@@ -334,3 +334,38 @@ describe('buildContainerImage', () => {
     });
   });
 });
+
+// go-to-k/cdk-local#745: `buildContainerImage` is how `invoke`, `start-api`,
+// the ALB / CloudFront front doors and `invoke-agentcore` / `start-agentcore`
+// reach `buildDockerImage`, so it must FORWARD the containment bound. A
+// dropped `assetOutdir` narrows to the manifest directory and refuses a
+// cdk.Stage image, whose context CDK stages one level above its manifest.
+describe('buildContainerImage — source.directory containment bound (#745)', () => {
+  it('forwards assetOutdir, so a cdk.Stage context `../asset.<hash>` builds', async () => {
+    await buildContainerImage(
+      { source: { directory: '../asset.stagectx' } },
+      '/tmp/cdkl-745-app/cdk.out/assembly-S',
+      { architecture: 'x86_64', assetOutdir: '/tmp/cdkl-745-app/cdk.out' }
+    );
+    const build = mockRunDocker.mock.calls.find((c) => (c[0] as string[])[0] === 'build');
+    expect((build![1] as { cwd: string }).cwd).toBe('/tmp/cdkl-745-app/cdk.out/asset.stagectx');
+  });
+
+  it('refuses the same context without assetOutdir, and an escaping one with it', async () => {
+    await expect(
+      buildContainerImage(
+        { source: { directory: '../asset.stagectx' } },
+        '/tmp/cdkl-745-app/cdk.out/assembly-S',
+        { architecture: 'x86_64' }
+      )
+    ).rejects.toBeInstanceOf(LocalInvokeBuildError);
+    await expect(
+      buildContainerImage(
+        { source: { directory: '../../victim' } },
+        '/tmp/cdkl-745-app/cdk.out/assembly-S',
+        { architecture: 'x86_64', assetOutdir: '/tmp/cdkl-745-app/cdk.out' }
+      )
+    ).rejects.toThrow(/Refusing to build it/);
+    expect(mockRunDocker.mock.calls.some((c) => (c[0] as string[])[0] === 'build')).toBe(false);
+  });
+});

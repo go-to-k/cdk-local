@@ -992,6 +992,25 @@ export function assetPathDirs(stack: StackInfo): {
 }
 
 /**
+ * The containment bound for a site whose BASE is the user's `--output`
+ * directory rather than the manifest's own directory — the `--watch` reload
+ * readers, which re-read `<output>/<stack>.assets.json` after each synth.
+ *
+ * A stack carrying `assetOutdir` (always, through `AssemblyReader`) gets the
+ * same Stage-aware bound as {@link assetPathDirs}. One without it gets
+ * `outputDir` itself, NOT `assetPathDirs`'s fallback: that fallback is the
+ * manifest directory or the process cwd, and against a base of `outputDir` the
+ * cwd is a DISJOINT bound that refuses every value with a message blaming the
+ * assembly. `outputDir` is the user's own flag, never assembly-supplied, so it
+ * is a legitimate bound.
+ */
+export function outputAssetBound(stack: StackInfo, outputDir: string): string {
+  return stack.assetOutdir === undefined || stack.assetOutdir === ''
+    ? outputDir
+    : assetPathDirs(stack).assetOutdir;
+}
+
+/**
  * The real assembly ROOT for a `--app` that names a `cdk.Stage`
  * SUB-assembly.
  *

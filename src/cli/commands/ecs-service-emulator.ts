@@ -8,7 +8,11 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
+import {
+  describeAwsFailureForWarn,
+  flattenToOneLine,
+  sanitizeServiceExceptionMessage,
+} from '../../local/credential-error.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, LocalStartServiceError } from '../../utils/error-handler.js';
 import { resolveMultiTarget } from '../../local/target-picker.js';
@@ -97,7 +101,8 @@ import {
   resolveFrontDoorTlsMaterials,
   type FrontDoorTlsMaterials,
 } from '../../local/front-door-tls.js';
-import type { ResolvedLambda } from '../../local/lambda-resolver.js';
+import { outputAssetBound, type ResolvedLambda } from '../../local/lambda-resolver.js';
+import { resolveAssetSourcePath } from '../../assets/asset-source-path.js';
 import {
   createFrontDoorLambdaRunner,
   type FrontDoorLambdaRunner,
@@ -1383,7 +1388,25 @@ export async function loadAssetContextForTarget(args: {
     );
     return undefined;
   }
-  const newAssetSourceDir = path.resolve(cdkOutDir, newDockerImage.source.directory);
+  // The directory a SOFT reload `docker cp`s into the running replicas.
+  // `path.resolve` HONOURS an absolute value, so it is judged as the absolute
+  // path it is and refused outside the app's outdir, exactly like a relative
+  // escape (go-to-k/cdk-local#745). The caller catches the refusal and falls
+  // back to a rebuild, whose `buildDockerImage` refuses the same value — so a
+  // hostile manifest stops the roll instead of reaching either sink.
+  const newAssetSourceDir = resolveAssetSourcePath({
+    manifestDir: cdkOutDir,
+    value: newDockerImage.source.directory,
+    assetOutdir: outputAssetBound(candidate, cdkOutDir),
+    absolute: 'honour',
+    field: 'source.directory',
+    subject:
+      `Docker image asset '${sanitizeServiceExceptionMessage(newAssetHash)}' of stack ` +
+      `'${sanitizeServiceExceptionMessage(candidate.stackName)}'`,
+    action: 'copy from it',
+    sink: 'copy that directory into the running replicas on a soft reload',
+    wrapError: (message) => new Error(message),
+  });
   // Phase 4 follow-up (#218) — read the OLD asset hash from the
   // LIVE replica's `lastDeployedAssetHash` stamp, not from
   // `controller.service` (the boot-time descriptor, which never

@@ -21,7 +21,7 @@ import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
 } from '../assets/asset-manifest-loader.js';
-import { materializeAssetCodeDir } from './lambda-resolver.js';
+import { assetPathDirs, materializeAssetCodeDir } from './lambda-resolver.js';
 import type { ResolvedImageLambda, ResolvedLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -190,6 +190,8 @@ async function resolveContainerImagePlan(
     if (entry) {
       imageRef = await buildContainerImage(entry.asset, cdkOutDir, {
         architecture: lambda.architecture,
+        // The containment bound for `source.directory` (go-to-k/cdk-local#745).
+        assetOutdir: assetPathDirs(lambda.stack).assetOutdir,
       });
       localBuilt = true;
     }

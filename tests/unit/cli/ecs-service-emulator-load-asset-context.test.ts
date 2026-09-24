@@ -537,3 +537,62 @@ describe('loadAssetContextForTarget — distinct debug messages per branch (issu
     }
   });
 });
+
+// go-to-k/cdk-local#745: `newAssetSourceDir` is what a SOFT reload
+// `docker cp`s into the running replicas. It was
+// `path.resolve(cdkOutDir, source.directory)`, which honours an absolute
+// value AND follows `..`, so a re-synthesized hand-modified manifest could
+// copy any host directory into the containers. The caller catches the throw
+// and falls back to a rebuild, whose `buildDockerImage` refuses the same
+// value — so a throw here is the fail-closed outcome.
+describe('loadAssetContextForTarget — soft-reload source containment (#745)', () => {
+  function callWithDirectory(directory: string, stack: Record<string, unknown> = {}) {
+    hoisted.resolveMode = 'happy';
+    hoisted.loadManifestCalls = [];
+    hoisted.manifest = {
+      version: '1.0.0',
+      files: {},
+      dockerImages: {
+        newhash: { displayName: 'WebTask:web', source: { directory }, destinations: {} },
+      },
+    };
+    return loadAssetContextForTarget({
+      target: 'AppStack:WebService',
+      controller: fakeControllerWithOldAssetHash('oldhash'),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      stacks: [{ ...fakeStack(), ...stack }] as any,
+      cdkOutDir: '/tmp/cdk.out',
+      assetLoader: new AssetManifestLoader(),
+      logger: getLogger().child('test'),
+    });
+  }
+
+  it('REFUSES a relative source.directory that climbs out of the output directory', async () => {
+    await expect(callWithDirectory('../../etc')).rejects.toThrow(
+      /Docker image asset 'newhash' of stack 'AppStack' has source\.directory='\.\.\/\.\.\/etc'.*outside.*Refusing to copy from it\./
+    );
+  });
+
+  it('REFUSES an ABSOLUTE source.directory outside the output directory (honoured by path.resolve)', async () => {
+    await expect(callWithDirectory('/etc')).rejects.toThrow(
+      /has an absolute source\.directory='\/etc'.*outside/
+    );
+  });
+
+  it('honours an absolute source.directory inside the output directory', async () => {
+    const ctx = (await callWithDirectory('/tmp/cdk.out/asset.newhash')) as {
+      newAssetSourceDir: string;
+    };
+    expect(ctx.newAssetSourceDir).toBe('/tmp/cdk.out/asset.newhash');
+  });
+
+  it("bounds by the stack's assetOutdir when the stack carries one", async () => {
+    // A WIDER bound admits `../x`; the default bound (the output directory,
+    // for a stack with no assetOutdir) refuses it. Proves which one is used.
+    await expect(callWithDirectory('../shared-ctx')).rejects.toThrow(/outside/);
+    const ctx = (await callWithDirectory('../shared-ctx', { assetOutdir: '/tmp' })) as {
+      newAssetSourceDir: string;
+    };
+    expect(ctx.newAssetSourceDir).toBe('/tmp/shared-ctx');
+  });
+});

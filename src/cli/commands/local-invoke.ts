@@ -41,6 +41,7 @@ import {
   type CdkLocalEmbedConfig,
 } from '../../local/embed-config.js';
 import {
+  assetPathDirs,
   resolveLambdaTarget,
   materializeAssetCodeDir,
   type ResolvedImageLambda,
@@ -672,6 +673,7 @@ export async function resolveContainerImagePlan(
     imageRef = await buildContainerImage(localBuild.asset, localBuild.cdkOutDir, {
       architecture: lambda.architecture,
       noBuild: options.build === false,
+      assetOutdir: localBuild.assetOutdir,
     });
   } else {
     if (!parseEcrUri(lambda.imageUri)) {
@@ -711,10 +713,13 @@ export async function resolveContainerImagePlan(
   };
 }
 
-async function resolveLocalBuildPlan(
-  lambda: ResolvedImageLambda
-): Promise<
-  | { asset: { source: import('../../types/assets.js').DockerImageAssetSource }; cdkOutDir: string }
+async function resolveLocalBuildPlan(lambda: ResolvedImageLambda): Promise<
+  | {
+      asset: { source: import('../../types/assets.js').DockerImageAssetSource };
+      cdkOutDir: string;
+      /** The containment bound for `source.directory` (go-to-k/cdk-local#745). */
+      assetOutdir: string;
+    }
   | undefined
 > {
   const manifestPath = lambda.stack.assetManifestPath;
@@ -727,7 +732,7 @@ async function resolveLocalBuildPlan(
 
   const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
   if (!entry) return undefined;
-  return { asset: entry.asset, cdkOutDir };
+  return { asset: entry.asset, cdkOutDir, assetOutdir: assetPathDirs(lambda.stack).assetOutdir };
 }
 
 export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | undefined): boolean {

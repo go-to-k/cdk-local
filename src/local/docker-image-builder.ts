@@ -4,6 +4,7 @@ import type { DockerImageAssetSource } from '../types/assets.js';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger, type Logger } from '../utils/logger.js';
+import { sanitizeServiceExceptionMessage } from './credential-error.js';
 import { isImageInLocalCache } from './ecr-puller.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -37,6 +38,13 @@ export interface BuildContainerImageOptions {
    * `--no-build` runs.
    */
   noBuild?: boolean;
+  /**
+   * The app's outdir, the containment bound for the asset's
+   * `source.directory` — pass `assetPathDirs(stack).assetOutdir`
+   * (go-to-k/cdk-local#745). Absent NARROWS to `cdkOutDir`, which refuses a
+   * `cdk.Stage` asset's `../asset.<hash>`; see `BuildDockerImageOptions`.
+   */
+  assetOutdir?: string;
 }
 
 /**
@@ -80,9 +88,11 @@ export async function buildContainerImage(
     platform,
     wrapError: (stderr) =>
       new LocalInvokeBuildError(
-        `docker build failed for container Lambda asset (${asset.source.directory ?? asset.source.executable?.join(' ')}): ${stderr}`
+        `docker build failed for container Lambda asset ` +
+          `(${sanitizeServiceExceptionMessage(asset.source.directory ?? asset.source.executable?.join(' ') ?? '')}): ${stderr}`
       ),
     progressLabel: `Building container image (platform=${platform})`,
+    ...(options.assetOutdir !== undefined && { assetOutdir: options.assetOutdir }),
   });
   if (actualTag !== tag) {
     logger.debug(`Re-tagging executable-built image '${actualTag}' → '${tag}'`);
