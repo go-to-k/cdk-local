@@ -517,19 +517,25 @@ The rules:
 - An ABSOLUTE value is judged the way each reader uses it. A Docker build
   context and an AgentCore code bundle (at boot and on a soft reload) place it
   UNDER the manifest's directory, as they always have.
-- The `start-cloudfront` S3 origin uses an absolute value as written: one
-  outside the output directory is ACCEPTED, and a WARNING names it —
-  including when it gets there through a symbolic link. `cdk synth
-  --no-staging` writes exactly this shape (the asset's absolute source
-  directory), so refusing it would reject the output of a documented CDK flag;
-  if you did not synthesize with `--no-staging`, treat that assembly as
-  untrusted. Roots no `--no-staging` source can be are still REFUSED: `/`,
-  your home directory or any directory containing it, and any directory
-  CONTAINING the output directory (compared through symbolic links). A
-  directory INSIDE your home — including `~/.aws` or `~/.ssh` — is accepted
-  with the warning, so read it. An origin accepted this way is
-  served only from inside THAT directory — a symbolic link in it pointing
-  elsewhere is not served.
+- The `start-cloudfront` S3 origin uses an absolute value as written, and
+  accepts one outside the output directory — with a WARNING naming it — only
+  as a `cdk synth --no-staging` source folder: `--no-staging` writes the
+  asset's absolute source directory, so refusing every such value would reject
+  the output of a documented CDK flag. It is ACCEPTED only when BOTH hold,
+  judged on real paths (symbolic links followed):
+  - it lies inside your PROJECT — the current directory, or the git work tree
+    holding the output directory (the nearest ancestor with a `.git` directory
+    or file) — so a monorepo sibling such as `packages/web/dist` beside
+    `packages/infra/cdk.out` works; and
+  - no directory between that project root and the folder starts with `.`
+    (`.git`, `.aws`, ...).
+
+  Everything else is REFUSED, naming the rule — including `/`, your home
+  directory or any directory containing it, and any directory containing the
+  output directory. A current directory that is itself `/` or your home
+  directory (or contains it) does not count as a project root. An origin
+  accepted this way is served only from inside THAT directory — a symbolic
+  link in it pointing elsewhere is not served.
 - The `--watch` soft-reload source of a container image also uses an absolute
   value as written, but there one outside the output directory is REFUSED:
   the image's own build places an absolute value under the manifest's

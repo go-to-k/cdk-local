@@ -1,6 +1,6 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import {
@@ -57,12 +57,15 @@ export interface AssetSourcePathOptions {
    *   `cdk synth --no-staging` assembly never boots a container to reload,
    *   and accepting the value would serve only a hostile layout.
    * - `'honour-warn'` — as `'honour'`, but an absolute value outside the bound
-   *   (lexically or through a symlink) is ACCEPTED WITH A WARNING naming it:
-   *   `cdk synth --no-staging` writes exactly this shape, and here it is
-   *   usable — the same decision as `Metadata['aws:asset:path']` (#744). EXCEPT
-   *   a root no `--no-staging` source can be — `/`, the user's home directory,
-   *   or an ANCESTOR of the outdir (see {@link broadRootReason}) — which is
-   *   refused. The start-cloudfront S3 origin is this.
+   *   (lexically or through a symlink) may be ACCEPTED WITH A WARNING naming
+   *   it: `cdk synth --no-staging` writes exactly this shape, and here it is
+   *   usable — the same decision as `Metadata['aws:asset:path']` (#744). Only
+   *   when it is a PROJECT folder, though (see {@link originScopeRefusal}):
+   *   its real path must lie inside a project root (the cwd, or the git work
+   *   tree holding the outdir) with no `.`-prefixed component in between, and
+   *   it must not be `/`, the home directory or an ancestor of either the home
+   *   directory or the outdir. Anything else is refused. The start-cloudfront
+   *   S3 origin is this.
    */
   absolute: 'fold' | 'honour' | 'honour-warn';
   /** The manifest field, for the message. */
@@ -109,17 +112,17 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
       );
     }
     if (escape !== undefined) {
-      // `'honour-warn'` (maintainer decision on #755's follow-up): ACCEPTED
-      // with a warning — the one legitimate producer is `cdk synth
-      // --no-staging`, whose source is a site folder. A root that folder can
-      // never be is refused: it hands a whole filesystem, a home directory or
-      // the assembly's own parent tree to the reader.
-      const broad = broadRootReason(absolute, assetOutdir);
-      if (broad !== undefined) {
+      // `'honour-warn'` (maintainer decisions on #755's follow-ups): ACCEPTED
+      // with a warning only as a `cdk synth --no-staging` source folder — a
+      // non-hidden directory inside the user's project. Anything else hands a
+      // host directory the assembly chose to the reader, and is refused.
+      const refusal = originScopeRefusal(absolute, assetOutdir);
+      if (refusal !== undefined) {
         throw wrapError(
-          `${subject} has an absolute ${field}='${shownValue}' which names ${broad}. ` +
-            `A cdk synth --no-staging source is a project directory, never that. ` +
-            `Refusing to ${action}.`
+          `${subject} has an absolute ${field}='${shownValue}' which ${refusal}. ` +
+            `An absolute ${field} is accepted only as a cdk synth --no-staging source ` +
+            `folder: a non-hidden directory inside your project (the current directory, ` +
+            `or the git work tree holding the output directory). Refusing to ${action}.`
         );
       }
       warnAbsoluteOutsideAssembly(opts, absolute, escape);
@@ -166,26 +169,100 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
  * - an ANCESTOR of the app's outdir, which contains the assembly and
  *   everything beside it.
  */
-function broadRootReason(absolute: string, assetOutdir: string): string | undefined {
-  const real = (p: string): string => {
-    try {
-      return realpathSync.native(p);
-    } catch {
-      return resolve(p);
-    }
-  };
-  const root = real(absolute);
-  // `root` is `dir` itself or an ancestor of it.
-  const containsOrIs = (dir: string): boolean => {
-    const rel = relative(root, dir);
-    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-  };
-  if (root === resolve('/')) return 'the filesystem root';
-  if (containsOrIs(real(homedir()))) return 'your home directory or a directory containing it';
-  if (containsOrIs(real(assetOutdir))) {
-    return "a directory containing the app's output directory";
+function broadRootReason(root: string, assetOutdir: string): string | undefined {
+  if (root === resolve('/')) return 'names the filesystem root';
+  if (containsOrIs(root, realPath(homedir()))) {
+    return 'names your home directory or a directory containing it';
+  }
+  if (containsOrIs(root, realPath(assetOutdir))) {
+    return "names a directory containing the app's output directory";
   }
   return undefined;
+}
+
+/**
+ * Why an `'honour-warn'` absolute root is refused, or `undefined` to accept it
+ * with the warning. Every comparison is on REAL paths, so a symlink whose
+ * target leaves the project is refused however it is spelled.
+ *
+ * 1. {@link broadRootReason} — roots no `--no-staging` source can be.
+ * 2. The root must lie STRICTLY inside a project root
+ *    ({@link projectRoots}), and no path component between that project root
+ *    and the origin may begin with `.` — so `.git`, `.aws`, `.ssh` inside the
+ *    repo are refused. A monorepo sibling
+ *    (`<repo>/packages/web/dist` beside `<repo>/packages/infra/cdk.out`) is
+ *    inside the git work tree and accepted.
+ */
+function originScopeRefusal(absolute: string, assetOutdir: string): string | undefined {
+  const root = realPath(absolute);
+  const broad = broadRootReason(root, assetOutdir);
+  if (broad !== undefined) return broad;
+  const projects = projectRoots(assetOutdir);
+  let hidden: string | undefined;
+  for (const project of projects) {
+    const rel = relative(project, root);
+    if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+    const dotted = rel.split(sep).find((c) => c.startsWith('.'));
+    if (dotted === undefined) return undefined;
+    hidden = dotted;
+  }
+  if (hidden !== undefined) {
+    return `passes through the hidden directory '${sanitizeServiceExceptionMessage(hidden)}' inside your project`;
+  }
+  const shown = projects.map((p) => `'${sanitizeServiceExceptionMessage(p)}'`).join(' or ');
+  return projects.length === 0
+    ? 'is outside any usable project root (the current directory and the git work tree are too broad to scope it)'
+    : `resolves to '${sanitizeServiceExceptionMessage(root)}', outside your project (${shown})`;
+}
+
+/**
+ * The directories an accepted absolute origin may live in: the process cwd,
+ * and the nearest ancestor of the outdir holding a `.git` entry (a directory,
+ * or a FILE in a linked worktree / submodule). Both real paths; `git` is not
+ * spawned. A candidate that is `/`, the home directory or an ancestor of it
+ * is DROPPED rather than used — running from `~` must not widen the scope to
+ * all of home.
+ */
+function projectRoots(assetOutdir: string): string[] {
+  const roots: string[] = [];
+  const usable = (p: string): boolean =>
+    p !== resolve('/') && !containsOrIs(p, realPath(homedir()));
+  const cwd = realPath(process.cwd());
+  if (usable(cwd)) roots.push(cwd);
+  let dir = realPath(assetOutdir);
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) {
+      if (usable(dir) && !roots.includes(dir)) roots.push(dir);
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return roots;
+}
+
+/** `outer` is `inner` itself or an ancestor of it (both real paths). */
+function containsOrIs(outer: string, inner: string): boolean {
+  const rel = relative(outer, inner);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/**
+ * `realpath(3)` of `p`, or — when `p` does not exist — the real path of its
+ * deepest existing ancestor with the rest re-appended, so a not-yet-existing
+ * path under a symlinked parent (`/tmp` -> `/private/tmp`) compares in the
+ * same spelling as its existing neighbours.
+ */
+function realPath(p: string): string {
+  const abs = resolve(p);
+  try {
+    return realpathSync.native(abs);
+  } catch {
+    const parent = dirname(abs);
+    if (parent === abs) return abs;
+    return join(realPath(parent), basename(abs));
+  }
 }
 
 /**

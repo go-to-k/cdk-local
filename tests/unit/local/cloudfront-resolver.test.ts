@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   describeS3OriginDomain,
   extractKvsAssociations,
@@ -691,6 +691,8 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
       writeFileSync(join(dir, 'index.html'), '<h1>site</h1>');
       writeFileSync(join(beyond, 'secret.txt'), 'SECRET');
       symlinkSync(join(beyond, 'secret.txt'), join(dir, 'leak.txt'));
+      // The site folder must be inside the project: make its parent the cwd.
+      vi.spyOn(process, 'cwd').mockReturnValue(dirname(dir));
       const stack = stackWithSourcePath(dir);
       const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get(
         'origin1'
@@ -706,6 +708,7 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(beyond, { recursive: true, force: true });
+      vi.restoreAllMocks();
     }
   });
 

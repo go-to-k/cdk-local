@@ -111,8 +111,17 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
+
+/**
+ * Make `dir` the process cwd for the project-root scope of `'honour-warn'`
+ * (an accepted absolute origin must lie inside the cwd or the git work tree).
+ */
+function useCwd(dir: string): void {
+  vi.spyOn(process, 'cwd').mockReturnValue(dir);
+}
 
 describe('resolveAssetSourcePath — the relative arm (both sinks)', () => {
   it('accepts a staged asset and returns the RESOLVED path', () => {
@@ -259,7 +268,8 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
   it("'honour-warn': an absolute value outside the outdir is ACCEPTED with a --no-staging warning, once", () => {
     // Maintainer decision (#755 follow-up): `cdk synth --no-staging` writes
     // this shape, so it is accepted and the warning names it.
-    const { outdir, victim } = layout();
+    const { root, outdir, victim } = layout();
+    useCwd(root);
     for (let i = 0; i < 2; i++) {
       expect(
         resolveIt({ manifestDir: outdir, value: victim, assetOutdir: outdir, absolute: 'honour-warn' })
@@ -275,7 +285,8 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
   it("'honour-warn': an accepted absolute value outside the outdir comes back NORMALIZED", () => {
     // The reader opens what this returns; `<victim>/sub/..` must come back as
     // `<victim>`, the path the warning named.
-    const { outdir, victim } = layout();
+    const { root, outdir, victim } = layout();
+    useCwd(root);
     mkdirSync(join(victim, 'sub'));
     expect(
       resolveIt({
@@ -289,6 +300,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
 
   it("'honour-warn': the warning flattens control characters in the path", () => {
     const { root, outdir } = layout();
+    useCwd(root);
     const odd = join(root, 'odd\x1b[2K\rFORGED');
     mkdirSync(odd);
     resolveIt({ manifestDir: outdir, value: odd, assetOutdir: outdir, absolute: 'honour-warn' });
@@ -347,7 +359,8 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
   });
 
   it("'honour-warn': an absolute value through a symlink out of the outdir is ACCEPTED, the warning naming the link target", () => {
-    const { outdir, victim } = layout();
+    const { root, outdir, victim } = layout();
+    useCwd(root);
     symlinkSync(victim, join(outdir, 'link'));
     expect(
       resolveIt({
@@ -405,7 +418,9 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
         absolute: 'honour-warn',
       })
     ).toThrow(/names your home directory or a directory containing it/);
-    // A real --no-staging site folder lives under home; only the home ROOT is refused.
+    // A real --no-staging site folder lives under home; only the home ROOT is
+    // refused. (The project root is a folder under home, as it would be.)
+    useCwd(join(homedir(), 'cdkl-745-not-created'));
     const site = join(homedir(), 'cdkl-745-not-created', 'site');
     expect(
       resolveIt({ manifestDir: outdir, value: site, assetOutdir: outdir, absolute: 'honour-warn' })
@@ -433,10 +448,89 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
   });
 
   it("'honour-warn' ACCEPTS a sibling site folder (the --no-staging shape)", () => {
-    const { outdir, victim } = layout();
+    const { root, outdir, victim } = layout();
+    useCwd(root);
     expect(
       resolveIt({ manifestDir: outdir, value: victim, assetOutdir: outdir, absolute: 'honour-warn' })
     ).toBe(victim);
+  });
+
+  it("'honour-warn' REFUSES an absolute folder outside both the cwd and the git work tree", () => {
+    const { root, outdir } = layout();
+    useCwd(join(root, 'project'));
+    mkdirSync(join(root, 'project'));
+    const elsewhere = tmp();
+    expect(() =>
+      resolveIt({ manifestDir: outdir, value: elsewhere, assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toThrow(/outside your project.*accepted only as a cdk synth --no-staging source folder.*Refusing to build it/);
+  });
+
+  it("'honour-warn' ACCEPTS a monorepo sibling scoped by the git work tree (cwd elsewhere)", () => {
+    const repo = tmp();
+    mkdirSync(join(repo, '.git'));
+    const outdir = join(repo, 'packages', 'infra', 'cdk.out');
+    const site = join(repo, 'packages', 'web', 'dist');
+    mkdirSync(outdir, { recursive: true });
+    mkdirSync(site, { recursive: true });
+    useCwd(tmp());
+    expect(
+      resolveIt({ manifestDir: outdir, value: site, assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toBe(site);
+    expect(warnLines.some((l) => /pointing outside the assembly/.test(l))).toBe(true);
+  });
+
+  it("'honour-warn' finds the git work tree from a `.git` FILE (a linked worktree)", () => {
+    const repo = tmp();
+    writeFileSync(join(repo, '.git'), 'gitdir: /elsewhere/.git/worktrees/x\n');
+    const outdir = join(repo, 'infra', 'cdk.out');
+    const site = join(repo, 'web', 'dist');
+    mkdirSync(outdir, { recursive: true });
+    mkdirSync(site, { recursive: true });
+    useCwd(tmp());
+    expect(
+      resolveIt({ manifestDir: outdir, value: site, assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toBe(site);
+  });
+
+  it("'honour-warn' REFUSES a hidden component between the project root and the origin", () => {
+    const repo = tmp();
+    mkdirSync(join(repo, '.git'));
+    const outdir = join(repo, 'infra', 'cdk.out');
+    mkdirSync(outdir, { recursive: true });
+    mkdirSync(join(repo, '.aws', 'creds'), { recursive: true });
+    useCwd(repo);
+    for (const value of [join(repo, '.git'), join(repo, '.aws', 'creds')]) {
+      expect(() =>
+        resolveIt({ manifestDir: outdir, value, assetOutdir: outdir, absolute: 'honour-warn' })
+      ).toThrow(/passes through the hidden directory '\.(git|aws)' inside your project/);
+    }
+  });
+
+  it("'honour-warn' drops a degenerate project root (cwd = home) instead of widening to it", () => {
+    // With the cwd at home and no git work tree, a folder under home is NOT
+    // in scope: home is too broad to be a project root.
+    const { outdir } = layout();
+    useCwd(homedir());
+    const site = join(homedir(), 'cdkl-745-not-created', 'site');
+    expect(() =>
+      resolveIt({ manifestDir: outdir, value: site, assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toThrow(/outside any usable project root/);
+  });
+
+  it("'honour-warn' REFUSES a symlink inside the project whose target leaves it (real paths)", () => {
+    const { root, outdir } = layout();
+    mkdirSync(join(root, 'project'));
+    useCwd(join(root, 'project'));
+    const outside = tmp();
+    symlinkSync(outside, join(root, 'project', 'site'));
+    expect(() =>
+      resolveIt({
+        manifestDir: outdir,
+        value: join(root, 'project', 'site'),
+        assetOutdir: outdir,
+        absolute: 'honour-warn',
+      })
+    ).toThrow(/outside your project/);
   });
 
   it("'honour' / 'honour-warn': a RELATIVE value leaving through a symlink is still REFUSED", () => {
