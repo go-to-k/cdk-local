@@ -92,7 +92,9 @@ Asset manifest loader + docker-build for container Lambdas.
   must open the RETURNED path, not re-join the raw value (#745).
 - `buildDockerImage` refuses an escaping context itself; every caller passes
   `assetOutdir`, or a cdk.Stage image is refused. BuildKit passthroughs only
-  WARN (`buildkit-passthrough-warnings.ts`).
+  WARN (`buildkit-passthrough-warnings.ts`), judging the RENDERED argv
+  string — `cacheOptionToFlag` (`docker-cache-option.ts`) is shared with the
+  argv builder so the two cannot disagree.
 
 ## `src/utils/`
 
