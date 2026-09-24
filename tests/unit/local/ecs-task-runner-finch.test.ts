@@ -269,7 +269,7 @@ describe('runEcsTask — the missing host-volume warning renders display-safe', 
     const line = warned.find((l) => l.includes('does not exist or is not a directory'));
     expect(line).toBeDefined();
     expect(line).toContain(`Volume ${JSON.stringify(name)}: host path ${JSON.stringify(hostPath)} does`);
-    const outside = line!.replace(/"(?:[^"\\]|\\.)*"/g, '<v>');
+    const outside = line!.split(JSON.stringify(name)).join('<v>').split(JSON.stringify(hostPath)).join('<v>');
     expect(outside).not.toContain('Mounted fine');
     expect(outside).not.toContain('Contained and healthy');
   });

@@ -601,7 +601,11 @@ describe('loadAssetContextForTarget — soft-reload source containment (#745)', 
       expect(message).toContain(
         `Docker image asset ${JSON.stringify(hash)} of stack ${JSON.stringify(stackName)} has`
       );
-      const outside = message.replace(/"(?:[^"\\]|\\.)*"/g, '<v>');
+      const outside = message
+        .split(JSON.stringify(hash))
+        .join('<v>')
+        .split(JSON.stringify(stackName))
+        .join('<v>');
       expect(outside).not.toContain('Contained and healthy');
       expect(outside).not.toContain('Nothing to see');
     } finally {

@@ -330,7 +330,11 @@ describe('resolveAgentCoreImage — CodeConfiguration (from source)', () => {
     expect(message).toContain(
       `AgentCore Runtime ${JSON.stringify(runtime.logicalId)} code bundle source ${JSON.stringify(forged)} does not exist`
     );
-    const outside = message.replace(/"(?:[^"\\]|\\.)*"/g, '<v>');
+    const outside = message
+      .split(JSON.stringify(forged))
+      .join('<v>')
+      .split(JSON.stringify(runtime.logicalId))
+      .join('<v>');
     expect(outside).not.toContain('Contained and healthy');
     expect(outside).not.toContain('Healthy agent');
     // The same id is the subject handed to the contained source-path lookup.

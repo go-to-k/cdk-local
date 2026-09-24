@@ -362,6 +362,10 @@ describe('the unsupported-shape refusal renders its values display-safe', () => 
       `Container ${JSON.stringify(forged.containerName)} secret ${JSON.stringify(forged.name)} ` +
         `references an unsupported ValueFrom shape ${JSON.stringify(forged.valueFrom)}. `
     );
-    expect(message.replace(/"(?:[^"\\]|\\.)*"/g, '<v>')).not.toContain('Healthy');
+    // Cut out the EXACT literals: a regex cut-out would pair a raw value's own
+    // quotes into a fake literal.
+    let outside = message;
+    for (const v of Object.values(forged)) outside = outside.split(JSON.stringify(v)).join('<v>');
+    expect(outside).not.toContain('Healthy');
   });
 });
