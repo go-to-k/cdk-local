@@ -244,6 +244,17 @@ describe('serveFromStaticOrigin — hidden entries under an accepted absolute or
       expect(serve('/index.html').body.toString()).toContain('ok');
       const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => /hidden entry/.test(l));
       expect(lines.filter((l) => l.includes("'.env'"))).toHaveLength(1);
+      // Aliases of one hidden file warn once (keyed on the file, not the key),
+      // and a `..` alias of a NORMAL file is not "hidden" at all.
+      serve('/a/../.env');
+      serve('/aa/../.env');
+      expect(
+        warn.mock.calls.map((c) => String(c[0])).filter((l) => /hidden entry/.test(l) && /\.env/.test(l))
+      ).toHaveLength(1);
+      expect(serve('/a/../index.html').body.toString()).toContain('ok');
+      expect(
+        warn.mock.calls.map((c) => String(c[0])).filter((l) => /index\.html/.test(l))
+      ).toEqual([]);
       // A made-up hidden key is refused silently: no warning, nothing recorded.
       serve('/.does-not-exist-1');
       serve('/.does-not-exist-2');

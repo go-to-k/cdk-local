@@ -179,7 +179,7 @@ function readKey(
       // Warn only for an entry that EXISTS: requests for made-up hidden keys
       // must not grow the dedupe set or the log (any page in the user's
       // browser can reach this loopback server).
-      if (isExistingFile(resolved)) warnHiddenKey(dir, key);
+      if (isExistingFile(resolved)) warnHiddenKey(dir, key, resolved);
       continue;
     }
     try {
@@ -248,7 +248,11 @@ const warnedEscapes = new Set<string>();
  */
 function isHiddenKey(dir: string, key: string, resolved: string): boolean {
   const hidden = (rel: string): boolean =>
-    rel.split(/[\\/]/).some((c) => c.startsWith('.') && c !== '.well-known');
+    rel
+      .split(/[\\/]/)
+      // `.` / `..` are navigation, not names (`safeJoin` already confines
+      // them); treating them as hidden made `a/../index.html` "hidden".
+      .some((c) => c.startsWith('.') && c !== '.' && c !== '..' && c !== '.well-known');
   // Only for an entry that EXISTS: a missing key has no real path, and the
   // lexical one relative to the folder's real path can read `../../tmp/...`
   // (a symlinked parent such as `/tmp` -> `/private/tmp`), whose `..` would
@@ -270,11 +274,14 @@ function isExistingFile(p: string): boolean {
   }
 }
 
-/** Warn once per (origin, key) that a hidden entry was withheld. */
-function warnHiddenKey(dir: string, key: string): void {
-  const warnKey = `${dir}\0${key}`;
-  if (warnedHiddenKeys.has(warnKey)) return;
-  warnedHiddenKeys.add(warnKey);
+/**
+ * Warn once per withheld FILE. Keyed on the resolved path, not the request
+ * key: `x/../.env`, `xx/../.env`, ... are unbounded spellings of one file, and
+ * keying on them let any client grow this set and the log without limit.
+ */
+function warnHiddenKey(dir: string, key: string, resolved: string): void {
+  if (warnedHiddenKeys.has(resolved)) return;
+  warnedHiddenKeys.add(resolved);
   getLogger().warn(
     `Not serving '${flattenToOneLine(key)}' from '${flattenToOneLine(dir)}': it is a hidden ` +
       `entry in a cdk synth --no-staging source folder (your own tree, not a staged asset). ` +
