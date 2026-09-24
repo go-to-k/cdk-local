@@ -43,8 +43,8 @@ export interface AssetSourcePathOptions {
    * How the SINK joins an absolute value, which decides how it is judged:
    *
    * - `'fold'` — the sink concatenates or `path.join`s, which does NOT honour a
-   *   leading separator, so `/etc` lands at `<manifestDir>/etc`. The leading
-   *   separators are stripped and the remainder takes the relative arm.
+   *   leading separator, so `/etc` lands at `<manifestDir>/etc` and is judged
+   *   there, by the relative arm.
    *   `buildDockerImage` (string concatenation) and the AgentCore code
    *   bundle's `getAssetSourcePath` (`path.join`) are these.
    * - `'honour'` — the sink `path.resolve`s, so an absolute value is used as
@@ -104,11 +104,10 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
   }
 
   // `'fold'`, or a relative value: the sink joins it under `manifestDir`.
-  // Stripping the leading separators is exactly what `path.join` and a
-  // `${a}/${b}` concatenation do to an absolute value, so the verdict is about
-  // the path the sink opens.
-  const relative = isAbsolute(value) ? value.replace(/^[/\\]+/, '') : value;
-  const resolved = resolveAssemblyPath(manifestDir, relative, { containWithin: assetOutdir });
+  // `resolveAssemblyPath` joins with `path.join`, which folds an absolute value
+  // exactly as `path.join` and a `${a}/${b}` concatenation do, so the verdict
+  // is about the path the sink opens.
+  const resolved = resolveAssemblyPath(manifestDir, value, { containWithin: assetOutdir });
   if (resolved.contained) return resolved.path;
   // "IS the bound", not "lands inside it": with `<parent>/back -> cdk.out`, a
   // value of `../back` is accepted and warned, while `../back/asset.abc` is

@@ -1,4 +1,3 @@
-import { resolve } from 'node:path';
 import type { DockerImageAssetSource } from '../types/assets.js';
 import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getEmbedConfig } from '../local/embed-config.js';
@@ -162,6 +161,10 @@ export function resetBuildKitPassthroughWarnings(): void {
  * `base` is the build context directory (what BuildKit resolves a relative
  * value against — the build's cwd); `bound` is the app's outdir. Called above
  * the spawn so the line precedes the read or write it describes.
+ *
+ * No "inside the build context" exemption is needed, unlike a builder that
+ * honours an absolute context: `buildDockerImage` has already contained the
+ * context within `bound`, so a path inside the context is inside the bound.
  */
 export function warnEscapingBuildKitPaths(
   source: DockerImageAssetSource,
@@ -169,18 +172,7 @@ export function warnEscapingBuildKitPaths(
   bound: string
 ): void {
   const logger = getLogger().child('assets');
-  // The context may only NARROW the question, never widen it. A READ inside
-  // the build context is not worth a line — BuildKit was handed that directory
-  // already — but when the context CONTAINS the outdir (a `directory: '.'`
-  // context at a project root) that exemption would silence every path under
-  // it, so it is switched off there.
-  const contextNarrows = assemblyPathEscape(base, base, resolve(bound)) !== undefined;
   for (const ref of hostPathsOf(source)) {
-    // A WRITE gets no such exemption: "BuildKit may already READ the
-    // context" does not license creating files in it.
-    if (!ref.write && contextNarrows && assemblyPathEscape(base, base, ref.path) === undefined) {
-      continue;
-    }
     const escape = assemblyPathEscape(base, bound, ref.path);
     if (escape === undefined) continue;
     const verb = ref.write ? 'WRITE to' : 'read';
