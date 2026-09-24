@@ -416,6 +416,9 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
           directory: 'asset.abc',
           dockerBuildSecrets: { t: 'type=file,src=token' },
           cacheFrom: [{ type: 'registry', params: { ref: 'ghcr.io/x/y:cache' } }],
+          // An S3 cache `prefix` is a key, not a host path; a leading `/`
+          // would read as an absolute escape if every key were a candidate.
+          cacheTo: { type: 's3', params: { bucket: 'b', prefix: '/team/cache/' } },
           dockerOutputs: ['type=image,push=true'],
         },
       },
