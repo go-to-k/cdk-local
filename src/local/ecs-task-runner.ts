@@ -968,7 +968,7 @@ async function prepareOneImage(
         wrapError: (stderr: string) =>
           new LocalInvokeBuildError(
             `docker build failed for ECS container '${container.name}' ` +
-              `(${displayUntrustedValue(asset.source.directory ?? asset.source.executable?.join(' ') ?? '')}): ${stderr}`
+              `(${displayUntrustedValue(asset.source.directory ?? asset.source.executable?.[0] ?? '')}): ${stderr}`
           ),
         progressLabel: `Building container image for '${container.name}'`,
       });

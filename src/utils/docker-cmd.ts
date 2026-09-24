@@ -298,7 +298,15 @@ export async function spawnStreaming(
           )
         );
       } else {
-        reject(err);
+        // Node's own message is `spawn <cmd> <CODE>` with the command RAW, and
+        // `cmd` is an asset's `source.executable[0]` when docker-build.ts runs
+        // one (go-to-k/cdk-local#764). No `cause`: the error handler prints a
+        // cause's message, which would carry the raw command back in.
+        const wrapped = new Error(
+          `Failed to execute ${displayUntrustedValue(cmd)} (${err.code ?? 'spawn error'})`
+        ) as NodeJS.ErrnoException;
+        if (err.code !== undefined) wrapped.code = err.code;
+        reject(wrapped);
       }
     });
 
@@ -310,11 +318,15 @@ export async function spawnStreaming(
         resolve({ stdout, stderr });
       } else {
         stopProgressSpinner(spin, options.progressLabel);
-        // `cmd` and `args[0]` are an asset's `source.executable` when
-        // docker-build.ts runs one, so they render display-safe
-        // (go-to-k/cdk-local#764); `docker build` stays bare.
-        const shownArgs = [cmd, ...args.slice(0, 1)].map(displayUntrustedValue).join(' ');
-        const message = stderr.trim() || stdout.trim() || `${shownArgs} exited with code ${code}`;
+        // `cmd` is an asset's `source.executable[0]` when docker-build.ts runs
+        // one, so it renders display-safe (go-to-k/cdk-local#764). Its
+        // ARGUMENTS stay out: a build script's own `--token=...` matches no
+        // argv masker, and the full argv is a `--verbose` detail (see
+        // `warnManifestExecutable`).
+        const message =
+          stderr.trim() ||
+          stdout.trim() ||
+          `${displayUntrustedValue(cmd)} exited with code ${code}`;
         const err = new Error(message) as SpawnError;
         err.stderr = stderr;
         err.stdout = stdout;
@@ -435,12 +447,13 @@ export async function spawnForeground(
     child.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') {
         const usingOverride = process.env['CDK_DOCKER'] === cmd && cmd !== 'docker';
+        const shownCmd = displayUntrustedValue(cmd);
         reject(
           new Error(
             usingOverride
-              ? `Failed to find and execute '${cmd}' (resolved via CDK_DOCKER). ` +
-                  `Install '${cmd}' or unset CDK_DOCKER to fall back to 'docker'.`
-              : `Failed to find and execute '${cmd}'. Install Docker (or set the ` +
+              ? `Failed to find and execute ${shownCmd} (resolved via CDK_DOCKER). ` +
+                  `Install ${shownCmd} or unset CDK_DOCKER to fall back to 'docker'.`
+              : `Failed to find and execute ${shownCmd}. Install Docker (or set the ` +
                   `'CDK_DOCKER' environment variable to a compatible binary such as podman / finch).`
           )
         );

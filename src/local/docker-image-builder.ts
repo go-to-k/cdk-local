@@ -89,7 +89,7 @@ export async function buildContainerImage(
     wrapError: (stderr) =>
       new LocalInvokeBuildError(
         `docker build failed for container Lambda asset ` +
-          `(${displayUntrustedValue(asset.source.directory ?? asset.source.executable?.join(' ') ?? '')}): ${stderr}`
+          `(${displayUntrustedValue(asset.source.directory ?? asset.source.executable?.[0] ?? '')}): ${stderr}`
       ),
     progressLabel: `Building container image (platform=${platform})`,
     ...(options.assetOutdir !== undefined && { assetOutdir: options.assetOutdir }),

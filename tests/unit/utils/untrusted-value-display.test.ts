@@ -17,7 +17,7 @@
  * outdir and the project root all carry it too.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,10 +77,6 @@ type StackInfo = import('../../../src/synthesis/assembly-reader.js').StackInfo;
 /** The clause a forging value tries to add to cdk-local's own sentence. */
 const CLAUSE = 'Contained and healthy';
 const FORGE = `x'". ${CLAUSE}. Nothing "'y`;
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /** Every JSON string literal in `text`, as `displayUntrustedValue` writes one. */
 const LITERAL = /"(?:[^"\\]|\\.)*"/g;
@@ -409,6 +405,10 @@ describe('buildkit-passthrough-warnings.ts', () => {
  * clause of its own into the docker-build failure message.
  */
 const PAREN_FORGE = `asset.x): ${CLAUSE}. Nothing (y`;
+/** An asset's `source.executable[0]` carrying the same forge. */
+const EXEC_FORGE = `./${PAREN_FORGE}`;
+/** A build script's own argument, which only `--verbose` may show. */
+const SECRET_ARG = '--token=ghp_764secret';
 
 describe('docker-build failure messages (#764)', () => {
   /** An outdir holding a real, contained asset directory named `dir`. */
@@ -441,76 +441,137 @@ describe('docker-build failure messages (#764)', () => {
     expectContained(message);
   });
 
-  it('buildContainerImage: the executable command line', async () => {
+  it('buildContainerImage: the executable, named by its command alone', async () => {
     const outdir = outdirWith('unused');
     mockSpawnStreaming.mockRejectedValue({ stderr: 'boom' });
     const message = await rejected(
-      buildContainerImage({ source: { executable: ['./build.sh', PAREN_FORGE] } }, outdir, {
+      buildContainerImage({ source: { executable: [EXEC_FORGE, SECRET_ARG] } }, outdir, {
         architecture: 'x86_64',
       })
     );
     expect(message).toBe(
-      `docker build failed for container Lambda asset (${JSON.stringify(`./build.sh ${PAREN_FORGE}`)}): boom`
+      `docker build failed for container Lambda asset (${JSON.stringify(EXEC_FORGE)}): boom`
     );
     expectContained(message);
+    expect(message).not.toContain(SECRET_ARG);
   });
 
-  it('prepareImages (run-task / start-service / start-alb): the ECS asset directory', async () => {
+  /** Drive `prepareImages` over a one-image manifest whose source is `source`. */
+  async function ecsBuildFailure(source: object): Promise<string> {
     const outdir = outdirWith(PAREN_FORGE);
     const assetManifestPath = join(outdir, 'Stk.assets.json');
     writeFileSync(
       assetManifestPath,
-      JSON.stringify({
-        version: '1',
-        files: {},
-        dockerImages: { h: { source: { directory: PAREN_FORGE }, destinations: {} } },
-      })
+      JSON.stringify({ version: '1', files: {}, dockerImages: { h: { source, destinations: {} } } })
     );
-    mockRunDockerStreaming.mockRejectedValue({ stderr: 'boom' });
     const task = {
       stack: { stackName: 'Stk', assetManifestPath, assetOutdir: outdir },
       containers: [{ name: 'web', image: { kind: 'cdk-asset', assetHash: 'h' }, essential: true }],
     } as never;
-    const message = await rejected(prepareImages(task, new Map(), { skipPull: true } as never));
+    return rejected(prepareImages(task, new Map(), { skipPull: true } as never));
+  }
+
+  it('prepareImages (run-task / start-service / start-alb): the ECS asset directory', async () => {
+    mockRunDockerStreaming.mockRejectedValue({ stderr: 'boom' });
+    const message = await ecsBuildFailure({ directory: PAREN_FORGE });
     expect(message).toBe(
       `docker build failed for ECS container 'web' (${JSON.stringify(PAREN_FORGE)}): boom`
     );
     expectContained(message);
   });
 
+  it('prepareImages: the executable, named by its command alone', async () => {
+    mockSpawnStreaming.mockRejectedValue({ stderr: 'boom' });
+    const message = await ecsBuildFailure({ executable: [EXEC_FORGE, SECRET_ARG] });
+    expect(message).toBe(
+      `docker build failed for ECS container 'web' (${JSON.stringify(EXEC_FORGE)}): boom`
+    );
+    expectContained(message);
+    expect(message).not.toContain(SECRET_ARG);
+  });
+
   it("the executable's debug line and its no-output failure", async () => {
     mockSpawnStreaming.mockResolvedValue({ stdout: '', stderr: '' });
     const message = await rejected(
-      buildDockerImage({ source: { executable: ['./build.sh', PAREN_FORGE] } }, '/tmp/cdk.out', {
+      buildDockerImage({ source: { executable: [EXEC_FORGE, SECRET_ARG] } }, '/tmp/cdk.out', {
         wrapError: (m: string) => new Error(m),
       })
     );
-    const shown = JSON.stringify(`./build.sh ${PAREN_FORGE}`);
     expect(message).toBe(
-      `docker build executable produced no output (expected the local image tag on stdout): ${shown}`
+      `docker build executable produced no output (expected the local image tag on stdout): ${JSON.stringify(EXEC_FORGE)}`
     );
     expectContained(message);
+    expect(message).not.toContain(SECRET_ARG);
+    // The debug line is where the full argv belongs, display-safe.
     const line = debugLines.find((l) => l.startsWith('Building Docker image via executable: '));
-    expect(line).toBe(`Building Docker image via executable: ${shown} (cwd=/tmp/cdk.out)`);
+    expect(line).toBe(
+      `Building Docker image via executable: ${JSON.stringify(`${EXEC_FORGE} ${SECRET_ARG}`)} (cwd=/tmp/cdk.out)`
+    );
     expectContained(line!);
   });
 
-  it("spawnStreaming (the executable's own launch): the no-output exit and the not-found refusal", async () => {
+  describe("spawnStreaming (the executable's own launch), for real", () => {
     // The REAL spawner, which this file otherwise mocks: it is what runs an
     // asset's `source.executable`, so its own failure text names that value.
-    const { spawnStreaming } = await vi.importActual<
-      typeof import('../../../src/utils/docker-cmd.js')
-    >('../../../src/utils/docker-cmd.js');
-    // `false` ignores its argument and exits 1 with no output, so the message
-    // is the spawner's own template.
-    const exited = await rejected(spawnStreaming('false', [PAREN_FORGE], { streamLive: false }));
-    expect(exited).toBe(`false ${JSON.stringify(PAREN_FORGE)} exited with code 1`);
-    expectContained(exited);
-    const missing = await rejected(spawnStreaming(`./${PAREN_FORGE}`, [], { streamLive: false }));
-    expect(missing).toMatch(
-      new RegExp(`^Failed to find and execute ${escapeRegExp(JSON.stringify(`./${PAREN_FORGE}`))}\\. `)
-    );
-    expectContained(missing);
+    async function realSpawnStreaming() {
+      return (
+        await vi.importActual<typeof import('../../../src/utils/docker-cmd.js')>(
+          '../../../src/utils/docker-cmd.js'
+        )
+      ).spawnStreaming;
+    }
+
+    /** A script at a path whose own name carries the forge. */
+    function scriptNamedForge(mode: number): string {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-764-spawn-')));
+      roots.push(root);
+      const script = join(root, PAREN_FORGE);
+      writeFileSync(script, '#!/bin/sh\nexit 3\n');
+      chmodSync(script, mode);
+      return script;
+    }
+
+    it('the silent non-zero exit names the command alone', async () => {
+      const spawnStreaming = await realSpawnStreaming();
+      const script = scriptNamedForge(0o755);
+      const message = await rejected(spawnStreaming(script, [SECRET_ARG], { streamLive: false }));
+      expect(message).toBe(`${JSON.stringify(script)} exited with code 3`);
+      expectContained(message);
+      expect(message).not.toContain(SECRET_ARG);
+    });
+
+    it('a command that cannot be executed (EACCES)', async () => {
+      const spawnStreaming = await realSpawnStreaming();
+      const script = scriptNamedForge(0o644);
+      let caught: unknown;
+      await spawnStreaming(script, [SECRET_ARG], { streamLive: false }).catch((e: unknown) => {
+        caught = e;
+      });
+      expect(caught).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      expect(message).toBe(`Failed to execute ${JSON.stringify(script)} (EACCES)`);
+      expect((caught as NodeJS.ErrnoException).code).toBe('EACCES');
+      expect((caught as Error).cause).toBeUndefined();
+      expectContained(message);
+    });
+
+    it('a command that does not exist (ENOENT)', async () => {
+      const spawnStreaming = await realSpawnStreaming();
+      const missing = join(realpathSync(tmpdir()), `cdkl-764-missing-${PAREN_FORGE}`);
+      const message = await rejected(spawnStreaming(missing, [], { streamLive: false }));
+      expect(message.startsWith(`Failed to find and execute ${JSON.stringify(missing)}. `)).toBe(true);
+      expectContained(message);
+    });
+
+    it("spawnForeground's not-found refusal renders the same way", async () => {
+      const { spawnForeground } = await vi.importActual<
+        typeof import('../../../src/utils/docker-cmd.js')
+      >('../../../src/utils/docker-cmd.js');
+      const missing = join(realpathSync(tmpdir()), `cdkl-764-missing-${PAREN_FORGE}`);
+      const message = await rejected(spawnForeground(missing, []));
+      expect(message.startsWith(`Failed to find and execute ${JSON.stringify(missing)}. `)).toBe(true);
+      expectContained(message);
+    });
   });
 
   it('directory mode: the build context in the docker build debug line', async () => {

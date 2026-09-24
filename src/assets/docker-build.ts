@@ -256,7 +256,7 @@ export async function buildDockerImage(
     const tag = result.stdout.trim();
     if (!tag) {
       throw options.wrapError(
-        `docker build executable produced no output (expected the local image tag on stdout): ${displayUntrustedValue(source.executable.join(' '))}`
+        `docker build executable produced no output (expected the local image tag on stdout): ${displayUntrustedValue(cmd)}`
       );
     }
     return tag;
