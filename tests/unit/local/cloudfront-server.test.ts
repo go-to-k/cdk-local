@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -646,5 +646,37 @@ describe('startCloudFrontServer — deployed-S3 origin (issue #405)', () => {
     const res = await fetch(`${s.url}/`);
     expect(res.status).toBe(502);
     await s.close();
+  });
+});
+
+// go-to-k/cdk-local#745: an origin whose directories the asset manifest named
+// (`fromAssembly`) must not serve a symlinked file that leads outside them.
+describe('startCloudFrontServer — manifest-named origin symlinks (#745)', () => {
+  it('does not serve a symlink out of a fromAssembly origin directory', async () => {
+    const origin = mkdtempSync(join(tmpdir(), 'cdkl-cf-srv-link-'));
+    const outside = mkdtempSync(join(tmpdir(), 'cdkl-cf-srv-victim-'));
+    writeFileSync(join(outside, 'secret.txt'), 'SECRET');
+    symlinkSync(join(outside, 'secret.txt'), join(origin, 'leak.txt'));
+    const srv = await startCloudFrontServer({
+      distribution: {
+        logicalId: 'Dist',
+        stackName: 'Stack',
+        behaviors: [{ targetOriginId: 'o1' }],
+        origins: new Map([
+          ['o1', { kind: 's3', originId: 'o1', localDirs: [origin], fromAssembly: true }],
+        ]),
+        customErrorResponses: [],
+      },
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const res = await fetch(`${srv.url}/leak.txt`);
+      expect(await res.text()).not.toContain('SECRET');
+    } finally {
+      await srv.close();
+      rmSync(origin, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
