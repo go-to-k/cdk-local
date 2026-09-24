@@ -97,9 +97,10 @@ function escapeForMessage(text: string): string {
  * `undefined` when they may be forwarded: another client, no such secret, or
  * {@link allowSecretsOnArgvEnvName} set. The caller throws it in its own error
  * class BEFORE any `docker run`. The AWS credential set is not refused here
- * (it is warned about by {@link warnFinchArgvExposure}): finch already puts the
- * operator's own credentials on that argv for every command, so refusing them
- * would only disable finch without changing the operator's exposure. Names
+ * but warned about by {@link warnFinchArgvExposure}: forwarding it is what puts
+ * credentials that are not in this process's own environment (`--assume-role`,
+ * `--profile`, the metadata sidecar's) on that argv, and the warning makes that
+ * visible while keeping finch usable for containers that need AWS access. Names
  * only, never a value. `subject` is context such as the container name; it is
  * escaped like the names.
  */

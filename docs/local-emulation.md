@@ -52,22 +52,29 @@ on every command. So when `CDK_DOCKER` names finch on macOS or Windows:
   task (`run-task`, and each replica of `start-service` / `start-alb`) with a
   `Secrets` entry or a decrypted `SecureString` env value. `run-task` refuses
   before any image is pulled, any secret is fetched or its task network is
-  created; `start-service` / `start-alb` have already created their shared
-  network, which is torn down as the run exits. The error names the secrets,
-  never their values. Use a client
-  that keeps the value off the command line (for example the default `docker`,
-  by unsetting `CDK_DOCKER`), or set `CDKL_ALLOW_SECRETS_ON_ARGV=1` (or `true`)
-  to accept the exposure while it stays set; the warning below then names each
-  forwarded secret.
+  created. `start-service` / `start-alb` check each service when its first
+  replica boots: the shared network and metadata sidecar already exist then,
+  and with several targets the services booted before the refused one are
+  already running. The run then exits and tears everything down. The error
+  names the secrets, never their values. Use a client that keeps the value off
+  the command line (for example the default `docker`, by unsetting
+  `CDK_DOCKER`), or set `CDKL_ALLOW_SECRETS_ON_ARGV=1` (or `true`) to accept
+  the exposure while it stays set; the warning below then names each forwarded
+  secret.
 - **The AWS credentials cdk-local hands a container** (and the metadata
   sidecar) are still forwarded, with a warning naming the variables but not
-  their values. finch places the credentials of its own environment on that
-  command line for every command anyway, so refusing them would disable finch
-  without removing the exposure.
+  their values. Forwarding them is what puts them on that command line, which
+  matters most for credentials that are not in cdk-local's own environment:
+  `--assume-role` session credentials and credentials resolved from
+  `--profile` (including SSO). They are warned about rather than refused so
+  that finch stays usable for containers that need AWS access. To keep them off
+  the command line, use a client other than finch on macOS or Windows.
 - **The AWS credentials in cdk-local's own environment** — your shell's, or
   the role `--role-arn` assumed — reach that command line on every finch
   command, including pulls, builds and network setup. finch does that by
-  itself; cdk-local does not refuse or warn about it.
+  itself, and on Windows with its `ecr-login` credential helper configured it
+  also adds the credentials `aws configure export-credentials` returns.
+  cdk-local does not refuse or warn about either.
 
 finch is recognised by the file name `CDK_DOCKER` resolves to: `finch`, or
 `finch.exe`, in any case. A wrapper script or a symlink under another name is

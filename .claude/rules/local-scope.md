@@ -21,8 +21,9 @@ the value-less `-e KEY` onto the `limactl` argv, so a container with one is
 refused there unless `<envPrefix>_ALLOW_SECRETS_ON_ARGV` is `1` / `true`
 (#749). Creds ride the env overlay, so **the named-profile credentials-FILE
 mount `cdkl invoke` adds is NOT reproduced** and an explicit
-`fromIni({ profile })` is the one `--profile` case not covered. Without a state flag, dev-shell creds are
-forwarded and intrinsic env values dropped (warn per key).
+`fromIni({ profile })` is the one `--profile` case not covered. Without a state
+flag, dev-shell creds are forwarded and intrinsic env values dropped (warn per
+key).
 
 ## ECS: `start-service` / `start-alb` / `run-task`
 
