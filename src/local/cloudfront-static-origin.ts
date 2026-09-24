@@ -1,5 +1,7 @@
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, normalize, relative, sep } from 'node:path';
+import { getLogger } from '../utils/logger.js';
+import { flattenToOneLine } from './credential-error.js';
 
 /**
  * Serve a request URI from a local directory standing in for a distribution's
@@ -44,12 +46,19 @@ export interface StaticOriginResult {
  */
 export function serveFromStaticOrigin(input: {
   localDirs: readonly string[];
+  /**
+   * Refuse a file whose REAL path leaves its directory (a symlink pointing
+   * elsewhere). Set for directories the asset manifest named; an `--origin`
+   * override is the user's own directory and is served as-is.
+   */
+  containLinks?: boolean;
   uri: string;
   defaultRootObject?: string;
   customErrorResponses?: readonly ResolvedCustomErrorResponse[];
 }): StaticOriginResult {
   const key = uriToKey(input.uri, input.defaultRootObject);
-  const direct = readKey(input.localDirs, key);
+  const containLinks = input.containLinks === true;
+  const direct = readKey(input.localDirs, key, containLinks);
   if (direct) {
     return { statusCode: 200, headers: { 'content-type': contentTypeForKey(key) }, body: direct };
   }
@@ -60,7 +69,7 @@ export function serveFromStaticOrigin(input: {
   // is what static-site CDK apps overwhelmingly use; an app that mapped 404
   // instead is also honored because we try BOTH codes' error responses.
   for (const candidate of resolveErrorResponseCandidates(input.customErrorResponses)) {
-    const body = readKey(input.localDirs, candidate.errorKey);
+    const body = readKey(input.localDirs, candidate.errorKey, containLinks);
     if (body) {
       return {
         statusCode: candidate.responseCode,
@@ -140,12 +149,23 @@ export function uriToKey(uri: string, defaultRootObject?: string): string {
  * `cdk.out/asset.x/index.html -> ~/.aws/credentials` inside a contained origin
  * directory used to be served (go-to-k/cdk-local#745).
  */
-function readKey(localDirs: readonly string[], key: string): Buffer | undefined {
+function readKey(
+  localDirs: readonly string[],
+  key: string,
+  containLinks: boolean
+): Buffer | undefined {
   if (key === '') return undefined;
   for (const dir of localDirs) {
-    const resolved = safeJoin(dir, key);
-    if (!resolved) continue;
-    if (!readsInsideRoot(dir, resolved)) continue;
+    const joined = safeJoin(dir, key);
+    if (!joined) continue;
+    let resolved = joined;
+    if (containLinks) {
+      const real = realPathInsideRoot(dir, joined);
+      if (real === false) continue;
+      // Read the REAL path that was judged, not the name again, so a link
+      // swapped between the check and the read is not followed.
+      if (real !== undefined) resolved = real;
+    }
     try {
       const st = statSync(resolved);
       if (st.isFile()) return readFileSync(resolved);
@@ -169,23 +189,38 @@ export function safeJoin(dir: string, key: string): string | undefined {
 }
 
 /**
- * Whether `file`, with every symbolic link followed by the kernel, still lies
- * inside `root` (links followed too). A path that does not resolve answers
- * `true`: the read after it fails the same way, so it reaches nothing.
+ * `file`'s REAL path (every symbolic link followed by the kernel) when it lies
+ * inside `root`'s real path; `false` when it leaves it, with a warning once per
+ * file; `undefined` when either does not resolve — the read after it fails the
+ * same way, so it reaches nothing.
  */
-function readsInsideRoot(root: string, file: string): boolean {
+function realPathInsideRoot(root: string, file: string): string | false | undefined {
   let realFile: string;
   let realRoot: string;
   try {
     realFile = realpathSync.native(file);
     realRoot = realpathSync.native(root);
   } catch {
-    return true;
+    return undefined;
   }
   const rel = relative(realRoot, realFile);
-  if (rel === '') return true;
-  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  if (rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) {
+    return realFile;
+  }
+  if (!warnedEscapes.has(file)) {
+    warnedEscapes.add(file);
+    getLogger().warn(
+      `Not serving '${flattenToOneLine(file)}': it is a symbolic link to ` +
+        `'${flattenToOneLine(realFile)}', outside the origin directory ` +
+        `'${flattenToOneLine(root)}' the asset manifest named. ` +
+        `Answering as if the key did not exist.`
+    );
+  }
+  return false;
 }
+
+/** Files already warned about; a browser re-requests the same key. */
+const warnedEscapes = new Set<string>();
 
 function stripLeadingSlash(s: string): string {
   return s.startsWith('/') ? s.replace(/^\/+/, '') : s;

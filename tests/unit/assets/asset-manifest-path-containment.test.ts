@@ -545,7 +545,9 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
     expect(warnLines.filter((l) => /dockerBuildSsh\['0'\]/.test(l))).toHaveLength(0);
     warnLines.length = 0;
     await buildDockerImage(
-      { source: { directory: 'asset.abc', dockerBuildSsh: 'default' } },
+      // No `=`: the value is an agent-socket ID, not a path, even when it
+      // LOOKS like an escaping one.
+      { source: { directory: 'asset.abc', dockerBuildSsh: victim } },
       outdir,
       { tag: 't2', wrapError }
     );

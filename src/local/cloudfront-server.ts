@@ -582,6 +582,7 @@ async function serveFromOrigin(
   if (origin.kind !== 's3') return undefined;
   const result = serveFromStaticOrigin({
     localDirs: origin.localDirs,
+    ...(origin.fromAssembly === true && { containLinks: true }),
     uri: args.uri,
     ...(distribution.defaultRootObject !== undefined && {
       defaultRootObject: distribution.defaultRootObject,

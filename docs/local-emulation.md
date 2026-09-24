@@ -503,7 +503,8 @@ directories it names are held to the same bound as `Metadata['aws:asset:path']`
   `source.executable` build script;
 - the directory `start-cloudfront` serves for a `BucketDeployment` source —
   and each file served from it must also resolve inside it, so a symbolic link
-  in the directory pointing elsewhere is not served;
+  in the directory pointing elsewhere is not served (with a warning). A
+  directory you name with `--origin` is your own and is served as-is;
 - the source tree of an AgentCore `fromCodeAsset` bundle;
 - the directory a `--watch` soft reload copies into a running container.
 

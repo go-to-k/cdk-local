@@ -144,10 +144,18 @@ describe('serveFromStaticOrigin — symbolic links leaving the origin (#745)', (
       mkdirSync(join(origin, 'ok'));
       writeFileSync(join(outside, 'inner.txt'), 'SECRET2');
       symlinkSync(outside, join(origin, 'escdir'));
-      const r = serveFromStaticOrigin({ localDirs: [origin], uri: '/index.html' });
+      const r = serveFromStaticOrigin({ localDirs: [origin], uri: '/index.html', containLinks: true });
       expect(r.body.toString()).not.toContain('SECRET');
       expect(r.statusCode).not.toBe(200);
-      const r2 = serveFromStaticOrigin({ localDirs: [origin], uri: '/escdir/inner.txt' });
+      const r2 = serveFromStaticOrigin({
+        localDirs: [origin],
+        uri: '/escdir/inner.txt',
+        containLinks: true,
+      });
+      // An `--origin` override (no `containLinks`) is the user's own tree and
+      // serves its links as before.
+      const r3 = serveFromStaticOrigin({ localDirs: [origin], uri: '/index.html' });
+      expect(r3.body.toString()).toBe('SECRET');
       expect(r2.body.toString()).not.toContain('SECRET2');
     } finally {
       rmSync(origin, { recursive: true, force: true });
@@ -160,7 +168,11 @@ describe('serveFromStaticOrigin — symbolic links leaving the origin (#745)', (
     try {
       writeFileSync(join(origin, 'real.html'), '<h1>real</h1>');
       symlinkSync(join(origin, 'real.html'), join(origin, 'alias.html'));
-      const r = serveFromStaticOrigin({ localDirs: [origin], uri: '/alias.html' });
+      const r = serveFromStaticOrigin({
+        localDirs: [origin],
+        uri: '/alias.html',
+        containLinks: true,
+      });
       expect(r.statusCode).toBe(200);
       expect(r.body.toString()).toContain('real');
     } finally {

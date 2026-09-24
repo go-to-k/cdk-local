@@ -713,6 +713,8 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
       'origin1'
     );
     expect(origin?.kind === 's3' && origin.localDirs).toEqual([inside]);
+    // Marks the directories as manifest-named, so the server contains links.
+    expect(origin?.kind === 's3' && origin.fromAssembly).toBe(true);
   });
 
   it("serves a cdk.Stage source `../asset.<hash>` bounded by the stack's assetOutdir", () => {

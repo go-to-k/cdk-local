@@ -992,15 +992,14 @@ export function assetPathDirs(stack: StackInfo): {
 }
 
 /**
- * The containment bound for a site whose BASE is the user's `--output`
- * directory rather than the manifest's own directory — the `--watch` reload
- * readers, which re-read `<output>/<stack>.assets.json` after each synth.
+ * The containment bound for the `--watch` reload readers, which re-read
+ * `<output>/<stack>.assets.json` after each synth (their BASE is
+ * {@link watchManifestDir}).
  *
  * A stack carrying `assetOutdir` (always, through `AssemblyReader`) gets the
  * same Stage-aware bound as {@link assetPathDirs}. One without it gets
- * `outputDir` itself, NOT `assetPathDirs`'s fallback: that fallback is the
- * manifest directory or the process cwd, and against a base of `outputDir` the
- * cwd is a DISJOINT bound that refuses every value with a message blaming the
+ * `outputDir` itself, NOT `assetPathDirs`'s fallback, which can be the process
+ * cwd — a DISJOINT bound that refuses every value with a message blaming the
  * assembly. `outputDir` is the user's own flag, never assembly-supplied, so it
  * is a legitimate bound.
  */

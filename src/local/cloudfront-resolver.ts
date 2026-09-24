@@ -89,7 +89,19 @@ export interface ResolvedBehavior {
 
 /** A resolved origin: an S3 origin, a Lambda Function URL origin, or a custom origin. */
 export type ResolvedOrigin =
-  | { kind: 's3'; originId: string; localDirs: string[] }
+  | {
+      kind: 's3';
+      originId: string;
+      localDirs: string[];
+      /**
+       * `true` when the directories came from the ASSET MANIFEST (a
+       * BucketDeployment source), so each served file must also resolve
+       * inside its directory through symlinks (go-to-k/cdk-local#745). Absent
+       * for an `--origin` override: that directory is the user's own, and a
+       * symlink in it pointing elsewhere is theirs to serve.
+       */
+      fromAssembly?: boolean;
+    }
   | {
       /**
        * An S3 origin with no local BucketDeployment source. The command
@@ -489,7 +501,7 @@ function resolveOrigins(
         ? resolveBucketDeploymentDirs(template, manifest, stack, bucketLogicalId)
         : [];
     if (localDirs.length > 0) {
-      out.set(originId, { kind: 's3', originId, localDirs });
+      out.set(originId, { kind: 's3', originId, localDirs, fromAssembly: true });
     } else {
       // No local source -> command resolves the deployed bucket. Carry the
       // best resolution hint: a same-stack logical id (physical id from state),

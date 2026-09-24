@@ -306,6 +306,15 @@ describe('resolveAgentCoreImage — CodeConfiguration (from source)', () => {
     expect(err).toMatchObject({ code: 'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_ESCAPES_ASSEMBLY' });
   });
 
+  it('flattens control characters in the missing-source error', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: 'asset.h123' } }]]));
+    getAssetSourcePathMock.mockReturnValue('/cdk.out/missing\x1b[2K\rFORGED');
+    const err = await resolveAgentCoreImage(codeRuntime(), imageOpts()).catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/does not exist or is not a directory/);
+    expect((err as Error).message).not.toMatch(/[\x1b\r]/);
+  });
+
   it('errors when the resolved source dir does not exist (stale cdk.out)', async () => {
     loadManifestMock.mockResolvedValue({ files: {} });
     getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: 'asset.h123' } }]]));
@@ -1323,13 +1332,13 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
       assetManifestPath: '/tmp/cdk.out/assembly-S/App.assets.json',
       assetOutdir: '/tmp/cdk.out',
     };
-    // `--output` deliberately differs from the stack's assetOutdir, so the
-    // case tells which one is the bound.
+    // `--output` differs from BOTH the manifest directory and the stack's
+    // assetOutdir, so the case tells which one is the base and which the bound.
     const ctx = await loadAgentCoreAssetContext({
       resolvedTarget: 'App:ChatAgent',
       resolved: runtime('123.dkr.ecr.us-east-1.amazonaws.com/assets:abc123'),
       stacks: [stack] as never,
-      cdkOutDir: '/tmp/cdk.out/assembly-S',
+      cdkOutDir: '/tmp/out',
       assetLoader: new (class {
         loadManifest = loadManifestMock;
       })() as never,
@@ -1356,7 +1365,7 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
         codeArtifact: { runtime: 'PYTHON_3_13', entryPoint: ['app.py'], codeAssetHash: 'h123' },
       } as never,
       stacks: [stack] as never,
-      cdkOutDir: '/tmp/cdk.out',
+      cdkOutDir: '/tmp/out',
       assetLoader: new (class {
         loadManifest = loadManifestMock;
         getFileAssets = getFileAssetsMock;
