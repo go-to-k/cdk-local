@@ -250,6 +250,22 @@ describe('serveFromStaticOrigin — hidden entries under an accepted absolute or
     }
   });
 
+  it('does not serve a hidden file as a custom error page either', () => {
+    const d = site();
+    try {
+      const r = serveFromStaticOrigin({
+        localDirs: [d],
+        uri: '/missing-route',
+        containLinks: true,
+        hideDotfilesIn: [d],
+        customErrorResponses: [{ errorCode: 403, responseCode: 200, responsePagePath: '/.env' }],
+      });
+      expect(r.body.toString()).not.toContain('SECRET');
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
   it('a staged origin (not in hideDotfilesIn) still serves hidden files', () => {
     const d = site();
     try {
