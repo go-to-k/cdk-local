@@ -441,7 +441,8 @@ working directory, a `start-cloudfront` `BucketDeployment` source, an AgentCore
 output directory through `..` or a symbolic link is REFUSED when the value is
 RELATIVE. An ABSOLUTE value outside it is ACCEPTED with a warning at the
 `start-cloudfront` S3 origin (the shape `cdk synth --no-staging` writes) unless
-it is `/`, your home directory or a directory containing the output directory,
+it is `/`, your home directory (or a directory containing it) or a directory
+containing the output directory,
 and REFUSED at a container image's soft-reload source. BuildKit options
 pointing outside the assembly are forwarded with a warning. Full rules:
 [local-emulation.md](local-emulation.md#asset-manifest-paths).

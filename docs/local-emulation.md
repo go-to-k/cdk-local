@@ -523,9 +523,11 @@ The rules:
   --no-staging` writes exactly this shape (the asset's absolute source
   directory), so refusing it would reject the output of a documented CDK flag;
   if you did not synthesize with `--no-staging`, treat that assembly as
-  untrusted. Three roots no `--no-staging` source can be are still REFUSED:
-  `/`, your home directory itself, and any directory CONTAINING the output
-  directory (compared through symbolic links). An origin accepted this way is
+  untrusted. Roots no `--no-staging` source can be are still REFUSED: `/`,
+  your home directory or any directory containing it, and any directory
+  CONTAINING the output directory (compared through symbolic links). A
+  directory INSIDE your home — including `~/.aws` or `~/.ssh` — is accepted
+  with the warning, so read it. An origin accepted this way is
   served only from inside THAT directory — a symbolic link in it pointing
   elsewhere is not served.
 - The `--watch` soft-reload source of a container image also uses an absolute

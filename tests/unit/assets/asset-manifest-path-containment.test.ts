@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const { mockSpawnStreaming, mockRunDockerStreaming } = vi.hoisted(() => ({
   mockSpawnStreaming: vi.fn(),
@@ -395,6 +395,16 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     expect(() =>
       resolveIt({ manifestDir: outdir, value: homedir(), assetOutdir: outdir, absolute: 'honour-warn' })
     ).toThrow(/names your home directory/);
+    // An ANCESTOR of home too — the outdir (under the OS temp dir) is not
+    // under home, so the outdir-ancestor arm cannot catch it.
+    expect(() =>
+      resolveIt({
+        manifestDir: outdir,
+        value: dirname(homedir()),
+        assetOutdir: outdir,
+        absolute: 'honour-warn',
+      })
+    ).toThrow(/names your home directory or a directory containing it/);
     // A real --no-staging site folder lives under home; only the home ROOT is refused.
     const site = join(homedir(), 'cdkl-745-not-created', 'site');
     expect(

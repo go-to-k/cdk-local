@@ -80,8 +80,8 @@ export interface AssetSourcePathOptions {
 /**
  * Resolve a manifest-supplied asset path and REFUSE it when it leaves the
  * app's outdir — lexically, or through a symbolic link. The one exception is
- * an ABSOLUTE value under `'honour'`, which is ACCEPTED with a warning (see
- * {@link AssetSourcePathOptions.absolute}).
+ * an ABSOLUTE value under `'honour-warn'`, which is ACCEPTED with a warning
+ * unless it names a broad root (see {@link AssetSourcePathOptions.absolute}).
  *
  * Returns the RESOLVED, normalized absolute path, and callers must use THAT
  * rather than re-joining the raw value. It matters for the kernel: a raw
@@ -159,8 +159,10 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
  * resolve:
  *
  * - `/` — the whole filesystem;
- * - the user's home directory itself (`os.homedir()`), which holds
- *   `~/.aws` / `~/.ssh`; a project folder UNDER it is fine;
+ * - the user's home directory (`os.homedir()`) or any ANCESTOR of it
+ *   (`/Users`, `/home`) — each contains `~/.aws` / `~/.ssh`; a project folder
+ *   UNDER home is fine. The ancestor arm matters when the project is not under
+ *   home (`/tmp`, `/workspaces`), where the outdir arm does not cover it;
  * - an ANCESTOR of the app's outdir, which contains the assembly and
  *   everything beside it.
  */
@@ -173,10 +175,14 @@ function broadRootReason(absolute: string, assetOutdir: string): string | undefi
     }
   };
   const root = real(absolute);
+  // `root` is `dir` itself or an ancestor of it.
+  const containsOrIs = (dir: string): boolean => {
+    const rel = relative(root, dir);
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  };
   if (root === resolve('/')) return 'the filesystem root';
-  if (root === real(homedir())) return 'your home directory';
-  const rel = relative(root, real(assetOutdir));
-  if (rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)) {
+  if (containsOrIs(real(homedir()))) return 'your home directory or a directory containing it';
+  if (containsOrIs(real(assetOutdir))) {
     return "a directory containing the app's output directory";
   }
   return undefined;
