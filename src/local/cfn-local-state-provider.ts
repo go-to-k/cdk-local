@@ -75,6 +75,7 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import { describeRejectedRoleArn, isIamRoleArn } from '../utils/role-arn.js';
@@ -556,7 +557,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
         // standard "output not found in producer stack state" message,
         // so skipping the warn here would mask the nature of the gap.
         logger.warn(
-          `${label}: Fn::GetStackOutput '${producerStack}.${outputName}' (${producerRegion}) has no CloudFormation equivalent and cannot be resolved when reading state from a CloudFormation stack. ` +
+          `${label}: Fn::GetStackOutput ${displayUntrustedValue(producerStack)}.${displayUntrustedValue(outputName)} (${displayUntrustedValue(producerRegion)}) has no CloudFormation equivalent and cannot be resolved when reading state from a CloudFormation stack. ` +
             `Use Fn::ImportValue against an exported output instead.`
         );
         return undefined;

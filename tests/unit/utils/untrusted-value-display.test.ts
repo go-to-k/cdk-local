@@ -175,6 +175,9 @@ describe('displayUntrustedValue', () => {
     ] as const) {
       expect(displayUntrustedValue(`/home/me/.ss${ch}h`)).toBe(`"/home/me/.ss${esc}h"`);
     }
+    // A mark straight after an ignorable no longer counts as attached to a
+    // letter, so it is escaped too rather than shown.
+    expect(displayUntrustedValue('a\u034f\u0301')).toBe('"a\\u034f\\u0301"');
     // An ordinary combining mark after a letter stays bare (a decomposed e-acute).
     expect(displayUntrustedValue('/tmp/cafe\u0301')).toBe('/tmp/cafe\u0301');
   });

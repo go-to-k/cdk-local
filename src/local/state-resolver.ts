@@ -1049,7 +1049,7 @@ async function resolveGetStackOutputAsync(
     return {
       kind: 'unresolved',
       // Same treatment for the three template-derived values here, each
-      // rendered on its own so `a.b`+`c` and `a`+`b.c` stay distinguishable.
+      // getting its own boundary when it needs one.
       reason: `Fn::GetStackOutput ${displayUntrustedValue(stackName)}.${displayUntrustedValue(
         outputName
       )} (${displayUntrustedValue(region)}): lookup failed: ${describeAwsFailureForWarn(

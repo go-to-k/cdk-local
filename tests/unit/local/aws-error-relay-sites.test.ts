@@ -1734,6 +1734,32 @@ describe('#579 round 3 — the wire-derived values on lines this round touched',
     }
   });
 
+  it('state-resolver.ts renders a forged Region display-safe on the lookup-failed arm', async () => {
+    const region = 'r\'". Region fine. "\'s\nWARN: signature verified';
+    const r = await substituteAgainstStateAsync(
+      { 'Fn::GetStackOutput': { StackName: 'S', OutputName: 'Out', Region: region } },
+      { resources: {}, crossStackResolver: importValueResolver(() => new Error('boom')) }
+    );
+    const reason = r.kind === 'unresolved' ? r.reason : '';
+    const shown = JSON.stringify(region.replace('\n', ' '));
+    expect(reason).toContain(`Fn::GetStackOutput S.Out (${shown}): lookup failed`);
+    expect(reason).not.toContain('\n');
+    expect(reason.split(shown).join('<v>')).not.toContain('Region fine');
+  });
+
+  it('cfn-local-state-provider.ts renders the Fn::GetStackOutput producer display-safe', async () => {
+    const v = 'p\'". Producer fine. "\'q\nWARN: signature verified';
+    const shown = JSON.stringify(v.replace('\n', ' '));
+    const p = new CfnLocalStateProvider({ cfnStackName: 'S', region: 'us-east-1' });
+    const resolver = await p.buildCrossStackResolver();
+    await resolver?.resolveGetStackOutput(v, v, v);
+    p.dispose();
+    const line = warnContaining('has no CloudFormation equivalent');
+    expect(line).toContain(`Fn::GetStackOutput ${shown}.${shown} (${shown}) has no`);
+    expect(line).not.toContain('\n');
+    expect(line.split(shown).join('<v>')).not.toContain('Producer fine');
+  });
+
   it('ssm-parameter-resolver.ts flattens the joined parameter names', async () => {
     mocks.ssmSend.mockRejectedValue(new Error('boom'));
     await resolveSsmParameters(
