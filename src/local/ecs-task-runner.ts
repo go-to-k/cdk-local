@@ -3,7 +3,12 @@ import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import graphlib from 'graphlib';
-import { getDockerCmd, runDockerStreaming } from '../utils/docker-cmd.js';
+import {
+  finchSecretArgvRefusal,
+  getDockerCmd,
+  runDockerStreaming,
+  warnFinchArgvExposure,
+} from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import {
   DockerRunnerError,
@@ -448,6 +453,20 @@ export async function runEcsTask(
   const dag = buildDependencyGraph(task.containers);
   const startOrder = topoSort(dag, task.containers);
 
+  // Under finch's Lima VM a value-less `-e KEY` lands on the limactl argv as
+  // `-e KEY=<value>` (#749). Refuse BEFORE any image is prepared, any secret
+  // fetched or any resource created, unless the operator opted in. Every
+  // container is checked before throwing, so one run names them all.
+  const finchRefusals: string[] = [];
+  for (const c of task.containers) {
+    const refusal = finchSecretArgvRefusal(
+      [...c.secrets.map((s) => s.name), ...c.sensitiveEnvKeys],
+      `Container '${c.name}'`
+    );
+    if (refusal !== undefined) finchRefusals.push(refusal);
+  }
+  if (finchRefusals.length > 0) throw new EcsTaskRunnerError(finchRefusals.join('\n'));
+
   // Resolve every container's image. Production callers leave
   // `imagePlanByContainer` undefined — the resolver below walks the asset
   // manifest / ECR / public-image path per image.
@@ -586,6 +605,8 @@ export async function runEcsTask(
     const { args, sensitiveEnv } = dockerCmds.get(container.name)!;
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
     let id: string;
+    // Under finch's Lima VM these values reach the limactl argv (#749).
+    warnFinchArgvExposure(Object.keys(sensitiveEnv));
     try {
       const { stdout } = await execFileAsync(getDockerCmd(), args, {
         maxBuffer: 10 * 1024 * 1024,

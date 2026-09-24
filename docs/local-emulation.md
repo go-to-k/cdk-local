@@ -32,6 +32,57 @@ for `run-task`). Subsequent runs reuse the cached image; pass
 `--no-pull` to skip the `docker pull` round-trip altogether (per-command
 `--no-pull` semantics may differ — see each section below).
 
+### finch on macOS and Windows
+
+`CDK_DOCKER` swaps the container client binary (default `docker`). cdk-local
+passes secret values — decrypted `SecureString` env values, ECS `Secrets`, and
+the AWS credentials it hands a container or the ECS metadata sidecar — as a
+value-less `-e KEY` flag, with the value in the client's environment, so the
+plaintext does not appear on the container client's command line.
+
+finch on macOS and Windows runs containers inside a Lima VM, and that does not
+hold there. finch resolves each value-less `-e KEY` itself and rewrites it as
+`-e KEY=<value>` on the command line of the `limactl` process it starts, where
+other local processes can read it. finch also puts `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from its own environment there,
+on every command. So when `CDK_DOCKER` names finch on macOS or Windows:
+
+- **A container with a secret is refused** before it starts: a Lambda or
+  AgentCore container with a decrypted `SecureString` env value, and an ECS
+  task (`run-task`, and each replica of `start-service` / `start-alb`) with a
+  `Secrets` entry or a decrypted `SecureString` env value. `run-task` refuses
+  before any image is pulled, any secret is fetched or its task network is
+  created. `start-service` / `start-alb` check each service when its first
+  replica boots: the shared network and metadata sidecar already exist then,
+  and with several targets the services booted before the refused one are
+  already running. The run then exits and tears everything down. The error
+  names the secrets, never their values. Use a client that keeps the value off
+  the command line (for example the default `docker`, by unsetting
+  `CDK_DOCKER`), or set `CDKL_ALLOW_SECRETS_ON_ARGV=1` (or `true`) to accept
+  the exposure while it stays set; the warning below then names each forwarded
+  secret.
+- **The AWS credentials cdk-local hands a container** (and the metadata
+  sidecar) are still forwarded, with a warning naming the variables but not
+  their values. Forwarding them is what puts them on that command line, which
+  matters most for credentials that are not in cdk-local's own environment:
+  `--assume-role` session credentials and credentials resolved from
+  `--profile` (including SSO). They are warned about rather than refused so
+  that finch stays usable for containers that need AWS access. To keep them off
+  the command line, use a client other than finch on macOS or Windows.
+- **The AWS credentials in cdk-local's own environment** — your shell's, or
+  the role `--role-arn` assumed — reach that command line on every finch
+  command, including pulls, builds and network setup. finch does that by
+  itself, and on Windows with its `ecr-login` credential helper configured it
+  also adds the credentials `aws configure export-credentials` returns.
+  cdk-local does not refuse or warn about either.
+
+finch is recognised by the file name `CDK_DOCKER` resolves to: `finch`, or
+`finch.exe`, in any case. A wrapper script or a symlink under another name is
+not recognised. finch on Linux passes the flags to nerdctl unchanged and is not
+affected. A host that embeds cdk-local reads the opt-in under its own
+environment prefix (`<envPrefix>_ALLOW_SECRETS_ON_ARGV`, see
+[library mode](library-mode.md)).
+
 ## Common flags
 
 Shared across all subcommands:

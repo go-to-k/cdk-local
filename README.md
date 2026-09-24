@@ -144,7 +144,7 @@ cdkl invoke --from-cfn-stack --stack-region eu-west-1   # cross-region CFn clien
 cdkl invoke --from-cfn-stack --assume-role              # auto-assume deployed execution role
 ```
 
-Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with the deployed physical IDs / exports, decrypts `AWS::SSM::Parameter::Value` entries (kept off the `docker run` argv), and resolves same-stack ECR `ContainerUri` to the deployed image. `Fn::GetAtt` in the Lambda's own env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Full resolution rules: [docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack](docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack).
+Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with the deployed physical IDs / exports, decrypts `AWS::SSM::Parameter::Value` entries (kept off the `docker run` argv; under `CDK_DOCKER=finch` on macOS / Windows they are refused unless you opt in, see [docs/local-emulation.md#finch-on-macos-and-windows](docs/local-emulation.md#finch-on-macos-and-windows)), and resolves same-stack ECR `ContainerUri` to the deployed image. `Fn::GetAtt` in the Lambda's own env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Full resolution rules: [docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack](docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack).
 
 ## Corporate proxy — `HTTPS_PROXY` / `NO_PROXY`
 
