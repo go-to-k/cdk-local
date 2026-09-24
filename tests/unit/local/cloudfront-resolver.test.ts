@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   describeS3OriginDomain,
   extractKvsAssociations,
@@ -691,12 +691,16 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
       writeFileSync(join(dir, 'index.html'), '<h1>site</h1>');
       writeFileSync(join(beyond, 'secret.txt'), 'SECRET');
       symlinkSync(join(beyond, 'secret.txt'), join(dir, 'leak.txt'));
+      // The site folder must be inside the project: make its parent the cwd.
+      vi.spyOn(process, 'cwd').mockReturnValue(dirname(dir));
       const stack = stackWithSourcePath(dir);
       const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get(
         'origin1'
       );
       expect(origin?.kind === 's3' && origin.localDirs).toEqual([dir]);
       expect(origin?.kind === 's3' && origin.fromAssembly).toBe(true);
+      // Accepted as an absolute folder outside the outdir: hidden entries hidden.
+      expect(origin?.kind === 's3' && origin.hideDotfilesIn).toEqual([dir]);
       if (origin?.kind !== 's3') throw new Error('expected an s3 origin');
       const serve = (uri: string) =>
         serveFromStaticOrigin({ localDirs: origin.localDirs, uri, containLinks: true });
@@ -706,6 +710,7 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(beyond, { recursive: true, force: true });
+      vi.restoreAllMocks();
     }
   });
 
@@ -757,5 +762,7 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
       'origin1'
     );
     expect(origin?.kind === 's3' && origin.localDirs).toEqual([join(outDir, `asset.${HASH}`)]);
+    // A staged (relative) source is not an accepted absolute folder.
+    expect(origin?.kind === 's3' && origin.hideDotfilesIn).toBeUndefined();
   });
 });

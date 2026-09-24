@@ -583,6 +583,7 @@ async function serveFromOrigin(
   const result = serveFromStaticOrigin({
     localDirs: origin.localDirs,
     ...(origin.fromAssembly === true && { containLinks: true }),
+    ...(origin.hideDotfilesIn !== undefined && { hideDotfilesIn: origin.hideDotfilesIn }),
     uri: args.uri,
     ...(distribution.defaultRootObject !== undefined && {
       defaultRootObject: distribution.defaultRootObject,

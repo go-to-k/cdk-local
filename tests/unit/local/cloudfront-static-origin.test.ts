@@ -211,3 +211,103 @@ describe('serveFromStaticOrigin — link containment on the error-response path 
     }
   });
 });
+
+// go-to-k/cdk-local#745 (#757): under an ACCEPTED absolute `--no-staging`
+// folder — the user's own tree — hidden entries are not served; `.well-known`
+// is. A staged origin (not listed in `hideDotfilesIn`) serves them as a
+// deployed bucket would.
+describe('serveFromStaticOrigin — hidden entries under an accepted absolute origin (#757)', () => {
+  function site(): string {
+    const d = mkdtempSync(join(tmpdir(), 'cdkl-cf-hidden-'));
+    writeFileSync(join(d, '.env'), 'SECRET=1');
+    mkdirSync(join(d, '.git'));
+    writeFileSync(join(d, '.git', 'config'), 'url=https://token@example');
+    mkdirSync(join(d, '.well-known'));
+    writeFileSync(join(d, '.well-known', 'x'), 'WELLKNOWN');
+    writeFileSync(join(d, 'index.html'), '<h1>ok</h1>');
+    symlinkSync(join(d, '.env'), join(d, 'alias.txt'));
+    return d;
+  }
+
+  it('refuses /.env, /.git/config and a link to .env; serves /.well-known/x and normal files; warns once', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const d = site();
+    try {
+      const serve = (uri: string) =>
+        serveFromStaticOrigin({ localDirs: [d], uri, containLinks: true, hideDotfilesIn: [d] });
+      expect(serve('/.env').body.toString()).not.toContain('SECRET');
+      expect(serve('/.env').body.toString()).not.toContain('SECRET');
+      expect(serve('/.git/config').body.toString()).not.toContain('token');
+      expect(serve('/alias.txt').body.toString()).not.toContain('SECRET');
+      expect(serve('/.well-known/x').body.toString()).toBe('WELLKNOWN');
+      expect(serve('/index.html').body.toString()).toContain('ok');
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => /hidden entry/.test(l));
+      expect(lines.filter((l) => l.includes("'.env'"))).toHaveLength(1);
+      // Aliases of one hidden file warn once (keyed on the file, not the key),
+      // and a `..` alias of a NORMAL file is not "hidden" at all.
+      serve('/a/../.env');
+      serve('/aa/../.env');
+      expect(
+        warn.mock.calls.map((c) => String(c[0])).filter((l) => /hidden entry/.test(l) && /\.env/.test(l))
+      ).toHaveLength(1);
+      expect(serve('/a/../index.html').body.toString()).toContain('ok');
+      expect(
+        warn.mock.calls.map((c) => String(c[0])).filter((l) => /index\.html/.test(l))
+      ).toEqual([]);
+      // A made-up hidden key is refused silently: no warning, nothing recorded.
+      serve('/.does-not-exist-1');
+      serve('/.does-not-exist-2');
+      const after = warn.mock.calls.map((c) => String(c[0])).filter((l) => /does-not-exist/.test(l));
+      expect(after).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('does not serve a hidden file as a custom error page either', () => {
+    const d = site();
+    try {
+      const r = serveFromStaticOrigin({
+        localDirs: [d],
+        uri: '/missing-route',
+        containLinks: true,
+        hideDotfilesIn: [d],
+        customErrorResponses: [{ errorCode: 403, responseCode: 200, responsePagePath: '/.env' }],
+      });
+      expect(r.body.toString()).not.toContain('SECRET');
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('does not flag a plain 404 as hidden when the folder sits under a symlinked parent', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const real = mkdtempSync(join(tmpdir(), 'cdkl-cf-real-'));
+    const linkParent = mkdtempSync(join(tmpdir(), 'cdkl-cf-linkparent-'));
+    try {
+      mkdirSync(join(real, 'site'));
+      writeFileSync(join(real, 'site', 'index.html'), 'ok');
+      symlinkSync(real, join(linkParent, 'alias'));
+      const d = join(linkParent, 'alias', 'site');
+      serveFromStaticOrigin({ localDirs: [d], uri: '/about', containLinks: true, hideDotfilesIn: [d] });
+      expect(warn.mock.calls.map((c) => String(c[0])).filter((l) => /hidden entry/.test(l))).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      rmSync(linkParent, { recursive: true, force: true });
+      rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it('a staged origin (not in hideDotfilesIn) still serves hidden files', () => {
+    const d = site();
+    try {
+      const r = serveFromStaticOrigin({ localDirs: [d], uri: '/.env', containLinks: true });
+      expect(r.body.toString()).toContain('SECRET');
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});

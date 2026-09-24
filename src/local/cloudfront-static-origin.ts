@@ -52,13 +52,20 @@ export function serveFromStaticOrigin(input: {
    * override is the user's own directory and is served as-is.
    */
   containLinks?: boolean;
+  /**
+   * Directories under which a key with a `.`-prefixed component (other than
+   * `.well-known`) is not served — the accepted absolute `--no-staging` source
+   * folders, judged on the request key AND on the file's real path.
+   */
+  hideDotfilesIn?: readonly string[];
   uri: string;
   defaultRootObject?: string;
   customErrorResponses?: readonly ResolvedCustomErrorResponse[];
 }): StaticOriginResult {
   const key = uriToKey(input.uri, input.defaultRootObject);
   const containLinks = input.containLinks === true;
-  const direct = readKey(input.localDirs, key, containLinks);
+  const hideIn = new Set(input.hideDotfilesIn ?? []);
+  const direct = readKey(input.localDirs, key, containLinks, hideIn);
   if (direct) {
     return { statusCode: 200, headers: { 'content-type': contentTypeForKey(key) }, body: direct };
   }
@@ -69,7 +76,7 @@ export function serveFromStaticOrigin(input: {
   // is what static-site CDK apps overwhelmingly use; an app that mapped 404
   // instead is also honored because we try BOTH codes' error responses.
   for (const candidate of resolveErrorResponseCandidates(input.customErrorResponses)) {
-    const body = readKey(input.localDirs, candidate.errorKey, containLinks);
+    const body = readKey(input.localDirs, candidate.errorKey, containLinks, hideIn);
     if (body) {
       return {
         statusCode: candidate.responseCode,
@@ -152,7 +159,8 @@ export function uriToKey(uri: string, defaultRootObject?: string): string {
 function readKey(
   localDirs: readonly string[],
   key: string,
-  containLinks: boolean
+  containLinks: boolean,
+  hideDotfilesIn: ReadonlySet<string>
 ): Buffer | undefined {
   if (key === '') return undefined;
   for (const dir of localDirs) {
@@ -166,6 +174,13 @@ function readKey(
       // re-followed. A concurrent rewrite of the assembly's directories is
       // out of scope, as for every containment check here.
       if (real !== undefined) resolved = real;
+    }
+    if (hideDotfilesIn.has(dir) && isHiddenKey(dir, key, resolved)) {
+      // Warn only for an entry that EXISTS: requests for made-up hidden keys
+      // must not grow the dedupe set or the log (any page in the user's
+      // browser can reach this loopback server).
+      if (isExistingFile(resolved)) warnHiddenKey(dir, key, resolved);
+      continue;
     }
     try {
       const st = statSync(resolved);
@@ -222,6 +237,60 @@ function realPathInsideRoot(root: string, file: string): string | false | undefi
 
 /** Files already warned about; a browser re-requests the same key. */
 const warnedEscapes = new Set<string>();
+
+/**
+ * Whether a key under an accepted absolute `--no-staging` folder names a
+ * hidden entry — on the request key itself, or on the file's REAL path relative
+ * to the folder's real path (a link inside the folder pointing at `.env`).
+ * `.well-known` is the one hidden name served, for parity with a deployed
+ * bucket's ACME / app-association files. The caller warns, and only for an
+ * entry that exists.
+ */
+function isHiddenKey(dir: string, key: string, resolved: string): boolean {
+  const hidden = (rel: string): boolean =>
+    rel
+      .split(/[\\/]/)
+      // `.` / `..` are navigation, not names (`safeJoin` already confines
+      // them); treating them as hidden made `a/../index.html` "hidden".
+      .some((c) => c.startsWith('.') && c !== '.' && c !== '..' && c !== '.well-known');
+  // Only for an entry that EXISTS: a missing key has no real path, and the
+  // lexical one relative to the folder's real path can read `../../tmp/...`
+  // (a symlinked parent such as `/tmp` -> `/private/tmp`), whose `..` would
+  // flag every plain 404 as hidden.
+  let realRel = '';
+  try {
+    realRel = relative(realpathSync.native(dir), realpathSync.native(resolved));
+  } catch {
+    realRel = '';
+  }
+  return hidden(key) || hidden(realRel);
+}
+
+function isExistingFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Warn once per withheld FILE. Keyed on the resolved path, not the request
+ * key: `x/../.env`, `xx/../.env`, ... are unbounded spellings of one file, and
+ * keying on them let any client grow this set and the log without limit.
+ */
+function warnHiddenKey(dir: string, key: string, resolved: string): void {
+  if (warnedHiddenKeys.has(resolved)) return;
+  warnedHiddenKeys.add(resolved);
+  getLogger().warn(
+    `Not serving '${flattenToOneLine(key)}' from '${flattenToOneLine(dir)}': it is a hidden ` +
+      `entry in a cdk synth --no-staging source folder (your own tree, not a staged asset). ` +
+      `Answering as if the key did not exist.`
+  );
+}
+
+/** Hidden keys already warned about. */
+const warnedHiddenKeys = new Set<string>();
 
 function stripLeadingSlash(s: string): string {
   return s.startsWith('/') ? s.replace(/^\/+/, '') : s;
