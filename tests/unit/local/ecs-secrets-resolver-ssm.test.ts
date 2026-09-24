@@ -350,9 +350,9 @@ describe('resolveEcsSecrets — SSM and Secrets Manager entries in one batch (is
 describe('the unsupported-shape refusal renders its values display-safe', () => {
   it('puts each quote-carrying value in one JSON literal', async () => {
     const forged = {
-      containerName: "C'. Healthy container. 'c",
-      name: "N'. Healthy secret. 'n",
-      valueFrom: "arn:aws:s3:::b/x'. Healthy shape. 'y",
+      containerName: 'C\'". Healthy container. "\'c',
+      name: 'N\'". Healthy secret. "\'n',
+      valueFrom: 'arn:aws:s3:::b/x\'". Healthy shape. "\'y',
     };
     const message = await resolveEcsSecrets([forged]).then(
       () => '',

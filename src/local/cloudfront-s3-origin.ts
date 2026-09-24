@@ -152,7 +152,7 @@ export function createS3OriginReader(
       }
       if (direct.kind === 'error') {
         getLogger().warn(
-          // Request-derived `key`, flattened for the reason given above.
+          // Request-derived `key`, rendered display-safe for the reason given above.
           `S3 read of ${displayUntrustedValue(key)} from bucket ${displayUntrustedValue(bucketName)} failed: ${direct.message}`
         );
       }
@@ -177,7 +177,7 @@ export function createS3OriginReader(
           // `candidate.errorKey` comes from the distribution's
           // `CustomErrorResponses[].ResponsePagePath`, i.e. the template --
           // less reachable than `key`, but it lands on the same DEFAULT-level
-          // line and the flatten costs one call.
+          // line and rendering it display-safe costs one call.
           `S3 could not read custom-error page ${displayUntrustedValue(candidate.errorKey)} from bucket ${displayUntrustedValue(bucketName)} ` +
             `(${page.kind}); falling through.`
         );

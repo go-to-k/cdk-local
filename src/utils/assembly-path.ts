@@ -451,6 +451,16 @@ const VISIBLE_LETTER = new RegExp(
 const COMBINING_MARK = /^\p{M}$/u;
 
 /**
+ * A default-ignorable code point, which draws as NOTHING. Tested before the
+ * mark rule, because some are combining marks (U+034F, U+17B4, U+180B, the
+ * variation selectors U+FE00-U+FE0F and U+E0100-U+E01EF): after a letter they
+ * would otherwise pass as bare, and `/home/me/.ss\u034fh` would print exactly
+ * like `.ssh` while naming a different path. The host's classifier
+ * (go-to-k/cdkd#3509) does not carve these out; this one does.
+ */
+const DEFAULT_IGNORABLE = /^\p{Default_Ignorable_Code_Point}$/u;
+
+/**
  * The ASCII a bare value may carry besides letters and digits. Everything else
  * — any whitespace, any quote, any other symbol — takes the boundary, which
  * costs a legitimate path nothing but a pair of quotes.
@@ -470,6 +480,10 @@ const BARE_PUNCTUATION = /^[/\\._~+@:=-]$/;
 function classify(chars: readonly string[]): Array<'bare' | 'shown' | 'escaped'> {
   let afterLetter = false;
   return chars.map((ch) => {
+    if (DEFAULT_IGNORABLE.test(ch)) {
+      afterLetter = false;
+      return 'escaped';
+    }
     if (COMBINING_MARK.test(ch)) return afterLetter ? 'bare' : 'escaped';
     afterLetter = VISIBLE_LETTER.test(ch);
     if (afterLetter || BARE_PUNCTUATION.test(ch)) return 'bare';
@@ -482,7 +496,6 @@ function classify(chars: readonly string[]): Array<'bare' | 'shown' | 'escaped'>
  * assembly chose, or a key a request supplied — into cdk-local's own prose
  * (go-to-k/cdk-local#758; the host's `displayAssemblyPath`, go-to-k/cdkd#3509).
  * The caller writes NO quotes around the result.
-
  *
  * `sanitizeServiceExceptionMessage` alone is not enough inside quotes of ours:
  * it flattens control characters and passes `'`, so a value carrying one
@@ -500,6 +513,11 @@ function classify(chars: readonly string[]): Array<'bare' | 'shown' | 'escaped'>
  * its `\u` escape. A value the sanitizer ALTERED (a control character
  * flattened, an over-long value truncated) did not arrive plain, so it always
  * takes the boundary. The empty string renders as `""`.
+ *
+ * The sanitizer also CAPS the value at 512 code points, so a longer path
+ * prints truncated (inside the boundary, with its true length named). That
+ * is deliberate: an unbounded assembly-chosen value would otherwise make the
+ * log line as long as the attacker likes, and a real path is far shorter.
  */
 export function displayUntrustedValue(value: string): string {
   const clean = sanitizeServiceExceptionMessage(value);

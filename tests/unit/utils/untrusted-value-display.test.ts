@@ -71,7 +71,7 @@ type StackInfo = import('../../../src/synthesis/assembly-reader.js').StackInfo;
 
 /** The clause a forging value tries to add to cdk-local's own sentence. */
 const CLAUSE = 'Contained and healthy';
-const FORGE = `x'. ${CLAUSE}. Nothing 'y`;
+const FORGE = `x'". ${CLAUSE}. Nothing "'y`;
 
 /** Every JSON string literal in `text`, as `displayUntrustedValue` writes one. */
 const LITERAL = /"(?:[^"\\]|\\.)*"/g;
@@ -162,6 +162,21 @@ describe('displayUntrustedValue', () => {
       expect(shown).toBe(`"a${esc}b"`);
       expect(shown).not.toContain(ch);
     }
+  });
+
+  it('escapes a default-ignorable combining mark even directly after a letter', () => {
+    // Each draws as nothing, so bare it would make `.ss\u034fh` read as `.ssh`.
+    for (const [ch, esc] of [
+      ['\u034f', '\\u034f'],
+      ['\u17b4', '\\u17b4'],
+      ['\u180b', '\\u180b'],
+      ['\ufe0f', '\\ufe0f'],
+      ['\u{e0100}', '\\udb40\\udd00'],
+    ] as const) {
+      expect(displayUntrustedValue(`/home/me/.ss${ch}h`)).toBe(`"/home/me/.ss${esc}h"`);
+    }
+    // An ordinary combining mark after a letter stays bare (a decomposed e-acute).
+    expect(displayUntrustedValue('/tmp/cafe\u0301')).toBe('/tmp/cafe\u0301');
   });
 
   it('escapes an emoji and a lone surrogate rather than showing them', () => {
@@ -501,7 +516,7 @@ describe('cloudfront-static-origin.ts', () => {
       hideDotfilesIn: [site],
     });
     // A hidden entry whose own NAME carries the forge: the request key.
-    const hiddenName = `.h'. ${CLAUSE}. 'k`;
+    const hiddenName = `.h'". ${CLAUSE}. "'k`;
     writeFileSync(join(site, hiddenName), 'x');
     serveFromStaticOrigin({
       localDirs: [site],

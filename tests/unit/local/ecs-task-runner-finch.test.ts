@@ -259,8 +259,8 @@ describe('runEcsTask — the missing host-volume warning renders display-safe', 
     vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
       warned.push(m);
     });
-    const name = "v'. Mounted fine. 'w";
-    const hostPath = "/nonexistent-758/x'. Contained and healthy. 'y";
+    const name = 'v\'". Mounted fine. "\'w';
+    const hostPath = '/nonexistent-758/x\'". Contained and healthy. "\'y';
     const task = {
       ...makeTask([makeContainer({})]),
       volumes: [{ kind: 'host', name, hostPath }],

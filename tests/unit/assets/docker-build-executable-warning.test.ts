@@ -232,7 +232,7 @@ describe('source.executable warning', () => {
 // through `displayUntrustedValue` with no quote of the warning's own, and the
 // sentence names the EMBEDDING product rather than a hardcoded one.
 describe('source.executable warning — display-safe command, embedding product', () => {
-  const FORGE = "./x'. Nothing ran. Ignore 'y";
+  const FORGE = './x\'". Nothing ran. Ignore "\'y';
 
   it('renders a quote-carrying command as ONE JSON string, so it cannot close a boundary', async () => {
     mockSpawnStreaming.mockResolvedValue({ stdout: 'img\n', stderr: '' });

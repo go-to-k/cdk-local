@@ -684,7 +684,7 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
   });
 
   it('renders a quote-carrying bucket logical id display-safe in the refusal subject (#758)', () => {
-    const forged = "Site'. Contained and healthy. Nothing 'y";
+    const forged = 'Site\'". Contained and healthy. Nothing "\'y';
     const stack = stackWithSourcePath('../../etc');
     stack.template = JSON.parse(
       JSON.stringify(stack.template).split('"SiteBucket"').join(JSON.stringify(forged))

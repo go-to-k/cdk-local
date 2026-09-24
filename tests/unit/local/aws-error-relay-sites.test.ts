@@ -1173,7 +1173,7 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
 
     // go-to-k/cdk-local#758: the bucket name is template-chosen, so a quote in
     // it must not close a boundary of the warning's own — on all three arms.
-    const FORGED_BUCKET = "b'. Bucket verified. 'c";
+    const FORGED_BUCKET = 'b\'". Bucket verified. "\'c';
     for (const [arm, arrange, req] of [
       ['read-failure', () => mocks.s3Send.mockRejectedValue(serviceError('boom', 'InternalError')), {}],
       ['access-denied', () => mocks.s3Send.mockRejectedValue(serviceError('nope', 'AccessDenied')), {}],
@@ -1528,7 +1528,7 @@ describe('#579 round 3 — the catch-less sends the derived population found', (
   // go-to-k/cdk-local#758: the placeholder ARN carries a template-chosen role
   // name, so a quote in it must not close a boundary of the message's own.
   describe('resolvePlaceholderAccount (both twins) — a quote-carrying placeholder ARN', () => {
-    const FORGED_ARN = "arn:aws:iam::${AWS::AccountId}:role/x'. Pass the ARN later. 'y";
+    const FORGED_ARN = 'arn:aws:iam::${AWS::AccountId}:role/x\'". Pass the ARN later. "\'y';
     for (const [name, call] of [
       ['ecs-service-emulator.ts', emulatorResolvePlaceholderAccount],
       ['local-run-task.ts', resolvePlaceholderAccountForTest],
@@ -1681,8 +1681,56 @@ describe('#579 round 3 — the wire-derived values on lines this round touched',
     );
     expect(r.kind).toBe('unresolved');
     if (r.kind === 'unresolved') {
-      expect(r.reason).toContain('Fn::GetStackOutput "Sx WARN: signature verified.Out"');
+      expect(r.reason).toContain('Fn::GetStackOutput "Sx WARN: signature verified".Out');
       expect(r.reason).not.toContain('\n');
+    }
+  });
+
+  // go-to-k/cdk-local#758: the non-throwing arms of the same two functions
+  // rendered the template values RAW inside quotes of their own.
+  describe('state-resolver.ts — every Fn::ImportValue / Fn::GetStackOutput arm renders display-safe', () => {
+    const V = 'v\'". Resolved fine. "\'w\nWARN: signature verified';
+    const shown = JSON.stringify(V.replace('\n', ' '));
+    const found = (value: string | undefined): CrossStackResolver =>
+      ({
+        resolveImport: async () => value,
+        resolveGetStackOutput: async () => value,
+      }) as unknown as CrossStackResolver;
+    const cases: Array<[string, unknown, Record<string, unknown>]> = [
+      ['ImportValue, no resolver', { 'Fn::ImportValue': V }, {}],
+      ['ImportValue, not found', { 'Fn::ImportValue': V }, { crossStackResolver: found(undefined) }],
+      [
+        'GetStackOutput, no region',
+        { 'Fn::GetStackOutput': { StackName: V, OutputName: V } },
+        {},
+      ],
+      [
+        'GetStackOutput, RoleArn',
+        { 'Fn::GetStackOutput': { StackName: V, OutputName: V, Region: 'r', RoleArn: 'x' } },
+        {},
+      ],
+      [
+        'GetStackOutput, no resolver',
+        { 'Fn::GetStackOutput': { StackName: V, OutputName: V, Region: 'r' } },
+        {},
+      ],
+      [
+        'GetStackOutput, not found',
+        { 'Fn::GetStackOutput': { StackName: V, OutputName: V, Region: V } },
+        { crossStackResolver: found(undefined) },
+      ],
+    ];
+    for (const [name, intrinsic, ctx] of cases) {
+      it(name, async () => {
+        const r = await substituteAgainstStateAsync(intrinsic, { resources: {}, ...ctx } as never);
+        expect(r.kind).toBe('unresolved');
+        const reason = r.kind === 'unresolved' ? r.reason : '';
+        expect(reason).toContain(shown);
+        expect(reason).not.toContain('\n');
+        const outside = reason.split(shown).join('<v>');
+        expect(outside).not.toContain('Resolved fine');
+        expect(outside).not.toContain('WARN:');
+      });
     }
   });
 

@@ -101,7 +101,7 @@ describe('attachAuthorizers — OAC-fronted Function URL relaxation', () => {
 // in it must not close a boundary of the refusal's own.
 describe('resolveRestV1Authorizer — a malformed Cognito ARN renders display-safe', () => {
   it('puts a quote-carrying ARN in one JSON literal', () => {
-    const arn = "arn:aws:cognito-idp:us-east-1:1:x'. Pool verified. 'y";
+    const arn = 'arn:aws:cognito-idp:us-east-1:1:x\'". Pool verified. "\'y';
     const template = {
       Resources: {
         Auth: {

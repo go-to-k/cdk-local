@@ -153,7 +153,7 @@ describe('buildAgentCoreCodeImage', () => {
   });
 
   it('renders a quote-carrying source directory display-safe in the failure (#758)', async () => {
-    const sourceDir = "/s/x'). Contained and healthy. (y";
+    const sourceDir = '/s/x\'"). Contained and healthy. ("y';
     runDockerStreamingMock.mockRejectedValue(Object.assign(new Error('exit 1'), { stderr: 'e' }));
     const msg = await buildAgentCoreCodeImage({
       sourceDir,
@@ -288,7 +288,7 @@ describe('warnIfDependenciesNotVendored (via buildAgentCoreCodeImage)', () => {
   ] as const) {
     it(`renders a quote-carrying bundle directory display-safe (${manifest})`, async () => {
       runDockerStreamingMock.mockResolvedValue({ stdout: '', stderr: '' });
-      dir = await mkdtemp(join(tmpdir(), "cdkl-758-x'. Contained and healthy. Nothing 'y-"));
+      dir = await mkdtemp(join(tmpdir(), 'cdkl-758-x\'". Contained and healthy. Nothing "\'y-'));
       await writeFile(join(dir, entry), '1');
       await writeFile(join(dir, manifest), manifest === 'package.json' ? '{}' : 'x');
       await buildAgentCoreCodeImage({ sourceDir: dir, runtime, entryPoint: [entry], architecture: 'arm64' });

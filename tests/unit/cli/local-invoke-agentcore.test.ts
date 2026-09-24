@@ -318,11 +318,11 @@ describe('resolveAgentCoreImage — CodeConfiguration (from source)', () => {
   // go-to-k/cdk-local#758: the logical id and the source directory are both
   // assembly-chosen; neither may close a boundary of the refusal's own.
   it('renders the logical id and the missing source directory display-safe', async () => {
-    const forged = "/cdk.out/x'. Contained and healthy. Nothing 'y";
+    const forged = '/cdk.out/x\'". Contained and healthy. Nothing "\'y';
     loadManifestMock.mockResolvedValue({ files: {} });
     getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: 'asset.h123' } }]]));
     getAssetSourcePathMock.mockReturnValue(forged);
-    const runtime = { ...codeRuntime(), logicalId: "A'. Healthy agent. 'b" };
+    const runtime = { ...codeRuntime(), logicalId: 'A\'". Healthy agent. "\'b' };
     const message = await resolveAgentCoreImage(runtime, imageOpts()).then(
       () => '',
       (err: unknown) => (err instanceof Error ? err.message : String(err))
@@ -1342,7 +1342,7 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
   });
 
   it('hands the code-bundle lookup a display-safe subject too (#758)', async () => {
-    const forged = "Agent'. Contained and healthy. Nothing 'y";
+    const forged = 'Agent\'". Contained and healthy. Nothing "\'y';
     const getAssetSourcePath = vi.fn().mockReturnValue('/tmp/cdk.out/asset.h1');
     await loadAgentCoreAssetContext({
       resolvedTarget: 'App:ChatAgent',
@@ -1367,7 +1367,7 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
 
   // go-to-k/cdk-local#758: the logical id in the subject is assembly-chosen.
   it('renders a quote-carrying logical id as one JSON literal in the subject', async () => {
-    const forged = "Agent'. Contained and healthy. Nothing 'y";
+    const forged = 'Agent\'". Contained and healthy. Nothing "\'y';
     const message = await ctxFor('../../etc', forged).then(
       () => '',
       (err: unknown) => (err instanceof Error ? err.message : String(err))

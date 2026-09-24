@@ -576,8 +576,8 @@ describe('loadAssetContextForTarget — soft-reload source containment (#745)', 
   });
 
   it('renders a quote-carrying asset hash and stack name display-safe in the subject (#758)', async () => {
-    const hash = "h'. Contained and healthy. 'x";
-    const stackName = "S'. Nothing to see. 'y";
+    const hash = 'h\'". Contained and healthy. "\'x';
+    const stackName = 'S\'". Nothing to see. "\'y';
     hoisted.resolveMode = 'happy';
     hoisted.assetHash = hash;
     hoisted.manifest = {
