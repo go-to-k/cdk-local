@@ -244,6 +244,11 @@ describe('serveFromStaticOrigin — hidden entries under an accepted absolute or
       expect(serve('/index.html').body.toString()).toContain('ok');
       const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => /hidden entry/.test(l));
       expect(lines.filter((l) => l.includes("'.env'"))).toHaveLength(1);
+      // A made-up hidden key is refused silently: no warning, nothing recorded.
+      serve('/.does-not-exist-1');
+      serve('/.does-not-exist-2');
+      const after = warn.mock.calls.map((c) => String(c[0])).filter((l) => /does-not-exist/.test(l));
+      expect(after).toEqual([]);
     } finally {
       warn.mockRestore();
       rmSync(d, { recursive: true, force: true });
@@ -263,6 +268,25 @@ describe('serveFromStaticOrigin — hidden entries under an accepted absolute or
       expect(r.body.toString()).not.toContain('SECRET');
     } finally {
       rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('does not flag a plain 404 as hidden when the folder sits under a symlinked parent', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const real = mkdtempSync(join(tmpdir(), 'cdkl-cf-real-'));
+    const linkParent = mkdtempSync(join(tmpdir(), 'cdkl-cf-linkparent-'));
+    try {
+      mkdirSync(join(real, 'site'));
+      writeFileSync(join(real, 'site', 'index.html'), 'ok');
+      symlinkSync(real, join(linkParent, 'alias'));
+      const d = join(linkParent, 'alias', 'site');
+      serveFromStaticOrigin({ localDirs: [d], uri: '/about', containLinks: true, hideDotfilesIn: [d] });
+      expect(warn.mock.calls.map((c) => String(c[0])).filter((l) => /hidden entry/.test(l))).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      rmSync(linkParent, { recursive: true, force: true });
+      rmSync(real, { recursive: true, force: true });
     }
   });
 

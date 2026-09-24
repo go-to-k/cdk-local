@@ -85,7 +85,8 @@ export interface AssetSourcePathOptions {
  * Resolve a manifest-supplied asset path and REFUSE it when it leaves the
  * app's outdir — lexically, or through a symbolic link. The one exception is
  * an ABSOLUTE value under `'honour-warn'`, which is ACCEPTED with a warning
- * when it is a non-hidden folder inside the user's project, and refused
+ * when it is a folder inside the user's project, not under a credential or
+ * version-control directory, and refused
  * otherwise (see {@link AssetSourcePathOptions.absolute}).
  *
  * Returns the RESOLVED, normalized absolute path, and callers must use THAT
@@ -116,15 +117,18 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
     if (escape !== undefined) {
       // `'honour-warn'` (maintainer decisions on #755's follow-ups): ACCEPTED
       // with a warning only as a `cdk synth --no-staging` source folder — a
-      // non-hidden directory inside the user's project. Anything else hands a
+      // directory inside the user's project, not under a credential or
+      // version-control directory. Anything else hands a
       // host directory the assembly chose to the reader, and is refused.
       const refusal = originScopeRefusal(absolute, assetOutdir);
       if (refusal !== undefined) {
         throw wrapError(
           `${subject} has an absolute ${field}='${shownValue}' which ${refusal}. ` +
             `An absolute ${field} is accepted only as a cdk synth --no-staging source ` +
-            `folder: a non-hidden directory inside your project (the current directory, ` +
-            `or the git work tree holding the output directory). Refusing to ${action}.`
+            `folder: a directory inside your project (the git work tree holding the ` +
+            `output directory, or the current directory when it contains the output ` +
+            `directory or is a git work-tree root), not under a credential or ` +
+            `version-control directory. Refusing to ${action}.`
         );
       }
       warnAbsoluteOutsideAssembly(opts, absolute, escape);

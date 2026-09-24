@@ -644,10 +644,11 @@ export function resolveBucketDeploymentDirs(
       // `path.resolve`, which honours an absolute value: a RELATIVE escape is
       // refused, while an absolute value outside the app's outdir (the
       // `cdk synth --no-staging` shape) is served with a warning naming it only
-      // when it is a non-hidden folder inside the user's project (the cwd or
-      // the git work tree), and refused otherwise. Each FILE served must also
-      // resolve inside the directory returned here (`realPathInsideRoot`,
-      // go-to-k/cdk-local#745).
+      // when it is a folder inside the user's project (the git work tree, or a
+      // cwd containing the outdir / a git root) not under a credential or VCS
+      // directory, and refused otherwise. Each FILE served must also resolve
+      // inside the directory returned here (`realPathInsideRoot`), and hidden
+      // entries in it are not served (`hideDotfilesIn`, go-to-k/cdk-local#745).
       dirs.push(
         resolveAssetSourcePath({
           manifestDir,
