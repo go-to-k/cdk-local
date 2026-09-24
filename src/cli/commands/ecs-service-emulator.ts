@@ -2108,6 +2108,9 @@ export async function buildFrontDoor(
   const attachAuth = (action: RouteAction, guard: FrontDoorAuthGuard | undefined): RouteAction =>
     guard ? { ...action, auth: authForGuard(guard) } : action;
 
+  // Set once the listener phase is done and a Lambda target is booting, so the
+  // catch below can tell the two failure phases apart.
+  let bootingLambda: string | undefined;
   try {
     for (const listener of plan.listeners) {
       const defaultRoute = listener.defaultAction
@@ -2201,14 +2204,26 @@ export async function buildFrontDoor(
     // Boot every distinct Lambda-target container before returning so the
     // front-door is invokable as soon as it accepts connections. A boot
     // failure tears down everything started so far (servers + earlier
-    // runners) and propagates with the same `--lb-port` hint envelope.
+    // runners), like a listener failure, but is reported under its own
+    // message naming the target: the `--lb-port` hint below is a remedy for
+    // the listener phase only, and would point an image-pull / container-start
+    // / secret-refusal failure at the wrong fix (issue #752).
     for (const runner of lambdaRegistry.values()) {
-      logger.info(`Booting Lambda target '${runner.logicalId}' behind the ALB front-door...`);
+      bootingLambda = flattenToOneLine(runner.logicalId);
+      logger.info(`Booting Lambda target '${bootingLambda}' behind the ALB front-door...`);
       await runner.start();
     }
+    // Every target is up: anything added below must not be blamed on the
+    // last Lambda that booted.
+    bootingLambda = undefined;
   } catch (err) {
     await Promise.allSettled(servers.map((s) => s.close()));
     await Promise.allSettled([...lambdaRegistry.values()].map((r) => r.stop()));
+    if (bootingLambda !== undefined) {
+      throw new LocalStartServiceError(
+        `Failed to boot ALB Lambda target '${bootingLambda}': ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     throw new LocalStartServiceError(
       `Failed to start ALB front-door: ${err instanceof Error ? err.message : String(err)}. If a ` +
         'listener port is privileged (< 1024), remap it to a non-privileged host port with ' +
