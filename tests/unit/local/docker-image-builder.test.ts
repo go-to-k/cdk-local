@@ -369,3 +369,17 @@ describe('buildContainerImage — source.directory containment bound (#745)', ()
     expect(mockRunDocker.mock.calls.some((c) => (c[0] as string[])[0] === 'build')).toBe(false);
   });
 });
+
+it('renders a control character in the asset directory flattened in a build-failure message (#745)', async () => {
+  mockRunDocker.mockImplementation(async (args: string[]) => {
+    if (args[0] === 'build') throw Object.assign(new Error('boom'), { stderr: 'boom' });
+    return { stdout: '', stderr: '' };
+  });
+  const err = await buildContainerImage(
+    { source: { directory: 'asset.x\x1b[2K\rFORGED' } },
+    '/tmp/cdkl-745-app/cdk.out',
+    { architecture: 'x86_64' }
+  ).catch((e: unknown) => e as Error);
+  expect((err as Error).message).toMatch(/docker build failed for container Lambda asset/);
+  expect((err as Error).message).not.toMatch(/[\x1b\r]/);
+});

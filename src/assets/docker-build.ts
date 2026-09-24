@@ -197,8 +197,8 @@ export async function buildDockerImage(
   // judged exactly as that concatenation joins it — an ABSOLUTE value is
   // folded under `cdkOutDir`, not honoured (`'fold'`) — and the RESOLVED path
   // is what the spawn receives, so the path judged and the path opened are
-  // one string (go-to-k/cdk-local#745). Refused BEFORE anything is spawned
-  // or announced.
+  // one string (go-to-k/cdk-local#745). Refused BEFORE anything is spawned,
+  // and before the executable is announced.
   const assetOutdir = options.assetOutdir ?? cdkOutDir;
   const contextDirectory = (directory: string, sink: string): string =>
     resolveAssetSourcePath({
@@ -240,7 +240,8 @@ export async function buildDockerImage(
       : cdkOutDir;
 
     logger.debug(
-      `Building Docker image via executable: ${source.executable.join(' ')} (cwd=${cwd})`
+      `Building Docker image via executable: ${sanitizeServiceExceptionMessage(source.executable.join(' '))} ` +
+        `(cwd=${sanitizeServiceExceptionMessage(cwd)})`
     );
     warnManifestExecutable(cmd, source.executable, cwd);
 

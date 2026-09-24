@@ -1,5 +1,5 @@
-import { readFileSync, statSync } from 'node:fs';
-import { join, normalize, sep } from 'node:path';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, normalize, relative, sep } from 'node:path';
 
 /**
  * Serve a request URI from a local directory standing in for a distribution's
@@ -134,12 +134,18 @@ export function uriToKey(uri: string, defaultRootObject?: string): string {
  * Path-traversal safe: the resolved absolute path must stay within the origin
  * directory (a `../` in the key, or a symlink escaping the root, yields no
  * read). Returns `undefined` when no directory has the key.
+ *
+ * The symlink half is {@link readsInsideRoot}, not `safeJoin`: `safeJoin`
+ * judges the path's TEXT, and `statSync` / `readFileSync` follow links, so a
+ * `cdk.out/asset.x/index.html -> ~/.aws/credentials` inside a contained origin
+ * directory used to be served (go-to-k/cdk-local#745).
  */
 function readKey(localDirs: readonly string[], key: string): Buffer | undefined {
   if (key === '') return undefined;
   for (const dir of localDirs) {
     const resolved = safeJoin(dir, key);
     if (!resolved) continue;
+    if (!readsInsideRoot(dir, resolved)) continue;
     try {
       const st = statSync(resolved);
       if (st.isFile()) return readFileSync(resolved);
@@ -160,6 +166,25 @@ export function safeJoin(dir: string, key: string): string | undefined {
   const rootWithSep = root.endsWith(sep) ? root : root + sep;
   if (candidate !== root && !candidate.startsWith(rootWithSep)) return undefined;
   return candidate;
+}
+
+/**
+ * Whether `file`, with every symbolic link followed by the kernel, still lies
+ * inside `root` (links followed too). A path that does not resolve answers
+ * `true`: the read after it fails the same way, so it reaches nothing.
+ */
+function readsInsideRoot(root: string, file: string): boolean {
+  let realFile: string;
+  let realRoot: string;
+  try {
+    realFile = realpathSync.native(file);
+    realRoot = realpathSync.native(root);
+  } catch {
+    return true;
+  }
+  const rel = relative(realRoot, realFile);
+  if (rel === '') return true;
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 function stripLeadingSlash(s: string): string {

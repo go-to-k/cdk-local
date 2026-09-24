@@ -148,3 +148,20 @@ describe('container-build callers pass the app outdir as the bound (#745)', () =
     expect((opts as { assetOutdir?: string }).assetOutdir).toBe(outdir);
   });
 });
+
+describe('--watch reader helpers (#745)', () => {
+  it('outputAssetBound: the stack assetOutdir when set, else the --output directory ("" counts as unset)', async () => {
+    const { outputAssetBound } = await import('../../../src/local/lambda-resolver.js');
+    expect(outputAssetBound({ ...stack, assetOutdir: outdir }, '/out')).toBe(outdir);
+    expect(outputAssetBound({ ...stack, assetOutdir: undefined }, '/out')).toBe('/out');
+    // `''` resolves to the process cwd if used as a bound — a disjoint one
+    // that refuses every value; it must take the `--output` fallback.
+    expect(outputAssetBound({ ...stack, assetOutdir: '' }, '/out')).toBe('/out');
+  });
+
+  it("watchManifestDir: the manifest's own directory, else the --output directory", async () => {
+    const { watchManifestDir } = await import('../../../src/local/lambda-resolver.js');
+    expect(watchManifestDir(stack, '/out')).toBe(join(outdir, 'assembly-S'));
+    expect(watchManifestDir({ ...stack, assetManifestPath: undefined }, '/out')).toBe('/out');
+  });
+});

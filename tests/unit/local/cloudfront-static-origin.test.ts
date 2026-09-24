@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
@@ -128,5 +128,43 @@ describe('resolveErrorResponseCandidates', () => {
   it('skips entries with no responsePagePath, and is empty when none given', () => {
     expect(resolveErrorResponseCandidates([{ errorCode: 403 }])).toEqual([]);
     expect(resolveErrorResponseCandidates()).toEqual([]);
+  });
+});
+
+// go-to-k/cdk-local#745: the origin DIRECTORY is contained, but `safeJoin`
+// judges only the key's text and the read follows links, so a symlinked FILE
+// inside the origin used to be served from anywhere on the host.
+describe('serveFromStaticOrigin — symbolic links leaving the origin (#745)', () => {
+  it('does not serve a file that is a symlink to a path outside the origin', () => {
+    const origin = mkdtempSync(join(tmpdir(), 'cdkl-cf-link-origin-'));
+    const outside = mkdtempSync(join(tmpdir(), 'cdkl-cf-link-victim-'));
+    try {
+      writeFileSync(join(outside, 'credentials'), 'SECRET');
+      symlinkSync(join(outside, 'credentials'), join(origin, 'index.html'));
+      mkdirSync(join(origin, 'ok'));
+      writeFileSync(join(outside, 'inner.txt'), 'SECRET2');
+      symlinkSync(outside, join(origin, 'escdir'));
+      const r = serveFromStaticOrigin({ localDirs: [origin], uri: '/index.html' });
+      expect(r.body.toString()).not.toContain('SECRET');
+      expect(r.statusCode).not.toBe(200);
+      const r2 = serveFromStaticOrigin({ localDirs: [origin], uri: '/escdir/inner.txt' });
+      expect(r2.body.toString()).not.toContain('SECRET2');
+    } finally {
+      rmSync(origin, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('still serves a symlink that stays inside the origin', () => {
+    const origin = mkdtempSync(join(tmpdir(), 'cdkl-cf-link-inside-'));
+    try {
+      writeFileSync(join(origin, 'real.html'), '<h1>real</h1>');
+      symlinkSync(join(origin, 'real.html'), join(origin, 'alias.html'));
+      const r = serveFromStaticOrigin({ localDirs: [origin], uri: '/alias.html' });
+      expect(r.statusCode).toBe(200);
+      expect(r.body.toString()).toContain('real');
+    } finally {
+      rmSync(origin, { recursive: true, force: true });
+    }
   });
 });

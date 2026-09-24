@@ -213,6 +213,16 @@ describe('resolveAssetSourcePath — the relative arm (both sinks)', () => {
     expect(warnLines.some((l) => /ITSELF/.test(l))).toBe(true);
   });
 
+  it("accepts a Stage manifest's `..` (the outdir itself) with the whole-assembly warning", () => {
+    const { outdir } = layout();
+    const stageDir = join(outdir, 'assembly-S');
+    mkdirSync(stageDir);
+    expect(
+      resolveIt({ manifestDir: stageDir, value: '..', assetOutdir: outdir, absolute: 'fold' })
+    ).toBe(outdir);
+    expect(warnLines.some((l) => /ITSELF/.test(l))).toBe(true);
+  });
+
   it('renders a control character in the value flattened, not raw', () => {
     const { outdir } = layout();
     let message = '';
@@ -259,6 +269,41 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     expect(
       resolveIt({ manifestDir: outdir, value: inside, assetOutdir: outdir, absolute: 'honour' })
     ).toBe(inside);
+  });
+
+  it("'honour': returns the NORMALIZED path for an absolute `<link>/..`", () => {
+    // The honour arm's readers (`path.resolve` sinks) must open the judged
+    // string; returning the raw value would hand the kernel `sub/link/..`,
+    // which it reads as the victim.
+    const { outdir, victim } = layout();
+    mkdirSync(join(outdir, 'sub'));
+    mkdirSync(join(victim, 'deep'));
+    symlinkSync(join(victim, 'deep'), join(outdir, 'sub', 'link'));
+    expect(
+      resolveIt({
+        manifestDir: outdir,
+        value: `${outdir}/sub/link/..`,
+        assetOutdir: outdir,
+        absolute: 'honour',
+      })
+    ).toBe(join(outdir, 'sub'));
+  });
+
+  it("'honour': a second spelling of the outdir itself is accepted with the whole-assembly warning", () => {
+    // `absoluteAssemblyPathEscape` exonerates `alias` (a link to the outdir)
+    // as inside; only `namesTheSameDirectory`'s real-path arm sees it IS the
+    // outdir.
+    const { root, outdir } = layout();
+    symlinkSync(outdir, join(root, 'alias'));
+    expect(
+      resolveIt({
+        manifestDir: outdir,
+        value: join(root, 'alias'),
+        assetOutdir: outdir,
+        absolute: 'honour',
+      })
+    ).toBe(join(root, 'alias'));
+    expect(warnLines.some((l) => /ITSELF/.test(l))).toBe(true);
   });
 
   it("'honour': an absolute value through a symlink out of the outdir is REFUSED", () => {
@@ -428,6 +473,66 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
     expect(warnLines.filter((l) => /names a host path/.test(l))).toEqual([]);
   });
 
+  it('resolves a relative passthrough against the BUILD CONTEXT, not cdkOutDir', async () => {
+    // From `asset.abc`, `../../cdk.out/ok` lands back inside the outdir; from
+    // `cdkOutDir` it would climb out. `../../victim/secret` leaves either way.
+    const { outdir } = layout();
+    await buildDockerImage(
+      {
+        source: {
+          directory: 'asset.abc',
+          dockerBuildSecrets: { a: 'type=file,src=../../cdk.out/ok', b: 'src=../../victim/secret' },
+        },
+      },
+      outdir,
+      { tag: 't', wrapError }
+    );
+    const lines = warnLines.filter((l) => /dockerBuildSecrets/.test(l));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/\['b'\]/);
+  });
+
+  it('covers dockerFile, the source= alias, cache src/dest and the bare --output form', async () => {
+    const { outdir, victim } = layout();
+    await buildDockerImage(
+      {
+        source: {
+          directory: 'asset.abc',
+          dockerFile: '../../victim/Dockerfile',
+          dockerBuildSecrets: { s: `source=${join(victim, 'secret')}` },
+          cacheFrom: [{ type: 'local', params: { src: victim } }],
+          cacheTo: { type: 'local', params: { dest: victim } },
+          dockerOutputs: [victim],
+        },
+      },
+      outdir,
+      { tag: 't', wrapError }
+    );
+    expect(warnLines.some((l) => /^Docker asset dockerFile names/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /dockerBuildSecrets\['s'\].*will read/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /cacheFrom\['0'\].*will read/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /cacheTo names.*will WRITE to/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /dockerOutputs\['0'\].*will WRITE to/.test(l))).toBe(true);
+  });
+
+  it('judges every --ssh key after the id, and none for the agent-socket form', async () => {
+    const { outdir, victim } = layout();
+    await buildDockerImage(
+      { source: { directory: 'asset.abc', dockerBuildSsh: `k=asset-key,${join(victim, 'secret')}` } },
+      outdir,
+      { tag: 't', wrapError }
+    );
+    expect(warnLines.filter((l) => /dockerBuildSsh\['1'\]/.test(l))).toHaveLength(1);
+    expect(warnLines.filter((l) => /dockerBuildSsh\['0'\]/.test(l))).toHaveLength(0);
+    warnLines.length = 0;
+    await buildDockerImage(
+      { source: { directory: 'asset.abc', dockerBuildSsh: 'default' } },
+      outdir,
+      { tag: 't2', wrapError }
+    );
+    expect(warnLines.filter((l) => /dockerBuildSsh/.test(l))).toHaveLength(0);
+  });
+
   it('prints a repeated line once per process (replicas rebuild the same asset)', async () => {
     const { outdir, victim } = layout();
     const asset = {
@@ -446,6 +551,15 @@ describe('AssetManifestLoader', () => {
     writeFileSync(join(root, 'x.assets.json'), '{"files":{},"dockerImages":{}}');
     await expect(new AssetManifestLoader().loadManifest(outdir, '../x')).rejects.toThrow(
       /Refusing to read the asset manifest for stack '\.\.\/x'.*outside/
+    );
+  });
+
+  it('REFUSES a stack manifest file that is a symlink out of the directory', async () => {
+    const { root, outdir } = layout();
+    writeFileSync(join(root, 'x.assets.json'), '{"files":{},"dockerImages":{}}');
+    symlinkSync(join(root, 'x.assets.json'), join(outdir, 'App.assets.json'));
+    await expect(new AssetManifestLoader().loadManifest(outdir, 'App')).rejects.toThrow(
+      /symbolic link/
     );
   });
 

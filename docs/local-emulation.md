@@ -501,7 +501,9 @@ directories it names are held to the same bound as `Metadata['aws:asset:path']`
   `invoke-agentcore`, `start-agentcore`, and a container Lambda behind
   `start-cloudfront` or an ALB target), and the working directory of a
   `source.executable` build script;
-- the directory `start-cloudfront` serves for a `BucketDeployment` source;
+- the directory `start-cloudfront` serves for a `BucketDeployment` source —
+  and each file served from it must also resolve inside it, so a symbolic link
+  in the directory pointing elsewhere is not served;
 - the source tree of an AgentCore `fromCodeAsset` bundle;
 - the directory a `--watch` soft reload copies into a running container.
 
@@ -511,12 +513,12 @@ The rules:
   symbolic link — is REFUSED before anything reads it. So is a stack name that
   would carry `<stack>.assets.json` out of it. No `cdk synth` writes either.
 - An ABSOLUTE value is judged the way each reader uses it. A Docker build
-  context and an AgentCore code bundle place it UNDER the manifest's directory,
-  as they always have. The `start-cloudfront` S3 origin and the `--watch`
-  soft-reload source use it as written, so there an absolute value outside the
-  output directory is REFUSED — including the absolute paths
-  `cdk synth --no-staging` writes. Re-synthesize without that flag for those
-  commands.
+  context and an AgentCore code bundle (at boot and on a soft reload) place it
+  UNDER the manifest's directory, as they always have. The `start-cloudfront`
+  S3 origin and the `--watch` soft-reload source of a container image use it
+  as written, so there an absolute value outside the output directory is
+  REFUSED — including the absolute paths `cdk synth --no-staging` writes.
+  Re-synthesize without that flag for those commands.
 - A value naming the output directory ITSELF is accepted with a warning, since
   it hands the whole assembly — every template and every staged asset — to the
   reader.

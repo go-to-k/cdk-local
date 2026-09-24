@@ -1311,4 +1311,60 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
     const ctx = await ctxFor('asset.abc123');
     expect(ctx?.newAssetSourceDir).toBe('/tmp/cdk.out/asset.abc123');
   });
+  it("resolves a Stage stack's `../asset.<hash>` from its manifest directory, bounded by its assetOutdir", async () => {
+    loadManifestMock.mockResolvedValue({ dockerImages: {} });
+    getDockerImageBySourceHashMock.mockReturnValue({
+      hash: 'abc123',
+      asset: { source: { directory: '../asset.abc123' } },
+    });
+    const stack = {
+      stackName: 'App',
+      template: { Resources: {} },
+      assetManifestPath: '/tmp/cdk.out/assembly-S/App.assets.json',
+      assetOutdir: '/tmp/cdk.out',
+    };
+    const ctx = await loadAgentCoreAssetContext({
+      resolvedTarget: 'App:ChatAgent',
+      resolved: runtime('123.dkr.ecr.us-east-1.amazonaws.com/assets:abc123'),
+      stacks: [stack] as never,
+      cdkOutDir: '/tmp/cdk.out',
+      assetLoader: new (class {
+        loadManifest = loadManifestMock;
+      })() as never,
+      oldAssetHash: 'old',
+    });
+    expect(ctx?.newAssetSourceDir).toBe('/tmp/cdk.out/asset.abc123');
+  });
+
+  it('code bundle arm: hands the contained lookup the manifest directory and the stack assetOutdir', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: '../asset.h123' } }]]));
+    getAssetSourcePathMock.mockReturnValue('/tmp/cdk.out/asset.h123');
+    const stack = {
+      stackName: 'App',
+      template: { Resources: {} },
+      assetManifestPath: '/tmp/cdk.out/assembly-S/App.assets.json',
+      assetOutdir: '/tmp/cdk.out',
+    };
+    const ctx = await loadAgentCoreAssetContext({
+      resolvedTarget: 'App:CodeAgent',
+      resolved: {
+        ...runtime('unused'),
+        containerUri: undefined,
+        codeArtifact: { runtime: 'PYTHON_3_13', entryPoint: ['app.py'], codeAssetHash: 'h123' },
+      } as never,
+      stacks: [stack] as never,
+      cdkOutDir: '/tmp/cdk.out',
+      assetLoader: new (class {
+        loadManifest = loadManifestMock;
+        getFileAssets = getFileAssetsMock;
+        getAssetSourcePath = getAssetSourcePathMock;
+      })() as never,
+      oldAssetHash: 'h123',
+    });
+    expect(ctx?.newAssetSourceDir).toBe('/tmp/cdk.out/asset.h123');
+    const [dir, , opts] = getAssetSourcePathMock.mock.calls.at(-1)!;
+    expect(dir).toBe('/tmp/cdk.out/assembly-S');
+    expect(opts).toMatchObject({ assetOutdir: '/tmp/cdk.out' });
+  });
 });

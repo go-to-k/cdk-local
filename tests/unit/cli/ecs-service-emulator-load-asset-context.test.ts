@@ -586,6 +586,14 @@ describe('loadAssetContextForTarget — soft-reload source containment (#745)', 
     expect(ctx.newAssetSourceDir).toBe('/tmp/cdk.out/asset.newhash');
   });
 
+  it("resolves a Stage stack's `../asset.<hash>` from its manifest directory, as the build does", async () => {
+    const ctx = (await callWithDirectory('../asset.newhash', {
+      assetManifestPath: '/tmp/cdk.out/assembly-S/AppStack.assets.json',
+      assetOutdir: '/tmp/cdk.out',
+    })) as { newAssetSourceDir: string };
+    expect(ctx.newAssetSourceDir).toBe('/tmp/cdk.out/asset.newhash');
+  });
+
   it("bounds by the stack's assetOutdir when the stack carries one", async () => {
     // A WIDER bound admits `../x`; the default bound (the output directory,
     // for a stack with no assetOutdir) refuses it. Proves which one is used.

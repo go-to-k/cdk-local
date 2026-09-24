@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { flattenToOneLine } from './credential-error.js';
 import { isImageInLocalCache } from './ecr-puller.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -113,7 +114,7 @@ export async function buildAgentCoreCodeImage(
   } catch (err) {
     const stderr = (err as { stderr?: string }).stderr?.trim();
     throw new LocalInvokeBuildError(
-      `docker build failed for AgentCore code artifact (${options.sourceDir})${stderr ? `: ${stderr}` : ''}`
+      `docker build failed for AgentCore code artifact (${flattenToOneLine(options.sourceDir)})${stderr ? `: ${stderr}` : ''}`
     );
   } finally {
     await rm(buildDir, { recursive: true, force: true }).catch(() => undefined);
@@ -168,7 +169,7 @@ async function warnIfDependenciesNotVendored(
   if (isNode) {
     if (has('package.json') && !has('node_modules')) {
       logger.warn(
-        `AgentCore code bundle '${sourceDir}' declares package.json but does not vendor node_modules. ` +
+        `AgentCore code bundle '${flattenToOneLine(sourceDir)}' declares package.json but does not vendor node_modules. ` +
           'The AgentCore managed runtime does NOT install dependencies at runtime, so the deployed agent ' +
           "will fail to resolve them. Vendor dependencies into the bundle (e.g. 'npm install --omit=dev' " +
           'in the bundle dir) so the deploy artifact is self-contained. cdk-local runs the bundle as-is to ' +
@@ -183,7 +184,7 @@ async function warnIfDependenciesNotVendored(
   if (manifest && !vendored) {
     const pyVersion = runtime.replace('PYTHON_', '').replace('_', '.');
     logger.warn(
-      `AgentCore code bundle '${sourceDir}' declares ${manifest} but does not vendor its dependencies. ` +
+      `AgentCore code bundle '${flattenToOneLine(sourceDir)}' declares ${manifest} but does not vendor its dependencies. ` +
         'The AgentCore managed runtime does NOT install dependencies at runtime, so the deployed agent will ' +
         'fail with ModuleNotFoundError. Vendor arm64 wheels into the bundle, e.g.:\n' +
         `  uv pip install --python-platform aarch64-manylinux2014 --python-version ${pyVersion} --target <bundle-dir> -r requirements.txt\n` +

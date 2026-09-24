@@ -1011,6 +1011,16 @@ export function outputAssetBound(stack: StackInfo, outputDir: string): string {
 }
 
 /**
+ * Where a `--watch` reader resolves a RELATIVE manifest value from: the
+ * manifest's own directory, exactly as the build does — so a value resolves
+ * to the same directory the running image was built from. Falls back to the
+ * user's `--output` for a stack record without a manifest path.
+ */
+export function watchManifestDir(stack: StackInfo, outputDir: string): string {
+  return stack.assetManifestPath ? dirname(stack.assetManifestPath) : outputDir;
+}
+
+/**
  * The real assembly ROOT for a `--app` that names a `cdk.Stage`
  * SUB-assembly.
  *

@@ -440,8 +440,8 @@ working directory, a `start-cloudfront` `BucketDeployment` source, an AgentCore
 `fromCodeAsset` bundle, a `--watch` soft-reload source. A value leaving the
 output directory through `..` or a symbolic link is REFUSED; an ABSOLUTE value
 is refused where the reader would use it as written (the `start-cloudfront` S3
-origin and the soft-reload source — including what `cdk synth --no-staging`
-writes); BuildKit options pointing outside the assembly are forwarded with a
+origin and a container image's soft-reload source — including what
+`cdk synth --no-staging` writes); BuildKit options pointing outside the assembly are forwarded with a
 warning. Full rules:
 [local-emulation.md](local-emulation.md#asset-manifest-paths).
 
