@@ -1,3 +1,4 @@
+import { createServer, type AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { FrontDoorPlan } from '../../../src/cli/commands/ecs-service-emulator.js';
 import type { ResolvedLambda } from '../../../src/local/lambda-resolver.js';
@@ -65,6 +66,7 @@ beforeEach(() => {
     assumeRoleApplied: true,
   });
   createRunnerMock.mockReturnValue({
+    logicalId: 'EchoFn',
     start: vi.fn(),
     stop: vi.fn(),
     invoke: vi.fn(),
@@ -201,6 +203,78 @@ describe('buildFrontDoor — ALB Lambda-target container env (issue #380)', () =
       expect(createRunnerMock).not.toHaveBeenCalled();
     } finally {
       await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+});
+
+// Issue #752 — the listener phase and the Lambda-target boot phase share one
+// teardown, but only a listener failure gets the `--lb-port` privileged-port
+// hint; a Lambda boot failure names the target and carries no port remedy.
+describe('buildFrontDoor — failure phase attribution (issue #752)', () => {
+  const options = { containerHost: '127.0.0.1', pull: true } as never;
+
+  it('reports a Lambda-target boot failure by target, without the --lb-port hint, and tears down', async () => {
+    const start = vi.fn().mockRejectedValue(new Error('refusing to forward a secret under finch'));
+    const stop = vi.fn().mockResolvedValue(undefined);
+    createRunnerMock.mockReturnValue({ logicalId: 'EchoFn', start, stop, invoke: vi.fn() });
+
+    const err = await buildFrontDoor(lambdaPlan(), options, logger, undefined).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(Error);
+    const message = (err as Error).message;
+    expect(message).toBe(
+      "Failed to boot ALB Lambda target 'EchoFn': refusing to forward a secret under finch"
+    );
+    expect(message).not.toContain('--lb-port');
+    expect(message).not.toContain('privileged');
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('flattens control characters in the named logical id onto one line', async () => {
+    createRunnerMock.mockReturnValue({
+      logicalId: 'Echo\nFn\u001b[31m',
+      start: vi.fn().mockRejectedValue(new Error('pull failed')),
+      stop: vi.fn().mockResolvedValue(undefined),
+      invoke: vi.fn(),
+    });
+
+    const err = await buildFrontDoor(lambdaPlan(), options, logger, undefined).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect((err as Error).message).toBe("Failed to boot ALB Lambda target 'Echo Fn [31m': pull failed");
+  });
+
+  it('keeps the --lb-port hint for a listener bind failure and never boots the Lambda target', async () => {
+    const start = vi.fn().mockResolvedValue(undefined);
+    const stop = vi.fn().mockResolvedValue(undefined);
+    createRunnerMock.mockReturnValue({ logicalId: 'EchoFn', start, stop, invoke: vi.fn() });
+
+    // Hold a port so the listener's bind fails with EADDRINUSE (not the
+    // EACCES privileged fallback), a genuine listener-phase failure.
+    const blocker = createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    const busyPort = (blocker.address() as AddressInfo).port;
+    try {
+      const plan = lambdaPlan();
+      plan.listeners[0]!.hostPort = busyPort;
+      const err = await buildFrontDoor(plan, options, logger, undefined).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(Error);
+      const message = (err as Error).message;
+      expect(message).toMatch(/^Failed to start ALB front-door: /);
+      expect(message).toContain('--lb-port <listenerPort>=<hostPort> (e.g. --lb-port 80=8080).');
+      expect(message).not.toContain('Lambda target');
+      expect(start).not.toHaveBeenCalled();
+      // The runner created while building routes is still torn down.
+      expect(stop).toHaveBeenCalledTimes(1);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
   });
 });
