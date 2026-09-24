@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { getLogger } from '../utils/logger.js';
-import { flattenToOneLine } from './credential-error.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 
 /**
  * Serve a request URI from a local directory standing in for a distribution's
@@ -226,9 +226,9 @@ function realPathInsideRoot(root: string, file: string): string | false | undefi
   if (!warnedEscapes.has(file)) {
     warnedEscapes.add(file);
     getLogger().warn(
-      `Not serving '${flattenToOneLine(file)}': it is a symbolic link to ` +
-        `'${flattenToOneLine(realFile)}', outside the origin directory ` +
-        `'${flattenToOneLine(root)}' the asset manifest named. ` +
+      `Not serving ${displayUntrustedValue(file)}: it is a symbolic link to ` +
+        `${displayUntrustedValue(realFile)}, outside the origin directory ` +
+        `${displayUntrustedValue(root)} the asset manifest named. ` +
         `Answering as if the key did not exist.`
     );
   }
@@ -283,7 +283,7 @@ function warnHiddenKey(dir: string, key: string, resolved: string): void {
   if (warnedHiddenKeys.has(resolved)) return;
   warnedHiddenKeys.add(resolved);
   getLogger().warn(
-    `Not serving '${flattenToOneLine(key)}' from '${flattenToOneLine(dir)}': it is a hidden ` +
+    `Not serving ${displayUntrustedValue(key)} from ${displayUntrustedValue(dir)}: it is a hidden ` +
       `entry in a cdk synth --no-staging source folder (your own tree, not a staged asset). ` +
       `Answering as if the key did not exist.`
   );

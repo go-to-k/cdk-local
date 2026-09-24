@@ -417,7 +417,7 @@ const sites: Site[] = [
   {
     name: 'state-resolver.ts / Fn::ImportValue',
     operation: 'CrossStackResolver.resolveImport (Fn::ImportValue)',
-    reached: "Fn::ImportValue 'X': lookup failed: ",
+    reached: 'Fn::ImportValue X: lookup failed: ',
     namePrefix: true,
     drive: async (err) => {
       const r = await substituteAgainstStateAsync(
@@ -431,7 +431,7 @@ const sites: Site[] = [
   {
     name: 'state-resolver.ts / Fn::GetStackOutput',
     operation: 'CrossStackResolver.resolveGetStackOutput (Fn::GetStackOutput)',
-    reached: "Fn::GetStackOutput 'Other.Out' (us-east-1): lookup failed: ",
+    reached: 'Fn::GetStackOutput Other.Out (us-east-1): lookup failed: ',
     namePrefix: true,
     drive: async (err) => {
       const r = await substituteAgainstStateAsync(
@@ -451,14 +451,14 @@ const sites: Site[] = [
   {
     name: 'cloudfront-s3-origin.ts / classifyS3Error (via the reader warn)',
     operation: 'S3 GetObject',
-    reached: "S3 read of 'index.html' from bucket 'cdn-bucket' failed: ",
+    reached: 'S3 read of index.html from bucket cdn-bucket failed: ',
     namePrefix: true,
     drive: async (err) => {
       mocks.s3Send.mockRejectedValue(err);
       const reader = createS3OriginReader('cdn-bucket');
       await reader({ uri: '/index.html' });
       await reader.close();
-      return { text: warnContaining("S3 read of 'index.html' from bucket 'cdn-bucket' failed: ") };
+      return { text: warnContaining('S3 read of index.html from bucket cdn-bucket failed: ') };
     },
   },
   {
@@ -1134,7 +1134,7 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
       await reader({ uri: FORGED_URI });
       await reader.close();
       const line = warnContaining('signature verified');
-      expect(line).toContain("S3 read of ' WARN: signature verified'");
+      expect(line).toContain('S3 read of " WARN: signature verified"');
       expect(line).not.toContain('\n');
     });
 
@@ -1144,7 +1144,7 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
       await reader({ uri: FORGED_URI });
       await reader.close();
       const line = warnContaining('signature verified');
-      expect(line).toContain("S3 denied reading ' WARN: signature verified'");
+      expect(line).toContain('S3 denied reading " WARN: signature verified"');
       expect(line).not.toContain('\n');
     });
 
@@ -1167,7 +1167,7 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
         ] as unknown as Parameters<typeof reader>[0]['customErrorResponses'],
       });
       await reader.close();
-      const line = warnContaining("custom-error page 'spa WARN: signature verified'");
+      const line = warnContaining('custom-error page "spa WARN: signature verified"');
       expect(line).not.toContain('\n');
     });
   });
@@ -1498,6 +1498,30 @@ describe('#579 round 3 — the catch-less sends the derived population found', (
     });
   });
 
+  // go-to-k/cdk-local#758: the placeholder ARN carries a template-chosen role
+  // name, so a quote in it must not close a boundary of the message's own.
+  describe('resolvePlaceholderAccount (both twins) — a quote-carrying placeholder ARN', () => {
+    const FORGED_ARN = "arn:aws:iam::${AWS::AccountId}:role/x'. Pass the ARN later. 'y";
+    for (const [name, call] of [
+      ['ecs-service-emulator.ts', emulatorResolvePlaceholderAccount],
+      ['local-run-task.ts', resolvePlaceholderAccountForTest],
+    ] as const) {
+      for (const [arm, arrange] of [
+        ['relay arm', () => mocks.stsSend.mockRejectedValue(new Error('boom'))],
+        ['no-Account arm', () => mocks.stsSend.mockResolvedValue({})],
+      ] as const) {
+        it(`${name}, ${arm}: renders the ARN as one JSON literal`, async () => {
+          arrange();
+          const message = await thrownMessage(() => call(FORGED_ARN, 'us-east-1', undefined));
+          expect(message).toContain(`placeholder ARN ${JSON.stringify(FORGED_ARN)}`);
+          expect(message.replace(JSON.stringify(FORGED_ARN), '<v>')).not.toContain(
+            'Pass the ARN later'
+          );
+        });
+      }
+    }
+  });
+
   describe('local-run-task.ts / resolvePlaceholderAccount (STS GetCallerIdentity)', () => {
     const PLACEHOLDER_ARN = 'arn:aws:iam::${AWS::AccountId}:role/TaskRole';
 
@@ -1616,7 +1640,7 @@ describe('#579 round 3 — the wire-derived values on lines this round touched',
     );
     expect(r.kind).toBe('unresolved');
     if (r.kind === 'unresolved') {
-      expect(r.reason).toContain("Fn::ImportValue 'x WARN: signature verified'");
+      expect(r.reason).toContain('Fn::ImportValue "x WARN: signature verified"');
       expect(r.reason).not.toContain('\n');
     }
   });
@@ -1630,7 +1654,7 @@ describe('#579 round 3 — the wire-derived values on lines this round touched',
     );
     expect(r.kind).toBe('unresolved');
     if (r.kind === 'unresolved') {
-      expect(r.reason).toContain("Fn::GetStackOutput 'Sx WARN: signature verified.Out'");
+      expect(r.reason).toContain('Fn::GetStackOutput "Sx WARN: signature verified.Out"');
       expect(r.reason).not.toContain('\n');
     }
   });

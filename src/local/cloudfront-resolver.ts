@@ -5,9 +5,8 @@ import type { AssetManifest, FileAsset } from '../types/assets.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { resolveAssetSourcePath } from '../assets/asset-source-path.js';
-import { sanitizeServiceExceptionMessage } from './credential-error.js';
 import { assetPathDirs } from './lambda-resolver.js';
-import { absoluteAssemblyPathEscape } from '../utils/assembly-path.js';
+import { absoluteAssemblyPathEscape, displayUntrustedValue } from '../utils/assembly-path.js';
 import {
   compileCloudFrontFunction,
   type CloudFrontKvsAssociation,
@@ -656,7 +655,7 @@ export function resolveBucketDeploymentDirs(
           assetOutdir,
           absolute: 'honour-warn',
           field: 'source.path',
-          subject: `BucketDeployment source asset for bucket '${sanitizeServiceExceptionMessage(bucketLogicalId)}'`,
+          subject: `BucketDeployment source asset for bucket ${displayUntrustedValue(bucketLogicalId)}`,
           action: 'serve it',
           sink: "serve every file under that directory as this bucket's local S3 origin",
           wrapError: (message) => new Error(message),

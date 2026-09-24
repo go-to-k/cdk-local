@@ -13,6 +13,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
+import { displayUntrustedValue } from '../../utils/assembly-path.js';
 import {
   applyRoleArnIfSet,
   AssumeRoleFailure,
@@ -1076,14 +1077,14 @@ async function resolveAgentCoreCodeImage(
   }
   const sourceDir = loader.getAssetSourcePath(cdkOutDir, asset, {
     assetOutdir: assetPathDirs(resolved.stack).assetOutdir,
-    subject: `AgentCore Runtime '${flattenToOneLine(resolved.logicalId)}' code bundle`,
+    subject: `AgentCore Runtime ${displayUntrustedValue(resolved.logicalId)} code bundle`,
     wrapError: (message) =>
       new CdkLocalError(message, 'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_ESCAPES_ASSEMBLY'),
   });
   if (!existsSync(sourceDir) || !statSync(sourceDir).isDirectory()) {
     throw new CdkLocalError(
-      `AgentCore Runtime '${flattenToOneLine(resolved.logicalId)}' code bundle source ` +
-        `'${flattenToOneLine(sourceDir)}' does not exist or is not a ` +
+      `AgentCore Runtime ${displayUntrustedValue(resolved.logicalId)} code bundle source ` +
+        `${displayUntrustedValue(sourceDir)} does not exist or is not a ` +
         `directory. Re-synthesize the app and retry.`,
       'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_MISSING'
     );
@@ -2359,7 +2360,7 @@ export async function loadAgentCoreAssetContext(args: {
       asset,
       {
         assetOutdir: outputAssetBound(newCandidate, cdkOutDir),
-        subject: `AgentCore Runtime '${flattenToOneLine(resolved.logicalId)}' code bundle`,
+        subject: `AgentCore Runtime ${displayUntrustedValue(resolved.logicalId)} code bundle`,
         wrapError: (message) =>
           new CdkLocalError(message, 'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_ESCAPES_ASSEMBLY'),
       }
@@ -2405,7 +2406,7 @@ export async function loadAgentCoreAssetContext(args: {
     assetOutdir: outputAssetBound(newCandidate, cdkOutDir),
     absolute: 'honour',
     field: 'source.directory',
-    subject: `AgentCore Runtime '${flattenToOneLine(resolved.logicalId)}' image asset`,
+    subject: `AgentCore Runtime ${displayUntrustedValue(resolved.logicalId)} image asset`,
     action: 'copy from it',
     sink: 'copy that directory into the running agent container on a soft reload',
     wrapError: (message) =>

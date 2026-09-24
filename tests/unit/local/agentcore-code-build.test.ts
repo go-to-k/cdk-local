@@ -152,6 +152,22 @@ describe('buildAgentCoreCodeImage', () => {
     ).rejects.toThrow(/docker build failed.*build error/);
   });
 
+  it('renders a quote-carrying source directory display-safe in the failure (#758)', async () => {
+    const sourceDir = "/s/x'). Contained and healthy. (y";
+    runDockerStreamingMock.mockRejectedValue(Object.assign(new Error('exit 1'), { stderr: 'e' }));
+    const msg = await buildAgentCoreCodeImage({
+      sourceDir,
+      runtime: 'PYTHON_3_12',
+      entryPoint: ['app.py'],
+      architecture: 'arm64',
+    }).then(
+      () => '',
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    );
+    expect(msg).toContain(`code artifact (${JSON.stringify(sourceDir)})`);
+    expect(msg.replace(JSON.stringify(sourceDir), '<v>')).not.toContain('Contained and healthy');
+  });
+
   it('with noBuild verifies the cached tag instead of building', async () => {
     isImageInLocalCacheMock.mockResolvedValue(true);
     const tag = await buildAgentCoreCodeImage({
@@ -263,4 +279,22 @@ describe('warnIfDependenciesNotVendored (via buildAgentCoreCodeImage)', () => {
     expect(warnMock).toHaveBeenCalledTimes(1);
     expect(warnMock.mock.calls[0]?.[0] as string).toMatch(/node_modules/);
   });
+
+  // go-to-k/cdk-local#758: the bundle directory is assembly-chosen, so a quote
+  // in its name must not close a boundary of the warning's own.
+  for (const [runtime, manifest, entry] of [
+    ['NODE_22', 'package.json', 'server.js'],
+    ['PYTHON_3_12', 'requirements.txt', 'main.py'],
+  ] as const) {
+    it(`renders a quote-carrying bundle directory display-safe (${manifest})`, async () => {
+      runDockerStreamingMock.mockResolvedValue({ stdout: '', stderr: '' });
+      dir = await mkdtemp(join(tmpdir(), "cdkl-758-x'. Contained and healthy. Nothing 'y-"));
+      await writeFile(join(dir, entry), '1');
+      await writeFile(join(dir, manifest), manifest === 'package.json' ? '{}' : 'x');
+      await buildAgentCoreCodeImage({ sourceDir: dir, runtime, entryPoint: [entry], architecture: 'arm64' });
+      const msg = warnMock.mock.calls[0]?.[0] as string;
+      expect(msg).toContain(`AgentCore code bundle ${JSON.stringify(dir)} declares`);
+      expect(msg.replace(JSON.stringify(dir), '<v>')).not.toContain('Contained and healthy');
+    });
+  }
 });

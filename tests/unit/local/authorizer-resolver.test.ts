@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { attachAuthorizers } from '../../../src/local/authorizer-resolver.js';
+import { attachAuthorizers, resolveRestV1Authorizer } from '../../../src/local/authorizer-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { DiscoveredRoute } from '../../../src/local/route-discovery.js';
 
@@ -94,5 +94,29 @@ describe('attachAuthorizers — OAC-fronted Function URL relaxation', () => {
     const [entry] = attachAuthorizers([s], [restV1IamRoute('RestMethod')]);
     expect(entry?.authorizer?.kind).toBe('iam');
     expect(entry?.authorizer?.kind === 'iam' && entry.authorizer.oacFronted).toBeUndefined();
+  });
+});
+
+// go-to-k/cdk-local#758: a ProviderARNs entry is template-chosen, so a quote
+// in it must not close a boundary of the refusal's own.
+describe('resolveRestV1Authorizer — a malformed Cognito ARN renders display-safe', () => {
+  it('puts a quote-carrying ARN in one JSON literal', () => {
+    const arn = "arn:aws:cognito-idp:us-east-1:1:x'. Pool verified. 'y";
+    const template = {
+      Resources: {
+        Auth: {
+          Type: 'AWS::ApiGateway::Authorizer',
+          Properties: { Type: 'COGNITO_USER_POOLS', ProviderARNs: [arn] },
+        },
+      },
+    } as never;
+    let message = '';
+    try {
+      resolveRestV1Authorizer('Auth', template, STACK_NAME, `${STACK_NAME}/Method`);
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain(`malformed Cognito User Pool ARN ${JSON.stringify(arn)}. Expected`);
+    expect(message.replace(JSON.stringify(arn), '<v>')).not.toContain('Pool verified');
   });
 });

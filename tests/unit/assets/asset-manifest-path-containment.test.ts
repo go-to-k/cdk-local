@@ -137,7 +137,7 @@ describe('resolveAssetSourcePath — the relative arm (both sinks)', () => {
     const { outdir } = layout();
     expect(() =>
       resolveIt({ manifestDir: outdir, value: '../victim', assetOutdir: outdir, absolute: 'fold' })
-    ).toThrow(/source\.directory='\.\.\/victim' which resolves to .*victim', outside .*cdk\.out'.*Refusing to build it\./);
+    ).toThrow(/source\.directory=\.\.\/victim which resolves to \S*victim, outside \S*cdk\.out\. .*Refusing to build it\./);
   });
 
   it('accepts a cdk.Stage asset `../asset.<hash>` bounded by the APP outdir', () => {
@@ -177,7 +177,7 @@ describe('resolveAssetSourcePath — the relative arm (both sinks)', () => {
     symlinkSync(victim, join(outdir, 'link'));
     expect(() =>
       resolveIt({ manifestDir: outdir, value: 'link', assetOutdir: outdir, absolute: 'fold' })
-    ).toThrow(/symbolic link to .*victim'/);
+    ).toThrow(/symbolic link to \S*victim, outside/);
   });
 
   it('returns the NORMALIZED path for `<link>/..`, so the kernel never re-reads it', () => {
@@ -277,7 +277,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     }
     const lines = warnLines.filter((l) => /pointing outside the assembly/.test(l));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain(`'${victim}'`);
+    expect(lines[0]).toContain(`the assembly: ${victim}. `);
     expect(lines[0]).toMatch(/cdk synth --no-staging/);
     expect(debugLines.some((l) => /pointing outside the assembly/.test(l))).toBe(true);
   });
@@ -371,7 +371,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
       })
     ).toBe(join(outdir, 'link'));
     const line = warnLines.find((l) => /pointing outside the assembly/.test(l))!;
-    expect(line).toContain(`through a symbolic link to '${victim}'`);
+    expect(line).toContain(`through a symbolic link to ${victim})`);
     // No `--no-staging` excuse for a link: no CDK synth writes one.
     expect(line).not.toMatch(/no-staging/);
     expect(line).toMatch(/made that link yourself/);
@@ -543,7 +543,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
       expect(() =>
         resolveIt({ manifestDir: outdir, value, assetOutdir: outdir, absolute: 'honour-warn' })
       ).toThrow(
-        new RegExp(`passes through the credential / version-control directory '\\${name}' inside your project`)
+        new RegExp(`passes through the credential / version-control directory \\${name} inside your project`)
       );
     }
   });
@@ -712,7 +712,7 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
     expect(mockRunDockerStreaming).toHaveBeenCalledTimes(1);
     const lines = warnLines.filter((l) => /dockerBuildSecrets/.test(l));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/\['npm'\] names a host path outside the assembly/);
+    expect(lines[0]).toMatch(/\[npm\] names a host path outside the assembly/);
     expect(lines[0]).toMatch(/will read it during the image build/);
     expect(lines[0]).not.toMatch(/Refusing/);
   });
@@ -739,7 +739,7 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
       outdir,
       { tag: 't', wrapError }
     );
-    expect(warnLines.some((l) => /dockerOutputs\['0'\].*will WRITE to it/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /dockerOutputs\[0\].*will WRITE to it/.test(l))).toBe(true);
   });
 
   it('warns for a --build-context and an --ssh key outside the assembly', async () => {
@@ -755,8 +755,8 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
       outdir,
       { tag: 't', wrapError }
     );
-    expect(warnLines.some((l) => /dockerBuildContexts\['shared'\]/.test(l))).toBe(true);
-    expect(warnLines.some((l) => /dockerBuildSsh\['0'\]/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /dockerBuildContexts\[shared\]/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /dockerBuildSsh\[0\]/.test(l))).toBe(true);
   });
 
   it('stays silent for passthroughs inside the build context, and for non-path keys', async () => {
@@ -796,7 +796,7 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
     );
     const lines = warnLines.filter((l) => /dockerBuildSecrets/.test(l));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/\['b'\]/);
+    expect(lines[0]).toMatch(/\[b\]/);
   });
 
   it('covers dockerFile, the source= alias, cache src/dest and the bare --output form', async () => {
@@ -816,10 +816,10 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
       { tag: 't', wrapError }
     );
     expect(warnLines.some((l) => /^Docker asset dockerFile names/.test(l))).toBe(true);
-    expect(warnLines.some((l) => /dockerBuildSecrets\['s'\].*will read/.test(l))).toBe(true);
-    expect(warnLines.some((l) => /cacheFrom\['0'\].*will read/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /dockerBuildSecrets\[s\].*will read/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /cacheFrom\[0\].*will read/.test(l))).toBe(true);
     expect(warnLines.some((l) => /cacheTo names.*will WRITE to/.test(l))).toBe(true);
-    expect(warnLines.some((l) => /dockerOutputs\['0'\].*will WRITE to/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /dockerOutputs\[0\].*will WRITE to/.test(l))).toBe(true);
   });
 
   it('judges an oci-layout:// build context by the host path behind the scheme', async () => {
@@ -829,7 +829,7 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
       outdir,
       { tag: 't', wrapError }
     );
-    expect(warnLines.some((l) => /dockerBuildContexts\['base'\]/.test(l))).toBe(true);
+    expect(warnLines.some((l) => /dockerBuildContexts\[base\]/.test(l))).toBe(true);
   });
 
   it('judges every --ssh key after the id, and none for the agent-socket form', async () => {
@@ -839,8 +839,8 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
       outdir,
       { tag: 't', wrapError }
     );
-    expect(warnLines.filter((l) => /dockerBuildSsh\['1'\]/.test(l))).toHaveLength(1);
-    expect(warnLines.filter((l) => /dockerBuildSsh\['0'\]/.test(l))).toHaveLength(0);
+    expect(warnLines.filter((l) => /dockerBuildSsh\[1\]/.test(l))).toHaveLength(1);
+    expect(warnLines.filter((l) => /dockerBuildSsh\[0\]/.test(l))).toHaveLength(0);
     warnLines.length = 0;
     await buildDockerImage(
       // No `=`: the value is an agent-socket ID, not a path, even when it
@@ -869,7 +869,7 @@ describe('AssetManifestLoader', () => {
     const { root, outdir } = layout();
     writeFileSync(join(root, 'x.assets.json'), '{"files":{},"dockerImages":{}}');
     await expect(new AssetManifestLoader().loadManifest(outdir, '../x')).rejects.toThrow(
-      /Refusing to read the asset manifest for stack '\.\.\/x'.*outside/
+      /Refusing to read the asset manifest for stack \.\.\/x: it resolves to .*outside/
     );
   });
 
@@ -902,7 +902,7 @@ describe('AssetManifestLoader', () => {
         typeof loader.getAssetSourcePath
       >[1];
     expect(() => loader.getAssetSourcePath(outdir, asset('../victim'), opts)).toThrow(
-      /Code bundle has source\.path='\.\.\/victim'.*outside/
+      /Code bundle has source\.path=\.\.\/victim which .*outside/
     );
     expect(loader.getAssetSourcePath(outdir, asset('asset.abc'), opts)).toBe(
       join(outdir, 'asset.abc')

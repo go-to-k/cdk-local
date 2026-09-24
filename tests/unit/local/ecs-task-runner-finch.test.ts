@@ -228,3 +228,49 @@ describe('runEcsTask under finch on macOS (issue #749)', () => {
     expect(warnSpy.mock.calls.map((x) => String(x[0])).join('\n')).not.toContain('CDK_DOCKER=finch');
   });
 });
+
+// go-to-k/cdk-local#758: a host volume's name and `Host.SourcePath` are both
+// template-chosen, and the missing-path warning printed them raw inside quotes
+// of its own.
+describe('runEcsTask — the missing host-volume warning renders display-safe', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('puts a quote-carrying volume name and host path in JSON literals', async () => {
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((_cmd: string, args: string[]) =>
+      args[0] === 'run' ? 'cid\n' : ''
+    );
+    for (const s of Object.values(stubs)) s.mockReset();
+    stubs.resolveEcsSecrets.mockResolvedValue([]);
+    const warned: string[] = [];
+    // The runner logs through `getLogger().child(...)`, so the child is what
+    // is captured.
+    const sink: Record<string, unknown> = {
+      debug: () => undefined,
+      info: () => undefined,
+      error: () => undefined,
+      warn: (m: string) => warned.push(m),
+      getLevel: () => 'info',
+    };
+    sink['child'] = () => sink;
+    vi.spyOn(getLogger(), 'child').mockReturnValue(sink as never);
+    vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
+      warned.push(m);
+    });
+    const name = "v'. Mounted fine. 'w";
+    const hostPath = "/nonexistent-758/x'. Contained and healthy. 'y";
+    const task = {
+      ...makeTask([makeContainer({})]),
+      volumes: [{ kind: 'host', name, hostPath }],
+    } as unknown as ResolvedEcsTask;
+    await runEcsTask(task, runnableOptions(task), createEcsRunState()).catch(() => undefined);
+    const line = warned.find((l) => l.includes('does not exist or is not a directory'));
+    expect(line).toBeDefined();
+    expect(line).toContain(`Volume ${JSON.stringify(name)}: host path ${JSON.stringify(hostPath)} does`);
+    const outside = line!.replace(/"(?:[^"\\]|\\.)*"/g, '<v>');
+    expect(outside).not.toContain('Mounted fine');
+    expect(outside).not.toContain('Contained and healthy');
+  });
+});

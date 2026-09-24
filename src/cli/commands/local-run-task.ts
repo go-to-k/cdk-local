@@ -8,7 +8,8 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
+import { describeAwsFailureForWarn } from '../../local/credential-error.js';
+import { displayUntrustedValue } from '../../utils/assembly-path.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -536,7 +537,7 @@ async function resolvePlaceholderAccount(
     const account = identity.Account;
     if (!account) {
       throw new PlaceholderAccountError(
-        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN '${arn}'. ` +
+        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN ${displayUntrustedValue(arn)}. ` +
           `Pass the ARN explicitly: --assume-task-role <arn>`
       );
     }
@@ -561,10 +562,10 @@ async function resolvePlaceholderAccount(
     // and one after the line announcing an STS failure, and an inline render
     // wrapped across three lines put the helper call outside it — the fence
     // reported this site as unguarded, correctly by its own rule.
-    const shownArn = flattenToOneLine(arn);
+    const shownArn = displayUntrustedValue(arn);
     const detail = describeAwsFailureForWarn(err, 'STS GetCallerIdentity (task-role placeholder)');
     throw new PlaceholderAccountError(
-      `--assume-task-role: STS GetCallerIdentity failed while resolving placeholder ARN '${shownArn}': ${detail}. ` +
+      `--assume-task-role: STS GetCallerIdentity failed while resolving placeholder ARN ${shownArn}: ${detail}. ` +
         `Pass the ARN explicitly: --assume-task-role <arn>`
     );
   } finally {

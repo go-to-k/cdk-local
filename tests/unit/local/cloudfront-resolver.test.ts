@@ -679,8 +679,24 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
   it('REFUSES a relative source.path that climbs out of the outdir', () => {
     const stack = stackWithSourcePath('../../etc');
     expect(() => resolveCloudFrontDistribution({ stack, logicalId: 'Dist' })).toThrow(
-      /BucketDeployment source asset for bucket 'SiteBucket' has source\.path='\.\.\/\.\.\/etc' which resolves to .*outside.*Refusing to serve it\./
+      /BucketDeployment source asset for bucket SiteBucket has source\.path=\.\.\/\.\.\/etc which resolves to .*outside.*Refusing to serve it\./
     );
+  });
+
+  it('renders a quote-carrying bucket logical id display-safe in the refusal subject (#758)', () => {
+    const forged = "Site'. Contained and healthy. Nothing 'y";
+    const stack = stackWithSourcePath('../../etc');
+    stack.template = JSON.parse(
+      JSON.stringify(stack.template).split('"SiteBucket"').join(JSON.stringify(forged))
+    ) as typeof stack.template;
+    let message = '';
+    try {
+      resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain(`BucketDeployment source asset for bucket ${JSON.stringify(forged)} has`);
+    expect(message.replace(JSON.stringify(forged), '<v>')).not.toContain('Contained and healthy');
   });
 
   it('SERVES an ABSOLUTE source.path outside the outdir (the --no-staging shape), still containing links to THAT directory', () => {

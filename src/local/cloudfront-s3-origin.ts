@@ -1,7 +1,8 @@
 import { getEmbedConfig } from './embed-config.js';
 import { getLogger } from '../utils/logger.js';
 import { buildProxyClientConfig } from '../utils/aws-proxy.js';
-import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import { describeAwsFailureForWarn } from './credential-error.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import {
   contentTypeForKey,
   resolveErrorResponseCandidates,
@@ -143,7 +144,7 @@ export function createS3OriginReader(
           // client that can reach the served port. Strictly more reachable than
           // the `functionPhysicalId` flatten, which needs a hijacked
           // CloudFormation endpoint.
-          `S3 denied reading '${flattenToOneLine(key)}' from bucket '${flattenToOneLine(bucketName)}'. If this is an OAC-locked / private ` +
+          `S3 denied reading ${displayUntrustedValue(key)} from bucket ${displayUntrustedValue(bucketName)}. If this is an OAC-locked / private ` +
             `bucket your credentials cannot read, point the origin at a local directory with ` +
             `--origin <originId>=<dir> (or use credentials with s3:GetObject on the bucket). ` +
             `${getEmbedConfig().cliName} start-cloudfront reads the origin from real S3.`
@@ -152,7 +153,7 @@ export function createS3OriginReader(
       if (direct.kind === 'error') {
         getLogger().warn(
           // Request-derived `key`, flattened for the reason given above.
-          `S3 read of '${flattenToOneLine(key)}' from bucket '${flattenToOneLine(bucketName)}' failed: ${direct.message}`
+          `S3 read of ${displayUntrustedValue(key)} from bucket ${displayUntrustedValue(bucketName)} failed: ${direct.message}`
         );
       }
     }
@@ -177,7 +178,7 @@ export function createS3OriginReader(
           // `CustomErrorResponses[].ResponsePagePath`, i.e. the template --
           // less reachable than `key`, but it lands on the same DEFAULT-level
           // line and the flatten costs one call.
-          `S3 could not read custom-error page '${flattenToOneLine(candidate.errorKey)}' from bucket '${flattenToOneLine(bucketName)}' ` +
+          `S3 could not read custom-error page ${displayUntrustedValue(candidate.errorKey)} from bucket ${displayUntrustedValue(bucketName)} ` +
             `(${page.kind}); falling through.`
         );
       }

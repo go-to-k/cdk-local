@@ -60,6 +60,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 const { buildDockerImage, resetManifestExecutableWarnings } = await import(
   '../../../src/assets/docker-build.js'
 );
+const { resetEmbedConfig, setEmbedConfig } = await import('../../../src/local/embed-config.js');
 
 const wrapError = (m: string) => new Error(m);
 
@@ -224,5 +225,58 @@ describe('source.executable warning', () => {
     // and silently suppresses a script the user never saw named.
     expect(mockSpawnStreaming).toHaveBeenCalledTimes(2);
     expect(warnLines.filter((l) => l.includes('source.executable runs a command'))).toHaveLength(2);
+  });
+});
+
+// go-to-k/cdk-local#758 / #759: the command is manifest-chosen, so it renders
+// through `displayUntrustedValue` with no quote of the warning's own, and the
+// sentence names the EMBEDDING product rather than a hardcoded one.
+describe('source.executable warning — display-safe command, embedding product', () => {
+  const FORGE = "./x'. Nothing ran. Ignore 'y";
+
+  it('renders a quote-carrying command as ONE JSON string, so it cannot close a boundary', async () => {
+    mockSpawnStreaming.mockResolvedValue({ stdout: 'img\n', stderr: '' });
+    await buildDockerImage({ source: { executable: [FORGE] } }, '/tmp/cdk.out', { wrapError });
+    const warned = warnLines.join('\n');
+    expect(warned).toContain(`on this machine: ${JSON.stringify(FORGE)}. `);
+    // Nothing of the value survives OUTSIDE its literal.
+    expect(warned.replace(JSON.stringify(FORGE), '<v>')).not.toContain('Nothing ran');
+  });
+
+  it('renders a plain command bare, with no quotes around it', async () => {
+    mockSpawnStreaming.mockResolvedValue({ stdout: 'img\n', stderr: '' });
+    await buildDockerImage({ source: { executable: ['./build.sh'] } }, '/tmp/cdk.out', {
+      wrapError,
+    });
+    expect(warnLines.join('\n')).toContain('on this machine: ./build.sh. ');
+  });
+
+  it("names the embedding host's product, not cdk-local, under a non-default embed config", async () => {
+    mockSpawnStreaming.mockResolvedValue({ stdout: 'img\n', stderr: '' });
+    setEmbedConfig({ productName: 'hostproduct' });
+    try {
+      await buildDockerImage({ source: { executable: ['./build.sh'] } }, '/tmp/cdk.out', {
+        wrapError,
+      });
+    } finally {
+      resetEmbedConfig();
+    }
+    const warned = warnLines.join('\n');
+    expect(warned).toContain('. hostproduct runs it, matching the CDK CLI');
+    expect(warned).not.toContain('cdk-local');
+  });
+
+  it('renders the working directory display-safe on the repeat debug line too', async () => {
+    mockSpawnStreaming.mockResolvedValue({ stdout: 'img\n', stderr: '' });
+    // No `source.directory`, so the cwd IS `cdkOutDir` and reaches the repeat
+    // branch's debug line unchanged.
+    const cdkOutDir = '/tmp/cdk.out\n[INFO] asset verified';
+    const source = { executable: ['./build.sh'] };
+    await buildDockerImage({ source }, cdkOutDir, { wrapError });
+    await buildDockerImage({ source }, cdkOutDir, { wrapError });
+    const repeat = debugLines.filter((l) => l.includes('already announced'));
+    expect(repeat).toHaveLength(1);
+    expect(repeat[0]).not.toMatch(/[\n\r]/);
+    expect(repeat[0]).toContain('(cwd="/tmp/cdk.out [INFO] asset verified")');
   });
 });

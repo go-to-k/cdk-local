@@ -1,7 +1,10 @@
 import type { DockerImageAssetSource } from '../types/assets.js';
-import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getEmbedConfig } from '../local/embed-config.js';
-import { assemblyPathEscape, renderAssemblyPathEscape } from '../utils/assembly-path.js';
+import {
+  assemblyPathEscape,
+  displayUntrustedValue,
+  renderAssemblyPathEscape,
+} from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 import { cacheOptionToFlag } from './docker-cache-option.js';
 
@@ -183,7 +186,7 @@ export function warnEscapingBuildKitPaths(
     const verb = ref.write ? 'WRITE to' : 'read';
     const line =
       `Docker asset ${ref.field}` +
-      (ref.where === ref.field ? '' : `['${sanitizeServiceExceptionMessage(ref.where)}']`) +
+      (ref.where === ref.field ? '' : `[${displayUntrustedValue(ref.where)}]`) +
       ` names a host path outside the assembly, which ` +
       renderAssemblyPathEscape(
         escape,

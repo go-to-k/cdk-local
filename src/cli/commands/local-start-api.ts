@@ -15,11 +15,8 @@ import {
 } from '../options.js';
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { getLogger } from '../../utils/logger.js';
-import {
-  describeAwsFailureForWarn,
-  flattenToOneLine,
-  sanitizeServiceExceptionMessage,
-} from '../../local/credential-error.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
+import { displayUntrustedValue } from '../../utils/assembly-path.js';
 import {
   applyRoleArnIfSet,
   assumeRoleCredentials,
@@ -3014,7 +3011,7 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new Error(
-      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has no Metadata['aws:asset:path']. ${getEmbedConfig().cliName} start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
+      `Lambda ${displayUntrustedValue(logicalId)} has no Metadata['aws:asset:path']. ${getEmbedConfig().cliName} start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
     );
   }
   const { manifestDir, assetOutdir } = assetPathDirs(stack);

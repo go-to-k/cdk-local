@@ -103,6 +103,7 @@
  */
 
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import type { ResourceState } from '../types/state.js';
 
 /**
@@ -926,7 +927,7 @@ async function resolveImportValueAsync(
       // wire-derived value on a default-level line is: it is resolved from the
       // template (and may itself come through `Fn::Sub` against deployed
       // state), and this `reason` is printed verbatim by three warns.
-      reason: `Fn::ImportValue '${flattenToOneLine(exportName)}': lookup failed: ${describeAwsFailureForWarn(
+      reason: `Fn::ImportValue ${displayUntrustedValue(exportName)}: lookup failed: ${describeAwsFailureForWarn(
         err,
         'CrossStackResolver.resolveImport (Fn::ImportValue)'
       )}`,
@@ -1047,9 +1048,9 @@ async function resolveGetStackOutputAsync(
     return {
       kind: 'unresolved',
       // Same treatment for the three template-derived values here.
-      reason: `Fn::GetStackOutput '${flattenToOneLine(stackName)}.${flattenToOneLine(
-        outputName
-      )}' (${flattenToOneLine(region)}): lookup failed: ${describeAwsFailureForWarn(
+      reason: `Fn::GetStackOutput ${displayUntrustedValue(
+        `${stackName}.${outputName}`
+      )} (${flattenToOneLine(region)}): lookup failed: ${describeAwsFailureForWarn(
         err,
         'CrossStackResolver.resolveGetStackOutput (Fn::GetStackOutput)'
       )}`,

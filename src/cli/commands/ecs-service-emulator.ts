@@ -8,11 +8,8 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import {
-  describeAwsFailureForWarn,
-  flattenToOneLine,
-  sanitizeServiceExceptionMessage,
-} from '../../local/credential-error.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
+import { displayUntrustedValue } from '../../utils/assembly-path.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, LocalStartServiceError } from '../../utils/error-handler.js';
 import { resolveMultiTarget } from '../../local/target-picker.js';
@@ -1408,8 +1405,8 @@ export async function loadAssetContextForTarget(args: {
     absolute: 'honour',
     field: 'source.directory',
     subject:
-      `Docker image asset '${sanitizeServiceExceptionMessage(newAssetHash)}' of stack ` +
-      `'${sanitizeServiceExceptionMessage(candidate.stackName)}'`,
+      `Docker image asset ${displayUntrustedValue(newAssetHash)} of stack ` +
+      `${displayUntrustedValue(candidate.stackName)}`,
     action: 'copy from it',
     sink: 'copy that directory into the running replicas on a soft reload',
     wrapError: (message) => new Error(message),
@@ -2421,7 +2418,7 @@ async function resolvePlaceholderAccount(
     const account = identity.Account;
     if (!account) {
       throw new LocalStartServiceError(
-        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN '${arn}'.`
+        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN ${displayUntrustedValue(arn)}.`
       );
     }
     return arn.split(TASK_ROLE_ACCOUNT_PLACEHOLDER).join(account);
@@ -2437,10 +2434,10 @@ async function resolvePlaceholderAccount(
     // the resolver emits for an inline same-stack IAM role, so a plain
     // `--from-cfn-stack` run on the default credential chain gets here.
     if (err instanceof LocalStartServiceError) throw err;
-    const shownArn = flattenToOneLine(arn);
+    const shownArn = displayUntrustedValue(arn);
     const detail = describeAwsFailureForWarn(err, 'STS GetCallerIdentity (task-role placeholder)');
     throw new LocalStartServiceError(
-      `--assume-task-role: STS GetCallerIdentity failed while resolving placeholder ARN '${shownArn}': ${detail}. ` +
+      `--assume-task-role: STS GetCallerIdentity failed while resolving placeholder ARN ${shownArn}: ${detail}. ` +
         `Pass the ARN explicitly: --assume-task-role <arn>`
     );
   } finally {
