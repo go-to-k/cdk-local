@@ -2213,6 +2213,9 @@ export async function buildFrontDoor(
       logger.info(`Booting Lambda target '${bootingLambda}' behind the ALB front-door...`);
       await runner.start();
     }
+    // Every target is up: anything added below must not be blamed on the
+    // last Lambda that booted.
+    bootingLambda = undefined;
   } catch (err) {
     await Promise.allSettled(servers.map((s) => s.close()));
     await Promise.allSettled([...lambdaRegistry.values()].map((r) => r.stop()));

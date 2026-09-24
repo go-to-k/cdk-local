@@ -1,4 +1,4 @@
-import { createServer, type AddressInfo } from 'node:net';
+import { connect, createServer, type AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { FrontDoorPlan } from '../../../src/cli/commands/ecs-service-emulator.js';
 import type { ResolvedLambda } from '../../../src/local/lambda-resolver.js';
@@ -217,8 +217,12 @@ describe('buildFrontDoor — failure phase attribution (issue #752)', () => {
     const start = vi.fn().mockRejectedValue(new Error('refusing to forward a secret under finch'));
     const stop = vi.fn().mockResolvedValue(undefined);
     createRunnerMock.mockReturnValue({ logicalId: 'EchoFn', start, stop, invoke: vi.fn() });
+    // Capture the listener's ephemeral port from its banner so the teardown of
+    // the already-started listener can be checked, not only the runner stop.
+    const infoLines: string[] = [];
+    const capturingLogger = { info: (m: string) => infoLines.push(m), warn: () => {} } as never;
 
-    const err = await buildFrontDoor(lambdaPlan(), options, logger, undefined).then(
+    const err = await buildFrontDoor(lambdaPlan(), options, capturingLogger, undefined).then(
       () => undefined,
       (e: unknown) => e
     );
@@ -231,6 +235,20 @@ describe('buildFrontDoor — failure phase attribution (issue #752)', () => {
     expect(message).not.toContain('privileged');
     expect(start).toHaveBeenCalledTimes(1);
     expect(stop).toHaveBeenCalledTimes(1);
+
+    const banner = infoLines.find((l) => l.startsWith('ALB front-door: http://127.0.0.1:'));
+    expect(banner).toBeDefined();
+    const port = Number(/:(\d+) /.exec(banner!)?.[1]);
+    expect(port).toBeGreaterThan(0);
+    const connectErr = await new Promise<NodeJS.ErrnoException | undefined>((resolve) => {
+      const socket = connect(port, '127.0.0.1');
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(undefined);
+      });
+      socket.once('error', (e: NodeJS.ErrnoException) => resolve(e));
+    });
+    expect(connectErr?.code).toBe('ECONNREFUSED');
   });
 
   it('flattens control characters in the named logical id onto one line', async () => {
