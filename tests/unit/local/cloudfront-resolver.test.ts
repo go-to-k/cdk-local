@@ -148,6 +148,8 @@ describe('resolveCloudFrontDistribution — unresolved + custom origins', () => 
       const origin = resolved.origins.get('origin1');
       expect(origin?.kind).toBe('s3');
       if (origin?.kind === 's3') expect(origin.localDirs[0]).toBe(overrideDir);
+      // The user's own directory: its links are served, not contained (#745).
+      expect(origin?.kind === 's3' && origin.fromAssembly).toBeUndefined();
     } finally {
       rmSync(overrideDir, { recursive: true, force: true });
     }

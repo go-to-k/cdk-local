@@ -140,11 +140,11 @@ export function uriToKey(uri: string, defaultRootObject?: string): string {
 
 /**
  * Read a key from the first directory that contains it as a regular file.
- * Path-traversal safe: the resolved absolute path must stay within the origin
- * directory (a `../` in the key, or a symlink escaping the root, yields no
- * read). Returns `undefined` when no directory has the key.
+ * Path-traversal safe: a `../` in the key never leaves the origin directory
+ * (`safeJoin`, always), and with `containLinks` neither does a symlink.
+ * Returns `undefined` when no directory has the key.
  *
- * The symlink half is {@link readsInsideRoot}, not `safeJoin`: `safeJoin`
+ * The symlink half is {@link realPathInsideRoot}, not `safeJoin`: `safeJoin`
  * judges the path's TEXT, and `statSync` / `readFileSync` follow links, so a
  * `cdk.out/asset.x/index.html -> ~/.aws/credentials` inside a contained origin
  * directory used to be served (go-to-k/cdk-local#745).
@@ -162,8 +162,9 @@ function readKey(
     if (containLinks) {
       const real = realPathInsideRoot(dir, joined);
       if (real === false) continue;
-      // Read the REAL path that was judged, not the name again, so a link
-      // swapped between the check and the read is not followed.
+      // Read the REAL path that was judged, so the final component is not
+      // re-followed. A concurrent rewrite of the assembly's directories is
+      // out of scope, as for every containment check here.
       if (real !== undefined) resolved = real;
     }
     try {

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vite-plus/test';
 import {
   contentTypeForKey,
   resolveErrorResponseCandidates,
@@ -177,6 +177,37 @@ describe('serveFromStaticOrigin — symbolic links leaving the origin (#745)', (
       expect(r.body.toString()).toContain('real');
     } finally {
       rmSync(origin, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('serveFromStaticOrigin — link containment on the error-response path and the warning (#745)', () => {
+  it('does not serve an escaping error page, and warns once per file', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const origin = mkdtempSync(join(tmpdir(), 'cdkl-cf-err-origin-'));
+    const outside = mkdtempSync(join(tmpdir(), 'cdkl-cf-err-victim-'));
+    try {
+      writeFileSync(join(outside, 'credentials'), 'SECRET');
+      symlinkSync(join(outside, 'credentials'), join(origin, 'index.html'));
+      const request = () =>
+        serveFromStaticOrigin({
+          localDirs: [origin],
+          uri: '/missing-route',
+          containLinks: true,
+          customErrorResponses: [
+            { errorCode: 403, responseCode: 200, responsePagePath: '/index.html' },
+          ],
+        });
+      expect(request().body.toString()).not.toContain('SECRET');
+      expect(request().body.toString()).not.toContain('SECRET');
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => /Not serving/.test(l));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('credentials');
+    } finally {
+      warn.mockRestore();
+      rmSync(origin, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 });
