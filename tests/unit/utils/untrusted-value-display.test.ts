@@ -82,6 +82,11 @@ const LITERAL = /"(?:[^"\\]|\\.)*"/g;
  */
 function expectContained(message: string): void {
   expect(message).toContain(CLAUSE);
+  // The forge carries its own `"`, so a site that printed it RAW would pair
+  // those quotes into a fake "literal" the cut below would remove. Inside a
+  // real literal every `"` of the value is escaped, so an UNESCAPED `"`
+  // directly before the clause means the value was printed raw.
+  expect(message).not.toMatch(new RegExp(`(?<!\\\\)"\\. ${CLAUSE}`));
   const outside = message.replace(LITERAL, '<v>');
   expect(outside).not.toContain(CLAUSE);
   for (const lit of message.match(LITERAL) ?? []) {
