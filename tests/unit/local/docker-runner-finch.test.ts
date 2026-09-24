@@ -106,7 +106,7 @@ describe('runDetached under finch on macOS (issue #749)', () => {
   });
 
   it('does not refuse for a marked key that is absent from the env', async () => {
-    await runDetached({ ...withSecret, env: { TABLE: 't' }, sensitiveEnvKeys: new Set(['DB_PASSWORD']) });
+    await runDetached({ ...withSecret, env: { ...credsEnv, TABLE: 't' }, sensitiveEnvKeys: new Set(['DB_PASSWORD']) });
     expect(execFileMock).toHaveBeenCalledTimes(1);
   });
 
