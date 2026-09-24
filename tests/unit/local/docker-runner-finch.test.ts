@@ -105,6 +105,11 @@ describe('runDetached under finch on macOS (issue #749)', () => {
     expect(String(finchWarnings[0]![0])).toContain('AWS_SECRET_ACCESS_KEY');
   });
 
+  it('does not refuse for a marked key that is absent from the env', async () => {
+    await runDetached({ ...withSecret, env: { TABLE: 't' }, sensitiveEnvKeys: new Set(['DB_PASSWORD']) });
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses under finch on Windows too', async () => {
     Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
     process.env['CDK_DOCKER'] = 'C:\\Program Files\\Finch\\bin\\finch.exe';
