@@ -12,6 +12,7 @@ import { buildStsClientConfig } from '../utils/profile-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
+import { canonicalizeImageUriHost, parseEcrRegistryHost } from './ecr-uri.js';
 
 /**
  * ECR pull fallback for `cdkl invoke` / `cdkl start-api` /
@@ -43,29 +44,48 @@ import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
  *     `--no-pull` or pre-pull manually.
  */
 
-/** Regex matching the `<acct>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` shape. */
-const ECR_URI_REGEX = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\/([^:]+):(.+)$/;
-
 export interface ParsedEcrUri {
   accountId: string;
   region: string;
   repository: string;
   tag: string;
+  /**
+   * The input with its registry host ASCII-lower-cased and its repository path
+   * and tag untouched — the ONE spelling every docker-facing use (login, pull,
+   * inspect, the returned run reference) must use, because docker keys its
+   * credential store on the hostname verbatim. See `canonicalizeImageUriHost`.
+   */
+  canonicalUri: string;
+  /**
+   * The canonical registry host `docker pull` targets — and therefore the host
+   * `docker login` must target (issue #760).
+   */
+  registryHost: string;
 }
 
 /**
  * Parse an ECR image URI. Returns `undefined` for non-ECR URIs (typically:
  * Docker Hub, public.ecr.aws, gcr.io, ...) — those are user-managed
  * images we don't try to authenticate against.
+ *
+ * Recognizes every host form in `ECR_REGISTRY_HOST_FORMS` (plain, FIPS,
+ * dual-stack, dual-stack FIPS) in every partition, each with the suffix that
+ * form carries for its region (issue #760) — see `parseEcrRegistryHost`.
  */
 export function parseEcrUri(imageUri: string): ParsedEcrUri | undefined {
-  const m = ECR_URI_REGEX.exec(imageUri);
+  const host = parseEcrRegistryHost(imageUri);
+  if (!host) return undefined;
+  const canonicalUri = canonicalizeImageUriHost(imageUri);
+  // The matched host carries no `/`, so the first one is the repository separator.
+  const m = /^([^:]+):(.+)$/.exec(canonicalUri.slice(canonicalUri.indexOf('/') + 1));
   if (!m) return undefined;
   return {
-    accountId: m[1]!,
-    region: m[2]!,
-    repository: m[3]!,
-    tag: m[4]!,
+    accountId: host.accountId,
+    region: host.region,
+    repository: m[1]!,
+    tag: m[2]!,
+    canonicalUri,
+    registryHost: host.registryHost,
   };
 }
 
@@ -172,7 +192,9 @@ function isCredentialFresh(creds: TempCredentials): boolean {
  *
  * Auto-detects cross-account from `STS:GetCallerIdentity` and assumes
  * the supplied role when set. Returns the image URI the caller should
- * pass to `docker run` (same as the input — no rewriting).
+ * pass to `docker run`: the input with its registry host ASCII-lower-cased
+ * (`ParsedEcrUri.canonicalUri`), so the run names the same spelling the pull
+ * and the login used; the repository path and tag are unchanged.
  */
 export async function pullEcrImage(imageUri: string, options: EcrPullOptions): Promise<string> {
   const logger = getLogger().child('ecr-puller');
@@ -185,6 +207,10 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     );
   }
 
+  // Every docker-facing use below goes through the canonical spelling, never
+  // the raw input — see `canonicalizeImageUriHost`.
+  const canonicalUri = parsed.canonicalUri;
+
   const callerRegion =
     options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
 
@@ -193,9 +219,9 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // `GetCallerIdentity` block avoids a wasted STS round-trip on every
   // container in an ECS run-task that pre-pulled the image manually.
   if (options.skipPull) {
-    logger.info(`Skipping ECR pull (--no-pull). Verifying ${imageUri} is in local cache...`);
-    await verifyImageInLocalCache(imageUri);
-    return imageUri;
+    logger.info(`Skipping ECR pull (--no-pull). Verifying ${canonicalUri} is in local cache...`);
+    await verifyImageInLocalCache(canonicalUri);
+    return canonicalUri;
   }
 
   // Look up the caller's identity (cached per region — invariant for the
@@ -296,20 +322,28 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     ...(assumed ? { credentials: assumed } : options.profile ? { profile: options.profile } : {}),
   });
   try {
-    await ecrLogin(ecr, parsed.accountId, parsed.region);
+    await ecrLogin(ecr, {
+      accountId: parsed.accountId,
+      region: parsed.region,
+      // The host `docker pull` below targets, taken off the SAME parse
+      // (issue #760). It passed `parseEcrRegistryHost`, so every segment is
+      // charset-constrained and its suffix is the AWS-owned one its form
+      // carries for the region.
+      registryHost: parsed.registryHost,
+    });
   } finally {
     ecr.destroy();
   }
 
-  logger.info(`Pulling ${imageUri}...`);
+  logger.info(`Pulling ${canonicalUri}...`);
   try {
-    await runDockerForeground(['pull', imageUri]);
+    await runDockerForeground(['pull', canonicalUri]);
   } catch (err) {
     const e = err as Error;
-    throw new LocalInvokeBuildError(`docker pull ${imageUri} failed: ${e.message}`);
+    throw new LocalInvokeBuildError(`docker pull ${canonicalUri} failed: ${e.message}`);
   }
 
-  return imageUri;
+  return canonicalUri;
 }
 
 /**
@@ -405,10 +439,26 @@ async function assumeRoleForEcr(
  * Authenticate the local docker daemon against the target ECR registry.
  * Self-contained in this module so the local-invoke path stays
  * independent of any full asset-publish path's larger surface area.
+ *
+ * The login endpoint is ALWAYS the host the PULL targets (issue #760):
+ * docker's credential store is keyed on the hostname verbatim, so a login to
+ * any other host leaves the pull with no credentials (`no basic auth
+ * credentials`). `GetAuthorizationToken`'s `proxyEndpoint` is therefore NOT
+ * used: it names the CALLER's default registry on the plain host, which is the
+ * wrong host for a FIPS / dual-stack pull and the wrong ACCOUNT for a
+ * cross-account pull made on the caller's own credentials (a repository policy
+ * grant, no `--ecr-role-arn`). The token is principal-scoped, not host-scoped:
+ * measured on real ECR, one token authenticates the plain, FIPS and dual-stack
+ * hosts alike. The password reaches docker only over `--password-stdin`, never
+ * argv.
  */
-async function ecrLogin(client: ECRClient, accountId: string, region: string): Promise<void> {
+async function ecrLogin(
+  client: ECRClient,
+  target: { accountId: string; region: string; registryHost: string }
+): Promise<void> {
+  const { accountId, region, registryHost } = target;
   const logger = getLogger().child('ecr-puller');
-  logger.debug(`ECR login (account=${accountId}, region=${region})`);
+  logger.debug(`ECR login (account=${accountId}, region=${region}, host=${registryHost})`);
 
   // Issue #579 review round 3 — same shape one level down: this `send` sat in
   // NO `try` at all, and its only caller wraps it in
@@ -438,7 +488,10 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
       'ECR authorization token has unexpected shape (missing username/password)'
     );
   }
-  const endpoint = authData.proxyEndpoint || `https://${accountId}.dkr.ecr.${region}.amazonaws.com`;
+  // `registryHost` passed `parseEcrRegistryHost`: every segment is
+  // charset-constrained and its suffix is the AWS-owned one its form carries
+  // for the region, so this never names a host AWS does not own.
+  const endpoint = `https://${registryHost}`;
 
   try {
     await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {

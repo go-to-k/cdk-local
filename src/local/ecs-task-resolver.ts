@@ -18,6 +18,7 @@ import {
   type SubstitutionContext,
 } from './state-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { parseEcrRegistryHost } from './ecr-uri.js';
 
 /**
  * Result of resolving a `cdkl run-task <target>` argument back to a
@@ -996,9 +997,10 @@ function buildSubstitutionContextFromImageContext(
  * Parse the `Image` field of an ECS container definition.
  *
  * Three shapes:
- *   - `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` — same-account
- *     same-region ECR. Cross-account/region is hard-errored (matches
- *     `cdkl invoke`'s ECR-pull semantics).
+ *   - `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` — ECR, in any
+ *     host form `ECR_REGISTRY_HOST_FORMS` lists (FIPS / dual-stack too) and any
+ *     partition. Pulled through `pullEcrImage` (cross-account / cross-region
+ *     below).
  *   - `Fn::Sub` / `Fn::Join` / `Ref` referencing a `Code.fromAsset`-style
  *     CDK asset image. Surfaces `kind: 'cdk-asset'` with the optional
  *     asset hash so the runner can route through `docker-build.ts`.
@@ -1123,10 +1125,11 @@ function parseContainerImage(
     );
   }
 
-  // Account-scoped ECR repo.
-  const ecrMatch = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\//.exec(substituted);
-  if (ecrMatch) {
-    return { kind: 'ecr', uri: substituted, account: ecrMatch[1]!, region: ecrMatch[2]! };
+  // Account-scoped ECR repo, in any of the host forms AWS serves (plain /
+  // FIPS / dual-stack / dual-stack FIPS) and any partition (issue #760).
+  const ecrHost = parseEcrRegistryHost(substituted);
+  if (ecrHost) {
+    return { kind: 'ecr', uri: substituted, account: ecrHost.accountId, region: ecrHost.region };
   }
 
   return { kind: 'public', uri: substituted };
@@ -1166,9 +1169,9 @@ function classifyResolvedImage(uri: string): ResolvedEcsImage {
     if (hashMatch) out.assetHash = hashMatch[1]!;
     return out;
   }
-  const ecrMatch = /^(\d{12})\.dkr\.ecr\.([^.]+)\.amazonaws\.com(?:\.cn)?\//.exec(uri);
-  if (ecrMatch) {
-    return { kind: 'ecr', uri, account: ecrMatch[1]!, region: ecrMatch[2]! };
+  const ecrHost = parseEcrRegistryHost(uri);
+  if (ecrHost) {
+    return { kind: 'ecr', uri, account: ecrHost.accountId, region: ecrHost.region };
   }
   return { kind: 'public', uri };
 }

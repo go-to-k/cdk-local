@@ -1204,8 +1204,11 @@ container still reach public AWS endpoints via the developer network.
    `nginx:latest`, etc. → plain `docker pull` (subject to `--no-pull`).
 2. **Direct ECR URIs** —
    `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` (flat
-   string, no intrinsics) → `pullEcrImage` (STS check + ECR auth +
-   `docker pull`). Cross-account / cross-region supported: cdk-local
+   string, no intrinsics), in any partition — or, in the commercial and
+   GovCloud partitions only, the same repository through the FIPS
+   (`dkr.ecr-fips`), dual-stack (`dkr-ecr.<region>.on.aws`) or dual-stack
+   FIPS (`dkr-ecr-fips.<region>.on.aws`) host → `pullEcrImage` (STS check + ECR auth against the host
+   being pulled + `docker pull`). Cross-account / cross-region supported: cdk-local
    builds the ECR client for the URI's region and (when `--ecr-role-arn
    <arn>` is passed) issues `sts:AssumeRole` to gain credentials in
    the target account.
