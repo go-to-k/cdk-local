@@ -111,3 +111,85 @@ describe('resolveEcsTaskTarget — same-stack ECR Fn::Join needs deployed state'
     );
   });
 });
+
+describe('resolveEcsTaskTarget — ECR host forms and partitions (issue #760)', () => {
+  const ACCT = '123456789012';
+/** U+212A KELVIN SIGN: `toLowerCase` folds it onto ASCII `k`. */
+const KELVIN = String.fromCodePoint(0x212a);
+
+  function taskWithImage(image: unknown): Record<string, TemplateResource> {
+    return {
+      MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      Task: {
+        Type: 'AWS::ECS::TaskDefinition',
+        Properties: {
+          Family: 'demo',
+          ContainerDefinitions: [{ Name: 'App', Image: image, Essential: true }],
+        },
+      },
+    };
+  }
+
+  function resolveImage(image: unknown, context?: Parameters<typeof resolveEcsTaskTarget>[2]) {
+    const stack = buildStack('App', taskWithImage(image));
+    return resolveEcsTaskTarget('App:Task', [stack], context).containers[0]!.image;
+  }
+
+  it.each([
+    [`${ACCT}.dkr.ecr.us-east-1.amazonaws.com/r:t`, 'us-east-1'],
+    [`${ACCT}.dkr.ecr-fips.us-east-1.amazonaws.com/r:t`, 'us-east-1'],
+    [`${ACCT}.dkr-ecr.us-east-1.on.aws/r:t`, 'us-east-1'],
+    [`${ACCT}.dkr-ecr-fips.us-west-2.on.aws/r:t`, 'us-west-2'],
+    [`${ACCT}.dkr.ecr.us-iso-east-1.c2s.ic.gov/r:t`, 'us-iso-east-1'],
+    [`${ACCT}.dkr.ecr.us-isob-east-1.sc2s.sgov.gov/r:t`, 'us-isob-east-1'],
+    [`${ACCT}.dkr.ecr.eu-isoe-west-1.cloud.adc-e.uk/r:t`, 'eu-isoe-west-1'],
+    [`${ACCT}.dkr.ecr.cn-north-1.amazonaws.com.cn/r:t`, 'cn-north-1'],
+  ])('classifies the flat image %s as ECR', (uri, region) => {
+    expect(resolveImage(uri)).toStrictEqual({ kind: 'ecr', uri, account: ACCT, region });
+  });
+
+  it.each([
+    `${ACCT}.dkr-ecr.us-east-1.on.aws.evil.example/r:t`,
+    `${ACCT}.dkr.ecr.us-east-1.example.com/r:t`,
+    `${ACCT}.dkr.ecr.us-iso-east-1.amazonaws.com/r:t`,
+    `${ACCT}.dkr.ecr-fips.us-${KELVIN}east-1.amazonaws.com/r:t`,
+  ])('classifies the look-alike %s as a public image (no ECR login)', (uri) => {
+    expect(resolveImage(uri)).toStrictEqual({ kind: 'public', uri });
+  });
+
+  it('classifies a state-resolved Fn::GetAtt RepositoryUri on the dual-stack host as ECR', () => {
+    const uri = `${ACCT}.dkr-ecr.us-east-1.on.aws/my-repo`;
+    const image = resolveImage(
+      { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] },
+      {
+        stateResources: {
+          MyRepo: {
+            physicalId: 'my-repo',
+            resourceType: 'AWS::ECR::Repository',
+            properties: {},
+            attributes: { RepositoryUri: uri },
+          },
+        },
+      }
+    );
+    expect(image).toStrictEqual({ kind: 'ecr', uri, account: ACCT, region: 'us-east-1' });
+  });
+
+  it('classifies a state-resolved Fn::GetAtt RepositoryUri on a look-alike host as public', () => {
+    const uri = `${ACCT}.dkr-ecr.us-east-1.on.aws.evil.example/my-repo`;
+    const image = resolveImage(
+      { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] },
+      {
+        stateResources: {
+          MyRepo: {
+            physicalId: 'my-repo',
+            resourceType: 'AWS::ECR::Repository',
+            properties: {},
+            attributes: { RepositoryUri: uri },
+          },
+        },
+      }
+    );
+    expect(image).toStrictEqual({ kind: 'public', uri });
+  });
+});

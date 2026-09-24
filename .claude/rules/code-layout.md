@@ -66,6 +66,11 @@ lambda-authorizer, cognito-jwt, sigv4-verify, rie-client, intrinsic-image,
 runtime-image, target-lister (`cdkl list`), target-picker (TTY selection),
 embed-config (host-CLI branding), ssm-parameter-resolver.
 
+- **ecr-uri** — the ONE recognizer of an ECR registry host (four forms, each
+  scoped to the partitions serving it, suffix paired to form + partition); `ecr-puller` and `ecs-task-resolver`
+  both call it, so never re-spell a `dkr.ecr` regex. `docker login` targets the
+  pull host, never `proxyEndpoint` (#760).
+
 - **layer-tree-copy** — `copyLayerTreeLastWins`, the ONE layer-merge copy both
   `invoke` and `start-api` call: an explicit walk recursing only into real
   directories, copying files one at a time, recreating symlinks with their own

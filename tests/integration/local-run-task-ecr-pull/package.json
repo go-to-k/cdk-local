@@ -1,0 +1,20 @@
+{
+  "name": "cdkl-integ-local-run-task-ecr-pull",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkl run-task pulling from private ECR through every registry host form (#760)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module",
+  "packageManager": "pnpm@11.5.1"
+}
