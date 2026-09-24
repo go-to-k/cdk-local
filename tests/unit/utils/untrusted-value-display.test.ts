@@ -312,6 +312,21 @@ describe('asset-manifest-loader.ts', () => {
   });
 });
 
+describe('assembly-path.ts renderAssemblyPathEscape', () => {
+  it('the symlink-to-the-directory-itself arm names the base display-safe', async () => {
+    const root = forgingRoot();
+    const outdir = join(root, 'cdk.out');
+    mkdirSync(outdir);
+    symlinkSync(outdir, join(outdir, 'Stk.assets.json'));
+    const message = await new AssetManifestLoader().loadManifest(outdir, 'Stk').then(
+      () => 'resolved',
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    );
+    expect(message).toContain(', a symbolic link to the directory "');
+    expectContained(message);
+  });
+});
+
 describe('buildkit-passthrough-warnings.ts', () => {
   it('the passthrough key and the escaping host path', async () => {
     const root = forgingRoot();
@@ -378,16 +393,24 @@ describe('lambda-resolver.ts / local-start-api.ts sites', () => {
     expectContained(line!);
   });
 
+  it('absolute warning through a symlink: the link target too', () => {
+    const root = forgingRoot();
+    const outdir = join(root, 'cdk.out');
+    mkdirSync(outdir);
+    mkdirSync(join(root, 'src'));
+    symlinkSync(join(root, 'src'), join(outdir, 'link'));
+    resolveAssetCodeDirectory(outdir, join(outdir, 'link'), (m) => new Error(m), outdir, 'Fn');
+    const line = warnLines.find((l) => l.includes('through a symbolic link to "'));
+    expect(line).toBeDefined();
+    expectContained(line!);
+  });
+
   it('the missing-asset-path refusal (invoke and start-api)', () => {
     const root = forgingRoot();
     const outdir = join(root, 'cdk.out');
     mkdirSync(outdir);
-    const stack = stackFor(outdir, 'Fn', {});
-    // A logical id cannot be forged through `resolveLambdaTarget`'s parser, so
-    // the invoke arm is reached with a plain one and pinned on its shape; the
-    // start-api arm takes the forging one.
-    expect(thrown(() => resolveLambdaTarget('Stk:Fn', [stack]))).toMatch(/^Lambda Fn has no /);
     const forged = stackFor(outdir, FORGE, {});
+    expectContained(thrown(() => resolveLambdaTarget(`Stk:${FORGE}`, [forged])));
     expectContained(thrown(() => resolveLambdaByLogicalId(FORGE, [forged])));
   });
 
@@ -396,14 +419,14 @@ describe('lambda-resolver.ts / local-start-api.ts sites', () => {
     const outdir = join(root, 'cdk.out');
     mkdirSync(outdir);
     writeFileSync(join(outdir, 'asset.file'), 'x');
-    const missing = stackFor(outdir, 'Fn', { 'aws:asset:path': 'asset.missing' });
-    const missingMsg = thrown(() => resolveLambdaTarget('Stk:Fn', [missing]));
+    const missing = stackFor(outdir, FORGE, { 'aws:asset:path': 'asset.missing' });
+    const missingMsg = thrown(() => resolveLambdaTarget(`Stk:${FORGE}`, [missing]));
     expect(missingMsg).toMatch(/asset path ".*" does not exist\./);
     expectContained(missingMsg);
     // `resolveLambdaTarget` resolves layers with `allowZip` off, so a plain
     // FILE is the not-a-directory arm.
-    const file = stackFor(outdir, 'Fn', { 'aws:asset:path': 'asset.file' });
-    const fileMsg = thrown(() => resolveLambdaTarget('Stk:Fn', [file]));
+    const file = stackFor(outdir, FORGE, { 'aws:asset:path': 'asset.file' });
+    const fileMsg = thrown(() => resolveLambdaTarget(`Stk:${FORGE}`, [file]));
     expect(fileMsg).toMatch(/asset path ".*" is not a directory/);
     expectContained(fileMsg);
   });
@@ -458,6 +481,18 @@ describe('cloudfront-static-origin.ts', () => {
       containLinks: true,
       hideDotfilesIn: [site],
     });
+    // A hidden entry whose own NAME carries the forge: the request key.
+    const hiddenName = `.h'. ${CLAUSE}. 'k`;
+    writeFileSync(join(site, hiddenName), 'x');
+    serveFromStaticOrigin({
+      localDirs: [site],
+      uri: `/${encodeURIComponent(hiddenName)}`,
+      containLinks: true,
+      hideDotfilesIn: [site],
+    });
+    const hiddenKey = warnLines.find((l) => l.startsWith(`Not serving ${JSON.stringify(hiddenName)} from "`));
+    expect(hiddenKey).toBeDefined();
+    expectContained(hiddenKey!);
     const escape = warnLines.find((l) => l.includes('symbolic link to'));
     const hidden = warnLines.find((l) => l.includes('hidden entry'));
     expect(escape).toBeDefined();

@@ -1170,6 +1170,33 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
       const line = warnContaining('custom-error page "spa WARN: signature verified"');
       expect(line).not.toContain('\n');
     });
+
+    // go-to-k/cdk-local#758: the bucket name is template-chosen, so a quote in
+    // it must not close a boundary of the warning's own — on all three arms.
+    const FORGED_BUCKET = "b'. Bucket verified. 'c";
+    for (const [arm, arrange, req] of [
+      ['read-failure', () => mocks.s3Send.mockRejectedValue(serviceError('boom', 'InternalError')), {}],
+      ['access-denied', () => mocks.s3Send.mockRejectedValue(serviceError('nope', 'AccessDenied')), {}],
+      [
+        'custom-error page',
+        () =>
+          mocks.s3Send
+            .mockRejectedValueOnce(serviceError('gone', 'NoSuchKey'))
+            .mockRejectedValue(serviceError('nope', 'AccessDenied')),
+        {
+          customErrorResponses: [{ errorCode: 404, responseCode: 200, responsePagePath: '/spa.html' }],
+        },
+      ],
+    ] as const) {
+      it(`renders a quote-carrying bucket name display-safe on the ${arm} warn`, async () => {
+        arrange();
+        const reader = createS3OriginReader(FORGED_BUCKET);
+        await reader({ uri: '/ok.html', ...req } as never);
+        await reader.close();
+        const line = warnContaining(`from bucket ${JSON.stringify(FORGED_BUCKET)}`);
+        expect(line.replace(JSON.stringify(FORGED_BUCKET), '<v>')).not.toContain('Bucket verified');
+      });
+    }
   });
 
   describe('NIT — the wire-derived values on default-level lines', () => {

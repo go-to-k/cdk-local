@@ -271,12 +271,18 @@ describe('source.executable warning — display-safe command, embedding product'
     // No `source.directory`, so the cwd IS `cdkOutDir` and reaches the repeat
     // branch's debug line unchanged.
     const cdkOutDir = '/tmp/cdk.out\n[INFO] asset verified';
-    const source = { executable: ['./build.sh'] };
+    const source = { executable: [FORGE] };
     await buildDockerImage({ source }, cdkOutDir, { wrapError });
     await buildDockerImage({ source }, cdkOutDir, { wrapError });
     const repeat = debugLines.filter((l) => l.includes('already announced'));
     expect(repeat).toHaveLength(1);
     expect(repeat[0]).not.toMatch(/[\n\r]/);
-    expect(repeat[0]).toContain('(cwd="/tmp/cdk.out [INFO] asset verified")');
+    expect(repeat[0]).toContain(
+      `${JSON.stringify(FORGE)} (cwd="/tmp/cdk.out [INFO] asset verified")`
+    );
+    // The first build's own debug line carries the same cwd.
+    const building = debugLines.filter((l) => l.includes('Building Docker image via executable'));
+    expect(building).toHaveLength(2);
+    expect(building[0]).toContain('(cwd="/tmp/cdk.out [INFO] asset verified")');
   });
 });
