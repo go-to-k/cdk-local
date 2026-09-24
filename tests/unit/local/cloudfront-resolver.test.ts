@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
   describeS3OriginDomain,
@@ -706,6 +706,15 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(beyond, { recursive: true, force: true });
+    }
+  });
+
+  it('REFUSES an absolute source.path that is a broad root (/, or an ancestor of the outdir)', () => {
+    for (const root of ['/', dirname(outDir)]) {
+      const stack = stackWithSourcePath(root);
+      expect(() => resolveCloudFrontDistribution({ stack, logicalId: 'Dist' })).toThrow(
+        /names (the filesystem root|a directory containing the app's output directory)\..*Refusing to serve it/
+      );
     }
   });
 

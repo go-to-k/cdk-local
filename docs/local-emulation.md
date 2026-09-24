@@ -516,16 +516,22 @@ The rules:
   either.
 - An ABSOLUTE value is judged the way each reader uses it. A Docker build
   context and an AgentCore code bundle (at boot and on a soft reload) place it
-  UNDER the manifest's directory, as they always have. The `start-cloudfront`
-  S3 origin and the `--watch` soft-reload source of a container image use it
-  as written: there an absolute value outside the output directory is
-  ACCEPTED, and a WARNING names it — including when it gets there through a
-  symbolic link. `cdk synth --no-staging` writes exactly this shape (the
-  asset's absolute source directory), so refusing it would reject the output
-  of a documented CDK flag; if you did not synthesize with `--no-staging`,
-  treat that assembly as untrusted. A `start-cloudfront` origin accepted this
-  way is still served only from inside THAT directory — a symbolic link in it
-  pointing elsewhere is not served.
+  UNDER the manifest's directory, as they always have.
+- The `start-cloudfront` S3 origin uses an absolute value as written: one
+  outside the output directory is ACCEPTED, and a WARNING names it —
+  including when it gets there through a symbolic link. `cdk synth
+  --no-staging` writes exactly this shape (the asset's absolute source
+  directory), so refusing it would reject the output of a documented CDK flag;
+  if you did not synthesize with `--no-staging`, treat that assembly as
+  untrusted. Three roots no `--no-staging` source can be are still REFUSED:
+  `/`, your home directory itself, and any directory CONTAINING the output
+  directory (compared through symbolic links). An origin accepted this way is
+  served only from inside THAT directory — a symbolic link in it pointing
+  elsewhere is not served.
+- The `--watch` soft-reload source of a container image also uses an absolute
+  value as written, but there one outside the output directory is REFUSED:
+  the image's own build places an absolute value under the manifest's
+  directory, so a `--no-staging` assembly never reaches a soft reload.
 - A value naming the output directory ITSELF is accepted with a warning, since
   it hands the whole assembly — every template and every staged asset — to the
   reader.

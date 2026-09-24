@@ -269,8 +269,9 @@ export function resolveAssemblyPath(
  * SOURCE directory under `aws:cdk:disable-asset-staging`, usually outside the
  * outdir — and they WARN rather than refuse when it leaves the bound, so this
  * returns a verdict rather than throwing. The asset-MANIFEST readers that
- * honour an absolute value (`resolveAssetSourcePath`'s `'honour'` mode) take
- * the same verdict and warn the same way (#745).
+ * honour an absolute value take the same verdict: `'honour-warn'` (the
+ * start-cloudfront origin) warns the same way, `'honour'` (the soft-reload
+ * sources) refuses (#745).
  *
  * It lives HERE so the containment rule has one spelling: it reuses this
  * module's own {@link isInside} and {@link resolveThroughLinks}, symlink arm

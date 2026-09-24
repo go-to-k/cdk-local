@@ -1312,9 +1312,8 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
     );
   });
 
-  it('ACCEPTS an ABSOLUTE source.directory outside the output directory (the --no-staging shape)', async () => {
-    const ctx = await ctxFor('/etc');
-    expect(ctx?.newAssetSourceDir).toBe('/etc');
+  it('REFUSES an ABSOLUTE source.directory outside the output directory', async () => {
+    await expect(ctxFor('/etc')).rejects.toThrow(/has an absolute source\.directory='\/etc'.*outside/);
   });
 
   it('returns the contained source directory for a staged asset', async () => {

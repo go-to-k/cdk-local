@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const { mockSpawnStreaming, mockRunDockerStreaming } = vi.hoisted(() => ({
@@ -86,7 +86,7 @@ function resolveIt(over: {
   manifestDir: string;
   value: string;
   assetOutdir: string;
-  absolute: 'fold' | 'honour';
+  absolute: 'fold' | 'honour' | 'honour-warn';
 }): string {
   return resolveAssetSourcePath({
     ...over,
@@ -256,13 +256,13 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     ).toThrow(/outside/);
   });
 
-  it("'honour': an absolute value outside the outdir is ACCEPTED with a --no-staging warning, once", () => {
+  it("'honour-warn': an absolute value outside the outdir is ACCEPTED with a --no-staging warning, once", () => {
     // Maintainer decision (#755 follow-up): `cdk synth --no-staging` writes
     // this shape, so it is accepted and the warning names it.
     const { outdir, victim } = layout();
     for (let i = 0; i < 2; i++) {
       expect(
-        resolveIt({ manifestDir: outdir, value: victim, assetOutdir: outdir, absolute: 'honour' })
+        resolveIt({ manifestDir: outdir, value: victim, assetOutdir: outdir, absolute: 'honour-warn' })
       ).toBe(victim);
     }
     const lines = warnLines.filter((l) => /pointing outside the assembly/.test(l));
@@ -272,7 +272,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     expect(debugLines.some((l) => /pointing outside the assembly/.test(l))).toBe(true);
   });
 
-  it("'honour': an accepted absolute value outside the outdir comes back NORMALIZED", () => {
+  it("'honour-warn': an accepted absolute value outside the outdir comes back NORMALIZED", () => {
     // The reader opens what this returns; `<victim>/sub/..` must come back as
     // `<victim>`, the path the warning named.
     const { outdir, victim } = layout();
@@ -282,24 +282,24 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
         manifestDir: outdir,
         value: `${victim}/sub/..`,
         assetOutdir: outdir,
-        absolute: 'honour',
+        absolute: 'honour-warn',
       })
     ).toBe(victim);
   });
 
-  it("'honour': the warning flattens control characters in the path", () => {
+  it("'honour-warn': the warning flattens control characters in the path", () => {
     const { root, outdir } = layout();
     const odd = join(root, 'odd\x1b[2K\rFORGED');
     mkdirSync(odd);
-    resolveIt({ manifestDir: outdir, value: odd, assetOutdir: outdir, absolute: 'honour' });
+    resolveIt({ manifestDir: outdir, value: odd, assetOutdir: outdir, absolute: 'honour-warn' });
     const line = warnLines.find((l) => /pointing outside the assembly/.test(l))!;
     expect(line).not.toMatch(/[\x1b\r]/);
   });
 
-  it("'honour': a RELATIVE escape is still REFUSED (only the absolute shape is accepted)", () => {
+  it("'honour-warn': a RELATIVE escape is still REFUSED (only the absolute shape is accepted)", () => {
     const { outdir } = layout();
     expect(() =>
-      resolveIt({ manifestDir: outdir, value: '../victim', assetOutdir: outdir, absolute: 'honour' })
+      resolveIt({ manifestDir: outdir, value: '../victim', assetOutdir: outdir, absolute: 'honour-warn' })
     ).toThrow(/outside.*Refusing to build it/);
   });
 
@@ -346,7 +346,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     expect(warnLines.some((l) => /ITSELF/.test(l))).toBe(true);
   });
 
-  it("'honour': an absolute value through a symlink out of the outdir is ACCEPTED, the warning naming the link target", () => {
+  it("'honour-warn': an absolute value through a symlink out of the outdir is ACCEPTED, the warning naming the link target", () => {
     const { outdir, victim } = layout();
     symlinkSync(victim, join(outdir, 'link'));
     expect(
@@ -354,19 +354,89 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
         manifestDir: outdir,
         value: join(outdir, 'link'),
         assetOutdir: outdir,
-        absolute: 'honour',
+        absolute: 'honour-warn',
       })
     ).toBe(join(outdir, 'link'));
     const line = warnLines.find((l) => /pointing outside the assembly/.test(l))!;
     expect(line).toContain(`through a symbolic link to '${victim}'`);
+    // No `--no-staging` excuse for a link: no CDK synth writes one.
+    expect(line).not.toMatch(/no-staging/);
+    expect(line).toMatch(/made that link yourself/);
   });
 
-  it("'honour': a RELATIVE value leaving through a symlink is still REFUSED", () => {
+  it("'honour' (soft-reload sources): an absolute value outside the outdir is REFUSED", () => {
+    // Their boot build folds an absolute value, so a real --no-staging
+    // assembly never reaches a reload; only a hostile layout would.
     const { outdir, victim } = layout();
+    expect(() =>
+      resolveIt({ manifestDir: outdir, value: victim, assetOutdir: outdir, absolute: 'honour' })
+    ).toThrow(/has an absolute source\.directory=.*outside.*Refusing to build it\./);
     symlinkSync(victim, join(outdir, 'link'));
     expect(() =>
-      resolveIt({ manifestDir: outdir, value: 'link', assetOutdir: outdir, absolute: 'honour' })
+      resolveIt({
+        manifestDir: outdir,
+        value: join(outdir, 'link'),
+        assetOutdir: outdir,
+        absolute: 'honour',
+      })
     ).toThrow(/symbolic link/);
+    expect(warnLines.filter((l) => /pointing outside the assembly/.test(l))).toEqual([]);
+  });
+
+  it("'honour-warn' REFUSES the filesystem root", () => {
+    const { outdir } = layout();
+    expect(() =>
+      resolveIt({ manifestDir: outdir, value: '/', assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toThrow(/names the filesystem root\..*Refusing to build it/);
+  });
+
+  it("'honour-warn' REFUSES the user's home directory, but accepts a folder under it", () => {
+    const { outdir } = layout();
+    expect(() =>
+      resolveIt({ manifestDir: outdir, value: homedir(), assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toThrow(/names your home directory/);
+    // A real --no-staging site folder lives under home; only the home ROOT is refused.
+    const site = join(homedir(), 'cdkl-745-not-created', 'site');
+    expect(
+      resolveIt({ manifestDir: outdir, value: site, assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toBe(site);
+  });
+
+  it("'honour-warn' REFUSES the home directory reached through a symlink (real paths compared)", () => {
+    const { root, outdir } = layout();
+    symlinkSync(homedir(), join(root, 'home-alias'));
+    expect(() =>
+      resolveIt({
+        manifestDir: outdir,
+        value: join(root, 'home-alias'),
+        assetOutdir: outdir,
+        absolute: 'honour-warn',
+      })
+    ).toThrow(/names your home directory/);
+  });
+
+  it("'honour-warn' REFUSES an ancestor of the outdir (it contains the assembly)", () => {
+    const { root, outdir } = layout();
+    expect(() =>
+      resolveIt({ manifestDir: outdir, value: root, assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toThrow(/names a directory containing the app's output directory/);
+  });
+
+  it("'honour-warn' ACCEPTS a sibling site folder (the --no-staging shape)", () => {
+    const { outdir, victim } = layout();
+    expect(
+      resolveIt({ manifestDir: outdir, value: victim, assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toBe(victim);
+  });
+
+  it("'honour' / 'honour-warn': a RELATIVE value leaving through a symlink is still REFUSED", () => {
+    const { outdir, victim } = layout();
+    symlinkSync(victim, join(outdir, 'link'));
+    for (const absolute of ['honour', 'honour-warn'] as const) {
+      expect(() =>
+        resolveIt({ manifestDir: outdir, value: 'link', assetOutdir: outdir, absolute })
+      ).toThrow(/symbolic link/);
+    }
   });
 });
 
