@@ -417,7 +417,7 @@ const sites: Site[] = [
   {
     name: 'state-resolver.ts / Fn::ImportValue',
     operation: 'CrossStackResolver.resolveImport (Fn::ImportValue)',
-    reached: "Fn::ImportValue 'X': lookup failed: ",
+    reached: 'Fn::ImportValue X: lookup failed: ',
     namePrefix: true,
     drive: async (err) => {
       const r = await substituteAgainstStateAsync(
@@ -431,7 +431,7 @@ const sites: Site[] = [
   {
     name: 'state-resolver.ts / Fn::GetStackOutput',
     operation: 'CrossStackResolver.resolveGetStackOutput (Fn::GetStackOutput)',
-    reached: "Fn::GetStackOutput 'Other.Out' (us-east-1): lookup failed: ",
+    reached: 'Fn::GetStackOutput Other.Out (us-east-1): lookup failed: ',
     namePrefix: true,
     drive: async (err) => {
       const r = await substituteAgainstStateAsync(
@@ -451,14 +451,14 @@ const sites: Site[] = [
   {
     name: 'cloudfront-s3-origin.ts / classifyS3Error (via the reader warn)',
     operation: 'S3 GetObject',
-    reached: "S3 read of 'index.html' from bucket 'cdn-bucket' failed: ",
+    reached: 'S3 read of index.html from bucket cdn-bucket failed: ',
     namePrefix: true,
     drive: async (err) => {
       mocks.s3Send.mockRejectedValue(err);
       const reader = createS3OriginReader('cdn-bucket');
       await reader({ uri: '/index.html' });
       await reader.close();
-      return { text: warnContaining("S3 read of 'index.html' from bucket 'cdn-bucket' failed: ") };
+      return { text: warnContaining('S3 read of index.html from bucket cdn-bucket failed: ') };
     },
   },
   {
@@ -1134,7 +1134,7 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
       await reader({ uri: FORGED_URI });
       await reader.close();
       const line = warnContaining('signature verified');
-      expect(line).toContain("S3 read of ' WARN: signature verified'");
+      expect(line).toContain('S3 read of " WARN: signature verified"');
       expect(line).not.toContain('\n');
     });
 
@@ -1144,7 +1144,7 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
       await reader({ uri: FORGED_URI });
       await reader.close();
       const line = warnContaining('signature verified');
-      expect(line).toContain("S3 denied reading ' WARN: signature verified'");
+      expect(line).toContain('S3 denied reading " WARN: signature verified"');
       expect(line).not.toContain('\n');
     });
 
@@ -1167,9 +1167,36 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
         ] as unknown as Parameters<typeof reader>[0]['customErrorResponses'],
       });
       await reader.close();
-      const line = warnContaining("custom-error page 'spa WARN: signature verified'");
+      const line = warnContaining('custom-error page "spa WARN: signature verified"');
       expect(line).not.toContain('\n');
     });
+
+    // go-to-k/cdk-local#758: the bucket name is template-chosen, so a quote in
+    // it must not close a boundary of the warning's own — on all three arms.
+    const FORGED_BUCKET = 'b\'". Bucket verified. "\'c';
+    for (const [arm, arrange, req] of [
+      ['read-failure', () => mocks.s3Send.mockRejectedValue(serviceError('boom', 'InternalError')), {}],
+      ['access-denied', () => mocks.s3Send.mockRejectedValue(serviceError('nope', 'AccessDenied')), {}],
+      [
+        'custom-error page',
+        () =>
+          mocks.s3Send
+            .mockRejectedValueOnce(serviceError('gone', 'NoSuchKey'))
+            .mockRejectedValue(serviceError('nope', 'AccessDenied')),
+        {
+          customErrorResponses: [{ errorCode: 404, responseCode: 200, responsePagePath: '/spa.html' }],
+        },
+      ],
+    ] as const) {
+      it(`renders a quote-carrying bucket name display-safe on the ${arm} warn`, async () => {
+        arrange();
+        const reader = createS3OriginReader(FORGED_BUCKET);
+        await reader({ uri: '/ok.html', ...req } as never);
+        await reader.close();
+        const line = warnContaining(`from bucket ${JSON.stringify(FORGED_BUCKET)}`);
+        expect(line.replace(JSON.stringify(FORGED_BUCKET), '<v>')).not.toContain('Bucket verified');
+      });
+    }
   });
 
   describe('NIT — the wire-derived values on default-level lines', () => {
@@ -1498,6 +1525,30 @@ describe('#579 round 3 — the catch-less sends the derived population found', (
     });
   });
 
+  // go-to-k/cdk-local#758: the placeholder ARN carries a template-chosen role
+  // name, so a quote in it must not close a boundary of the message's own.
+  describe('resolvePlaceholderAccount (both twins) — a quote-carrying placeholder ARN', () => {
+    const FORGED_ARN = 'arn:aws:iam::${AWS::AccountId}:role/x\'". Pass the ARN later. "\'y';
+    for (const [name, call] of [
+      ['ecs-service-emulator.ts', emulatorResolvePlaceholderAccount],
+      ['local-run-task.ts', resolvePlaceholderAccountForTest],
+    ] as const) {
+      for (const [arm, arrange] of [
+        ['relay arm', () => mocks.stsSend.mockRejectedValue(new Error('boom'))],
+        ['no-Account arm', () => mocks.stsSend.mockResolvedValue({})],
+      ] as const) {
+        it(`${name}, ${arm}: renders the ARN as one JSON literal`, async () => {
+          arrange();
+          const message = await thrownMessage(() => call(FORGED_ARN, 'us-east-1', undefined));
+          expect(message).toContain(`placeholder ARN ${JSON.stringify(FORGED_ARN)}`);
+          expect(message.replace(JSON.stringify(FORGED_ARN), '<v>')).not.toContain(
+            'Pass the ARN later'
+          );
+        });
+      }
+    }
+  });
+
   describe('local-run-task.ts / resolvePlaceholderAccount (STS GetCallerIdentity)', () => {
     const PLACEHOLDER_ARN = 'arn:aws:iam::${AWS::AccountId}:role/TaskRole';
 
@@ -1616,7 +1667,7 @@ describe('#579 round 3 — the wire-derived values on lines this round touched',
     );
     expect(r.kind).toBe('unresolved');
     if (r.kind === 'unresolved') {
-      expect(r.reason).toContain("Fn::ImportValue 'x WARN: signature verified'");
+      expect(r.reason).toContain('Fn::ImportValue "x WARN: signature verified"');
       expect(r.reason).not.toContain('\n');
     }
   });
@@ -1630,9 +1681,87 @@ describe('#579 round 3 — the wire-derived values on lines this round touched',
     );
     expect(r.kind).toBe('unresolved');
     if (r.kind === 'unresolved') {
-      expect(r.reason).toContain("Fn::GetStackOutput 'Sx WARN: signature verified.Out'");
+      expect(r.reason).toContain('Fn::GetStackOutput "Sx WARN: signature verified".Out');
       expect(r.reason).not.toContain('\n');
     }
+  });
+
+  // go-to-k/cdk-local#758: the non-throwing arms of the same two functions
+  // rendered the template values RAW inside quotes of their own.
+  describe('state-resolver.ts — every Fn::ImportValue / Fn::GetStackOutput arm renders display-safe', () => {
+    const V = 'v\'". Resolved fine. "\'w\nWARN: signature verified';
+    const shown = JSON.stringify(V.replace('\n', ' '));
+    const found = (value: string | undefined): CrossStackResolver =>
+      ({
+        resolveImport: async () => value,
+        resolveGetStackOutput: async () => value,
+      }) as unknown as CrossStackResolver;
+    const cases: Array<[string, unknown, Record<string, unknown>]> = [
+      ['ImportValue, no resolver', { 'Fn::ImportValue': V }, {}],
+      ['ImportValue, not found', { 'Fn::ImportValue': V }, { crossStackResolver: found(undefined) }],
+      [
+        'GetStackOutput, no region',
+        { 'Fn::GetStackOutput': { StackName: V, OutputName: V } },
+        {},
+      ],
+      [
+        'GetStackOutput, RoleArn',
+        { 'Fn::GetStackOutput': { StackName: V, OutputName: V, Region: 'r', RoleArn: 'x' } },
+        {},
+      ],
+      [
+        'GetStackOutput, no resolver',
+        { 'Fn::GetStackOutput': { StackName: V, OutputName: V, Region: 'r' } },
+        {},
+      ],
+      [
+        'GetStackOutput, not found',
+        { 'Fn::GetStackOutput': { StackName: V, OutputName: V, Region: V } },
+        { crossStackResolver: found(undefined) },
+      ],
+    ];
+    for (const [name, intrinsic, ctx] of cases) {
+      it(name, async () => {
+        const r = await substituteAgainstStateAsync(intrinsic, { resources: {}, ...ctx } as never);
+        expect(r.kind).toBe('unresolved');
+        const reason = r.kind === 'unresolved' ? r.reason : '';
+        expect(reason).toContain(shown);
+        expect(reason).not.toContain('\n');
+        const outside = reason.split(shown).join('<v>');
+        expect(outside).not.toContain('Resolved fine');
+        expect(outside).not.toContain('WARN:');
+      });
+    }
+  });
+
+  it('state-resolver.ts renders a forged output name and Region display-safe on the lookup-failed arm', async () => {
+    const region = 'r\'". Region fine. "\'s\nWARN: signature verified';
+    const output = 'o\'". Output fine. "\'p';
+    const r = await substituteAgainstStateAsync(
+      { 'Fn::GetStackOutput': { StackName: 'S', OutputName: output, Region: region } },
+      { resources: {}, crossStackResolver: importValueResolver(() => new Error('boom')) }
+    );
+    const reason = r.kind === 'unresolved' ? r.reason : '';
+    const shownRegion = JSON.stringify(region.replace('\n', ' '));
+    const shownOutput = JSON.stringify(output);
+    expect(reason).toContain(`Fn::GetStackOutput S.${shownOutput} (${shownRegion}): lookup failed`);
+    expect(reason).not.toContain('\n');
+    const outside = reason.split(shownRegion).join('<v>').split(shownOutput).join('<v>');
+    expect(outside).not.toContain('Region fine');
+    expect(outside).not.toContain('Output fine');
+  });
+
+  it('cfn-local-state-provider.ts renders the Fn::GetStackOutput producer display-safe', async () => {
+    const v = 'p\'". Producer fine. "\'q\nWARN: signature verified';
+    const shown = JSON.stringify(v.replace('\n', ' '));
+    const p = new CfnLocalStateProvider({ cfnStackName: 'S', region: 'us-east-1' });
+    const resolver = await p.buildCrossStackResolver();
+    await resolver?.resolveGetStackOutput(v, v, v);
+    p.dispose();
+    const line = warnContaining('has no CloudFormation equivalent');
+    expect(line).toContain(`Fn::GetStackOutput ${shown}.${shown} (${shown}) has no`);
+    expect(line).not.toContain('\n');
+    expect(line.split(shown).join('<v>')).not.toContain('Producer fine');
   });
 
   it('ssm-parameter-resolver.ts flattens the joined parameter names', async () => {

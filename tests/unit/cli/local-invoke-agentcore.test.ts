@@ -315,6 +315,35 @@ describe('resolveAgentCoreImage — CodeConfiguration (from source)', () => {
     expect((err as Error).message).not.toMatch(/[\x1b\r]/);
   });
 
+  // go-to-k/cdk-local#758: the logical id and the source directory are both
+  // assembly-chosen; neither may close a boundary of the refusal's own.
+  it('renders the logical id and the missing source directory display-safe', async () => {
+    const forged = '/cdk.out/x\'". Contained and healthy. Nothing "\'y';
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: 'asset.h123' } }]]));
+    getAssetSourcePathMock.mockReturnValue(forged);
+    const runtime = { ...codeRuntime(), logicalId: 'A\'". Healthy agent. "\'b' };
+    const message = await resolveAgentCoreImage(runtime, imageOpts()).then(
+      () => '',
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    );
+    expect(message).toContain(
+      `AgentCore Runtime ${JSON.stringify(runtime.logicalId)} code bundle source ${JSON.stringify(forged)} does not exist`
+    );
+    const outside = message
+      .split(JSON.stringify(forged))
+      .join('<v>')
+      .split(JSON.stringify(runtime.logicalId))
+      .join('<v>');
+    expect(outside).not.toContain('Contained and healthy');
+    expect(outside).not.toContain('Healthy agent');
+    // The same id is the subject handed to the contained source-path lookup.
+    const [, , opts] = getAssetSourcePathMock.mock.calls[0]!;
+    expect((opts as { subject: string }).subject).toBe(
+      `AgentCore Runtime ${JSON.stringify(runtime.logicalId)} code bundle`
+    );
+  });
+
   it('errors when the resolved source dir does not exist (stale cdk.out)', async () => {
     loadManifestMock.mockResolvedValue({ files: {} });
     getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: 'asset.h123' } }]]));
@@ -1290,13 +1319,13 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
     vi.clearAllMocks();
   });
 
-  function ctxFor(directory: string) {
+  function ctxFor(directory: string, logicalId = 'ChatAgent') {
     loadManifestMock.mockResolvedValue({ dockerImages: {} });
     getDockerImageBySourceHashMock.mockReturnValue({ hash: 'abc123', asset: { source: { directory } } });
     const stack = { stackName: 'App', template: { Resources: {} } };
     return loadAgentCoreAssetContext({
       resolvedTarget: 'App:ChatAgent',
-      resolved: runtime('123.dkr.ecr.us-east-1.amazonaws.com/assets:abc123'),
+      resolved: runtime('123.dkr.ecr.us-east-1.amazonaws.com/assets:abc123', { logicalId }),
       stacks: [stack] as never,
       cdkOutDir: '/tmp/cdk.out',
       assetLoader: new (class {
@@ -1308,12 +1337,47 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
 
   it('REFUSES a relative source.directory that climbs out of the output directory', async () => {
     await expect(ctxFor('../../etc')).rejects.toThrow(
-      /AgentCore Runtime 'ChatAgent' image asset has source\.directory='\.\.\/\.\.\/etc'.*outside.*Refusing to copy from it\./
+      /AgentCore Runtime ChatAgent image asset has source\.directory=\.\.\/\.\.\/etc which .*outside.*Refusing to copy from it\./
     );
   });
 
   it('REFUSES an ABSOLUTE source.directory outside the output directory', async () => {
-    await expect(ctxFor('/etc')).rejects.toThrow(/has an absolute source\.directory='\/etc'.*outside/);
+    await expect(ctxFor('/etc')).rejects.toThrow(/has an absolute source\.directory=\/etc which .*outside/);
+  });
+
+  it('hands the code-bundle lookup a display-safe subject too (#758)', async () => {
+    const forged = 'Agent\'". Contained and healthy. Nothing "\'y';
+    const getAssetSourcePath = vi.fn().mockReturnValue('/tmp/cdk.out/asset.h1');
+    await loadAgentCoreAssetContext({
+      resolvedTarget: 'App:ChatAgent',
+      resolved: runtime('unused', {
+        logicalId: forged,
+        codeArtifact: { runtime: 'PYTHON_3_13', entryPoint: ['app.py'], codeAssetHash: 'h1' },
+      }),
+      stacks: [{ stackName: 'App', template: { Resources: {} } }] as never,
+      cdkOutDir: '/tmp/cdk.out',
+      assetLoader: {
+        loadManifest: vi.fn().mockResolvedValue({ files: {} }),
+        getFileAssets: () => new Map([['h1', { source: { path: 'asset.h1' } }]]),
+        getAssetSourcePath,
+      } as never,
+      oldAssetHash: 'old',
+    });
+    expect(getAssetSourcePath).toHaveBeenCalledTimes(1);
+    expect((getAssetSourcePath.mock.calls[0]![2] as { subject: string }).subject).toBe(
+      `AgentCore Runtime ${JSON.stringify(forged)} code bundle`
+    );
+  });
+
+  // go-to-k/cdk-local#758: the logical id in the subject is assembly-chosen.
+  it('renders a quote-carrying logical id as one JSON literal in the subject', async () => {
+    const forged = 'Agent\'". Contained and healthy. Nothing "\'y';
+    const message = await ctxFor('../../etc', forged).then(
+      () => '',
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    );
+    expect(message).toContain(`AgentCore Runtime ${JSON.stringify(forged)} image asset has`);
+    expect(message.replace(JSON.stringify(forged), '<v>')).not.toContain('Contained and healthy');
   });
 
   it('returns the contained source directory for a staged asset', async () => {

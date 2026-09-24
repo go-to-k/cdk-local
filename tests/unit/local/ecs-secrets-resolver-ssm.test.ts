@@ -344,3 +344,28 @@ describe('resolveEcsSecrets — SSM and Secrets Manager entries in one batch (is
     ).rejects.toBeInstanceOf(EcsSecretsResolutionError);
   });
 });
+
+// go-to-k/cdk-local#758: the container name, the secret name and the ValueFrom
+// are all template-chosen, so none may close a boundary of the refusal's own.
+describe('the unsupported-shape refusal renders its values display-safe', () => {
+  it('puts each quote-carrying value in one JSON literal', async () => {
+    const forged = {
+      containerName: 'C\'". Healthy container. "\'c',
+      name: 'N\'". Healthy secret. "\'n',
+      valueFrom: 'arn:aws:s3:::b/x\'". Healthy shape. "\'y',
+    };
+    const message = await resolveEcsSecrets([forged]).then(
+      () => '',
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    );
+    expect(message).toContain(
+      `Container ${JSON.stringify(forged.containerName)} secret ${JSON.stringify(forged.name)} ` +
+        `references an unsupported ValueFrom shape ${JSON.stringify(forged.valueFrom)}. `
+    );
+    // Cut out the EXACT literals: a regex cut-out would pair a raw value's own
+    // quotes into a fake literal.
+    let outside = message;
+    for (const v of Object.values(forged)) outside = outside.split(JSON.stringify(v)).join('<v>');
+    expect(outside).not.toContain('Healthy');
+  });
+});

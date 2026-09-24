@@ -465,7 +465,7 @@ The line is emitted on one line; wrapped here to fit the page:
 
 ```text
 WARN: Docker asset source.executable runs a command this asset manifest chose,
-on this machine: './build-image.sh' (with 2 argument(s); --verbose shows them).
+on this machine: ./build-image.sh (with 2 argument(s); --verbose shows them).
 cdk-local runs it, matching the CDK CLI — a pre-synthesized assembly is trusted
 input. Note that this means running a local command against a pre-synthesized
 assembly DOES execute code from it, which the CloudFormation template does not

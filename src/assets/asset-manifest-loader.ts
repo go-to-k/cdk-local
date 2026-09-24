@@ -1,8 +1,11 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets.js';
-import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
+import {
+  displayUntrustedValue,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 import { resolveAssetSourcePath } from './asset-source-path.js';
 
@@ -30,7 +33,7 @@ export class AssetManifestLoader {
     if (!resolved.contained) {
       throw new Error(
         `Refusing to read the asset manifest for stack ` +
-          `'${sanitizeServiceExceptionMessage(stackName)}': it ` +
+          `${displayUntrustedValue(stackName)}: it ` +
           renderAssemblyPathEscape(resolved, cdkOutputDir, 'read it')
       );
     }

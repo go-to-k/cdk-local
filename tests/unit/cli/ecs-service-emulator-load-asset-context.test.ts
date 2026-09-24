@@ -8,6 +8,8 @@ const { hoisted } = vi.hoisted(() => ({
     manifest: null as Record<string, unknown> | null,
     /** Tracks the manifest loader's hash arg so we can assert it. */
     loadManifestCalls: [] as Array<{ cdkOutDir: string; stackName: string }>,
+    /** The new image's asset hash the happy-path resolver returns. */
+    assetHash: 'newhash',
   },
 }));
 
@@ -74,7 +76,7 @@ vi.mock('../../../src/local/ecs-service-resolver.js', async (importActual) => {
                 {
                   name: 'web',
                   essential: true,
-                  image: { kind: 'cdk-asset', assetHash: 'newhash' },
+                  image: { kind: 'cdk-asset', assetHash: hoisted.assetHash },
                 },
               ],
               warnings: [],
@@ -569,13 +571,51 @@ describe('loadAssetContextForTarget — soft-reload source containment (#745)', 
 
   it('REFUSES a relative source.directory that climbs out of the output directory', async () => {
     await expect(callWithDirectory('../../etc')).rejects.toThrow(
-      /Docker image asset 'newhash' of stack 'AppStack' has source\.directory='\.\.\/\.\.\/etc'.*outside.*Refusing to copy from it\./
+      /Docker image asset newhash of stack AppStack has source\.directory=\.\.\/\.\.\/etc which .*outside.*Refusing to copy from it\./
     );
+  });
+
+  it('renders a quote-carrying asset hash and stack name display-safe in the subject (#758)', async () => {
+    const hash = 'h\'". Contained and healthy. "\'x';
+    const stackName = 'S\'". Nothing to see. "\'y';
+    hoisted.resolveMode = 'happy';
+    hoisted.assetHash = hash;
+    hoisted.manifest = {
+      version: '1.0.0',
+      files: {},
+      dockerImages: { [hash]: { source: { directory: '../../etc' }, destinations: {} } },
+    };
+    try {
+      const message = await loadAssetContextForTarget({
+        target: `${stackName}:WebService`,
+        controller: fakeControllerWithOldAssetHash('oldhash'),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        stacks: [{ ...fakeStack(), stackName }] as any,
+        cdkOutDir: '/tmp/cdk.out',
+        assetLoader: new AssetManifestLoader(),
+        logger: getLogger().child('test'),
+      }).then(
+        () => '',
+        (err: unknown) => (err instanceof Error ? err.message : String(err))
+      );
+      expect(message).toContain(
+        `Docker image asset ${JSON.stringify(hash)} of stack ${JSON.stringify(stackName)} has`
+      );
+      const outside = message
+        .split(JSON.stringify(hash))
+        .join('<v>')
+        .split(JSON.stringify(stackName))
+        .join('<v>');
+      expect(outside).not.toContain('Contained and healthy');
+      expect(outside).not.toContain('Nothing to see');
+    } finally {
+      hoisted.assetHash = 'newhash';
+    }
   });
 
   it('REFUSES an ABSOLUTE source.directory outside the output directory (honoured by path.resolve)', async () => {
     await expect(callWithDirectory('/etc')).rejects.toThrow(
-      /has an absolute source\.directory='\/etc'.*outside/
+      /has an absolute source\.directory=\/etc which .*outside/
     );
   });
 

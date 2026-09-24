@@ -3,6 +3,7 @@ import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 
 /**
  * Resolve `ContainerDefinitions[].Secrets[].ValueFrom` references to real
@@ -126,7 +127,7 @@ async function resolveOne(
       return resolveSsm(entry, shape, ssmClient);
     case 'unknown':
       throw new EcsSecretsResolutionError(
-        `Container '${entry.containerName}' secret '${entry.name}' references an unsupported ValueFrom shape '${arn}'. ` +
+        `Container ${displayUntrustedValue(entry.containerName)} secret ${displayUntrustedValue(entry.name)} references an unsupported ValueFrom shape ${displayUntrustedValue(arn)}. ` +
           'Expected Secrets Manager ARN (optionally with :<json-key>::) or SSM Parameter ARN.'
       );
   }

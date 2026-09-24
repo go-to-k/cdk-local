@@ -2,6 +2,7 @@ import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { isFunctionUrlOacFronted } from './cors-handler.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
@@ -543,7 +544,7 @@ function parseCognitoUserPoolArn(
   const m = /^arn:aws[a-z0-9-]*:cognito-idp:([a-z0-9-]+):[0-9]+:userpool\/(.+)$/.exec(arn);
   if (!m) {
     throw new RouteDiscoveryError(
-      `${location}: malformed Cognito User Pool ARN '${arn}'. Expected 'arn:aws:cognito-idp:<region>:<account>:userpool/<id>'.`
+      `${location}: malformed Cognito User Pool ARN ${displayUntrustedValue(arn)}. Expected 'arn:aws:cognito-idp:<region>:<account>:userpool/<id>'.`
     );
   }
   return { region: m[1]!, userPoolId: m[2]! };

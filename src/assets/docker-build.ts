@@ -2,6 +2,7 @@ import type { DockerImageAssetSource } from '../types/assets.js';
 import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../utils/docker-cmd.js';
 import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getEmbedConfig } from '../local/embed-config.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { resolveAssetSourcePath } from './asset-source-path.js';
@@ -118,9 +119,10 @@ export interface BuildDockerImageOptions {
  * to `debug`, where the argv already is. Deduping the LINE must never dedupe
  * the WORK: the spawn happens every time regardless.
  *
- * `sanitizeServiceExceptionMessage` for the same reason `assembly-path.ts`
- * uses it: the value is manifest-chosen, it keeps control characters, and an
- * unsanitized one lets the command forge its own log line. It is applied to
+ * `displayUntrustedValue` for the same reason `assembly-path.ts` uses it: the
+ * value is manifest-chosen, it keeps control characters and quotes, and an
+ * unsanitized one lets the command forge its own log line or close a quote
+ * of ours (go-to-k/cdk-local#758). It is applied to
  * the DISPLAYED command only — the dedupe key is built from the raw argv and
  * cwd, so two commands differing only in control characters stay distinct
  * keys.
@@ -150,7 +152,7 @@ function warnManifestExecutable(cmd: string, executable: readonly string[], cwd:
   if (warnedExecutables.has(key)) {
     logger.debug(
       `source.executable already announced this process: ` +
-        `${sanitizeServiceExceptionMessage(cmd)} (cwd=${cwd})`
+        `${displayUntrustedValue(cmd)} (cwd=${displayUntrustedValue(cwd)})`
     );
     return;
   }
@@ -158,9 +160,9 @@ function warnManifestExecutable(cmd: string, executable: readonly string[], cwd:
   const argCount = executable.length - 1;
   logger.warn(
     `Docker asset source.executable runs a command this asset manifest chose, on ` +
-      `this machine: '${sanitizeServiceExceptionMessage(cmd)}'` +
+      `this machine: ${displayUntrustedValue(cmd)}` +
       (argCount > 0 ? ` (with ${argCount} argument(s); --verbose shows them)` : '') +
-      `. cdk-local runs it, matching the CDK CLI — a pre-synthesized assembly is ` +
+      `. ${getEmbedConfig().productName} runs it, matching the CDK CLI — a pre-synthesized assembly is ` +
       `trusted input. Note that this means running a local command against a ` +
       `pre-synthesized assembly DOES execute code from it, which the ` +
       `CloudFormation template does not show.`
@@ -241,7 +243,7 @@ export async function buildDockerImage(
 
     logger.debug(
       `Building Docker image via executable: ${sanitizeServiceExceptionMessage(source.executable.join(' '))} ` +
-        `(cwd=${sanitizeServiceExceptionMessage(cwd)})`
+        `(cwd=${displayUntrustedValue(cwd)})`
     );
     warnManifestExecutable(cmd, source.executable, cwd);
 

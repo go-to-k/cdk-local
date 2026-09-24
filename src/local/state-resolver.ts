@@ -102,7 +102,8 @@
  * one env var must not abort the whole `cdkl invoke` call.
  */
 
-import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import { describeAwsFailureForWarn } from './credential-error.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import type { ResourceState } from '../types/state.js';
 
 /**
@@ -880,7 +881,7 @@ async function resolveImportValueAsync(
   if (!context.crossStackResolver) {
     return {
       kind: 'unresolved',
-      reason: `Fn::ImportValue '${exportName}': no cross-stack resolver supplied (pass a state-source flag, e.g. --from-cfn-stack, and ensure the producer stack was deployed)`,
+      reason: `Fn::ImportValue ${displayUntrustedValue(exportName)}: no cross-stack resolver supplied (pass a state-source flag, e.g. --from-cfn-stack, and ensure the producer stack was deployed)`,
     };
   }
 
@@ -922,11 +923,12 @@ async function resolveImportValueAsync(
     // the message above the boundary.
     return {
       kind: 'unresolved',
-      // `exportName` is flattened for the same one-call reason every other
-      // wire-derived value on a default-level line is: it is resolved from the
+      // `exportName` goes through `displayUntrustedValue` for the same
+      // one-call reason every other wire-derived value on a default-level
+      // line does: it is resolved from the
       // template (and may itself come through `Fn::Sub` against deployed
       // state), and this `reason` is printed verbatim by three warns.
-      reason: `Fn::ImportValue '${flattenToOneLine(exportName)}': lookup failed: ${describeAwsFailureForWarn(
+      reason: `Fn::ImportValue ${displayUntrustedValue(exportName)}: lookup failed: ${describeAwsFailureForWarn(
         err,
         'CrossStackResolver.resolveImport (Fn::ImportValue)'
       )}`,
@@ -935,7 +937,7 @@ async function resolveImportValueAsync(
   if (resolved === undefined) {
     return {
       kind: 'unresolved',
-      reason: `Fn::ImportValue '${exportName}': export not found in any deployed stack in this region`,
+      reason: `Fn::ImportValue ${displayUntrustedValue(exportName)}: export not found in any deployed stack in this region`,
     };
   }
   return { kind: 'literal', value: resolved };
@@ -1013,21 +1015,21 @@ async function resolveGetStackOutputAsync(
   if (!region) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetStackOutput '${stackName}.${outputName}': no Region supplied and consumer region is unknown (set --region, AWS_REGION, or env.region on the CDK stack)`,
+      reason: `Fn::GetStackOutput ${displayUntrustedValue(stackName)}.${displayUntrustedValue(outputName)}: no Region supplied and consumer region is unknown (set --region, AWS_REGION, or env.region on the CDK stack)`,
     };
   }
 
   if (args['RoleArn'] !== undefined && args['RoleArn'] !== null) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetStackOutput '${stackName}.${outputName}': RoleArn (cross-account) is not yet supported by the state source — tracked under issue #449`,
+      reason: `Fn::GetStackOutput ${displayUntrustedValue(stackName)}.${displayUntrustedValue(outputName)}: RoleArn (cross-account) is not yet supported by the state source — tracked under issue #449`,
     };
   }
 
   if (!context.crossStackResolver) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetStackOutput '${stackName}.${outputName}': no cross-stack resolver supplied (pass a state-source flag, e.g. --from-cfn-stack, and ensure the producer stack was deployed)`,
+      reason: `Fn::GetStackOutput ${displayUntrustedValue(stackName)}.${displayUntrustedValue(outputName)}: no cross-stack resolver supplied (pass a state-source flag, e.g. --from-cfn-stack, and ensure the producer stack was deployed)`,
     };
   }
 
@@ -1046,10 +1048,11 @@ async function resolveGetStackOutputAsync(
     // resolver's throw.
     return {
       kind: 'unresolved',
-      // Same treatment for the three template-derived values here.
-      reason: `Fn::GetStackOutput '${flattenToOneLine(stackName)}.${flattenToOneLine(
+      // Same treatment for the three template-derived values here, each
+      // getting its own boundary when it needs one.
+      reason: `Fn::GetStackOutput ${displayUntrustedValue(stackName)}.${displayUntrustedValue(
         outputName
-      )}' (${flattenToOneLine(region)}): lookup failed: ${describeAwsFailureForWarn(
+      )} (${displayUntrustedValue(region)}): lookup failed: ${describeAwsFailureForWarn(
         err,
         'CrossStackResolver.resolveGetStackOutput (Fn::GetStackOutput)'
       )}`,
@@ -1058,7 +1061,7 @@ async function resolveGetStackOutputAsync(
   if (resolved === undefined) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetStackOutput '${stackName}.${outputName}' (${region}): output not found in producer stack state`,
+      reason: `Fn::GetStackOutput ${displayUntrustedValue(stackName)}.${displayUntrustedValue(outputName)} (${displayUntrustedValue(region)}): output not found in producer stack state`,
     };
   }
   return { kind: 'literal', value: resolved };

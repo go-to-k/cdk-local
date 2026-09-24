@@ -1,11 +1,11 @@
 import { existsSync, readlinkSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import {
   type AssemblyPathEscape,
   absoluteAssemblyPathEscape,
+  displayUntrustedValue,
   namesTheSameDirectory,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
@@ -71,7 +71,11 @@ export interface AssetSourcePathOptions {
   absolute: 'fold' | 'honour' | 'honour-warn';
   /** The manifest field, for the message. */
   field: 'source.path' | 'source.directory';
-  /** Subject clause, already safe to print (e.g. `Docker image asset`). */
+  /**
+   * Subject clause, already safe to print (e.g. `Docker image asset`). An
+   * assembly-chosen value inside it goes through `displayUntrustedValue`, with
+   * no quotes of the caller's own (go-to-k/cdk-local#758).
+   */
   subject: string;
   /** Completes "Refusing to ...". */
   action: string;
@@ -103,14 +107,14 @@ export interface AssetSourcePathOptions {
  */
 export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
   const { manifestDir, value, assetOutdir, field, subject, action, wrapError } = opts;
-  const shownValue = sanitizeServiceExceptionMessage(value);
+  const shownValue = displayUntrustedValue(value);
 
   if (isAbsolute(value) && opts.absolute !== 'fold') {
     const absolute = resolve(value);
     const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
     if (escape !== undefined && opts.absolute === 'honour') {
       throw wrapError(
-        `${subject} has an absolute ${field}='${shownValue}' which ` +
+        `${subject} has an absolute ${field}=${shownValue} which ` +
           renderAssemblyPathEscape(escape, assetOutdir, action)
       );
     }
@@ -123,7 +127,7 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
       const refusal = originScopeRefusal(absolute, assetOutdir);
       if (refusal !== undefined) {
         throw wrapError(
-          `${subject} has an absolute ${field}='${shownValue}' which ${refusal}. ` +
+          `${subject} has an absolute ${field}=${shownValue} which ${refusal}. ` +
             `An absolute ${field} is accepted only as a cdk synth --no-staging source ` +
             `folder: a directory inside your project (the git work tree holding the ` +
             `output directory, or the current directory when it contains the output ` +
@@ -156,7 +160,7 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
     return resolved.path;
   }
   throw wrapError(
-    `${subject} has ${field}='${shownValue}' which ` +
+    `${subject} has ${field}=${shownValue} which ` +
       renderAssemblyPathEscape(resolved, assetOutdir, action)
   );
 }
@@ -222,12 +226,12 @@ function originScopeRefusal(absolute: string, assetOutdir: string): string | und
     return 'is your project root itself; name a folder inside it';
   }
   if (hidden !== undefined) {
-    return `passes through the credential / version-control directory '${sanitizeServiceExceptionMessage(hidden)}' inside your project`;
+    return `passes through the credential / version-control directory ${displayUntrustedValue(hidden)} inside your project`;
   }
-  const shown = projects.map((p) => `'${sanitizeServiceExceptionMessage(p)}'`).join(' or ');
+  const shown = projects.map((p) => displayUntrustedValue(p)).join(' or ');
   return projects.length === 0
     ? 'is outside any usable project root (the current directory and the git work tree are too broad to scope it)'
-    : `resolves to '${sanitizeServiceExceptionMessage(root)}', outside your project (${shown})`;
+    : `resolves to ${displayUntrustedValue(root)}, outside your project (${shown})`;
 }
 
 /**
@@ -338,9 +342,9 @@ function warnAbsoluteOutsideAssembly(
   const logger = getLogger().child('assets');
   const line =
     `${opts.subject} has an absolute ${opts.field} pointing outside the assembly: ` +
-    `'${sanitizeServiceExceptionMessage(absolute)}'` +
+    displayUntrustedValue(absolute) +
     (escape.escape === 'symlink'
-      ? ` (through a symbolic link to '${sanitizeServiceExceptionMessage(escape.realPath)}')`
+      ? ` (through a symbolic link to ${displayUntrustedValue(escape.realPath)})`
       : '') +
     `. ${getEmbedConfig().productName} will ${opts.sink}. ` +
     // The `--no-staging` sentence only where that flag is a plausible cause:
@@ -377,7 +381,7 @@ function warnWholeAssemblyAsSource(opts: AssetSourcePathOptions, outdir: string)
   const logger = getLogger().child('assets');
   const line =
     `${opts.subject} has ${opts.field} naming the assembly's output directory ITSELF: ` +
-    `'${sanitizeServiceExceptionMessage(outdir)}'. ${getEmbedConfig().productName} will ` +
+    `${displayUntrustedValue(outdir)}. ${getEmbedConfig().productName} will ` +
     `${opts.sink} — that is the WHOLE assembly, every template and every staged asset, ` +
     `not one asset directory. No CDK synth emits this, so treat this assembly as ` +
     `untrusted unless you wrote that path yourself.`;

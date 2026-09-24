@@ -25,6 +25,7 @@ import { buildDockerImage } from '../assets/docker-build.js';
 import { sanitizeServiceExceptionMessage } from './credential-error.js';
 import { assetPathDirs } from './lambda-resolver.js';
 import { isImageInLocalCache, pullEcrImage } from './ecr-puller.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
 import {
@@ -1007,7 +1008,7 @@ async function realizeDockerVolumes(
     if (v.kind === 'host') {
       if (v.hostPath && !checkVolumeHostPath(v.hostPath)) {
         logger.warn(
-          `Volume '${v.name}': host path '${v.hostPath}' does not exist or is not a directory. ` +
+          `Volume ${displayUntrustedValue(v.name)}: host path ${displayUntrustedValue(v.hostPath)} does not exist or is not a directory. ` +
             'Docker will create an anonymous bind mount; create the host path before run-task if you expected to bind-mount it.'
         );
       }

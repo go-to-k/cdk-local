@@ -21,9 +21,9 @@ import {
   tryResolveImageFnJoin,
 } from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
-import { sanitizeServiceExceptionMessage } from './credential-error.js';
 import {
   absoluteAssemblyPathEscape,
+  displayUntrustedValue,
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
@@ -819,11 +819,11 @@ export function resolveAssetCodeDirectory(
       // user did NOT expect is visible rather than silent, so it names the
       // directory and says what is done with it.
       getLogger().warn(
-        `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has an absolute ` +
+        `Lambda ${displayUntrustedValue(logicalId)} has an absolute ` +
           `Metadata['aws:asset:path'] pointing outside the assembly: ` +
-          `'${sanitizeServiceExceptionMessage(absolute)}'` +
+          `${displayUntrustedValue(absolute)}` +
           (escape.escape === 'symlink'
-            ? ` (through a symbolic link to '${sanitizeServiceExceptionMessage(escape.realPath)}')`
+            ? ` (through a symbolic link to ${displayUntrustedValue(escape.realPath)})`
             : '') +
           `. ${getEmbedConfig().productName} will read that directory and expose its ` +
           `contents to the container — bind-mounted read-only, or copied when the asset is ` +
@@ -892,8 +892,8 @@ export function resolveAssetCodeDirectory(
           `directory, point it at that output directory.`
         : '';
     throw wrapError(
-      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has ` +
-        `Metadata['aws:asset:path']='${sanitizeServiceExceptionMessage(assetPath)}' which ` +
+      `Lambda ${displayUntrustedValue(logicalId)} has ` +
+        `Metadata['aws:asset:path']=${displayUntrustedValue(assetPath)} which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'mount it')}${stageHint}`
     );
   }
@@ -1189,8 +1189,8 @@ function warnOutsideNamedDirectory(assetOutdir: string, resolved: string): void 
   if (warnedOutsideNamed.has(resolved)) return;
   warnedOutsideNamed.add(resolved);
   getLogger().warn(
-    `'${sanitizeServiceExceptionMessage(resolved)}' is outside ` +
-      `'${sanitizeServiceExceptionMessage(named)}', the directory --app named. It is ` +
+    `${displayUntrustedValue(resolved)} is outside ` +
+      `${displayUntrustedValue(named)}, the directory --app named. It is ` +
       `inside the assembly root derived from it, so ${getEmbedConfig().productName} is ` +
       `using it.`
   );
@@ -1208,9 +1208,9 @@ function warnDerivedAssemblyRoot(named: string, derived: string): void {
   if (warnedDerivedRoots.has(derived)) return;
   warnedDerivedRoots.add(derived);
   getLogger().warn(
-    `'${sanitizeServiceExceptionMessage(named)}' is a cdk.Stage sub-assembly, so ` +
+    `${displayUntrustedValue(named)} is a cdk.Stage sub-assembly, so ` +
       `${getEmbedConfig().productName} is treating its parent ` +
-      `'${sanitizeServiceExceptionMessage(derived)}' as the assembly root — that is ` +
+      `${displayUntrustedValue(derived)} as the assembly root — that is ` +
       `where cdk synth stages a Stage's assets. Everything under that parent is now ` +
       `inside the containment bound, including siblings of the directory you named. ` +
       `If you did not expect the wider directory, point --app at the app's own output ` +
@@ -1243,7 +1243,7 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has no ` +
+      `Lambda ${displayUntrustedValue(logicalId)} has no ` +
         `Metadata['aws:asset:path']. ` +
         `${getEmbedConfig().cliName} invoke needs this hint to find the local asset directory. ` +
         'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
@@ -1260,8 +1260,8 @@ function resolveAssetCodePath(
   );
   if (!existsSync(abs)) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' asset path ` +
-        `'${sanitizeServiceExceptionMessage(abs)}' does not exist. ` +
+      `Lambda ${displayUntrustedValue(logicalId)} asset path ` +
+        `${displayUntrustedValue(abs)} does not exist. ` +
         'Re-synthesize the app and retry.'
     );
   }
@@ -1278,8 +1278,8 @@ function resolveAssetCodePath(
     return abs;
   }
   throw new LocalInvokeResolutionError(
-    `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' asset path ` +
-      `'${sanitizeServiceExceptionMessage(abs)}' is not a directory` +
+    `Lambda ${displayUntrustedValue(logicalId)} asset path ` +
+      `${displayUntrustedValue(abs)} is not a directory` +
       (options.allowZip ? ' or a .zip archive' : '') +
       '. Re-synthesize the app and retry.'
   );
@@ -1327,7 +1327,7 @@ export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode
   // still get an actionable error instead of a raw `ENOENT` from `statSync`.
   if (!existsSync(codePath)) {
     throw new LocalInvokeResolutionError(
-      `Lambda asset path '${sanitizeServiceExceptionMessage(codePath)}' does not exist. ` +
+      `Lambda asset path ${displayUntrustedValue(codePath)} does not exist. ` +
         'Re-synthesize the app and retry.'
     );
   }
@@ -1340,7 +1340,7 @@ export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode
     files = unzipSync(zipBytes);
   } catch (err) {
     throw new LocalInvokeResolutionError(
-      `Lambda asset '${sanitizeServiceExceptionMessage(codePath)}' is a file but could not ` +
+      `Lambda asset ${displayUntrustedValue(codePath)} is a file but could not ` +
         `be read as a ZIP archive: ` +
         `${err instanceof Error ? err.message : String(err)}. Re-synthesize the app and retry.`
     );
