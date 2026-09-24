@@ -78,6 +78,10 @@ type StackInfo = import('../../../src/synthesis/assembly-reader.js').StackInfo;
 const CLAUSE = 'Contained and healthy';
 const FORGE = `x'". ${CLAUSE}. Nothing "'y`;
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** Every JSON string literal in `text`, as `displayUntrustedValue` writes one. */
 const LITERAL = /"(?:[^"\\]|\\.)*"/g;
 
@@ -489,6 +493,24 @@ describe('docker-build failure messages (#764)', () => {
     const line = debugLines.find((l) => l.startsWith('Building Docker image via executable: '));
     expect(line).toBe(`Building Docker image via executable: ${shown} (cwd=/tmp/cdk.out)`);
     expectContained(line!);
+  });
+
+  it("spawnStreaming (the executable's own launch): the no-output exit and the not-found refusal", async () => {
+    // The REAL spawner, which this file otherwise mocks: it is what runs an
+    // asset's `source.executable`, so its own failure text names that value.
+    const { spawnStreaming } = await vi.importActual<
+      typeof import('../../../src/utils/docker-cmd.js')
+    >('../../../src/utils/docker-cmd.js');
+    // `false` ignores its argument and exits 1 with no output, so the message
+    // is the spawner's own template.
+    const exited = await rejected(spawnStreaming('false', [PAREN_FORGE], { streamLive: false }));
+    expect(exited).toBe(`false ${JSON.stringify(PAREN_FORGE)} exited with code 1`);
+    expectContained(exited);
+    const missing = await rejected(spawnStreaming(`./${PAREN_FORGE}`, [], { streamLive: false }));
+    expect(missing).toMatch(
+      new RegExp(`^Failed to find and execute ${escapeRegExp(JSON.stringify(`./${PAREN_FORGE}`))}\\. `)
+    );
+    expectContained(missing);
   });
 
   it('directory mode: the build context in the docker build debug line', async () => {
