@@ -1,6 +1,5 @@
 import type { DockerImageAssetSource } from '../types/assets.js';
 import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../utils/docker-cmd.js';
-import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
@@ -242,7 +241,7 @@ export async function buildDockerImage(
       : cdkOutDir;
 
     logger.debug(
-      `Building Docker image via executable: ${sanitizeServiceExceptionMessage(source.executable.join(' '))} ` +
+      `Building Docker image via executable: ${displayUntrustedValue(source.executable.join(' '))} ` +
         `(cwd=${displayUntrustedValue(cwd)})`
     );
     warnManifestExecutable(cmd, source.executable, cwd);
@@ -257,7 +256,7 @@ export async function buildDockerImage(
     const tag = result.stdout.trim();
     if (!tag) {
       throw options.wrapError(
-        `docker build executable produced no output (expected the local image tag on stdout): ${cmd} ${args.join(' ')}`
+        `docker build executable produced no output (expected the local image tag on stdout): ${displayUntrustedValue(source.executable.join(' '))}`
       );
     }
     return tag;
@@ -293,7 +292,9 @@ export async function buildDockerImage(
   // the read or write it describes. Warn only — see the module.
   warnEscapingBuildKitPaths(source, contextDir, assetOutdir);
 
-  logger.debug(`${getDockerCmd()} ${buildArgs.join(' ')} (cwd=${contextDir})`);
+  logger.debug(
+    `${getDockerCmd()} ${buildArgs.join(' ')} (cwd=${displayUntrustedValue(contextDir)})`
+  );
 
   try {
     await runDockerStreaming(buildArgs, {

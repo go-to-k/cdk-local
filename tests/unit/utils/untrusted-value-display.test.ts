@@ -38,11 +38,14 @@ vi.mock('../../../src/utils/docker-cmd.js', async () => {
   };
 });
 
-const { warnLines } = vi.hoisted(() => ({ warnLines: [] as string[] }));
+const { warnLines, debugLines } = vi.hoisted(() => ({
+  warnLines: [] as string[],
+  debugLines: [] as string[],
+}));
 
 vi.mock('../../../src/utils/logger.js', () => {
   const sink = {
-    debug: vi.fn(),
+    debug: (m: string) => debugLines.push(m),
     info: vi.fn(),
     warn: (m: string) => warnLines.push(m),
     error: vi.fn(),
@@ -60,6 +63,8 @@ const { AssetManifestLoader } = await import('../../../src/assets/asset-manifest
 const { buildDockerImage, resetManifestExecutableWarnings } = await import(
   '../../../src/assets/docker-build.js'
 );
+const { buildContainerImage } = await import('../../../src/local/docker-image-builder.js');
+const { prepareImages } = await import('../../../src/local/ecs-task-runner.js');
 const { resetBuildKitPassthroughWarnings } = await import(
   '../../../src/assets/buildkit-passthrough-warnings.js'
 );
@@ -114,6 +119,8 @@ function forgingRoot(): string {
 
 beforeEach(() => {
   warnLines.length = 0;
+  debugLines.length = 0;
+  mockSpawnStreaming.mockReset();
   mockRunDockerStreaming.mockReset();
   mockRunDockerStreaming.mockResolvedValue({ stdout: '', stderr: '' });
   resetWholeAssemblyWarnings();
@@ -387,6 +394,112 @@ describe('buildkit-passthrough-warnings.ts', () => {
     const line = warnLines.find((l) => l.startsWith('Docker asset dockerBuildSecrets['));
     expect(line).toBeDefined();
     expect(line).toContain(`dockerBuildSecrets[${JSON.stringify(FORGE)}] names a host path`);
+    expectContained(line!);
+  });
+});
+
+/**
+ * go-to-k/cdk-local#764 — the same class with cdk-local's own PARENTHESES as
+ * the boundary. `sanitizeServiceExceptionMessage` passes `)`, so a contained
+ * asset directory named like this closed the `(...)` around it and wrote a
+ * clause of its own into the docker-build failure message.
+ */
+const PAREN_FORGE = `asset.x): ${CLAUSE}. Nothing (y`;
+
+describe('docker-build failure messages (#764)', () => {
+  /** An outdir holding a real, contained asset directory named `dir`. */
+  function outdirWith(dir: string): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-764-')));
+    roots.push(root);
+    const outdir = join(root, 'cdk.out');
+    mkdirSync(join(outdir, dir), { recursive: true });
+    return outdir;
+  }
+
+  async function rejected(p: Promise<unknown>): Promise<string> {
+    return p.then(
+      () => 'resolved',
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    );
+  }
+
+  it('buildContainerImage: the container Lambda asset directory', async () => {
+    const outdir = outdirWith(PAREN_FORGE);
+    mockRunDockerStreaming.mockRejectedValue({ stderr: 'boom' });
+    const message = await rejected(
+      buildContainerImage({ source: { directory: PAREN_FORGE } }, outdir, {
+        architecture: 'x86_64',
+      })
+    );
+    expect(message).toBe(
+      `docker build failed for container Lambda asset (${JSON.stringify(PAREN_FORGE)}): boom`
+    );
+    expectContained(message);
+  });
+
+  it('buildContainerImage: the executable command line', async () => {
+    const outdir = outdirWith('unused');
+    mockSpawnStreaming.mockRejectedValue({ stderr: 'boom' });
+    const message = await rejected(
+      buildContainerImage({ source: { executable: ['./build.sh', PAREN_FORGE] } }, outdir, {
+        architecture: 'x86_64',
+      })
+    );
+    expect(message).toBe(
+      `docker build failed for container Lambda asset (${JSON.stringify(`./build.sh ${PAREN_FORGE}`)}): boom`
+    );
+    expectContained(message);
+  });
+
+  it('prepareImages (run-task / start-service / start-alb): the ECS asset directory', async () => {
+    const outdir = outdirWith(PAREN_FORGE);
+    const assetManifestPath = join(outdir, 'Stk.assets.json');
+    writeFileSync(
+      assetManifestPath,
+      JSON.stringify({
+        version: '1',
+        files: {},
+        dockerImages: { h: { source: { directory: PAREN_FORGE }, destinations: {} } },
+      })
+    );
+    mockRunDockerStreaming.mockRejectedValue({ stderr: 'boom' });
+    const task = {
+      stack: { stackName: 'Stk', assetManifestPath, assetOutdir: outdir },
+      containers: [{ name: 'web', image: { kind: 'cdk-asset', assetHash: 'h' }, essential: true }],
+    } as never;
+    const message = await rejected(prepareImages(task, new Map(), { skipPull: true } as never));
+    expect(message).toBe(
+      `docker build failed for ECS container 'web' (${JSON.stringify(PAREN_FORGE)}): boom`
+    );
+    expectContained(message);
+  });
+
+  it("the executable's debug line and its no-output failure", async () => {
+    mockSpawnStreaming.mockResolvedValue({ stdout: '', stderr: '' });
+    const message = await rejected(
+      buildDockerImage({ source: { executable: ['./build.sh', PAREN_FORGE] } }, '/tmp/cdk.out', {
+        wrapError: (m: string) => new Error(m),
+      })
+    );
+    const shown = JSON.stringify(`./build.sh ${PAREN_FORGE}`);
+    expect(message).toBe(
+      `docker build executable produced no output (expected the local image tag on stdout): ${shown}`
+    );
+    expectContained(message);
+    const line = debugLines.find((l) => l.startsWith('Building Docker image via executable: '));
+    expect(line).toBe(`Building Docker image via executable: ${shown} (cwd=/tmp/cdk.out)`);
+    expectContained(line!);
+  });
+
+  it('directory mode: the build context in the docker build debug line', async () => {
+    const outdir = outdirWith(PAREN_FORGE);
+    await buildDockerImage({ source: { directory: PAREN_FORGE } }, outdir, {
+      tag: 't',
+      wrapError: (m: string) => new Error(m),
+    });
+    const line = debugLines.find((l) => l.includes(' build --tag t '));
+    expect(line).toBeDefined();
+    expect(line!.endsWith(` (cwd=${JSON.stringify(join(outdir, PAREN_FORGE))})`)).toBe(true);
     expectContained(line!);
   });
 });
