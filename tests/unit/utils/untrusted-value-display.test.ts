@@ -206,6 +206,25 @@ describe('asset-source-path.ts sites', () => {
     expectContained(message);
   });
 
+  it('relative refusal through a symlink: the link target in the tail', () => {
+    const root = forgingRoot();
+    const outdir = join(root, 'cdk.out');
+    mkdirSync(outdir);
+    mkdirSync(join(root, 'victim'));
+    symlinkSync(join(root, 'victim'), join(outdir, 'link'));
+    const message = thrown(() =>
+      resolveAssetSourcePath({
+        ...base,
+        manifestDir: outdir,
+        value: 'link',
+        assetOutdir: outdir,
+        absolute: 'fold',
+      })
+    );
+    expect(message).toContain('which leads through a symbolic link to "');
+    expectContained(message);
+  });
+
   it("'honour' absolute refusal", () => {
     const root = forgingRoot();
     const outdir = join(root, 'cdk.out');
