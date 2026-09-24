@@ -1323,11 +1323,13 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
       assetManifestPath: '/tmp/cdk.out/assembly-S/App.assets.json',
       assetOutdir: '/tmp/cdk.out',
     };
+    // `--output` deliberately differs from the stack's assetOutdir, so the
+    // case tells which one is the bound.
     const ctx = await loadAgentCoreAssetContext({
       resolvedTarget: 'App:ChatAgent',
       resolved: runtime('123.dkr.ecr.us-east-1.amazonaws.com/assets:abc123'),
       stacks: [stack] as never,
-      cdkOutDir: '/tmp/cdk.out',
+      cdkOutDir: '/tmp/cdk.out/assembly-S',
       assetLoader: new (class {
         loadManifest = loadManifestMock;
       })() as never,

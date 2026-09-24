@@ -317,6 +317,15 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
         absolute: 'honour',
       })
     ).toThrow(/symbolic link/);
+    // The --no-staging hint belongs to the lexical arm only.
+    expect(() =>
+      resolveIt({
+        manifestDir: outdir,
+        value: join(outdir, 'link'),
+        assetOutdir: outdir,
+        absolute: 'honour',
+      })
+    ).not.toThrow(/no-staging/);
   });
 });
 
@@ -513,6 +522,16 @@ describe('buildDockerImage — BuildKit passthrough warnings (warn, never refuse
     expect(warnLines.some((l) => /cacheFrom\['0'\].*will read/.test(l))).toBe(true);
     expect(warnLines.some((l) => /cacheTo names.*will WRITE to/.test(l))).toBe(true);
     expect(warnLines.some((l) => /dockerOutputs\['0'\].*will WRITE to/.test(l))).toBe(true);
+  });
+
+  it('judges an oci-layout:// build context by the host path behind the scheme', async () => {
+    const { outdir, victim } = layout();
+    await buildDockerImage(
+      { source: { directory: 'asset.abc', dockerBuildContexts: { base: `oci-layout://${victim}` } } },
+      outdir,
+      { tag: 't', wrapError }
+    );
+    expect(warnLines.some((l) => /dockerBuildContexts\['base'\]/.test(l))).toBe(true);
   });
 
   it('judges every --ssh key after the id, and none for the agent-socket form', async () => {

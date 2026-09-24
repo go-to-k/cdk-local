@@ -89,12 +89,17 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
     const absolute = resolve(value);
     const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
     if (escape !== undefined) {
+      // The `--no-staging` hint only where that flag is a plausible cause: a
+      // lexical escape. A symlink escape is not what the flag writes.
+      const hint =
+        escape.escape === 'lexical'
+          ? ` An absolute ${field} outside the assembly is what cdk synth --no-staging ` +
+            `writes; ${getEmbedConfig().productName} uses only assets staged inside the ` +
+            `assembly here, so re-synthesize without it.`
+          : '';
       throw wrapError(
         `${subject} has an absolute ${field}='${shownValue}' which ` +
-          `${renderAssemblyPathEscape(escape, assetOutdir, action)} ` +
-          `(cdk synth --no-staging writes absolute asset paths; ` +
-          `${getEmbedConfig().productName} uses only assets staged inside the assembly here, ` +
-          `so re-synthesize without it.)`
+          `${renderAssemblyPathEscape(escape, assetOutdir, action)}${hint}`
       );
     }
     if (namesTheSameDirectory(assetOutdir, absolute)) {

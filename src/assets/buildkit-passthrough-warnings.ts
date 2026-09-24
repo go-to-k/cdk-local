@@ -97,7 +97,12 @@ function hostPathsOf(source: DockerImageAssetSource): HostPathRef[] {
   // legitimate path may contain a comma.
   for (const [k, v] of Object.entries(source.dockerBuildContexts ?? {})) {
     const rendered = `${k}=${v}`;
-    const contextPath = rendered.slice(rendered.indexOf('=') + 1).trim();
+    // `oci-layout://<path>` names a HOST directory behind a scheme; judged
+    // with the scheme it would fold one level deeper and read as contained.
+    const contextPath = rendered
+      .slice(rendered.indexOf('=') + 1)
+      .trim()
+      .replace(/^oci-layout:\/\//, '');
     if (contextPath.length === 0) continue;
     refs.push({ field: 'dockerBuildContexts', where: k, path: contextPath, write: false });
   }
