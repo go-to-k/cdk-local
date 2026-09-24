@@ -272,6 +272,21 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     expect(debugLines.some((l) => /pointing outside the assembly/.test(l))).toBe(true);
   });
 
+  it("'honour': an accepted absolute value outside the outdir comes back NORMALIZED", () => {
+    // The reader opens what this returns; `<victim>/sub/..` must come back as
+    // `<victim>`, the path the warning named.
+    const { outdir, victim } = layout();
+    mkdirSync(join(victim, 'sub'));
+    expect(
+      resolveIt({
+        manifestDir: outdir,
+        value: `${victim}/sub/..`,
+        assetOutdir: outdir,
+        absolute: 'honour',
+      })
+    ).toBe(victim);
+  });
+
   it("'honour': the warning flattens control characters in the path", () => {
     const { root, outdir } = layout();
     const odd = join(root, 'odd\x1b[2K\rFORGED');
