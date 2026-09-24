@@ -505,6 +505,25 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
         assetOutdir: outdir,
         absolute: 'honour-warn',
       })
+    ).toThrow(/is your project root itself; name a folder inside it/);
+  });
+
+  it("'honour-warn' judges a DANGLING link by its target, not its name", () => {
+    // `project/site -> <outside>/missing`: nothing is served while the target
+    // is missing, but if it appears later it would be served from outside the
+    // project. Judged as the target, it is refused now.
+    const { root, outdir } = layout();
+    mkdirSync(join(root, 'project'));
+    useCwd(join(root, 'project'));
+    const outside = tmp();
+    symlinkSync(join(outside, 'missing'), join(root, 'project', 'site'));
+    expect(() =>
+      resolveIt({
+        manifestDir: outdir,
+        value: join(root, 'project', 'site'),
+        assetOutdir: outdir,
+        absolute: 'honour-warn',
+      })
     ).toThrow(/outside your project/);
   });
 

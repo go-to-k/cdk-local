@@ -270,7 +270,8 @@ export function resolveAssemblyPath(
  * outdir — and they WARN rather than refuse when it leaves the bound, so this
  * returns a verdict rather than throwing. The asset-MANIFEST readers that
  * honour an absolute value take the same verdict: `'honour-warn'` (the
- * start-cloudfront origin) warns the same way, `'honour'` (the soft-reload
+ * start-cloudfront origin) warns when the value is a non-hidden folder inside
+ * the user's project and refuses otherwise, `'honour'` (the soft-reload
  * sources) refuses (#745).
  *
  * It lives HERE so the containment rule has one spelling: it reuses this

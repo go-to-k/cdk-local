@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readlinkSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
@@ -84,7 +84,8 @@ export interface AssetSourcePathOptions {
  * Resolve a manifest-supplied asset path and REFUSE it when it leaves the
  * app's outdir — lexically, or through a symbolic link. The one exception is
  * an ABSOLUTE value under `'honour-warn'`, which is ACCEPTED with a warning
- * unless it names a broad root (see {@link AssetSourcePathOptions.absolute}).
+ * when it is a non-hidden folder inside the user's project, and refused
+ * otherwise (see {@link AssetSourcePathOptions.absolute}).
  *
  * Returns the RESOLVED, normalized absolute path, and callers must use THAT
  * rather than re-joining the raw value. It matters for the kernel: a raw
@@ -157,9 +158,9 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
 
 /**
  * Why an accepted-absolute root is too broad to be a `--no-staging` source, or
- * `undefined`. Compared on REAL paths (a link to `/` or to `$HOME` is the
- * same root), falling back to the lexical spelling when a side does not
- * resolve:
+ * `undefined`. `root` is already a real path ({@link realPath}); the other
+ * sides are resolved the same way, so a link to `/` or to `$HOME` is the same
+ * root:
  *
  * - `/` — the whole filesystem;
  * - the user's home directory (`os.homedir()`) or any ANCESTOR of it
@@ -199,12 +200,17 @@ function originScopeRefusal(absolute: string, assetOutdir: string): string | und
   if (broad !== undefined) return broad;
   const projects = projectRoots(assetOutdir);
   let hidden: string | undefined;
+  let isProjectRoot = false;
   for (const project of projects) {
     const rel = relative(project, root);
+    if (rel === '') isProjectRoot = true;
     if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
     const dotted = rel.split(sep).find((c) => c.startsWith('.'));
     if (dotted === undefined) return undefined;
     hidden = dotted;
+  }
+  if (isProjectRoot) {
+    return 'is your project root itself; name a folder inside it';
   }
   if (hidden !== undefined) {
     return `passes through the hidden directory '${sanitizeServiceExceptionMessage(hidden)}' inside your project`;
@@ -252,16 +258,29 @@ function containsOrIs(outer: string, inner: string): boolean {
  * `realpath(3)` of `p`, or — when `p` does not exist — the real path of its
  * deepest existing ancestor with the rest re-appended, so a not-yet-existing
  * path under a symlinked parent (`/tmp` -> `/private/tmp`) compares in the
- * same spelling as its existing neighbours.
+ * same spelling as its existing neighbours. A DANGLING link component is
+ * followed by hand (`readlink`), so `project/site -> /outside/missing` is
+ * judged as `/outside/missing` — the place a later-created target would be
+ * served from — not as `project/site`.
  */
-function realPath(p: string): string {
+function realPath(p: string, hops = 0): string {
   const abs = resolve(p);
   try {
     return realpathSync.native(abs);
   } catch {
     const parent = dirname(abs);
     if (parent === abs) return abs;
-    return join(realPath(parent), basename(abs));
+    const realParent = realPath(parent, hops);
+    let link: string | undefined;
+    try {
+      link = readlinkSync(abs);
+    } catch {
+      link = undefined;
+    }
+    // The hop cap mirrors the OS's own `ELOOP` limit; past it the path cannot
+    // be opened anyway.
+    if (link !== undefined && hops < 40) return realPath(resolve(realParent, link), hops + 1);
+    return join(realParent, basename(abs));
   }
 }
 

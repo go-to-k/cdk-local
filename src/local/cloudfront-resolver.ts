@@ -624,10 +624,11 @@ export function resolveBucketDeploymentDirs(
       // escaping `source.path` published host files over HTTP. The join is
       // `path.resolve`, which honours an absolute value: a RELATIVE escape is
       // refused, while an absolute value outside the app's outdir (the
-      // `cdk synth --no-staging` shape) is served with a warning naming it —
-      // unless it is `/`, the home directory or an ancestor of the outdir,
-      // which no such source is. Each FILE served must also resolve inside the
-      // directory returned here (`realPathInsideRoot`, go-to-k/cdk-local#745).
+      // `cdk synth --no-staging` shape) is served with a warning naming it only
+      // when it is a non-hidden folder inside the user's project (the cwd or
+      // the git work tree), and refused otherwise. Each FILE served must also
+      // resolve inside the directory returned here (`realPathInsideRoot`,
+      // go-to-k/cdk-local#745).
       dirs.push(
         resolveAssetSourcePath({
           manifestDir,
