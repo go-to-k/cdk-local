@@ -622,9 +622,11 @@ export function resolveBucketDeploymentDirs(
       if (!asset) continue;
       // The directory `start-cloudfront` SERVES as this origin's content, so an
       // escaping `source.path` published host files over HTTP. The join is
-      // `path.resolve`, which honours an absolute value, so one is judged as
-      // the absolute path it is and refused outside the app's outdir — the
-      // same containment as a relative escape (go-to-k/cdk-local#745).
+      // `path.resolve`, which honours an absolute value: a RELATIVE escape is
+      // refused, while an absolute value outside the app's outdir (the
+      // `cdk synth --no-staging` shape) is served with a warning naming it.
+      // Either way each FILE served must resolve inside the directory returned
+      // here (`realPathInsideRoot`, go-to-k/cdk-local#745).
       dirs.push(
         resolveAssetSourcePath({
           manifestDir,

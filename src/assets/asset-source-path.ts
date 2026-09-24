@@ -2,6 +2,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import {
+  type AssemblyPathEscape,
   absoluteAssemblyPathEscape,
   namesTheSameDirectory,
   renderAssemblyPathEscape,
@@ -48,9 +49,12 @@ export interface AssetSourcePathOptions {
    *   `buildDockerImage` (string concatenation) and the AgentCore code
    *   bundle's `getAssetSourcePath` (`path.join`) are these.
    * - `'honour'` — the sink `path.resolve`s, so an absolute value is used as
-   *   written. It is judged as the absolute path it is and REFUSED outside the
-   *   bound, not warned about: the start-cloudfront S3 origin and the `--watch`
-   *   soft-reload source are these.
+   *   written. It is judged as the absolute path it is and, outside the bound
+   *   (lexically or through a symlink), ACCEPTED WITH A WARNING naming it:
+   *   `cdk synth --no-staging` writes exactly this shape, so refusing it
+   *   rejects a documented CDK flag's output — the same decision as
+   *   `Metadata['aws:asset:path']` (#744). The start-cloudfront S3 origin and
+   *   the `--watch` soft-reload source of a container image are these.
    */
   absolute: 'fold' | 'honour';
   /** The manifest field, for the message. */
@@ -89,18 +93,13 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
     const absolute = resolve(value);
     const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
     if (escape !== undefined) {
-      // The `--no-staging` hint only where that flag is a plausible cause: a
-      // lexical escape. A symlink escape is not what the flag writes.
-      const hint =
-        escape.escape === 'lexical'
-          ? ` An absolute ${field} outside the assembly is what cdk synth --no-staging ` +
-            `writes; ${getEmbedConfig().productName} uses only assets staged inside the ` +
-            `assembly here, so re-synthesize without it.`
-          : '';
-      throw wrapError(
-        `${subject} has an absolute ${field}='${shownValue}' which ` +
-          `${renderAssemblyPathEscape(escape, assetOutdir, action)}${hint}`
-      );
+      // ACCEPTED, and WARNED — never refused (maintainer decision on #755's
+      // follow-up). The one producer of this shape is `cdk synth --no-staging`,
+      // so a refusal rejects a documented CDK flag's output. The warning is the
+      // whole signal: it names the directory so one the user did not expect is
+      // visible. Relative escapes stay refused below — no CDK synth writes one.
+      warnAbsoluteOutsideAssembly(opts, absolute, escape);
+      return absolute;
     }
     if (namesTheSameDirectory(assetOutdir, absolute)) {
       warnWholeAssemblyAsSource(opts, absolute);
@@ -130,6 +129,35 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
 }
 
 /**
+ * Absolute-outside lines already printed this process (deduped for the same
+ * reason as {@link warnedWholeAssembly}).
+ */
+const warnedAbsoluteOutside = new Set<string>();
+
+function warnAbsoluteOutsideAssembly(
+  opts: AssetSourcePathOptions,
+  absolute: string,
+  escape: AssemblyPathEscape
+): void {
+  const logger = getLogger().child('assets');
+  const line =
+    `${opts.subject} has an absolute ${opts.field} pointing outside the assembly: ` +
+    `'${sanitizeServiceExceptionMessage(absolute)}'` +
+    (escape.escape === 'symlink'
+      ? ` (through a symbolic link to '${sanitizeServiceExceptionMessage(escape.realPath)}')`
+      : '') +
+    `. ${getEmbedConfig().productName} will ${opts.sink}. This is what cdk synth ` +
+    `--no-staging emits, and is expected for it; if you did not synthesize with that ` +
+    `flag, treat this assembly as untrusted.`;
+  if (warnedAbsoluteOutside.has(line)) {
+    logger.debug(line);
+    return;
+  }
+  warnedAbsoluteOutside.add(line);
+  logger.warn(line);
+}
+
+/**
  * Whole-assembly lines already printed this process. A `start-service` with
  * `DesiredCount: 3` builds per replica and again per crash-loop restart, so an
  * undeduped line is a storm, and a storm is not read. Repeats drop to debug;
@@ -140,6 +168,7 @@ const warnedWholeAssembly = new Set<string>();
 /** Test seam; a process serves one assembly, so the set is per invocation. */
 export function resetWholeAssemblyWarnings(): void {
   warnedWholeAssembly.clear();
+  warnedAbsoluteOutside.clear();
 }
 
 function warnWholeAssemblyAsSource(opts: AssetSourcePathOptions, outdir: string): void {

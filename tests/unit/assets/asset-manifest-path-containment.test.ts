@@ -256,11 +256,36 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     ).toThrow(/outside/);
   });
 
-  it("'honour': an absolute value outside the outdir is REFUSED, naming --no-staging", () => {
+  it("'honour': an absolute value outside the outdir is ACCEPTED with a --no-staging warning, once", () => {
+    // Maintainer decision (#755 follow-up): `cdk synth --no-staging` writes
+    // this shape, so it is accepted and the warning names it.
     const { outdir, victim } = layout();
+    for (let i = 0; i < 2; i++) {
+      expect(
+        resolveIt({ manifestDir: outdir, value: victim, assetOutdir: outdir, absolute: 'honour' })
+      ).toBe(victim);
+    }
+    const lines = warnLines.filter((l) => /pointing outside the assembly/.test(l));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(`'${victim}'`);
+    expect(lines[0]).toMatch(/cdk synth --no-staging/);
+    expect(debugLines.some((l) => /pointing outside the assembly/.test(l))).toBe(true);
+  });
+
+  it("'honour': the warning flattens control characters in the path", () => {
+    const { root, outdir } = layout();
+    const odd = join(root, 'odd\x1b[2K\rFORGED');
+    mkdirSync(odd);
+    resolveIt({ manifestDir: outdir, value: odd, assetOutdir: outdir, absolute: 'honour' });
+    const line = warnLines.find((l) => /pointing outside the assembly/.test(l))!;
+    expect(line).not.toMatch(/[\x1b\r]/);
+  });
+
+  it("'honour': a RELATIVE escape is still REFUSED (only the absolute shape is accepted)", () => {
+    const { outdir } = layout();
     expect(() =>
-      resolveIt({ manifestDir: outdir, value: victim, assetOutdir: outdir, absolute: 'honour' })
-    ).toThrow(/has an absolute source\.directory=.*outside.*Refusing to build it\..*--no-staging/);
+      resolveIt({ manifestDir: outdir, value: '../victim', assetOutdir: outdir, absolute: 'honour' })
+    ).toThrow(/outside.*Refusing to build it/);
   });
 
   it("'honour': an absolute value inside the outdir is used as written", () => {
@@ -306,26 +331,27 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     expect(warnLines.some((l) => /ITSELF/.test(l))).toBe(true);
   });
 
-  it("'honour': an absolute value through a symlink out of the outdir is REFUSED", () => {
+  it("'honour': an absolute value through a symlink out of the outdir is ACCEPTED, the warning naming the link target", () => {
+    const { outdir, victim } = layout();
+    symlinkSync(victim, join(outdir, 'link'));
+    expect(
+      resolveIt({
+        manifestDir: outdir,
+        value: join(outdir, 'link'),
+        assetOutdir: outdir,
+        absolute: 'honour',
+      })
+    ).toBe(join(outdir, 'link'));
+    const line = warnLines.find((l) => /pointing outside the assembly/.test(l))!;
+    expect(line).toContain(`through a symbolic link to '${victim}'`);
+  });
+
+  it("'honour': a RELATIVE value leaving through a symlink is still REFUSED", () => {
     const { outdir, victim } = layout();
     symlinkSync(victim, join(outdir, 'link'));
     expect(() =>
-      resolveIt({
-        manifestDir: outdir,
-        value: join(outdir, 'link'),
-        assetOutdir: outdir,
-        absolute: 'honour',
-      })
+      resolveIt({ manifestDir: outdir, value: 'link', assetOutdir: outdir, absolute: 'honour' })
     ).toThrow(/symbolic link/);
-    // The --no-staging hint belongs to the lexical arm only.
-    expect(() =>
-      resolveIt({
-        manifestDir: outdir,
-        value: join(outdir, 'link'),
-        assetOutdir: outdir,
-        absolute: 'honour',
-      })
-    ).not.toThrow(/no-staging/);
   });
 });
 

@@ -573,10 +573,9 @@ describe('loadAssetContextForTarget — soft-reload source containment (#745)', 
     );
   });
 
-  it('REFUSES an ABSOLUTE source.directory outside the output directory (honoured by path.resolve)', async () => {
-    await expect(callWithDirectory('/etc')).rejects.toThrow(
-      /has an absolute source\.directory='\/etc'.*outside/
-    );
+  it('ACCEPTS an ABSOLUTE source.directory outside the output directory (the --no-staging shape)', async () => {
+    const ctx = (await callWithDirectory('/etc')) as { newAssetSourceDir: string };
+    expect(ctx.newAssetSourceDir).toBe('/etc');
   });
 
   it('honours an absolute source.directory inside the output directory', async () => {

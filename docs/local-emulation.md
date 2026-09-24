@@ -510,16 +510,22 @@ directories it names are held to the same bound as `Metadata['aws:asset:path']`
 
 The rules:
 
-- A value that leaves the output directory — through `..`, or through a
-  symbolic link — is REFUSED before anything reads it. So is a stack name that
-  would carry `<stack>.assets.json` out of it. No `cdk synth` writes either.
+- A RELATIVE value that leaves the output directory — through `..`, or
+  through a symbolic link — is REFUSED before anything reads it. So is a stack
+  name that would carry `<stack>.assets.json` out of it. No `cdk synth` writes
+  either.
 - An ABSOLUTE value is judged the way each reader uses it. A Docker build
   context and an AgentCore code bundle (at boot and on a soft reload) place it
   UNDER the manifest's directory, as they always have. The `start-cloudfront`
   S3 origin and the `--watch` soft-reload source of a container image use it
-  as written, so there an absolute value outside the output directory is
-  REFUSED — including the absolute paths `cdk synth --no-staging` writes.
-  Re-synthesize without that flag for those commands.
+  as written: there an absolute value outside the output directory is
+  ACCEPTED, and a WARNING names it — including when it gets there through a
+  symbolic link. `cdk synth --no-staging` writes exactly this shape (the
+  asset's absolute source directory), so refusing it would reject the output
+  of a documented CDK flag; if you did not synthesize with `--no-staging`,
+  treat that assembly as untrusted. A `start-cloudfront` origin accepted this
+  way is still served only from inside THAT directory — a symbolic link in it
+  pointing elsewhere is not served.
 - A value naming the output directory ITSELF is accepted with a warning, since
   it hands the whole assembly — every template and every staged asset — to the
   reader.

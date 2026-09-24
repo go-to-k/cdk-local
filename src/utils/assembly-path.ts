@@ -270,7 +270,7 @@ export function resolveAssemblyPath(
  * outdir — and they WARN rather than refuse when it leaves the bound, so this
  * returns a verdict rather than throwing. The asset-MANIFEST readers that
  * honour an absolute value (`resolveAssetSourcePath`'s `'honour'` mode) take
- * the same verdict and REFUSE on it instead (#745).
+ * the same verdict and warn the same way (#745).
  *
  * It lives HERE so the containment rule has one spelling: it reuses this
  * module's own {@link isInside} and {@link resolveThroughLinks}, symlink arm

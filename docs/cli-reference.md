@@ -439,10 +439,10 @@ wherever cdk-local reads one — a Docker build context, a `source.executable`
 working directory, a `start-cloudfront` `BucketDeployment` source, an AgentCore
 `fromCodeAsset` bundle, a `--watch` soft-reload source. A value leaving the
 output directory through `..` or a symbolic link is REFUSED; an ABSOLUTE value
-is refused where the reader would use it as written (the `start-cloudfront` S3
-origin and a container image's soft-reload source — including what
-`cdk synth --no-staging` writes); BuildKit options pointing outside the assembly are forwarded with a
-warning. Full rules:
+outside it is ACCEPTED with a warning where the reader uses it as written (the
+`start-cloudfront` S3 origin and a container image's soft-reload source — the
+shape `cdk synth --no-staging` writes); BuildKit options pointing outside the
+assembly are forwarded with a warning. Full rules:
 [local-emulation.md](local-emulation.md#asset-manifest-paths).
 
 ### Lambda Layers
