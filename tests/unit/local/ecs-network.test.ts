@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 // Mock the docker boundary (node:child_process execFile) so we can assert
 // the sweep's `docker network ls` / `inspect` / `rm` choreography without
@@ -29,9 +29,11 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
-const { sweepOrphanedSvcNetworks, createSharedSvcNetwork } = await import(
+const { sweepOrphanedSvcNetworks, createSharedSvcNetwork, createTaskNetwork } = await import(
   '../../../src/local/ecs-network.js'
 );
+const { resetFinchArgvWarningsForTest } = await import('../../../src/utils/docker-cmd.js');
+const { getLogger } = await import('../../../src/utils/logger.js');
 
 /** Classify a captured execFile call by its docker sub-command shape. */
 function kindOf(args: string[] | undefined): string {
@@ -218,5 +220,57 @@ describe('createSharedSvcNetwork sweep ordering', () => {
     expect(createIdx).toBeGreaterThanOrEqual(0);
     // Leaked network reclaimed before the fixed-subnet create.
     expect(rmIdx).toBeLessThan(createIdx);
+  });
+});
+
+// Issue #749: under finch on macOS / Windows the sidecar's value-less
+// credential flags reach the limactl argv as `-e KEY=<value>`. The sidecar is
+// still started (credentials are warned about, not refused).
+describe('createTaskNetwork under finch on macOS (issue #749)', () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  let savedDocker: string | undefined;
+
+  beforeEach(() => {
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((_cmd: string, args: string[]) =>
+      kindOf(args) === 'sidecar-run' ? 'sidecar-container-id\n' : ''
+    );
+    savedDocker = process.env['CDK_DOCKER'];
+    resetFinchArgvWarningsForTest();
+    Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', platformDescriptor);
+    if (savedDocker === undefined) delete process.env['CDK_DOCKER'];
+    else process.env['CDK_DOCKER'] = savedDocker;
+    vi.restoreAllMocks();
+  });
+
+  const credentials = {
+    accessKeyId: 'AKIAFAKEKEYID',
+    secretAccessKey: 'super-secret-value-xyz',
+    sessionToken: 'session-token-abc',
+  };
+
+  it('starts the sidecar and warns naming the credential keys, not their values', async () => {
+    process.env['CDK_DOCKER'] = 'finch';
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    await createTaskNetwork({ prefix: 'cdkl', credentials, skipPull: true });
+    expect(execFileMock.mock.calls.some((c) => kindOf(c[1] as string[]) === 'sidecar-run')).toBe(
+      true
+    );
+    const msg = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toContain('CDK_DOCKER=finch on macOS / Windows puts the values of');
+    expect(msg).toContain('AWS_SECRET_ACCESS_KEY');
+    expect(msg).not.toContain('CLUSTER');
+    for (const v of Object.values(credentials)) expect(msg).not.toContain(v);
+  });
+
+  it('does not warn under docker', async () => {
+    process.env['CDK_DOCKER'] = 'docker';
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    await createTaskNetwork({ prefix: 'cdkl', credentials, skipPull: true });
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('CDK_DOCKER=finch');
   });
 });

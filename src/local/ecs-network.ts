@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
-import { getDockerCmd } from '../utils/docker-cmd.js';
+import { getDockerCmd, warnFinchArgvExposure } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import {
   DockerRunnerError,
@@ -339,6 +339,8 @@ async function createNetworkAndSidecar(args: {
   // CLUSTER (non-secret) keeps the inline `-e KEY=VALUE` form.
   const sidecarPassthroughEnv = appendEnvFlags(sidecarArgs, sidecarEnv, SENSITIVE_ENV_KEYS);
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);
+  // Under finch's Lima VM these credential values reach the limactl argv (#749).
+  warnFinchArgvExposure(Object.keys(sidecarPassthroughEnv));
 
   logger.info(`Starting ECS local-container-endpoints sidecar at ${sidecarIp}...`);
   try {

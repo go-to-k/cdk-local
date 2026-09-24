@@ -1,7 +1,13 @@
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
-import { getDockerCmd, runDockerForeground, runDockerStreaming } from '../utils/docker-cmd.js';
+import {
+  finchSecretArgvRefusal,
+  getDockerCmd,
+  runDockerForeground,
+  runDockerStreaming,
+  warnFinchArgvExposure,
+} from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -315,6 +321,17 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
 
   const logger = getLogger().child('docker');
   logger.debug(`${getDockerCmd()} ${redactAwsCredentialsInArgs(args).join(' ')}`);
+
+  // Under finch's Lima VM the value-less `-e KEY` flags do not keep the value
+  // off argv (#749): refuse a caller-marked secret unless the operator opted
+  // in, and warn about the rest (the AWS credential set).
+  const forwardedKeys = Object.keys(passthroughEnv);
+  const refusal = finchSecretArgvRefusal(
+    forwardedKeys.filter((k) => opts.sensitiveEnvKeys?.has(k)),
+    `Container for image ${opts.image}`
+  );
+  if (refusal !== undefined) throw new DockerRunnerError(refusal);
+  warnFinchArgvExposure(forwardedKeys);
 
   try {
     const { stdout } = await execFileAsync(getDockerCmd(), args, {
