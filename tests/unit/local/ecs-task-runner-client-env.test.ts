@@ -117,6 +117,7 @@ function dockerRunCalls(): string[][] {
 describe('runEcsTask docker-client key refusal (issue #772)', () => {
   const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
   let savedDocker: string | undefined;
+  let savedOptIn: string | undefined;
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -132,6 +133,9 @@ describe('runEcsTask docker-client key refusal (issue #772)', () => {
     stubs.createTaskNetwork.mockResolvedValue(network);
     savedDocker = process.env['CDK_DOCKER'];
     delete process.env['CDK_DOCKER'];
+    // The finch cases must not pass because the operator opted in.
+    savedOptIn = process.env['CDKL_ALLOW_SECRETS_ON_ARGV'];
+    delete process.env['CDKL_ALLOW_SECRETS_ON_ARGV'];
     resetFinchArgvWarningsForTest();
     warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
   });
@@ -140,6 +144,8 @@ describe('runEcsTask docker-client key refusal (issue #772)', () => {
     Object.defineProperty(process, 'platform', platformDescriptor);
     if (savedDocker === undefined) delete process.env['CDK_DOCKER'];
     else process.env['CDK_DOCKER'] = savedDocker;
+    if (savedOptIn === undefined) delete process.env['CDKL_ALLOW_SECRETS_ON_ARGV'];
+    else process.env['CDKL_ALLOW_SECRETS_ON_ARGV'] = savedOptIn;
     vi.restoreAllMocks();
   });
 
@@ -197,7 +203,6 @@ describe('runEcsTask docker-client key refusal (issue #772)', () => {
 
   it('control under finch: an ordinary secret is still refused', async () => {
     process.env['CDK_DOCKER'] = 'finch';
-    delete process.env['CDKL_ALLOW_SECRETS_ON_ARGV'];
     Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });
     const task = makeTask([makeContainer({ secrets: [dbSecret] })]);
     const err = await runEcsTask(task, runnableOptions(task), createEcsRunState()).catch(

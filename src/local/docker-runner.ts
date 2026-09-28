@@ -535,10 +535,11 @@ export function describeRefusedSensitiveEnvKeys(subject: string, keys: readonly 
 /**
  * Build the `env` option for an `execFile` / `spawn` call that runs a
  * `docker run` whose args include passed-through sensitive keys (from
- * {@link appendEnvFlags}). Returns `{ env: {...process.env, ...passthrough} }`
- * so docker inherits the normal environment PLUS the sensitive values it
- * must resolve, or `{}` when there is nothing to pass through (preserving
- * the default inherited-environment behavior).
+ * {@link appendEnvFlags}). Returns `{ env }`: a copy of `process.env` with the
+ * accepted passthrough keys written onto it as own keys, so docker inherits
+ * the normal environment PLUS the sensitive values it must resolve. Returns
+ * `{}` when no key is left to pass through (preserving the default
+ * inherited-environment behavior).
  *
  * The client's own variables stay authoritative: a passthrough key that names
  * one ({@link isDockerClientEnvKey}) or is malformed ({@link isMalformedEnvKey})
