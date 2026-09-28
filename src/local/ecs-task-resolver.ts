@@ -19,6 +19,7 @@ import {
 } from './state-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { parseEcrRegistryHost } from './ecr-uri.js';
+import { defineOwnKey } from '../utils/own-keys.js';
 
 /**
  * Result of resolving a `cdkl run-task <target>` argument back to a
@@ -787,7 +788,9 @@ function parseContainerDefinition(
       const value = e['Value'];
       if (!key) continue;
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-        environment[key] = String(value);
+        // Own-key writes: an env var named `__proto__` must not be
+        // dropped by Object.prototype's setter (issue #769).
+        defineOwnKey(environment, key, String(value));
         continue;
       }
       // Intrinsic-valued entry. With `--from-state` we try to substitute
@@ -797,7 +800,7 @@ function parseContainerDefinition(
       if (subContext) {
         const { result: sub, consumedSensitive } = resolveWithSensitivity(value, subContext);
         if (sub.kind === 'literal') {
-          environment[key] = String(sub.value);
+          defineOwnKey(environment, key, String(sub.value));
           // SecureString-backed value — keep it off the `docker run` argv (#99).
           if (consumedSensitive) sensitiveEnvKeys.push(key);
           continue;
@@ -1569,7 +1572,8 @@ export async function applyCrossStackResolverToTask(
         if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
           continue;
         }
-        if (key in container.environment) continue;
+        // `Object.hasOwn`, not `in`: `'__proto__' in {}` is true (#769).
+        if (Object.hasOwn(container.environment, key)) continue;
         if (!isCrossStackIntrinsic(value)) {
           // The sync pass already tried this — re-trying here can't
           // produce a different outcome.
@@ -1580,7 +1584,7 @@ export async function applyCrossStackResolverToTask(
           context
         );
         if (sub.kind === 'literal') {
-          container.environment[key] = String(sub.value);
+          defineOwnKey(container.environment, key, String(sub.value));
           resolvedEnvKeys.add(key);
           // SecureString-backed value — keep it off the `docker run` argv (#99).
           if (consumedSensitive && !container.sensitiveEnvKeys.includes(key)) {

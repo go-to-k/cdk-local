@@ -10,6 +10,7 @@ import {
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
+import { defineOwnKey } from '../utils/own-keys.js';
 import {
   DockerRunnerError,
   pullImage,
@@ -1420,8 +1421,11 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     finalEnv['AWS_SHARED_CREDENTIALS_FILE'] = opts.profileCredentialsFile.containerPath;
     finalEnv['AWS_PROFILE'] = opts.profileCredentialsFile.profileName;
   }
-  Object.assign(finalEnv, container.environment);
-  for (const s of secrets) finalEnv[s.name] = s.value;
+  // Own-key copies, not `Object.assign` / assignment: both go through
+  // [[Set]], so an env var or secret literally named `__proto__` would hit
+  // Object.prototype's setter and never reach the container (issue #769).
+  for (const [k, v] of Object.entries(container.environment)) defineOwnKey(finalEnv, k, v);
+  for (const s of secrets) defineOwnKey(finalEnv, s.name, s.value);
 
   const overrides = opts.envOverrides;
   if (overrides) {

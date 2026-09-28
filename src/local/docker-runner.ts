@@ -9,6 +9,7 @@ import {
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
+import { defineOwnKey } from '../utils/own-keys.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -477,7 +478,9 @@ export function appendEnvFlags(
   for (const [k, v] of Object.entries(env)) {
     if (sensitiveKeys.has(k)) {
       args.push('-e', k);
-      passthrough[k] = v;
+      // Own-key write so a secret named `__proto__` reaches docker's process
+      // env instead of being dropped by Object.prototype's setter (#769).
+      defineOwnKey(passthrough, k, v);
     } else {
       args.push('-e', `${k}=${v}`);
     }

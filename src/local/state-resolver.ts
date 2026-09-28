@@ -105,6 +105,7 @@
 import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import type { ResourceState } from '../types/state.js';
+import { defineOwnKey } from '../utils/own-keys.js';
 
 /**
  * Result of substituting a single env-var value against state.
@@ -1124,13 +1125,13 @@ export function substituteEnvVarsFromState(
     // Cheap fast path for already-literal values: no substitution
     // attempted, no audit entry — env-resolver will simply keep them.
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      env[key] = value;
+      defineOwnKey(env, key, value);
       continue;
     }
 
     const { result, consumedSensitive } = resolveWithSensitivity(value, context);
     if (result.kind === 'literal') {
-      env[key] = result.value;
+      defineOwnKey(env, key, result.value);
       audit.resolvedKeys.push(key);
       if (consumedSensitive) audit.sensitiveKeys.push(key);
     } else {
@@ -1222,13 +1223,13 @@ export async function substituteEnvVarsFromStateAsync(
 
   for (const [key, value] of Object.entries(templateEnv)) {
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-      env[key] = value;
+      defineOwnKey(env, key, value);
       continue;
     }
 
     const { result, consumedSensitive } = await resolveWithSensitivityAsync(value, context);
     if (result.kind === 'literal') {
-      env[key] = result.value;
+      defineOwnKey(env, key, result.value);
       audit.resolvedKeys.push(key);
       if (consumedSensitive) audit.sensitiveKeys.push(key);
     } else {
@@ -1276,9 +1277,12 @@ export function applyDeployedEnvFallback(
   const filled: string[] = [];
   const stillUnresolved: Array<{ key: string; reason: string }> = [];
   for (const item of unresolved) {
-    const deployedValue = deployedEnv[item.key];
+    // Own-key read + write: an env var literally named `__proto__` must
+    // neither read the inherited accessor off `deployedEnv` nor hit the
+    // setter on `env` (issue #769).
+    const deployedValue = Object.hasOwn(deployedEnv, item.key) ? deployedEnv[item.key] : undefined;
     if (deployedValue !== undefined) {
-      env[item.key] = deployedValue;
+      defineOwnKey(env, item.key, deployedValue);
       filled.push(item.key);
     } else {
       stillUnresolved.push({ key: item.key, reason: item.reason });

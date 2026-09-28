@@ -161,3 +161,62 @@ describe('runDetached sensitive-env wiring', () => {
     expect(options.env).toBeUndefined();
   });
 });
+
+// Issue #769: an env var literally named `__proto__` must reach docker. The
+// env map arrives from `resolveEnvVars` with `__proto__` as an OWN key; a
+// non-sensitive value goes inline, and a sensitive one must go through the
+// spawned process env (value-less `-e __proto__`), never argv.
+describe('runDetached __proto__ env var (issue #769)', () => {
+  beforeEach(() => execFileMock.mockReset());
+
+  function envWithProto(value: string): Record<string, string> {
+    // Same shape the Lambda paths build: fixed keys, then the resolved map
+    // spread in (a spread copies an own `__proto__` as an own key).
+    const resolved = JSON.parse(`{"__proto__":${JSON.stringify(value)}}`) as Record<
+      string,
+      string
+    >;
+    return { AWS_LAMBDA_FUNCTION_NAME: 'MyFn', ...resolved };
+  }
+
+  it('emits a non-sensitive __proto__ inline', async () => {
+    await runDetached({
+      image: 'public.ecr.aws/lambda/nodejs:20',
+      mounts: [],
+      env: envWithProto('plain-value'),
+      cmd: ['index.handler'],
+      hostPort: 9201,
+    });
+    const [, args, options] = execFileMock.mock.calls[0] as [
+      string,
+      string[],
+      { env?: NodeJS.ProcessEnv },
+    ];
+    expect(args).toContain('__proto__=plain-value');
+    expect(options.env).toBeUndefined();
+  });
+
+  it('routes a sensitive __proto__ through the process env, never argv', async () => {
+    await runDetached({
+      image: 'public.ecr.aws/lambda/nodejs:20',
+      mounts: [],
+      env: envWithProto('s3cr3t-proto-value'),
+      sensitiveEnvKeys: new Set(['__proto__']),
+      cmd: ['index.handler'],
+      hostPort: 9202,
+    });
+    const [, args, options] = execFileMock.mock.calls[0] as [
+      string,
+      string[],
+      { env?: NodeJS.ProcessEnv },
+    ];
+    expect(args.join(' ')).not.toContain('s3cr3t-proto-value');
+    const i = args.indexOf('__proto__');
+    expect(i).toBeGreaterThan(0);
+    expect(args[i - 1]).toBe('-e');
+    expect(options.env).toBeDefined();
+    expect(Object.hasOwn(options.env!, '__proto__')).toBe(true);
+    expect(options.env!['__proto__']).toBe('s3cr3t-proto-value');
+    expect(Object.getPrototypeOf(options.env)).toBe(Object.prototype);
+  });
+});

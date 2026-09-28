@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   substituteAgainstState,
   substituteEnvVarsFromState,
+  substituteEnvVarsFromStateAsync,
   type SubstitutionContext,
 } from '../../../src/local/state-resolver.js';
 
@@ -136,5 +137,65 @@ describe('state-resolver: SubstitutionContext.sensitiveParameters (issue #99)', 
     // Both composed values embed the decrypted secret, so both keys are
     // flagged even though the Ref is nested.
     expect(audit.sensitiveKeys.sort()).toEqual(['JOINED', 'SUBBED']);
+  });
+});
+
+// Issue #769: the pre-substituted env map feeds `resolveEnvVars`, so an env
+// var literally named `__proto__` must survive here as an OWN key, whether it
+// is a literal, a state-substituted value, or a value that consumed a
+// sensitive (SecureString) parameter.
+describe('substituteEnvVarsFromState own-key writes (issue #769)', () => {
+  const context: SubstitutionContext = {
+    resources: {},
+    parameters: { Secret: 's3cr3t', Plain: 'ok' },
+    sensitiveParameters: new Set(['Secret']),
+  };
+
+  it('keeps a literal __proto__ entry as an own key (sync + async)', async () => {
+    const templateEnv = JSON.parse('{"__proto__":"lit","A":"a"}') as Record<string, unknown>;
+    for (const { env } of [
+      substituteEnvVarsFromState(templateEnv, context),
+      await substituteEnvVarsFromStateAsync(templateEnv, context),
+    ]) {
+      expect(Object.hasOwn(env, '__proto__')).toBe(true);
+      expect(env['__proto__']).toBe('lit');
+      expect(Object.getPrototypeOf(env)).toBe(Object.prototype);
+    }
+  });
+
+  it('keeps a substituted __proto__ entry as an own key (sync + async)', async () => {
+    const templateEnv = JSON.parse('{"__proto__":{"Ref":"Plain"}}') as Record<string, unknown>;
+    for (const { env, audit } of [
+      substituteEnvVarsFromState(templateEnv, context),
+      await substituteEnvVarsFromStateAsync(templateEnv, context),
+    ]) {
+      expect(Object.hasOwn(env, '__proto__')).toBe(true);
+      expect(env['__proto__']).toBe('ok');
+      expect(audit.resolvedKeys).toEqual(['__proto__']);
+      expect(audit.sensitiveKeys).toEqual([]);
+    }
+  });
+
+  it('keeps a SecureString-backed __proto__ entry as an own key and flags it sensitive', async () => {
+    const templateEnv = JSON.parse('{"__proto__":{"Ref":"Secret"}}') as Record<string, unknown>;
+    for (const { env, audit } of [
+      substituteEnvVarsFromState(templateEnv, context),
+      await substituteEnvVarsFromStateAsync(templateEnv, context),
+    ]) {
+      expect(Object.hasOwn(env, '__proto__')).toBe(true);
+      expect(env['__proto__']).toBe('s3cr3t');
+      expect(audit.sensitiveKeys).toEqual(['__proto__']);
+    }
+  });
+
+  it('negative control: ordinary keys substitute exactly as before', async () => {
+    const templateEnv = { SECRET: { Ref: 'Secret' }, PLAIN: { Ref: 'Plain' }, LIT: 'x' };
+    for (const { env, audit } of [
+      substituteEnvVarsFromState(templateEnv, context),
+      await substituteEnvVarsFromStateAsync(templateEnv, context),
+    ]) {
+      expect(env).toEqual({ SECRET: 's3cr3t', PLAIN: 'ok', LIT: 'x' });
+      expect(audit.sensitiveKeys).toEqual(['SECRET']);
+    }
   });
 });

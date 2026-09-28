@@ -33,6 +33,8 @@
  * (matches SAM behavior).
  */
 
+import { defineOwnKey } from '../utils/own-keys.js';
+
 export interface EnvResolutionResult {
   /** Variables that should be set on the container. */
   resolved: Record<string, string>;
@@ -83,7 +85,9 @@ export function resolveEnvVars(
   if (templateEnv) {
     for (const [key, value] of Object.entries(templateEnv)) {
       if (isLiteralEnvValue(value)) {
-        resolved[key] = String(value);
+        // Own-key write: a variable literally named `__proto__` must not
+        // hit Object.prototype's setter and vanish (issue #769).
+        defineOwnKey(resolved, key, String(value));
       } else {
         unresolved.push(key);
       }
@@ -145,7 +149,7 @@ export function applyEnvOverrideMap(
       typeof value === 'number' ||
       typeof value === 'boolean'
     ) {
-      acc[key] = String(value);
+      defineOwnKey(acc, key, String(value));
     }
   }
 }
