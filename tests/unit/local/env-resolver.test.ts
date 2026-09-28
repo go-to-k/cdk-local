@@ -232,3 +232,82 @@ describe('resolveEnvVars', () => {
     });
   });
 });
+
+// Issue #769: an env var literally named `__proto__` must come out as an OWN
+// key of the resolved map. Ordinary assignment on a plain `{}` hits
+// Object.prototype's `__proto__` setter and silently drops the variable.
+// Inputs are built with JSON.parse, the same way the synthesized template and
+// the `--env-vars` file reach this function, so `__proto__` is an own key of
+// the input.
+describe('resolveEnvVars own-key writes (issue #769)', () => {
+  it('keeps a template env var named __proto__ as an own key', () => {
+    const templateEnv = JSON.parse('{"__proto__":"from-template","OTHER":"x"}') as Record<
+      string,
+      unknown
+    >;
+    const result = resolveEnvVars(LOGICAL, L1_PATH, templateEnv);
+    expect(Object.hasOwn(result.resolved, '__proto__')).toBe(true);
+    expect(result.resolved['__proto__']).toBe('from-template');
+    expect(Object.keys(result.resolved)).toEqual(['__proto__', 'OTHER']);
+    // The resolved map's prototype is untouched.
+    expect(Object.getPrototypeOf(result.resolved)).toBe(Object.prototype);
+  });
+
+  it('keeps a global --env-vars Parameters entry named __proto__ as an own key', () => {
+    const overrides = JSON.parse(
+      '{"Parameters":{"__proto__":"from-parameters"}}'
+    ) as EnvOverrideFile;
+    const result = resolveEnvVars(LOGICAL, L1_PATH, { A: '1' }, overrides);
+    expect(Object.hasOwn(result.resolved, '__proto__')).toBe(true);
+    expect(result.resolved['__proto__']).toBe('from-parameters');
+    expect(result.resolved['A']).toBe('1');
+    expect(Object.getPrototypeOf(result.resolved)).toBe(Object.prototype);
+  });
+
+  it('keeps a function-specific --env-vars entry named __proto__ as an own key', () => {
+    const overrides = JSON.parse(
+      `{"${LOGICAL}":{"__proto__":"by-logical-id"},"${L2_PATH}":{"__proto__":"by-display-path"}}`
+    ) as EnvOverrideFile;
+    const result = resolveEnvVars(LOGICAL, L1_PATH, undefined, overrides);
+    expect(Object.hasOwn(result.resolved, '__proto__')).toBe(true);
+    // Later key wins (JSON insertion order), same as any other key.
+    expect(result.resolved['__proto__']).toBe('by-display-path');
+  });
+
+  it('lets an --env-vars override replace a template __proto__ and a null clear it', () => {
+    const templateEnv = JSON.parse('{"__proto__":"from-template"}') as Record<string, unknown>;
+    const replaced = resolveEnvVars(
+      LOGICAL,
+      L1_PATH,
+      templateEnv,
+      JSON.parse('{"Parameters":{"__proto__":"override"}}') as EnvOverrideFile
+    );
+    expect(replaced.resolved['__proto__']).toBe('override');
+    expect(Object.hasOwn(replaced.resolved, '__proto__')).toBe(true);
+
+    const cleared = resolveEnvVars(
+      LOGICAL,
+      L1_PATH,
+      templateEnv,
+      JSON.parse('{"Parameters":{"__proto__":null}}') as EnvOverrideFile
+    );
+    expect(Object.hasOwn(cleared.resolved, '__proto__')).toBe(false);
+    expect(Object.getPrototypeOf(cleared.resolved)).toBe(Object.prototype);
+  });
+
+  it('negative control: ordinary keys resolve exactly as before', () => {
+    const result = resolveEnvVars(
+      LOGICAL,
+      L1_PATH,
+      { A: 'a', N: 1 },
+      { Parameters: { B: 'b' }, [LOGICAL]: { A: 'a2', C: null } }
+    );
+    expect(result.resolved).toEqual({ A: 'a2', N: '1', B: 'b' });
+    expect(Object.getOwnPropertyDescriptor(result.resolved, 'A')).toEqual({
+      value: 'a2',
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  });
+});

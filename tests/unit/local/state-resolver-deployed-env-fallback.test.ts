@@ -64,3 +64,33 @@ describe('applyDeployedEnvFallback', () => {
     expect(result.stillUnresolved).toEqual([{ key: 'A', reason: 'r1' }]);
   });
 });
+
+// Issue #769: `__proto__` as an env var name.
+describe('applyDeployedEnvFallback own-key handling (issue #769)', () => {
+  it('fills an unresolved __proto__ key from the deployed env as an own key', () => {
+    const deployedEnv = JSON.parse('{"__proto__":"deployed"}') as Record<string, string>;
+    const result = applyDeployedEnvFallback({}, [{ key: '__proto__', reason: 'r' }], deployedEnv);
+    expect(Object.hasOwn(result.env, '__proto__')).toBe(true);
+    expect(result.env['__proto__']).toBe('deployed');
+    expect(result.filled).toEqual(['__proto__']);
+    expect(result.stillUnresolved).toEqual([]);
+    expect(Object.getPrototypeOf(result.env)).toBe(Object.prototype);
+  });
+
+  it('does not treat an inherited __proto__ on the deployed env as a deployed value', () => {
+    // A deployed env WITHOUT an own `__proto__` key: a plain property read
+    // would return Object.prototype, "filling" the key with a non-string.
+    const result = applyDeployedEnvFallback({}, [{ key: '__proto__', reason: 'r' }], { A: 'a' });
+    expect(Object.hasOwn(result.env, '__proto__')).toBe(false);
+    expect(result.filled).toEqual([]);
+    expect(result.stillUnresolved).toEqual([{ key: '__proto__', reason: 'r' }]);
+  });
+
+  it('keeps a __proto__ key already in the resolved env as an own key on the copy', () => {
+    const resolvedEnv = JSON.parse('{"__proto__":"kept"}') as Record<string, unknown>;
+    const result = applyDeployedEnvFallback(resolvedEnv, [{ key: 'B', reason: 'r' }], { B: 'b' });
+    expect(Object.hasOwn(result.env, '__proto__')).toBe(true);
+    expect(result.env['__proto__']).toBe('kept');
+    expect(result.env['B']).toBe('b');
+  });
+});

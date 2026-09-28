@@ -20,6 +20,7 @@
  */
 
 import type { StudioTargetKind } from './studio-events.js';
+import { defineOwnKey } from '../utils/own-keys.js';
 
 /** A boolean flag — rendered as a checkbox; emits the bare flag when true. */
 export interface BooleanOptionSpec {
@@ -414,7 +415,9 @@ export function resolveEnvVars(
     const flat: Record<string, string> = {};
     for (const row of value) {
       const { left, right } = (row ?? {}) as PairValue;
-      if (nonEmptyStr(left)) flat[left.trim()] = typeof right === 'string' ? right : '';
+      // Own-key write: a row keyed `__proto__` must not vanish (issue #769).
+      if (nonEmptyStr(left))
+        defineOwnKey(flat, left.trim(), typeof right === 'string' ? right : '');
     }
     return Object.keys(flat).length > 0 ? { Parameters: flat } : undefined;
   }

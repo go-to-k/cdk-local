@@ -196,3 +196,32 @@ describe('OPTION_SPECS table', () => {
     ]);
   });
 });
+
+// Issue #769: a Studio KV row keyed `__proto__` must reach the materialized
+// `--env-vars` file as an own key of `Parameters` (and so survive the
+// JSON.stringify that writes the temp file).
+describe('resolveEnvVars __proto__ KV row (issue #769)', () => {
+  it('keeps a __proto__ row as an own key of Parameters', () => {
+    const out = resolveEnvVars('lambda', {
+      '--env-vars': [
+        { left: '__proto__', right: 'v' },
+        { left: 'A', right: '1' },
+      ],
+    }) as { Parameters: Record<string, string> };
+    expect(Object.hasOwn(out.Parameters, '__proto__')).toBe(true);
+    expect(out.Parameters['__proto__']).toBe('v');
+    expect(Object.getPrototypeOf(out.Parameters)).toBe(Object.prototype);
+    expect(JSON.parse(JSON.stringify(out))).toEqual(
+      JSON.parse('{"Parameters":{"__proto__":"v","A":"1"}}')
+    );
+  });
+
+  it('keeps a __proto__-only row set (not treated as empty)', () => {
+    const out = resolveEnvVars('lambda', { '--env-vars': [{ left: '__proto__', right: 'v' }] }) as
+      | { Parameters: Record<string, string> }
+      | undefined;
+    expect(out).toBeDefined();
+    expect(Object.hasOwn(out!.Parameters, '__proto__')).toBe(true);
+    expect(out!.Parameters['__proto__']).toBe('v');
+  });
+});

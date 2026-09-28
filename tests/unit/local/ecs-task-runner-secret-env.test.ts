@@ -90,3 +90,84 @@ describe('buildDockerRunArgs secret env routing', () => {
     expect(sensitiveEnv['LOG_LEVEL']).toBeUndefined();
   });
 });
+
+// Issue #769: an env var literally named `__proto__` — from the template env,
+// a resolved secret, or an `--env-vars` override — must be delivered as an
+// own key, and a secret one must still stay off argv.
+describe('buildDockerRunArgs __proto__ env var (issue #769)', () => {
+  function build(
+    environment: Record<string, string>,
+    opts: {
+      secrets?: Array<{ name: string; value: string }>;
+      envOverrides?: Record<string, Record<string, string | null>>;
+      sensitiveEnvKeys?: string[];
+    } = {}
+  ) {
+    return buildDockerRunArgs({
+      task,
+      container: minimalContainer(environment, opts.sensitiveEnvKeys ?? []),
+      image: 'public.ecr.aws/docker/library/busybox:latest',
+      network: 'net',
+      volumeByName: new Map(),
+      secrets: opts.secrets ?? [],
+      envOverrides: opts.envOverrides,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+  }
+
+  it('delivers a template env var named __proto__ inline', () => {
+    const environment = JSON.parse('{"__proto__":"tmpl","LOG_LEVEL":"info"}') as Record<
+      string,
+      string
+    >;
+    const { args } = build(environment);
+    expect(args).toContain('__proto__=tmpl');
+    expect(args).toContain('LOG_LEVEL=info');
+  });
+
+  it('delivers a SecureString-backed __proto__ via pass-through, never argv', () => {
+    const environment = JSON.parse('{"__proto__":"s3cr3t-env"}') as Record<string, string>;
+    const { args, sensitiveEnv } = build(environment, { sensitiveEnvKeys: ['__proto__'] });
+    expect(args.join(' ')).not.toContain('s3cr3t-env');
+    const i = args.indexOf('__proto__');
+    expect(i).toBeGreaterThan(0);
+    expect(args[i - 1]).toBe('-e');
+    expect(Object.hasOwn(sensitiveEnv, '__proto__')).toBe(true);
+    expect(sensitiveEnv['__proto__']).toBe('s3cr3t-env');
+  });
+
+  it('delivers a secret named __proto__ via pass-through, never argv', () => {
+    const { args, sensitiveEnv } = build(
+      { LOG_LEVEL: 'info' },
+      { secrets: [{ name: '__proto__', value: 'p@ss-proto' }] }
+    );
+    expect(args.join(' ')).not.toContain('p@ss-proto');
+    const i = args.indexOf('__proto__');
+    expect(i).toBeGreaterThan(0);
+    expect(args[i - 1]).toBe('-e');
+    expect(Object.hasOwn(sensitiveEnv, '__proto__')).toBe(true);
+    expect(sensitiveEnv['__proto__']).toBe('p@ss-proto');
+  });
+
+  it('delivers an --env-vars override named __proto__ inline', () => {
+    const envOverrides = JSON.parse('{"Parameters":{"__proto__":"from-override"}}') as Record<
+      string,
+      Record<string, string | null>
+    >;
+    const { args } = build({ LOG_LEVEL: 'info' }, { envOverrides });
+    expect(args).toContain('__proto__=from-override');
+  });
+
+  it('negative control: ordinary keys route exactly as before', () => {
+    const { args, sensitiveEnv } = build(
+      { LOG_LEVEL: 'info' },
+      { secrets: [{ name: 'DB_PASSWORD', value: 'pw' }] }
+    );
+    expect(args).toContain('LOG_LEVEL=info');
+    expect(args.join(' ')).not.toContain('=pw');
+    expect(sensitiveEnv).toEqual({ DB_PASSWORD: 'pw' });
+  });
+});

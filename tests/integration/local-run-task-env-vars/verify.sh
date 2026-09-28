@@ -53,6 +53,8 @@ fi
 # SAM-shape --env-vars file (Parameters apply to every container):
 #   - ADDED_BY_FLAG : new key not in the template
 #   - DROP_ME       : null -> CLEAR the template key
+#   - __proto__     : a key literally named `__proto__` must be delivered, not
+#                     dropped by Object.prototype's setter (issue #769)
 # (KEEP_ME is intentionally NOT mentioned so it survives from the template.)
 ENV_FILE=$(mktemp)
 OUT_FILE=$(mktemp)
@@ -60,7 +62,8 @@ cat > "${ENV_FILE}" <<'JSON'
 {
   "Parameters": {
     "ADDED_BY_FLAG": "added-value",
-    "DROP_ME": null
+    "DROP_ME": null,
+    "__proto__": "proto-added"
   }
 }
 JSON
@@ -84,6 +87,10 @@ echo "==> Asserting the overlay ADDED a new key"
 grep -q '\[probe\] ADDED_BY_FLAG=added-value' "${OUT_FILE}" \
   || dump_and_fail "expected '[probe] ADDED_BY_FLAG=added-value' (overlay add)"
 
+echo "==> Asserting an overlay key named __proto__ was DELIVERED (issue #769)"
+grep -q '\[probe\] __proto__=proto-added' "${OUT_FILE}" \
+  || dump_and_fail "expected '[probe] __proto__=proto-added' (own-key overlay)"
+
 echo "==> Asserting an unmentioned template key SURVIVED"
 grep -q '\[probe\] KEEP_ME=kept-value' "${OUT_FILE}" \
   || dump_and_fail "expected '[probe] KEEP_ME=kept-value' (template key preserved)"
@@ -99,4 +106,4 @@ if grep -q 'DROP_ME=null' "${OUT_FILE}"; then
 fi
 
 echo ""
-echo "==> local-run-task-env-vars test passed (add / keep / null-clear)"
+echo "==> local-run-task-env-vars test passed (add / __proto__ / keep / null-clear)"
