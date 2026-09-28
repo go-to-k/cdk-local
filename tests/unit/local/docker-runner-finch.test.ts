@@ -107,8 +107,8 @@ describe('runDetached under finch on macOS (issue #749)', () => {
   });
 
   // Issue #774: the image name is template / asset derived, so the refusal
-  // renders it as an untrusted value: control characters escaped inside a
-  // quoted boundary and the length capped, the same as every other
+  // renders it as an untrusted value: control characters flattened, a
+  // non-plain name quoted and the length capped, the same as every other
   // template-chosen name cdk-local prints.
   it.each([
     ['a control-character image name', 'evil\u001b[31m\nimage:latest'],

@@ -120,7 +120,7 @@ describe('finch VM argv exposure (issue #749)', () => {
 
   // Issue #774: the subject name (an image or container name) and the secret
   // names are template-chosen, so they render as untrusted values: control
-  // characters escaped inside a quoted boundary, the length capped.
+  // characters flattened, a non-plain name quoted, the length capped.
   it('renders secret names and the subject name display-safe', () => {
     setPlatform('darwin');
     process.env['CDK_DOCKER'] = 'finch';

@@ -91,8 +91,9 @@ function secretsOnArgvAllowed(): boolean {
  * `subject` names what is refused: a fixed `label` of ours (`Container`,
  * `Container for image`) and the template- or asset-chosen `name` (a container
  * name, an image URI). The name and every secret name render through
- * {@link displayUntrustedValue} (issue #774): control characters escaped
- * inside a quoted boundary and the length capped, so a crafted name can neither
+ * {@link displayUntrustedValue} (issue #774): control characters flattened to
+ * a space, a name that is not plain put inside a quoted boundary, and the
+ * length capped, so a crafted name can neither
  * drive the terminal, forge a clause of this message, nor make it unbounded.
  */
 export function finchSecretArgvRefusal(
