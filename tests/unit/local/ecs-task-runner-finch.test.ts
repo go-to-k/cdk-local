@@ -55,6 +55,7 @@ vi.mock('../../../src/assets/docker-build.js', () => ({
 const { runEcsTask, createEcsRunState } = await import('../../../src/local/ecs-task-runner.js');
 const { resetFinchArgvWarningsForTest } = await import('../../../src/utils/docker-cmd.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
+const { displayUntrustedValue } = await import('../../../src/utils/assembly-path.js');
 
 function makeContainer(overrides: Partial<ResolvedEcsContainer>): ResolvedEcsContainer {
   return {
@@ -159,7 +160,7 @@ describe('runEcsTask under finch on macOS (issue #749)', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe('EcsTaskRunnerError');
     expect(err.message).toMatch(
-      /Container 'app': refusing to forward secret\(s\) DB_PASS under CDK_DOCKER=finch/
+      /Container app: refusing to forward secret\(s\) DB_PASS under CDK_DOCKER=finch/
     );
     expect(stubs.pullImage).not.toHaveBeenCalled();
     expect(stubs.pullEcrImage).not.toHaveBeenCalled();
@@ -176,9 +177,26 @@ describe('runEcsTask under finch on macOS (issue #749)', () => {
     const err = await runEcsTask(task, runnableOptions(task), createEcsRunState()).catch(
       (e: unknown) => e as Error
     );
-    expect(err.message).toContain("Container 'app': refusing to forward secret(s) API_KEY");
+    expect(err.message).toContain('Container app: refusing to forward secret(s) API_KEY');
     expect(err.message).not.toContain('s3cr3t');
     expect(dockerRunCalls()).toHaveLength(0);
+  });
+
+  // Issue #774: the container name is template-chosen; render it display-safe.
+  it.each([
+    ['a control-character container name', 'app\u001b]0;pwned\u0007\nx'],
+    ['an over-long container name', 'c'.repeat(5000)],
+  ])('renders %s display-safe in the refusal', async (_label, name) => {
+    const task = makeTask([makeContainer({ name, secrets: [dbSecret] })]);
+    const err = await runEcsTask(task, runnableOptions(task), createEcsRunState()).catch(
+      (e: unknown) => e as Error
+    );
+    expect(err.message).toContain(
+      `Container ${displayUntrustedValue(name)}: refusing to forward secret(s) DB_PASS`
+    );
+    expect(err.message).not.toMatch(/[\u001b\u0007\n]/);
+    expect(err.message.length).toBeLessThan(1500);
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 
   it('names every refused container in one error, not only the first', async () => {
@@ -195,8 +213,8 @@ describe('runEcsTask under finch on macOS (issue #749)', () => {
     const err = await runEcsTask(task, runnableOptions(task), createEcsRunState()).catch(
       (e: unknown) => e as Error
     );
-    expect(err.message).toContain("Container 'a': refusing to forward secret(s) A_SECRET");
-    expect(err.message).toContain("Container 'b': refusing to forward secret(s) B_SECRET");
+    expect(err.message).toContain('Container a: refusing to forward secret(s) A_SECRET');
+    expect(err.message).toContain('Container b: refusing to forward secret(s) B_SECRET');
     expect(execFileMock).not.toHaveBeenCalled();
   });
 

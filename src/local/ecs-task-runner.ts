@@ -471,7 +471,7 @@ export async function runEcsTask(
       [...c.secrets.map((s) => s.name), ...c.sensitiveEnvKeys].filter(
         (n) => !isMalformedEnvKey(n) && !isDockerClientEnvKey(n)
       ),
-      `Container '${c.name}'`
+      { label: 'Container', name: c.name }
     );
     if (refusal !== undefined) finchRefusals.push(refusal);
   }

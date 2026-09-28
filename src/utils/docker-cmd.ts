@@ -76,22 +76,6 @@ function secretsOnArgvAllowed(): boolean {
   return v !== undefined && ['1', 'true'].includes(v.trim().toLowerCase());
 }
 
-// eslint-disable-next-line no-control-regex -- the control characters are exactly what is escaped.
-const MESSAGE_UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
-
-/**
- * Render template- or state-sourced text (an env var name, a container name,
- * an image URI) for a message: control and line-separator characters are
- * escaped as `\uXXXX` so a hostile value cannot drive the terminal or forge a
- * log line. Plain text renders unchanged.
- */
-function escapeForMessage(text: string): string {
-  return text.replace(
-    MESSAGE_UNSAFE_CHARS,
-    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
-  );
-}
-
 /**
  * The refusal text when template-sourced secrets (ECS `Secrets`, decrypted
  * `SecureString` values) would be forwarded under {@link isFinchVmClient}, or
@@ -102,17 +86,25 @@ function escapeForMessage(text: string): string {
  * credentials that are not in this process's own environment (`--assume-role`,
  * `--profile`, the metadata sidecar's) on that argv, and the warning makes that
  * visible while keeping finch usable for containers that need AWS access. Names
- * only, never a value. `subject` is context such as the container name; it is
- * escaped like the names.
+ * only, never a value.
+ *
+ * `subject` names what is refused: a fixed `label` of ours (`Container`,
+ * `Container for image`) and the template- or asset-chosen `name` (a container
+ * name, an image URI). The name and every secret name render through
+ * {@link displayUntrustedValue} (issue #774): control characters flattened to
+ * a space, a name that is not plain put inside a quoted boundary, and the
+ * length capped, so a crafted name can neither
+ * drive the terminal, forge a clause of this message, nor make it unbounded.
  */
 export function finchSecretArgvRefusal(
   secretNames: readonly string[],
-  subject: string
+  subject: { label: string; name: string }
 ): string | undefined {
   if (secretNames.length === 0 || !isFinchVmClient() || secretsOnArgvAllowed()) return undefined;
   const names = [...new Set(secretNames)];
   return (
-    `${escapeForMessage(subject)}: refusing to forward secret(s) ${names.map(escapeForMessage).join(', ')} ` +
+    `${subject.label} ${displayUntrustedValue(subject.name)}: refusing to forward secret(s) ` +
+    `${names.map(displayUntrustedValue).join(', ')} ` +
     `under CDK_DOCKER=finch on macOS / Windows. finch turns each value-less '-e KEY' into ` +
     `'-e KEY=<value>' on the command line of the limactl process it starts, where other local ` +
     `processes can read the plaintext. Use a container client that keeps the value off the command ` +
@@ -133,7 +125,7 @@ export function resetFinchArgvWarningsForTest(): void {
  * Warn, once per process per distinct key set, that under
  * {@link isFinchVmClient} the values of `keys` (the sensitive env about to be
  * forwarded as value-less `-e KEY`) reach the `limactl` command line. Names
- * only, never a value.
+ * only, never a value, each rendered through {@link displayUntrustedValue}.
  */
 export function warnFinchArgvExposure(keys: readonly string[]): void {
   if (keys.length === 0 || !isFinchVmClient()) return;
@@ -142,7 +134,7 @@ export function warnFinchArgvExposure(keys: readonly string[]): void {
   if (finchArgvWarned.has(latch)) return;
   finchArgvWarned.add(latch);
   getLogger().warn(
-    `CDK_DOCKER=finch on macOS / Windows puts the values of ${names.map(escapeForMessage).join(', ')} ` +
+    `CDK_DOCKER=finch on macOS / Windows puts the values of ${names.map(displayUntrustedValue).join(', ')} ` +
       `on the command line of the limactl process it starts (finch turns a value-less '-e KEY' into ` +
       `'-e KEY=<value>'), where other local processes can read them. The default 'docker' client ` +
       `keeps them off the command line.`
