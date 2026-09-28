@@ -8,10 +8,12 @@ import {
 } from '../../../src/utils/docker-cmd.js';
 import { resetEmbedConfig, setEmbedConfig } from '../../../src/local/embed-config.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { displayUntrustedValue } from '../../../src/utils/assembly-path.js';
 
 // Issue #749: finch on macOS / Windows rewrites a value-less `-e KEY` into
 // `-e KEY=<value>` on the limactl argv, so the value-less form is not a
 // guarantee there.
+const CONTAINER = { label: 'Container', name: 'app' };
 const OPT_IN_KEYS = ['CDKL_ALLOW_SECRETS_ON_ARGV', 'CDKD_ALLOW_SECRETS_ON_ARGV'] as const;
 
 describe('finch VM argv exposure (issue #749)', () => {
@@ -83,9 +85,12 @@ describe('finch VM argv exposure (issue #749)', () => {
   it('refuses a template secret under finch on macOS, naming it and the opt-in', () => {
     setPlatform('darwin');
     process.env['CDK_DOCKER'] = 'finch';
-    const msg = finchSecretArgvRefusal(['DB_PASSWORD', 'API_KEY'], "Container 'app'");
+    const msg = finchSecretArgvRefusal(['DB_PASSWORD', 'API_KEY'], {
+      label: 'Container',
+      name: 'app',
+    });
     expect(msg).toBeDefined();
-    expect(msg).toContain("Container 'app': refusing to forward secret(s) DB_PASSWORD, API_KEY");
+    expect(msg).toContain('Container app: refusing to forward secret(s) DB_PASSWORD, API_KEY');
     expect(msg).toContain('CDKL_ALLOW_SECRETS_ON_ARGV=1');
     expect(msg).toContain('limactl');
     expect(msg).toContain('while it stays set');
@@ -95,7 +100,7 @@ describe('finch VM argv exposure (issue #749)', () => {
     setPlatform('darwin');
     process.env['CDK_DOCKER'] = 'finch';
     setEmbedConfig({ envPrefix: 'CDKD' });
-    const msg = finchSecretArgvRefusal(['DB_PASSWORD'], 'Container')!;
+    const msg = finchSecretArgvRefusal(['DB_PASSWORD'], CONTAINER)!;
     expect(msg).toContain('CDKD_ALLOW_SECRETS_ON_ARGV=1');
     expect(msg).not.toContain('CDKL_ALLOW_SECRETS_ON_ARGV');
   });
@@ -103,27 +108,53 @@ describe('finch VM argv exposure (issue #749)', () => {
   it('names a repeated secret once', () => {
     setPlatform('darwin');
     process.env['CDK_DOCKER'] = 'finch';
-    const msg = finchSecretArgvRefusal(['DB_PASSWORD', 'DB_PASSWORD'], 'Container')!;
+    const msg = finchSecretArgvRefusal(['DB_PASSWORD', 'DB_PASSWORD'], CONTAINER)!;
     expect(msg.match(/DB_PASSWORD/g)).toHaveLength(1);
   });
 
   it('refuses under finch on Windows too', () => {
     setPlatform('win32');
     process.env['CDK_DOCKER'] = 'finch.exe';
-    expect(finchSecretArgvRefusal(['DB_PASSWORD'], 'Container')).toBeDefined();
+    expect(finchSecretArgvRefusal(['DB_PASSWORD'], CONTAINER)).toBeDefined();
   });
 
-  it('escapes control and line-separator characters in secret names and the subject', () => {
+  // Issue #774: the subject name (an image or container name) and the secret
+  // names are template-chosen, so they render as untrusted values: control
+  // characters escaped inside a quoted boundary, the length capped.
+  it('renders secret names and the subject name display-safe', () => {
     setPlatform('darwin');
     process.env['CDK_DOCKER'] = 'finch';
-    const msg = finchSecretArgvRefusal(
-      ['EVIL\u001b[31mNAME', 'LINE\u2028SEP'],
-      "Container 'a\nb'"
-    )!;
+    const names = ['EVIL\u001b[31mNAME', 'LINE\u2028SEP'];
+    const msg = finchSecretArgvRefusal(names, { label: 'Container', name: 'a\nb' })!;
     expect(msg).not.toMatch(/[\u001b\n\u2028]/);
-    expect(msg).toContain('EVIL\\u001b[31mNAME');
-    expect(msg).toContain('LINE\\u2028SEP');
-    expect(msg).toContain("Container 'a\\u000ab'");
+    expect(msg).toContain(
+      `Container ${displayUntrustedValue('a\nb')}: refusing to forward secret(s) ` +
+        names.map(displayUntrustedValue).join(', ')
+    );
+  });
+
+  it('caps an over-long subject name', () => {
+    setPlatform('darwin');
+    process.env['CDK_DOCKER'] = 'finch';
+    const image = `registry.example/${'a'.repeat(5000)}:tag`;
+    const msg = finchSecretArgvRefusal(['DB_PASSWORD'], {
+      label: 'Container for image',
+      name: image,
+    })!;
+    expect(msg).toContain(`Container for image ${displayUntrustedValue(image)}: refusing`);
+    expect(msg.length).toBeLessThan(1500);
+  });
+
+  it('control: ordinary names render bare', () => {
+    setPlatform('darwin');
+    process.env['CDK_DOCKER'] = 'finch';
+    const msg = finchSecretArgvRefusal(['DB_PASSWORD'], {
+      label: 'Container for image',
+      name: 'public.ecr.aws/lambda/nodejs:20',
+    })!;
+    expect(msg).toContain(
+      'Container for image public.ecr.aws/lambda/nodejs:20: refusing to forward secret(s) DB_PASSWORD '
+    );
   });
 
   it.each([
@@ -139,27 +170,27 @@ describe('finch VM argv exposure (issue #749)', () => {
     setPlatform(platform);
     process.env['CDK_DOCKER'] = docker;
     if (optIn !== undefined) process.env['CDKL_ALLOW_SECRETS_ON_ARGV'] = optIn;
-    expect(finchSecretArgvRefusal(names, 'Container')).toBeUndefined();
+    expect(finchSecretArgvRefusal(names, CONTAINER)).toBeUndefined();
   });
 
   it.each(['0', 'false', 'yes', ''])('an opt-in value of %j does not opt in', (optIn) => {
     setPlatform('darwin');
     process.env['CDK_DOCKER'] = 'finch';
     process.env['CDKL_ALLOW_SECRETS_ON_ARGV'] = optIn;
-    expect(finchSecretArgvRefusal(['DB_PASSWORD'], 'Container')).toBeDefined();
+    expect(finchSecretArgvRefusal(['DB_PASSWORD'], CONTAINER)).toBeDefined();
   });
 
   it("does not honor another host's opt-in name", () => {
     setPlatform('darwin');
     process.env['CDK_DOCKER'] = 'finch';
     process.env['CDKD_ALLOW_SECRETS_ON_ARGV'] = '1';
-    expect(finchSecretArgvRefusal(['DB_PASSWORD'], 'Container')).toBeDefined();
+    expect(finchSecretArgvRefusal(['DB_PASSWORD'], CONTAINER)).toBeDefined();
     setEmbedConfig({ envPrefix: 'CDKD' });
-    expect(finchSecretArgvRefusal(['DB_PASSWORD'], 'Container')).toBeUndefined();
+    expect(finchSecretArgvRefusal(['DB_PASSWORD'], CONTAINER)).toBeUndefined();
     // And the other way round: under the CDKD prefix, CDKL_* does not opt in.
     delete process.env['CDKD_ALLOW_SECRETS_ON_ARGV'];
     process.env['CDKL_ALLOW_SECRETS_ON_ARGV'] = '1';
-    expect(finchSecretArgvRefusal(['DB_PASSWORD'], 'Container')).toBeDefined();
+    expect(finchSecretArgvRefusal(['DB_PASSWORD'], CONTAINER)).toBeDefined();
   });
 
   describe('warnFinchArgvExposure', () => {
@@ -187,6 +218,19 @@ describe('finch VM argv exposure (issue #749)', () => {
       const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
       warnFinchArgvExposure(['AWS_SECRET_ACCESS_KEY']);
       expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('renders key names display-safe (issue #774)', () => {
+      setPlatform('darwin');
+      process.env['CDK_DOCKER'] = 'finch';
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+      const long = `K${'x'.repeat(5000)}`;
+      warnFinchArgvExposure(['EVIL\u001b[31mKEY', long]);
+      const msg = String(warn.mock.calls[0]![0]);
+      expect(msg).not.toMatch(/\u001b/);
+      expect(msg).toContain(displayUntrustedValue('EVIL\u001b[31mKEY'));
+      expect(msg).toContain(displayUntrustedValue(long));
+      expect(msg.length).toBeLessThan(1500);
     });
 
     it('does not warn for an empty key set', () => {

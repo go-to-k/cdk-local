@@ -340,7 +340,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   const forwardedKeys = Object.keys(passthroughEnv);
   const refusal = finchSecretArgvRefusal(
     forwardedKeys.filter((k) => opts.sensitiveEnvKeys?.has(k)),
-    `Container for image ${opts.image}`
+    { label: 'Container for image', name: opts.image }
   );
   if (refusal !== undefined) throw new DockerRunnerError(refusal);
   warnFinchArgvExposure(forwardedKeys);

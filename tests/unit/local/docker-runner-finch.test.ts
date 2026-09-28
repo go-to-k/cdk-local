@@ -21,6 +21,7 @@ vi.mock('node:child_process', () => ({
 const { runDetached } = await import('../../../src/local/docker-runner.js');
 const { resetFinchArgvWarningsForTest } = await import('../../../src/utils/docker-cmd.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
+const { displayUntrustedValue } = await import('../../../src/utils/assembly-path.js');
 
 describe('runDetached under finch on macOS (issue #749)', () => {
   const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -103,6 +104,31 @@ describe('runDetached under finch on macOS (issue #749)', () => {
     const finchWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('CDK_DOCKER=finch'));
     expect(finchWarnings).toHaveLength(1);
     expect(String(finchWarnings[0]![0])).toContain('AWS_SECRET_ACCESS_KEY');
+  });
+
+  // Issue #774: the image name is template / asset derived, so the refusal
+  // renders it as an untrusted value: control characters escaped inside a
+  // quoted boundary and the length capped, the same as every other
+  // template-chosen name cdk-local prints.
+  it.each([
+    ['a control-character image name', 'evil\u001b[31m\nimage:latest'],
+    ['an over-long image name', `registry.example/${'a'.repeat(5000)}:tag`],
+    ['an image name that forges a clause', 'x: refusing to forward secret(s) NOTHING. OK'],
+  ])('renders %s display-safe in the refusal', async (_label, image) => {
+    const err = await runDetached({ ...withSecret, image }).catch((e: unknown) => e as Error);
+    expect(err.message).toContain(
+      `Container for image ${displayUntrustedValue(image)}: refusing to forward secret(s) DB_PASSWORD`
+    );
+    expect(err.message).not.toMatch(/[\u001b\n]/);
+    expect(err.message.length).toBeLessThan(1500);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('control: an ordinary image name renders bare, as before', async () => {
+    const err = await runDetached(withSecret).catch((e: unknown) => e as Error);
+    expect(err.message).toContain(
+      'Container for image public.ecr.aws/lambda/nodejs:20: refusing to forward secret(s) DB_PASSWORD'
+    );
   });
 
   it('does not refuse for a marked key that is absent from the env', async () => {
