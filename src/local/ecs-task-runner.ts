@@ -6,6 +6,8 @@ import graphlib from 'graphlib';
 import {
   finchSecretArgvRefusal,
   getDockerCmd,
+  isDockerClientEnvKey,
+  isMalformedEnvKey,
   runDockerStreaming,
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
@@ -16,6 +18,7 @@ import {
   pullImage,
   removeContainer,
   appendEnvFlags,
+  describeRefusedSensitiveEnvKeys,
   execEnvForSecrets,
   pickFreePort,
   SENSITIVE_ENV_KEYS,
@@ -462,8 +465,12 @@ export async function runEcsTask(
   // container is checked before throwing, so one run names them all.
   const finchRefusals: string[] = [];
   for (const c of task.containers) {
+    // A name `appendEnvFlags` will drop (a docker-client var or a malformed
+    // name, issue #772) never reaches the limactl argv, so it is not refused.
     const refusal = finchSecretArgvRefusal(
-      [...c.secrets.map((s) => s.name), ...c.sensitiveEnvKeys],
+      [...c.secrets.map((s) => s.name), ...c.sensitiveEnvKeys].filter(
+        (n) => !isMalformedEnvKey(n) && !isDockerClientEnvKey(n)
+      ),
       `Container '${c.name}'`
     );
     if (refusal !== undefined) finchRefusals.push(refusal);
@@ -590,6 +597,16 @@ export async function runEcsTask(
       }),
     });
     dockerCmds.set(container.name, { args: built.args, sensitiveEnv: built.sensitiveEnv });
+    // Warn HERE, in the build loop, so every container's dropped keys are
+    // reported even when an earlier container's `docker run` fails (#772).
+    if (built.collisions.length > 0) {
+      logger.warn(
+        describeRefusedSensitiveEnvKeys(
+          `Container ${displayUntrustedValue(container.name)}`,
+          built.collisions
+        )
+      );
+    }
     for (const ep of built.publishedEndpoints) state.publishedEndpoints.push(ep);
   }
 
@@ -1243,6 +1260,8 @@ export async function resolvePrivilegedHostPortRemaps(opts: {
 export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   args: string[];
   sensitiveEnv: Record<string, string>;
+  /** Sensitive keys refused by {@link appendEnvFlags} (issue #772); names only. */
+  collisions: string[];
   publishedEndpoints: PublishedHostEndpoint[];
 } {
   const { task, container, image, network, volumeByName, secrets, containerHost, roleArn } = opts;
@@ -1442,7 +1461,11 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // Env keys that resolved to a decrypted SecureString SSM parameter
   // (issue #99) — same off-argv treatment as secrets.
   for (const k of container.sensitiveEnvKeys) sensitiveEnvKeys.add(k);
-  const sensitiveEnv = appendEnvFlags(args, finalEnv, sensitiveEnvKeys);
+  const { passthrough: sensitiveEnv, collisions } = appendEnvFlags(
+    args,
+    finalEnv,
+    sensitiveEnvKeys
+  );
 
   if (container.user) args.push('--user', container.user);
   if (container.privileged) args.push('--privileged');
@@ -1478,7 +1501,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   }
 
   args.push(image, ...entryPointTail, ...(container.command ?? []));
-  return { args, sensitiveEnv, publishedEndpoints };
+  return { args, sensitiveEnv, collisions, publishedEndpoints };
 }
 
 /**

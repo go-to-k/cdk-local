@@ -4,10 +4,13 @@ import { promisify } from 'node:util';
 import {
   finchSecretArgvRefusal,
   getDockerCmd,
+  isDockerClientEnvKey,
+  isMalformedEnvKey,
   runDockerForeground,
   runDockerStreaming,
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
@@ -291,7 +294,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     opts.sensitiveEnvKeys && opts.sensitiveEnvKeys.size > 0
       ? new Set<string>([...SENSITIVE_ENV_KEYS, ...opts.sensitiveEnvKeys])
       : SENSITIVE_ENV_KEYS;
-  const passthroughEnv = appendEnvFlags(args, opts.env, sensitiveKeys);
+  const { passthrough: passthroughEnv, collisions } = appendEnvFlags(args, opts.env, sensitiveKeys);
 
   // Issue #440 — Lambda EphemeralStorage.Size: emit `--tmpfs
   // <target>:rw,size=<N>m` so the container's `/tmp` is capped at the
@@ -322,6 +325,14 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
 
   const logger = getLogger().child('docker');
   logger.debug(`${getDockerCmd()} ${redactAwsCredentialsInArgs(args).join(' ')}`);
+  if (collisions.length > 0) {
+    logger.warn(
+      describeRefusedSensitiveEnvKeys(
+        `Container for image ${displayUntrustedValue(opts.image)}`,
+        collisions
+      )
+    );
+  }
 
   // Under finch's Lima VM the value-less `-e KEY` flags do not keep the value
   // off argv (#749): refuse a caller-marked secret unless the operator opted
@@ -460,11 +471,25 @@ export const SENSITIVE_ENV_KEYS: ReadonlySet<string> = new Set([
  * shell history. Non-sensitive keys keep the inline `-e KEY=VALUE` form
  * (fine for non-secret config, and keeps `--debug` output readable).
  *
- * Returns the `{ KEY: value }` map of routed-through keys; the caller MUST
- * merge it into the spawned docker process's `env` (see
+ * Returns `passthrough`, the `{ KEY: value }` map of routed-through keys; the
+ * caller MUST merge it into the spawned docker process's `env` (see
  * {@link execEnvForSecrets}) so docker can resolve each passed-through
  * key. Values still appear in `docker inspect` Config.Env — that is
  * inherent to container env and matches production behavior.
+ *
+ * A sensitive key whose NAME is a variable the container client (or the
+ * dynamic loader / a helper it execs) reads ({@link isDockerClientEnvKey}), or
+ * that is MALFORMED ({@link isMalformedEnvKey}: empty, or containing `=` /
+ * NUL), gets NO flag and no passthrough entry, and is returned in
+ * `collisions` so the caller can warn by NAME (issue #772). Written into the
+ * client's spawn env it would hijack the client (`DOCKER_HOST` redirects the
+ * daemon, `PATH` / `LD_PRELOAD` choose what code runs); and a value-less
+ * `-e KEY` the spawn env refuses to set would make docker resolve it against
+ * its OWN environment, handing the container the HOST's value. A key
+ * containing `=` is refused because the OS parses the environ entry's name as
+ * everything before the first `=`, so `PATH=/tmp/evil:` would poison `PATH`
+ * while slipping past the name denylist. A NON-sensitive key is container
+ * env only (`-e KEY=VALUE` on the argv) and is unaffected.
  *
  * Unlike `--env-file`, this handles multi-line values (e.g. PEM secrets)
  * and needs no temp file on disk.
@@ -473,10 +498,15 @@ export function appendEnvFlags(
   args: string[],
   env: Record<string, string>,
   sensitiveKeys: ReadonlySet<string>
-): Record<string, string> {
+): { passthrough: Record<string, string>; collisions: string[] } {
   const passthrough: Record<string, string> = {};
+  const collisions: string[] = [];
   for (const [k, v] of Object.entries(env)) {
     if (sensitiveKeys.has(k)) {
+      if (isMalformedEnvKey(k) || isDockerClientEnvKey(k)) {
+        collisions.push(k);
+        continue;
+      }
       args.push('-e', k);
       // Own-key write so a secret named `__proto__` reaches docker's process
       // env instead of being dropped by Object.prototype's setter (#769).
@@ -485,7 +515,21 @@ export function appendEnvFlags(
       args.push('-e', `${k}=${v}`);
     }
   }
-  return passthrough;
+  return { passthrough, collisions };
+}
+
+/**
+ * The warning for keys {@link appendEnvFlags} refused. Names each key
+ * display-safe (a key is template-chosen) and never a value.
+ */
+export function describeRefusedSensitiveEnvKeys(subject: string, keys: readonly string[]): string {
+  return (
+    `${subject}: sensitive env var(s) ${keys.map(displayUntrustedValue).join(', ')} ` +
+    `share a name with a variable the container client reads (docker, or the CDK_DOCKER binary) ` +
+    `or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the ` +
+    `container at all (a colliding name would hijack that client; a malformed name cannot form ` +
+    `a valid environment variable). Rename the variable if the container needs it.`
+  );
 }
 
 /**
@@ -495,12 +539,23 @@ export function appendEnvFlags(
  * so docker inherits the normal environment PLUS the sensitive values it
  * must resolve, or `{}` when there is nothing to pass through (preserving
  * the default inherited-environment behavior).
+ *
+ * The client's own variables stay authoritative: a passthrough key that names
+ * one ({@link isDockerClientEnvKey}) or is malformed ({@link isMalformedEnvKey})
+ * is never written (issue #772). {@link appendEnvFlags} already keeps such a
+ * key out of `passthrough`; this is defence in depth for any other caller.
  */
 export function execEnvForSecrets(passthrough: Record<string, string>): {
   env?: NodeJS.ProcessEnv;
 } {
-  if (Object.keys(passthrough).length === 0) return {};
-  return { env: { ...process.env, ...passthrough } };
+  const keys = Object.keys(passthrough).filter(
+    (k) => !isMalformedEnvKey(k) && !isDockerClientEnvKey(k)
+  );
+  if (keys.length === 0) return {};
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  // Own-key writes, so a secret named `__proto__` still arrives (#769).
+  for (const k of keys) defineOwnKey(env as Record<string, string>, k, passthrough[k]!);
+  return { env };
 }
 
 /**

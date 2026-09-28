@@ -12,6 +12,9 @@ exports.handler = async (event) => {
     // issue #99: the decrypted SecureString SSM value — proves the value
     // reached the container even though it was kept off the docker argv.
     apiKey: process.env.API_KEY ?? 'unset',
+    // issue #772: a SecureString-backed key named after a docker-client
+    // variable is dropped, so this stays unset.
+    dockerConfig: process.env.DOCKER_CONFIG ?? 'unset',
     event,
   };
 };

@@ -8,6 +8,7 @@ import {
   pullImage,
   removeContainer,
   appendEnvFlags,
+  describeRefusedSensitiveEnvKeys,
   execEnvForSecrets,
   SENSITIVE_ENV_KEYS,
 } from './docker-runner.js';
@@ -337,7 +338,18 @@ async function createNetworkAndSidecar(args: {
   // AWS credentials served by the metadata sidecar route through docker's
   // value-from-process-env form (`-e KEY`) so they never appear in argv;
   // CLUSTER (non-secret) keeps the inline `-e KEY=VALUE` form.
-  const sidecarPassthroughEnv = appendEnvFlags(sidecarArgs, sidecarEnv, SENSITIVE_ENV_KEYS);
+  // `SENSITIVE_ENV_KEYS` is disjoint from the docker-client denylist (fenced
+  // in `docker-cmd-client-env.test.ts`), so `collisions` is empty today; it is
+  // still consumed so a future addition to either set cannot drop a
+  // credential silently (#772).
+  const { passthrough: sidecarPassthroughEnv, collisions: sidecarCollisions } = appendEnvFlags(
+    sidecarArgs,
+    sidecarEnv,
+    SENSITIVE_ENV_KEYS
+  );
+  if (sidecarCollisions.length > 0) {
+    logger.warn(describeRefusedSensitiveEnvKeys('Metadata sidecar', sidecarCollisions));
+  }
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);
   // Under finch's Lima VM these credential values reach the limactl argv (#749).
   warnFinchArgvExposure(Object.keys(sidecarPassthroughEnv));

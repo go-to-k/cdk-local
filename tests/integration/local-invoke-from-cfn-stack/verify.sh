@@ -290,6 +290,12 @@ echo "${RESULT_FROM_CFN}" | grep -q "\"apiKey\":\"${SSM_API_KEY_VALUE}\"" || {
   echo "[verify] FAIL: expected API_KEY=${SSM_API_KEY_VALUE} (decrypted SecureString resolved from SSM), got: ${RESULT_FROM_CFN}"
   exit 1
 }
+# issue #772: the same SecureString under the docker-client name DOCKER_CONFIG
+# is dropped, so the container never sees it.
+echo "${RESULT_FROM_CFN}" | grep -q '"dockerConfig":"unset"' || {
+  echo "[verify] FAIL: expected DOCKER_CONFIG to be dropped (docker-client name, issue #772), got: ${RESULT_FROM_CFN}"
+  exit 1
+}
 
 echo "[verify] step 6b: assert the decrypted SecureString is kept OFF the docker argv (issue #99)"
 # Re-invoke with --verbose so the docker-runner logs the full `docker run`
@@ -327,6 +333,27 @@ echo "${DOCKER_RUN_LINE}" | grep -q "DB_HOST=${SSM_PARAM_VALUE}" || {
 }
 echo "[verify]   SecureString API_KEY routed off the argv; String DB_HOST stayed inline (control)."
 
+echo "[verify] step 6c: assert a SecureString named DOCKER_CONFIG is refused by name (issue #772)"
+if echo "${DOCKER_RUN_LINE}" | grep -q -- '-e DOCKER_CONFIG'; then
+  echo "[verify] FAIL: DOCKER_CONFIG must get no -e flag at all (issue #772): ${DOCKER_RUN_LINE}"
+  exit 1
+fi
+REFUSAL_LINE=$(echo "${DEBUG_OUT}" | grep 'share a name with a variable the container client reads' | head -1)
+echo "${REFUSAL_LINE}" | grep -q 'DOCKER_CONFIG' || {
+  echo "[verify] FAIL: expected a warning naming DOCKER_CONFIG as a refused docker-client name (issue #772)"
+  echo "${DEBUG_OUT}" | tail -20
+  exit 1
+}
+if echo "${REFUSAL_LINE}" | grep -q "${SSM_API_KEY_VALUE}"; then
+  echo "[verify] FAIL: the refusal warning carries the SecureString VALUE (issue #772): ${REFUSAL_LINE}"
+  exit 1
+fi
+if echo "${REFUSAL_LINE}" | grep -q 'API_KEY'; then
+  echo "[verify] FAIL: the refusal warning names the ordinary API_KEY too (issue #772): ${REFUSAL_LINE}"
+  exit 1
+fi
+echo "[verify]   DOCKER_CONFIG refused by name; its value is on neither the argv nor the warning."
+
 echo "[verify] step 7: cdk destroy --force"
 cdk destroy "${STACK}" --force --region "${REGION}" \
   --no-version-reporting --no-asset-metadata --no-path-metadata
@@ -337,3 +364,4 @@ echo "[verify]   - existing behavior intact: TABLE_NAME (Ref) substituted, STATI
 echo "[verify]   - GetAtt fallback: SIBLING_ARN (Fn::GetAtt .Arn) recovered from the deployed function's resolved env."
 echo "[verify]   - issue #94: DB_HOST (Ref to AWS::SSM::Parameter::Value<String>) resolved from SSM under --from-cfn-stack, dropped without it."
 echo "[verify]   - issue #99: API_KEY (SecureString SSM param) decrypted + injected under --from-cfn-stack, and kept OFF the docker run argv (value-less -e API_KEY); String DB_HOST stayed inline as the control."
+echo "[verify]   - issue #772: the same SecureString under the docker-client name DOCKER_CONFIG was dropped with a by-name warning."

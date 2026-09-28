@@ -124,6 +124,10 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
         // through docker's value-from-process-env form (`-e API_KEY`), never
         // the inline `-e API_KEY=<value>` argv.
         API_KEY: ssm.StringParameter.valueForStringParameter(this, SSM_API_KEY_PARAM),
+        // issue #772: the same SecureString under a NAME the docker client
+        // reads. cdkl must drop it (no `-e DOCKER_CONFIG`, nothing in the
+        // docker client's spawn env) and warn by name, never the value.
+        DOCKER_CONFIG: ssm.StringParameter.valueForStringParameter(this, SSM_API_KEY_PARAM),
       },
       timeout: cdk.Duration.seconds(10),
     });
