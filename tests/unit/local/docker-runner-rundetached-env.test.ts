@@ -220,3 +220,90 @@ describe('runDetached __proto__ env var (issue #769)', () => {
     expect(Object.getPrototypeOf(options.env)).toBe(Object.prototype);
   });
 });
+
+// Issue #772: a caller-marked sensitive key named after a docker-client /
+// loader variable must reach neither the client's spawn env nor the argv, and
+// the drop is warned about by key name only.
+describe('runDetached docker-client key refusal (issue #772)', () => {
+  beforeEach(() => execFileMock.mockReset());
+
+  // `runDetached` logs through `getLogger().child('docker')`; hand it a child
+  // whose `warn` is observable.
+  function spyDockerWarn() {
+    const warn = vi.fn();
+    const child = { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() };
+    const childSpy = vi
+      .spyOn(getLogger(), 'child')
+      .mockReturnValue({ ...child, child: () => child } as never);
+    return { mock: warn.mock, mockRestore: () => childSpy.mockRestore() };
+  }
+
+  it('drops a sensitive DOCKER_HOST / LD_PRELOAD and warns with the name, never the value', async () => {
+    const warnSpy = spyDockerWarn();
+    try {
+      await runDetached({
+        image: 'public.ecr.aws/lambda/nodejs:20',
+        mounts: [],
+        env: {
+          DOCKER_HOST: 'tcp://evil-host:2375',
+          LD_PRELOAD: '/tmp/evil-lib.so',
+          API_KEY: 'ordinary-secret',
+        },
+        sensitiveEnvKeys: new Set(['DOCKER_HOST', 'LD_PRELOAD', 'API_KEY']),
+        cmd: ['index.handler'],
+        hostPort: 9301,
+      });
+      const [, args, options] = execFileMock.mock.calls[0] as [
+        string,
+        string[],
+        { env?: NodeJS.ProcessEnv },
+      ];
+      // No flag at all for the refused keys, and no value anywhere in argv.
+      expect(args).not.toContain('DOCKER_HOST');
+      expect(args).not.toContain('LD_PRELOAD');
+      const joined = args.join(' ');
+      expect(joined).not.toContain('evil-host');
+      expect(joined).not.toContain('evil-lib');
+      // The client's own env is untouched for those names.
+      expect(options.env!['DOCKER_HOST']).toBe(process.env['DOCKER_HOST']);
+      expect(options.env!['LD_PRELOAD']).toBe(process.env['LD_PRELOAD']);
+      // Control: the ordinary secret still goes through the spawn env.
+      expect(args).toContain('API_KEY');
+      expect(options.env!['API_KEY']).toBe('ordinary-secret');
+      // One warning naming both keys, carrying neither value.
+      const warns = warnSpy.mock.calls.map((c) => String(c[0]));
+      const hit = warns.filter((w) => w.includes('DOCKER_HOST'));
+      expect(hit).toHaveLength(1);
+      expect(hit[0]).toContain('LD_PRELOAD');
+      expect(hit[0]).not.toContain('evil-host');
+      expect(hit[0]).not.toContain('evil-lib');
+      expect(hit[0]).not.toContain('API_KEY');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('control: no warning and no spawn env when nothing is refused', async () => {
+    const warnSpy = spyDockerWarn();
+    try {
+      await runDetached({
+        image: 'public.ecr.aws/lambda/nodejs:20',
+        mounts: [],
+        env: { PATH: '/var/lang/bin' },
+        cmd: ['index.handler'],
+        hostPort: 9302,
+      });
+      const [, args, options] = execFileMock.mock.calls[0] as [
+        string,
+        string[],
+        { env?: NodeJS.ProcessEnv },
+      ];
+      // A NON-sensitive PATH is container env, emitted inline as before.
+      expect(args).toContain('PATH=/var/lang/bin');
+      expect(options.env).toBeUndefined();
+      expect(warnSpy.mock.calls).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});

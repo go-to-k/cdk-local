@@ -40,6 +40,17 @@ the AWS credentials it hands a container or the ECS metadata sidecar — as a
 value-less `-e KEY` flag, with the value in the client's environment, so the
 plaintext does not appear on the container client's command line.
 
+Because the value goes into the client's own environment, a secret whose
+NAME is a variable the client, the dynamic loader or a helper the client runs
+reads is not forwarded at all. Examples are `PATH`, `HOME`, `DOCKER_HOST`,
+`DOCKER_CONFIG`, `NODE_OPTIONS`, `HTTPS_PROXY`, and the `LD_*`, `DYLD_*` and
+`AWS_ENDPOINT_URL_*` families; names are matched case-insensitively. A name
+that is empty or contains `=` is not forwarded either. The container starts
+without that variable, and a warning names it, never its value. Rename the
+secret if the container needs it. A plain (non-secret) env var of the same
+name is unaffected, because it is passed as `-e KEY=VALUE` and never touches
+the client's environment.
+
 finch on macOS and Windows runs containers inside a Lima VM, and that does not
 hold there. finch resolves each value-less `-e KEY` itself and rewrites it as
 `-e KEY=<value>` on the command line of the `limactl` process it starts, where
