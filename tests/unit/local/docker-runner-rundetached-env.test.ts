@@ -179,7 +179,7 @@ describe('runDetached __proto__ env var (issue #769)', () => {
     return { AWS_LAMBDA_FUNCTION_NAME: 'MyFn', ...resolved };
   }
 
-  it('emits a non-sensitive __proto__ inline', async () => {
+  it('control: emits a non-sensitive __proto__ inline (green before the fix too)', async () => {
     await runDetached({
       image: 'public.ecr.aws/lambda/nodejs:20',
       mounts: [],

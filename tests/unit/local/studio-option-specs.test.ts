@@ -217,7 +217,11 @@ describe('resolveEnvVars __proto__ KV row (issue #769)', () => {
   });
 
   it('keeps a __proto__-only row set (not treated as empty)', () => {
-    const out = resolveEnvVars('lambda', { '--env-vars': [{ left: '__proto__', right: 'v' }] });
+    const out = resolveEnvVars('lambda', { '--env-vars': [{ left: '__proto__', right: 'v' }] }) as
+      | { Parameters: Record<string, string> }
+      | undefined;
     expect(out).toBeDefined();
+    expect(Object.hasOwn(out!.Parameters, '__proto__')).toBe(true);
+    expect(out!.Parameters['__proto__']).toBe('v');
   });
 });
