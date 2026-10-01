@@ -493,11 +493,12 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   collisions → claim → file-disjoint lanes → `/verify-pr` → `/merge-pr`);
   `/hunt-bugs` is the companion sweep that files the issues. Skip the claim
   only for a trivial change you will PR within minutes.
-- **File only what a user can hit.** An issue names a path from a CDK app or a
-  documented `cdkl` command to behavior that differs from the real AWS service,
-  a crash, or an exposure [SECURITY.md](SECURITY.md) puts in scope. Wording, an
-  input no CDK app produces, and SECURITY.md's out-of-scope class are a line in
-  the PR body, never an issue. A reviewer's finding meets the same bar.
+- **File only what a user can hit.** A defect or finding is filed only when
+  it names a path from a CDK app or a documented `cdkl` command to behavior
+  that differs from the real AWS service, a crash, or an exposure
+  [SECURITY.md](SECURITY.md) puts in scope. Wording, an input no CDK app
+  produces, and SECURITY.md's out-of-scope class are a line in the PR body,
+  never an issue. A reviewer's finding meets the same bar.
 - **Every session-wrap / task-complete report MUST end with a "Remaining
   work" section AND a "Session close" verdict — unprompted.** **Scope: only work
   THIS session created or touched.** The section reports residuals of the

@@ -41,8 +41,10 @@ In scope:
   container or AWS value reaching the terminal unstripped.
 - cdk-local itself passing an untrusted value to a shell or a child process,
   or resolving a file path outside where it belongs.
-- A local emulator's authorizer, JWT or signature check accepting a request
-  AWS would reject.
+- A local emulator's authorizer, JWT, signature or mTLS client-certificate
+  check accepting a request AWS would reject.
+- Removal of a container, network, image, file or directory cdk-local did not
+  create.
 - A local server reachable from outside the machine when the operator did not
   ask for it.
 
@@ -54,3 +56,6 @@ Out of scope:
   runs arbitrary code at synth), the operator's own deployment, or a principal
   in the account who can already change the deployed resources directly. The
   attack also needs the operator to paste a crafted line.
+- **The non-boundaries the docs already state**: the CloudFront Function
+  runtime is not a sandbox, and a failed role assumption falls back to the
+  caller's own credentials (see `docs/cli-reference.md`).

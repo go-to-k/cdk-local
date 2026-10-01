@@ -112,7 +112,8 @@ inherits the labels via `.github/workflows/pr-inherit-issue-labels.yml` — do
 not hand-add them.
 
 **Folding is not a filing threshold** — the bar above is; folding changes
-only WHERE an admitted defect is written down. A folded row carries no `Session-fit` / `Severity`: put the severity in the row's text,
+only WHERE an admitted defect is written down. A folded row carries no
+`Session-fit` / `Severity`: put the severity in the row's text,
 and write cross-references as `go-to-k/<repo>#N`.
 
 ### 5-c. `Session-fit: next` must NAME the next session's verification

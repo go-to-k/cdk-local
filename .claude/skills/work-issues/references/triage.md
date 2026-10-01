@@ -113,10 +113,8 @@ into ONE lane (one worktree, one PR) or one defers, one lane per shared module.
 Map each candidate to its target file, then rank:
 
 - **Security issues come FIRST**, ahead of every other preference — the one
-  class whose cost grows while it waits. Security = credentials / secrets,
-  redaction, sensitive values persisted or logged, auth and token verification,
-  role assumption, untrusted input reaching a container or command; in doubt,
-  treat as security. Urgency changes ORDER and waives §3-a, NEVER verification
+  class whose cost grows while it waits. Security = SECURITY.md's in-scope
+  list; its out-of-scope class never ranks here. Urgency changes ORDER and waives §3-a, NEVER verification
   depth — such a lane also takes the security-lens review.
 - **Then higher `Severity` first**, when BOTH candidates carry it: it was
   MEASURED by the session holding the evidence, while a title prefix is a proxy
