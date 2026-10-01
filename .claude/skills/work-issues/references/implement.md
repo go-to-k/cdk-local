@@ -50,10 +50,14 @@ it.
   `s/echo "FAIL: /fail "/` sweep turns `fail()` into a call to itself).
 - **A red fixture is not evidence about your lane until you have ATTRIBUTED
   it**: re-run on a clean tree and compare the failure SIGNATURE, not the exit
-  code. Identical both ways = pre-existing (say so in the PR body, file it,
-  proceed); different = yours, stop.
+  code. Identical both ways = pre-existing (say so in the PR body, file it if
+  it meets the filing bar, proceed); different = yours, stop.
 
 ### 5-b. Resolve a finding against the issues ALREADY OPEN, then file
+
+**Apply `.claude/AGENTS.md`'s "File only what a user can hit" bar FIRST.** A
+finding below it (wording, an input no CDK app produces, SECURITY.md's
+out-of-scope class) is one line in the PR body — neither filed nor folded.
 
 The code sweep finds sibling SITES; this finds a sibling ISSUE, written from
 another angle. Search before filing:
@@ -84,7 +88,7 @@ gh issue view <hit> --json body -q .body > "$U" \
 empty file the `printf` fills with the new row, and the `edit` then replaces
 the issue's WHOLE body with it. Never fold twice at once.
 
-On a MISS — the expected outcome for a new root cause — file it, with its
+On a MISS for a finding that meets the bar, file it, with its
 `Severity` / `Effort` values **ALSO as labels**:
 
 ```bash
@@ -107,9 +111,8 @@ too; `Session-fit` is re-decided at claim and `Estimate` is free-form. The PR
 inherits the labels via `.github/workflows/pr-inherit-issue-labels.yml` — do
 not hand-add them.
 
-**Folding is not a filing threshold** — it changes only WHERE a defect is
-written down (§10-0: an unfiled finding is worse than a filed one). A folded
-row carries no `Session-fit` / `Severity`: put the severity in the row's text,
+**Folding is not a filing threshold** — the bar above is; folding changes
+only WHERE an admitted defect is written down. A folded row carries no `Session-fit` / `Severity`: put the severity in the row's text,
 and write cross-references as `go-to-k/<repo>#N`.
 
 ### 5-c. `Session-fit: next` must NAME the next session's verification
