@@ -56,6 +56,6 @@ Out of scope:
   runs arbitrary code at synth), the operator's own deployment, or a principal
   in the account who can already change the deployed resources directly. The
   attack also needs the operator to paste a crafted line.
-- **The non-boundaries the docs already state**: the CloudFront Function
-  runtime is not a security boundary, and a failed role assumption falls back to the
+- **The non-boundaries the docs already state**: the CloudFront Function runtime
+  is not a security boundary, and a failed role assumption falls back to the
   caller's own credentials (see `docs/cli-reference.md`).

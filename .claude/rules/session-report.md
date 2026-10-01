@@ -60,12 +60,13 @@ CLAIM time, before the lane's PR exists.
 ## Scales
 
 `Severity`: `high` = a wrong result, data loss, an exposure SECURITY.md puts in
-scope, or something a user hits in normal operation; `medium` = a capability
-is missing but there is a workaround, or it shows up only under a specific
+scope, or something a user hits in normal operation; `medium` = a capability is
+missing but there is a workaround, or it shows up only under a specific
 condition; `low` = internal tidiness, invisible to users. **Rate what a user
-experiences, never why this session should do it** — "leaving main self-inconsistent" is a `Session-fit: now`
-trigger, not a Severity level; rating it `high` smuggles that trigger through
-the wrong field, and `high` forces `now`, so a misrated one cannot be re-judged.
+experiences, never why this session should do it** — "leaving main
+self-inconsistent" is a `Session-fit: now` trigger, not a Severity level; rating
+it `high` smuggles that trigger through the wrong field, and `high` forces
+`now`, so a misrated one cannot be re-judged.
 
 `Effort` measures the verification tail, not the edit: `small` = edit plus unit
 tests, riding verification this session already pays for; `medium` = one
