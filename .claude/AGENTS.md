@@ -493,10 +493,14 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   collisions → claim → file-disjoint lanes → `/verify-pr` → `/merge-pr`);
   `/hunt-bugs` is the companion sweep that files the issues. Skip the claim
   only for a trivial change you will PR within minutes.
+- **File only what a user can hit.** A defect or finding is filed only when
+  it names a path from a CDK app or a documented `cdkl` command to behavior
+  that differs from the real AWS service, a crash, or an exposure
+  [SECURITY.md](SECURITY.md) puts in scope. Wording, an input no CDK app
+  produces, and SECURITY.md's out-of-scope class are a line in the PR body,
+  never an issue. A reviewer's finding meets the same bar.
 - **Every session-wrap / task-complete report MUST end with a "Remaining
-  work" section AND a "Session close" verdict — unprompted** (mirrors
-  the user should never have to ask "any follow-up tasks?" or "can I close
-  this session?"). **Scope: only work
+  work" section AND a "Session close" verdict — unprompted.** **Scope: only work
   THIS session created or touched.** The section reports residuals of the
   task just finished: gaps in what was shipped, polish deferred while doing
   it, and issues filed BECAUSE of this work. It is NOT a backlog dump — if
@@ -545,16 +549,10 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
 
 ## Tooling Policy
 
-The agent-tooling layer — Claude Code hooks, markgate gates,
-`.claude/rules/**`, `.claude/skills/**` and the unit tests whose subject is
-that prose — had grown to roughly half of all recently merged PRs and half of
-the open issues, with more bash in the hooks than the shipped CLI has in some
-subsystems. Every session paid for it: rule files load whole into context,
-gates re-run on every push, and the tooling itself bred bugs — a bash parser
-for shell commands is never finished, and each miss became an issue, a PR and
-a review round as if it were a product bug. **These rules exist so it does not
-grow back.** An exception is stated in
-the PR body for the maintainer to decide.
+The agent-tooling layer (hooks, gates, `.claude/rules/**`, `.claude/skills/**`,
+tests of that prose) once crowded out cdk-local itself; these rules keep it
+from growing back. An exception is stated in the PR body for the maintainer to
+decide.
 
 1. **Default answer: do not build it.** A new hook, gate, CI fence, rule
    paragraph, skill step or test-of-prose is added only on the **SECOND**

@@ -118,7 +118,8 @@ fixtures ARE its deliverable.
 
 ### 6. On a confirmed bug: file an issue, then fix it with a unit test
 
-**File a GitHub issue for every confirmed bug**, even when you fix it in the same
+**File a GitHub issue for every confirmed bug that meets `.claude/AGENTS.md`'s
+"File only what a user can hit" bar**, even when you fix it in the same
 session: an issue-only round files and stops, a fix-in-session round files then
 closes from the PR (`Closes #<n>`). The body
 carries the real repro (synth + command + observed vs expected) and the four

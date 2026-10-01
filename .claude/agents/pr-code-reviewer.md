@@ -40,6 +40,7 @@ Read every changed file end-to-end. For each, ask:
 - Whether tests pass (CI handles that).
 - Whether decisions match the design doc (separate spec-compliance reviewer).
 - Documentation prose.
+- SECURITY.md's out-of-scope class (a printed value that would run if pasted into a shell), and any site OUTSIDE the diff that fails `.claude/AGENTS.md`'s "File only what a user can hit" — every finding you raise becomes work.
 
 ## Report format
 

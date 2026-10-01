@@ -148,8 +148,9 @@ Run each check and report pass/fail.
     none holds: **(a) fixed in this PR** — the default, since a reviewer's nit
     lives in a file this session just reviewed, which makes it `now` under
     `.claude/rules/session-report.md`'s context test; **(b) TODO (issue #N)** —
-    only through one of that rule's two `next` reasons, written in the issue body
-    and referenced from this PR's; **(c) won't-do** — the PR body or a comment
+    only when it meets `.claude/AGENTS.md`'s filing bar, and through one of
+    `session-report.md`'s two `next` reasons, written in the issue body and
+    referenced from this PR's; **(c) won't-do** — the PR body or a comment
     names the nit and why shipping as-is is right.
 
 13. **PR title + body freshness** (skip if no PR exists yet). Follow-up commits

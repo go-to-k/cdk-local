@@ -59,13 +59,14 @@ CLAIM time, before the lane's PR exists.
 
 ## Scales
 
-`Severity`: `high` = a wrong result, data loss, a security surface, or something
-a user hits in normal operation; `medium` = a capability is missing but there is
-a workaround, or it shows up only under a specific condition; `low` = internal
-tidiness, invisible to users. **Rate what a user experiences, never why this
-session should do it** — "leaving main self-inconsistent" is a `Session-fit: now`
-trigger, not a Severity level; rating it `high` smuggles that trigger through
-the wrong field, and `high` forces `now`, so a misrated one cannot be re-judged.
+`Severity`: `high` = a wrong result, data loss, an exposure SECURITY.md puts in
+scope, or something a user hits in normal operation; `medium` = a capability is
+missing but there is a workaround, or it shows up only under a specific
+condition; `low` = internal tidiness, invisible to users. **Rate what a user
+experiences, never why this session should do it** — "leaving main
+self-inconsistent" is a `Session-fit: now` trigger, not a Severity level; rating
+it `high` smuggles that trigger through the wrong field, and `high` forces
+`now`, so a misrated one cannot be re-judged.
 
 `Effort` measures the verification tail, not the edit: `small` = edit plus unit
 tests, riding verification this session already pays for; `medium` = one
@@ -94,7 +95,8 @@ decided first; (b) is what the test gates.
   subsystem this session holds, a pattern landed at some sites and not others, a
   guard with a known hole: the cost grows FOR THE REPO every session, and a
   deferred fixture is the piece that never lands; or **`Severity: high`** — a
-  wrong result, data loss, or a security surface — unless (a) blocks it. **Residuals of a just-merged lane** — polish, nits,
+  wrong result, data loss, or an in-scope SECURITY.md exposure — unless (a)
+  blocks it. **Residuals of a just-merged lane** — polish, nits,
   parity gaps, sibling sites a review named — are the hottest context there is;
   "only a residual" names no cost. Writing a NEW integ fixture is
   `Effort: large`, a cost to record, never a reason to defer.

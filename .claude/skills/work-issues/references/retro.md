@@ -38,8 +38,8 @@ Report one line — `closed N / filed M (new K / folded J)` — plus the reason
 when M > N; only one such reason is healthy, the code really having that many
 independent defects (say which area). `J = 0` over several findings in one area
 signals §5's window was searched by this instance's spelling, not the concept.
-**M <= N is NOT a target**: an unfiled finding leaves the defect in the
-product.
+A filed item below `.claude/AGENTS.md`'s filing bar is a defect in this run:
+name it.
 
 ### 10-a. Evidence: only what this run actually produced
 

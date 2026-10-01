@@ -129,6 +129,8 @@ made explicit:
       reader — log line, console output, cache, persisted file, container env,
       outbound request, error message. Report any reader that receives it
       unmasked, plus injection, path-traversal and deletion-safety issues.
+      Do not raise SECURITY.md's out-of-scope class (a printed value that
+      would run if pasted into a shell).
       Touched security paths: <list them>.
   }
 ```
