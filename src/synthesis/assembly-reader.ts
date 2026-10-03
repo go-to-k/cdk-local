@@ -1,10 +1,26 @@
-import {
+import type {
   AssetManifestArtifact,
-  type CloudFormationStackArtifact,
+  CloudFormationStackArtifact,
 } from '@aws-cdk/cloud-assembly-api';
-import { Toolkit, CdkAppMultiContext, BaseCredentials } from '@aws-cdk/toolkit-lib';
-import { CdklIoHost } from './cdkl-io-host.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
+
+/**
+ * `@aws-cdk/toolkit-lib` (and the IoHost subclass built on it) is loaded on
+ * first synth, never at module load. It is the single most expensive import
+ * in the graph (~400 ms of module resolution on Node 24), and this module is
+ * reachable from every entry point — `cdk-local`, `cdk-local/internal` and the
+ * CLI — so a static import made every embedding host (cdkd's `deploy` /
+ * `destroy` included, which never synthesize through cdk-local) pay for it at
+ * startup. Do not turn these back into static imports.
+ */
+async function loadSynthDeps() {
+  const [toolkitLib, { CdklIoHost }, { AssetManifestArtifact }] = await Promise.all([
+    import('@aws-cdk/toolkit-lib'),
+    import('./cdkl-io-host.js'),
+    import('@aws-cdk/cloud-assembly-api'),
+  ]);
+  return { ...toolkitLib, CdklIoHost, AssetManifestArtifact };
+}
 
 /**
  * Stack information extracted from a CDK Cloud Assembly.
@@ -155,6 +171,8 @@ export class AssemblyReader {
    * artifact in the resulting Cloud Assembly.
    */
   async read(cdkAppCommand: string, options: AssemblyReadOptions = {}): Promise<StackInfo[]> {
+    const { Toolkit, CdkAppMultiContext, BaseCredentials, CdklIoHost, AssetManifestArtifact } =
+      await loadSynthDeps();
     const toolkit = new Toolkit({
       ioHost: new CdklIoHost(),
       sdkConfig: {
@@ -181,7 +199,7 @@ export class AssemblyReader {
     });
     const cached = await toolkit.synth(source);
     try {
-      return collectStacks(cached.cloudAssembly);
+      return collectStacks(cached.cloudAssembly, AssetManifestArtifact);
     } finally {
       await cached.dispose();
     }
@@ -208,13 +226,14 @@ export class AssemblyReader {
    * lookups (SSM / VPC / AMI / etc.), without any safety benefit.
    */
   async readFromDirectory(assemblyDir: string): Promise<StackInfo[]> {
+    const { Toolkit, CdklIoHost, AssetManifestArtifact } = await loadSynthDeps();
     const toolkit = new Toolkit({ ioHost: new CdklIoHost() });
     const source = await toolkit.fromAssemblyDirectory(assemblyDir, {
       failOnMissingContext: false,
     });
     const cached = await toolkit.synth(source);
     try {
-      return collectStacks(cached.cloudAssembly);
+      return collectStacks(cached.cloudAssembly, AssetManifestArtifact);
     } finally {
       await cached.dispose();
     }
@@ -245,11 +264,16 @@ export class AssemblyReader {
  * refusal says so in as many words rather than leaving the user with the
  * generic hand-modified-assembly diagnosis.
  */
-function collectStacks(assembly: {
-  directory: string;
-  stacks: CloudFormationStackArtifact[];
-}): StackInfo[] {
-  return assembly.stacks.map((stack) => mapStackArtifact(stack, assembly.directory));
+function collectStacks(
+  assembly: {
+    directory: string;
+    stacks: CloudFormationStackArtifact[];
+  },
+  assetManifestClass: typeof AssetManifestArtifact
+): StackInfo[] {
+  return assembly.stacks.map((stack) =>
+    mapStackArtifact(stack, assembly.directory, assetManifestClass)
+  );
 }
 
 /**
@@ -259,7 +283,11 @@ function collectStacks(assembly: {
  * the directory the Stage's assets were staged into. See
  * `StackInfo.assetOutdir`.
  */
-function mapStackArtifact(stack: CloudFormationStackArtifact, assetOutdir: string): StackInfo {
+function mapStackArtifact(
+  stack: CloudFormationStackArtifact,
+  assetOutdir: string,
+  assetManifestClass: typeof AssetManifestArtifact
+): StackInfo {
   const info: StackInfo = {
     stackName: stack.stackName,
     displayName: stack.displayName ?? stack.id,
@@ -286,7 +314,7 @@ function mapStackArtifact(stack: CloudFormationStackArtifact, assetOutdir: strin
   // asset-directory existence check fires a `LocalInvokeResolutionError`
   // for every Lambda whose code was synthesized as a separate asset.
   const assetManifest = stack.dependencies.find(
-    (d): d is AssetManifestArtifact => d instanceof AssetManifestArtifact
+    (d): d is AssetManifestArtifact => d instanceof assetManifestClass
   );
   if (assetManifest) {
     info.assetManifestPath = assetManifest.file;
