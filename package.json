@@ -112,10 +112,10 @@
   },
   "peerDependenciesMeta": {
     "aws-cdk-lib": {
-      "optional": false
+      "optional": true
     },
     "constructs": {
-      "optional": false
+      "optional": true
     }
   }
 }
