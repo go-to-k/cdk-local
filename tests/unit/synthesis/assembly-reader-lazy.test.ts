@@ -37,6 +37,16 @@ vi.mock('@aws-cdk/cloud-assembly-api', () => {
 });
 
 describe('AssemblyReader — toolkit-lib is loaded lazily', () => {
+  // First, so nothing has loaded the mocks yet: a static import anywhere in
+  // either public entry's graph (a command file importing cdkl-io-host.ts, a
+  // re-export) would bring the cost back without touching assembly-reader.ts.
+  it('neither public entry point evaluates toolkit-lib or cloud-assembly-api at import', async () => {
+    await import('../../../src/index.js');
+    await import('../../../src/internal.js');
+    expect(loaded).toEqual({ toolkitLib: false, cloudAssemblyApi: false });
+    // Transforming both entries' whole source graph takes several seconds.
+  }, 60_000);
+
   it('does not evaluate toolkit-lib or cloud-assembly-api at module load, only on first read', async () => {
     const { AssemblyReader } = await import('../../../src/synthesis/assembly-reader.js');
     expect(loaded).toEqual({ toolkitLib: false, cloudAssemblyApi: false });
