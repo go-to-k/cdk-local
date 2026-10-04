@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vite-plus/test';
 
 /**
  * `@aws-cdk/toolkit-lib` is the most expensive import in cdk-local's graph and
