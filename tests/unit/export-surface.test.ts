@@ -52,14 +52,30 @@ describe('package export surface', () => {
     // ERR_MODULE_NOT_FOUND for every consumer (`./state-provider` shipped that
     // way from the first release).
     const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
-      exports: Record<string, { types: string; import: string }>;
+      main: string;
+      types: string;
+      bin: Record<string, string>;
+      exports: Record<string, string | Record<string, string>>;
     };
     const { default: config } = await import('../../vite.config.ts');
     const entries = Object.keys((config as { pack: { entry: Record<string, string> } }).pack.entry);
     const emitted = new Set(entries.flatMap((name) => [`./dist/${name}.js`, `./dist/${name}.d.ts`]));
-    for (const [subpath, target] of Object.entries(pkg.exports)) {
-      expect(emitted, `exports["${subpath}"].import`).toContain(target.import);
-      expect(emitted, `exports["${subpath}"].types`).toContain(target.types);
+    const normalize = (p: string): string => (p.startsWith('./') ? p : `./${p}`);
+    const targets: Array<[string, string]> = [
+      ['main', pkg.main],
+      ['types', pkg.types],
+      ...Object.entries(pkg.bin).map(([name, p]): [string, string] => [`bin.${name}`, p]),
+      ...Object.entries(pkg.exports).flatMap(([subpath, target]): Array<[string, string]> =>
+        typeof target === 'string'
+          ? [[`exports["${subpath}"]`, target]]
+          : Object.entries(target).map(([cond, p]): [string, string] => [
+              `exports["${subpath}"].${cond}`,
+              p,
+            ])
+      ),
+    ];
+    for (const [field, path] of targets) {
+      expect(emitted, field).toContain(normalize(path));
     }
   });
 });
