@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vite-plus/test';
 import * as main from '../../src/index.js';
 import * as internal from '../../src/internal.js';
@@ -44,5 +45,37 @@ describe('package export surface', () => {
     // `export * from './internal.js'` to the main entry, this breaks loudly.
     const leaked = Object.keys(internal).filter((key) => key in main);
     expect(leaked, `internal symbols leaked into the main entry: ${leaked.join(', ')}`).toEqual([]);
+  });
+
+  it('every package.json export points at a file `vp pack` emits', async () => {
+    // A subpath whose target no pack entry produces resolves to
+    // ERR_MODULE_NOT_FOUND for every consumer (`./state-provider` shipped that
+    // way from the first release).
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
+      main: string;
+      types: string;
+      bin: Record<string, string>;
+      exports: Record<string, string | Record<string, string>>;
+    };
+    const { default: config } = await import('../../vite.config.ts');
+    const entries = Object.keys((config as { pack: { entry: Record<string, string> } }).pack.entry);
+    const emitted = new Set(entries.flatMap((name) => [`./dist/${name}.js`, `./dist/${name}.d.ts`]));
+    const normalize = (p: string): string => (p.startsWith('./') ? p : `./${p}`);
+    const targets: Array<[string, string]> = [
+      ['main', pkg.main],
+      ['types', pkg.types],
+      ...Object.entries(pkg.bin).map(([name, p]): [string, string] => [`bin.${name}`, p]),
+      ...Object.entries(pkg.exports).flatMap(([subpath, target]): Array<[string, string]> =>
+        typeof target === 'string'
+          ? [[`exports["${subpath}"]`, target]]
+          : Object.entries(target).map(([cond, p]): [string, string] => [
+              `exports["${subpath}"].${cond}`,
+              p,
+            ])
+      ),
+    ];
+    for (const [field, path] of targets) {
+      expect(emitted, field).toContain(normalize(path));
+    }
   });
 });
