@@ -183,6 +183,12 @@ export interface RunEcsTaskOptions {
   /** AWS region for secret resolution + metadata sidecar. */
   region?: string;
   /**
+   * `--stack-region`: the region the task's stack lives in. Resolving a
+   * plain-name `{{resolve:...}}` reference uses it ahead of the synth region
+   * and `region` (issue #784), the same precedence the Lambda env builder uses.
+   */
+  stackRegion?: string;
+  /**
    * Optional pre-resolved `ImagePlan` map — only used by tests. Production
    * callers leave undefined and let the runner walk every container's
    * Image / docker build / ECR pull path.
@@ -487,6 +493,29 @@ export async function runEcsTask(
   }
   if (finchRefusals.length > 0) throw new EcsTaskRunnerError(finchRefusals.join('\n'));
 
+  // A dynamic reference in `Command` / `EntryPoint` / a health-check command
+  // would have to be resolved ONTO the `docker run` argv, where any local
+  // process can read it. Refuse instead of resolving it there or handing the
+  // container the token (issue #784).
+  const argvRefusals: string[] = [];
+  for (const c of task.containers) {
+    const fields: Array<[string, string[] | undefined]> = [
+      ['Command', c.command],
+      ['EntryPoint', c.entryPoint],
+      ['HealthCheck.Command', c.healthCheck?.command],
+    ];
+    for (const [field, argv] of fields) {
+      if (argv?.some((a) => containsDynamicReference(a))) {
+        argvRefusals.push(
+          `Container ${displayUntrustedValue(c.name)}: ${field} carries a CloudFormation dynamic reference ({{resolve:...}}). ` +
+            'cdk-local resolves dynamic references only in Environment, because resolving one here would put the secret on the docker run argv. ' +
+            'Move the value into an Environment variable or a Secrets entry.'
+        );
+      }
+    }
+  }
+  if (argvRefusals.length > 0) throw new EcsTaskRunnerError(argvRefusals.join('\n'));
+
   // Resolve every container's image. Production callers leave
   // `imagePlanByContainer` undefined — the resolver below walks the asset
   // manifest / ECR / public-image path per image.
@@ -527,12 +556,13 @@ export async function runEcsTask(
       dynamicEnvByContainer.set(
         c.name,
         await resolveDynamicReferencesInEnv(c.environment, {
-          region: firstUsableRegion(task.stack.region, options.region),
+          region: firstUsableRegion(options.stackRegion, task.stack.region, options.region),
           label: `Container ${c.name}`,
-          skipKeys: new Set([
-            ...c.sensitiveEnvKeys,
-            ...overriddenEnvKeys(options.envOverrides, c.name),
-          ]),
+          skipKeys: new Set(
+            Object.keys(c.environment).filter(
+              (k) => !dynamicReferenceEnvKeys(c, options.envOverrides).includes(k)
+            )
+          ),
           resolver: dynamicRefs,
         })
       );
@@ -1128,8 +1158,11 @@ function dynamicReferenceEnvKeys(
   container: ResolvedEcsTask['containers'][number],
   overrides: RunEcsTaskOptions['envOverrides']
 ): string[] {
+  // A `Secrets` entry of the same name replaces the env value in the
+  // container, so its token is never what the container receives.
   const skip = new Set([
     ...container.sensitiveEnvKeys,
+    ...container.secrets.map((s) => s.name),
     ...overriddenEnvKeys(overrides, container.name),
   ]);
   return Object.keys(container.environment).filter(

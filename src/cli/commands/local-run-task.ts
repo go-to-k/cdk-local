@@ -327,6 +327,8 @@ async function localRunTaskCommand(
             dynamicRefs.resolveString(value, {
               region: producerRegion,
               consumer: `Task ${task.taskDefinitionLogicalId} cross-stack env value`,
+              // Overrides apply later, at docker-run time, so none can skip this.
+              overridable: false,
             }),
         };
         try {
@@ -438,6 +440,7 @@ async function localRunTaskCommand(
     if (resolvedRoleArn) runOpts.taskRoleArn = resolvedRoleArn;
     if (options.platform) runOpts.platformOverride = options.platform;
     if (options.region) runOpts.region = options.region;
+    if (options.stackRegion) runOpts.stackRegion = options.stackRegion;
     if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
     if (options.profile) runOpts.profile = options.profile;
     const hostPortOverrides = parseHostPortOverrides(options.hostPort);

@@ -1803,6 +1803,8 @@ async function resolveServiceAndRunnerOpts(
           dynamicRefs.resolveString(value, {
             region: producerRegion,
             consumer: `Task ${service.task.taskDefinitionLogicalId} cross-stack env value`,
+            // Overrides apply later, at docker-run time, so none can skip this.
+            overridable: false,
           }),
       };
       try {
@@ -1854,6 +1856,7 @@ async function resolveServiceAndRunnerOpts(
     detach: true,
   };
   if (envOverrides) taskOpts.envOverrides = envOverrides;
+  if (options.stackRegion) taskOpts.stackRegion = options.stackRegion;
   if (assumedCredentials) taskOpts.taskCredentials = assumedCredentials;
   if (resolvedRoleArn) taskOpts.taskRoleArn = resolvedRoleArn;
   if (options.platform) taskOpts.platformOverride = options.platform;

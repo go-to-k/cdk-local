@@ -2,6 +2,7 @@ import {
   firstUsableRegion,
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
+  templateValueHoldsDynamicReference,
 } from '../../local/dynamic-reference-resolver.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -2290,6 +2291,7 @@ async function buildContainerSpec(args: {
   const stateBundle = stateByStack.get(lambda.stack.stackName);
   let stateAudit: ReturnType<typeof substituteEnvVarsFromState>['audit'] | undefined;
   const plaintextKeys = new Set<string>();
+  const deployedSecretKeys: string[] = [];
   if (stateBundle) {
     const context: SubstitutionContext = { resources: stateBundle.state.resources };
     if (stateBundle.pseudoParameters) {
@@ -2323,12 +2325,21 @@ async function buildContainerSpec(args: {
         resolvedKeys.push(key);
         // Deploy-time-resolved: already plaintext, never re-scanned (#784).
         plaintextKeys.add(key);
+        // A deployed value built from a dynamic reference IS the secret:
+        // keep it off the `docker run` argv.
+        if (templateValueHoldsDynamicReference(getTemplateEnv(lambda.resource)?.[key])) {
+          deployedSecretKeys.push(key);
+        }
         getLogger().debug(
           `Lambda ${logicalId}: filled env var ${key} from deployed function config`
         );
       }
     }
-    stateAudit = { resolvedKeys, unresolved, sensitiveKeys: audit.sensitiveKeys };
+    stateAudit = {
+      resolvedKeys,
+      unresolved,
+      sensitiveKeys: [...audit.sensitiveKeys, ...deployedSecretKeys],
+    };
     for (const { key, reason } of unresolved) {
       getLogger().warn(
         `Lambda ${logicalId}: state source could not substitute env var ${key} (${reason}). ` +
@@ -2362,7 +2373,13 @@ async function buildContainerSpec(args: {
   for (const key of stateAudit?.sensitiveKeys ?? []) plaintextKeys.add(key);
   for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
   const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
-    region: firstUsableRegion(stackRegionOverride, lambda.stack.region, stsRegion, profileRegion),
+    region: firstUsableRegion(
+      stateBundle?.region,
+      stackRegionOverride,
+      lambda.stack.region,
+      stsRegion,
+      profileRegion
+    ),
     label: `Lambda ${logicalId}`,
     skipKeys: plaintextKeys,
     ...(profile !== undefined && { profile }),
@@ -3525,6 +3542,11 @@ async function reloadAllServers(args: {
 export interface StackStateBundle {
   state: StackState;
   /**
+   * The region the state was loaded from — the owning stack's region, used
+   * first when resolving a `{{resolve:...}}` env value (issue #784).
+   */
+  region?: string;
+  /**
    * AWS pseudo parameters (account / region / partition / URL suffix).
    * `undefined` when none of the stack's reachable Lambdas has a
    * pseudo-parameter intrinsic in its env map (skips the STS hop) OR
@@ -3694,7 +3716,7 @@ export async function loadStateForRoutedStacks(
         outputs: loaded.outputs,
         lastModified: 0,
       };
-      const bundle: StackStateBundle = { state: syntheticState };
+      const bundle: StackStateBundle = { state: syntheticState, region: loaded.region };
       if (stackHasIntrinsicEnv(stackName)) {
         const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
         if (pseudo) bundle.pseudoParameters = pseudo;

@@ -42,8 +42,13 @@ export class DynamicReferenceResolutionError extends Error {
   }
 }
 
-/** A well-formed `{{resolve:<service>:<body>}}` occurrence. */
-const DYNAMIC_REFERENCE_SOURCE = String.raw`\{\{resolve:([^:{}]*):([^{}]*)\}\}`;
+/**
+ * Any `{{resolve:...}}` occurrence. Deliberately broader than the grammar:
+ * a malformed token (`{{resolve:ssm}}`, a stray `{` in the body) is detected
+ * here and REJECTED by {@link parseDynamicReference}, rather than slipping
+ * through to the container as text.
+ */
+const DYNAMIC_REFERENCE_SOURCE = String.raw`\{\{resolve:[^}]*\}\}`;
 /** Stateless (non-global) form for detection: `.test` on a `/g` regex advances `lastIndex`. */
 const DYNAMIC_REFERENCE_DETECT = new RegExp(DYNAMIC_REFERENCE_SOURCE);
 
@@ -60,6 +65,50 @@ function dynamicReferenceMatcher(): RegExp {
  */
 export function firstUsableRegion(...candidates: Array<string | undefined>): string | undefined {
   return candidates.find((r) => r !== undefined && r !== '' && r !== 'unknown-region');
+}
+
+/**
+ * True when a template value — a literal or an intrinsic tree — holds a
+ * dynamic reference anywhere, including one split across `Fn::Join` parts
+ * (`["{{resolve:secretsmanager:", {"Ref": "S"}, ":SecretString:k}}"]`). Used
+ * to flag a key whose value arrives already resolved from elsewhere (a
+ * deployed-env fill) as a secret, so it stays off the `docker run` argv.
+ */
+export function templateValueHoldsDynamicReference(value: unknown): boolean {
+  if (typeof value === 'string') return value.includes('{{resolve:');
+  if (value === null || typeof value !== 'object') return false;
+  return JSON.stringify(value).includes('{{resolve:');
+}
+
+/**
+ * Template env keys an `--env-vars` override replaces or clears, found by
+ * running the caller's own override function over sentinel values. Removing
+ * them BEFORE state substitution means an override also skips a cross-stack
+ * dynamic-reference lookup, as the resolver's error message promises.
+ */
+export function keysOverriddenBy(
+  templateEnv: Record<string, unknown> | undefined,
+  applyOverrides: (env: Record<string, string>) => Record<string, string>
+): Set<string> {
+  const out = new Set<string>();
+  if (!templateEnv) return out;
+  const sentinel: Record<string, string> = {};
+  for (const k of Object.keys(templateEnv)) defineOwnKey(sentinel, k, `\u0000cdkl-sentinel:${k}`);
+  const applied = applyOverrides(sentinel);
+  for (const k of Object.keys(templateEnv)) {
+    if (!Object.hasOwn(applied, k) || applied[k] !== sentinel[k]) out.add(k);
+  }
+  return out;
+}
+
+/** Copy of `env` without `keys` (own-key safe). */
+export function withoutKeys<T>(
+  env: Record<string, T>,
+  keys: ReadonlySet<string>
+): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const k of Object.keys(env)) if (!keys.has(k)) defineOwnKey(out, k, env[k]!);
+  return out;
 }
 
 /** True when `value` contains at least one `{{resolve:...}}` dynamic reference. */
@@ -193,7 +242,7 @@ function parseSsm(raw: string, service: 'ssm' | 'ssm-secure', body: string): Ssm
   if (name.length === 0) throw malformed(raw, 'the parameter name is empty');
   if (versionParts.length > 1) throw malformed(raw, 'too many segments after the parameter name');
   const version = versionParts[0];
-  if (version !== undefined && !/^\d+$/.test(version)) {
+  if (version !== undefined && !/^[1-9]\d*$/.test(version)) {
     throw malformed(raw, 'the parameter version must be a positive integer');
   }
   return {
@@ -242,6 +291,12 @@ export interface ResolveStringOptions {
   region?: string | undefined;
   /** Who consumes the value, e.g. `Lambda MyFn env var TOKEN`, for errors. */
   consumer: string;
+  /**
+   * Whether an `--env-vars` override can skip this lookup, which decides
+   * whether the error suggests one. Default true; false at a cross-stack
+   * boundary that runs before overrides are applied.
+   */
+  overridable?: boolean;
 }
 
 /**
@@ -298,8 +353,8 @@ export class DynamicReferenceResolver {
     if (!pending) {
       pending =
         ref.service === 'secretsmanager'
-          ? this.fetchSecret(ref, region, opts.consumer)
-          : this.fetchParameter(ref, region, opts.consumer);
+          ? this.fetchSecret(ref, region, opts)
+          : this.fetchParameter(ref, region, opts);
       this.cache.set(cacheKey, pending);
       // A failed fetch is not cached: the error propagates to this caller,
       // and a later call (a --watch rebuild) retries.
@@ -343,10 +398,12 @@ export class DynamicReferenceResolver {
   private fetchFailure(
     ref: DynamicReference,
     region: string | undefined,
-    consumer: string,
+    opts: ResolveStringOptions,
     operation: string,
     err: unknown
   ): DynamicReferenceResolutionError {
+    const consumer = opts.consumer;
+    const overridable = opts.overridable !== false;
     // Raised BEFORE any value exists, so the relayed SDK detail is about the
     // reference (AccessDenied / ResourceNotFound / ParameterNotFound), never
     // the secret. `describeAwsFailureForWarn` withholds a credential-chain
@@ -362,15 +419,17 @@ export class DynamicReferenceResolver {
       `Could not resolve CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} ` +
         `(${operation} in ${region ?? 'the default region'}): ${describeAwsFailureForWarn(err, operation)}.${hint} ` +
         `Resolving it needs ${requiredPermissionsFor(ref)}. ` +
-        'cdk-local does not fall back to the unresolved token; override the variable with --env-vars to skip the lookup.'
+        'cdk-local does not fall back to the unresolved token' +
+        (overridable ? '; override the variable with --env-vars to skip the lookup.' : '.')
     );
   }
 
   private async fetchSecret(
     ref: SecretsManagerReference,
     region: string | undefined,
-    consumer: string
+    opts: ResolveStringOptions
   ): Promise<string> {
+    const consumer = opts.consumer;
     const operation = 'SecretsManager GetSecretValue';
     let secretString: string | undefined;
     try {
@@ -383,7 +442,7 @@ export class DynamicReferenceResolver {
       );
       secretString = resp.SecretString;
     } catch (err) {
-      throw this.fetchFailure(ref, region, consumer, operation, err);
+      throw this.fetchFailure(ref, region, opts, operation, err);
     }
     if (secretString === undefined) {
       throw new DynamicReferenceResolutionError(
@@ -428,8 +487,9 @@ export class DynamicReferenceResolver {
   private async fetchParameter(
     ref: SsmReference,
     region: string | undefined,
-    consumer: string
+    opts: ResolveStringOptions
   ): Promise<string> {
+    const consumer = opts.consumer;
     const operation = 'SSM GetParameter';
     let value: string | undefined;
     let type: string | undefined;
@@ -443,7 +503,7 @@ export class DynamicReferenceResolver {
       value = resp.Parameter?.Value;
       type = resp.Parameter?.Type;
     } catch (err) {
-      throw this.fetchFailure(ref, region, consumer, operation, err);
+      throw this.fetchFailure(ref, region, opts, operation, err);
     }
     if (value === undefined) {
       throw new DynamicReferenceResolutionError(

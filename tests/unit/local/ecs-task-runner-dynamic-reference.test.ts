@@ -214,6 +214,58 @@ describe('runEcsTask — dynamic references in Environment (#784)', () => {
     expect(dockerRunCalls()).toHaveLength(0);
   });
 
+  it('--stack-region wins over the synth region for a plain-name reference', async () => {
+    const task = makeTask([makeContainer({ environment: { DB_PASSWORD: TOKEN } })]);
+    await runEcsTask(
+      task,
+      { ...runnableOptions(task), stackRegion: 'eu-west-1', region: 'us-west-1' },
+      createEcsRunState()
+    );
+    expect(smRegions).toEqual(['eu-west-1']);
+  });
+
+  it('skips a key a Parameters override or a same-name Secret replaces', async () => {
+    stubs.resolveEcsSecrets.mockImplementation(
+      async (secrets: { containerName: string; name: string }[]) =>
+        secrets.map((s) => ({ ...s, value: `resolved-${s.name}` }))
+    );
+    const task = makeTask([
+      makeContainer({
+        environment: { A: TOKEN, B: TOKEN },
+        secrets: [{ name: 'B', valueFrom: 'arn:aws:secretsmanager:us-east-1:111111111111:secret:b' }],
+      }),
+    ]);
+    await runEcsTask(
+      task,
+      { ...runnableOptions(task), envOverrides: { Parameters: { A: 'global' } } },
+      createEcsRunState()
+    );
+    expect(smSend).not.toHaveBeenCalled();
+    expect(dockerRunCalls()[0]!).toContain('A=global');
+  });
+
+  it('a key already flagged sensitive (a decrypted SecureString) is never scanned', async () => {
+    const task = makeTask([
+      makeContainer({ environment: { K: `x${TOKEN}` }, sensitiveEnvKeys: ['K'] }),
+    ]);
+    await runEcsTask(task, runnableOptions(task), createEcsRunState());
+    expect(smSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Command', { command: ['sh', '-c', `echo ${TOKEN}`] }],
+    ['EntryPoint', { entryPoint: [TOKEN] }],
+    ['HealthCheck.Command', { healthCheck: { command: ['CMD', TOKEN] } }],
+  ])('refuses a dynamic reference in %s (it would land on the argv)', async (field, extra) => {
+    const task = makeTask([makeContainer(extra as never)]);
+    const err = await runEcsTask(task, runnableOptions(task), createEcsRunState()).catch(
+      (e: unknown) => e as Error
+    );
+    expect(err.message).toContain(`Container app: ${field} carries a CloudFormation dynamic reference`);
+    expect(smSend).not.toHaveBeenCalled();
+    expect(dockerRunCalls()).toHaveLength(0);
+  });
+
   it('under finch on macOS the key is refused like a secret, before any fetch', async () => {
     process.env['CDK_DOCKER'] = 'finch';
     Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'darwin' });

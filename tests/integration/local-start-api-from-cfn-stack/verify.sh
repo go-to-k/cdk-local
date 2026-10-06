@@ -46,6 +46,9 @@ CONTAINER_HOST="127.0.0.1"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-start-api-from-cfn-stack"
 CLI="node ${REPO_ROOT}/dist/cli.js"
+# issue #784: the stack's secret password (kept in sync with the stack).
+DYNREF_SECRET_PASSWORD="dynref-api-pw-3b81d0"
+SECRET_ARN=""
 
 echo "[verify] region=${REGION} stack=${STACK} (CloudFormation-deployed)"
 
@@ -99,6 +102,12 @@ cleanup() {
     (cd "${TEST_DIR}" && cdk destroy "${STACK}" --force --region "${REGION}" \
       --no-version-reporting --no-asset-metadata --no-path-metadata) || true
   fi
+  # issue #784: a stack-deleted secret may linger in its recovery window;
+  # purge it so no secret outlives the run. Best-effort, idempotent.
+  if [ -n "${SECRET_ARN}" ]; then
+    aws secretsmanager delete-secret --secret-id "${SECRET_ARN}" \
+      --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   rm -f "${LOG_FILE}"
   exit "${rc}"
 }
@@ -123,6 +132,17 @@ cdk deploy "${STACK}" \
   --no-path-metadata \
   --region "${REGION}"
 echo "[verify] step 3 ok: cdk deploy completed"
+# Record the secret ARN at once, so every later failure can purge it.
+SECRET_ARN=$(aws cloudformation describe-stack-resources \
+  --stack-name "${STACK}" \
+  --region "${REGION}" \
+  --query 'StackResources[?ResourceType==`AWS::SecretsManager::Secret`].PhysicalResourceId | [0]' \
+  --output text)
+if [ -z "${SECRET_ARN}" ] || [ "${SECRET_ARN}" = "None" ]; then
+  SECRET_ARN=""
+  echo "[verify] FAIL: could not read the deployed secret ARN from CloudFormation"
+  exit 1
+fi
 
 echo "[verify] step 4: read the deployed table name + sibling ARN from AWS"
 DEPLOYED_TABLE=$(aws cloudformation describe-stack-resources \
@@ -220,13 +240,31 @@ echo "${RESULT_BASELINE}" | grep -q '"siblingArn":"unset"' || {
 echo "${RESULT_BASELINE}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in baseline, got: ${RESULT_BASELINE}"; exit 1;
 }
+echo "${RESULT_BASELINE}" | grep -q '"dynrefSecret":"unset"' || {
+  echo "[verify] FAIL: expected DYNREF_SECRET (Fn::Join over a Ref) dropped in baseline, got: ${RESULT_BASELINE}"; exit 1;
+}
 
 echo "[verify] step 6: cdkl start-api --from-cfn-stack — expect deployed values"
-PORT_FROM_CFN=$(start_server_and_get_port --from-cfn-stack)
+PORT_FROM_CFN=$(start_server_and_get_port --from-cfn-stack --verbose)
 echo "[verify]   server on port ${PORT_FROM_CFN}"
 RESULT_FROM_CFN=$(curl_echo "${PORT_FROM_CFN}")
 echo "[verify]   response: ${RESULT_FROM_CFN}"
+SERVER_LOG="$(cat "${LOG_FILE}")"
 stop_server
+# issue #784: the same-stack secretsmanager reference reaches the container
+# resolved; cdkl's own --verbose output (docker run argv included) carries
+# neither the plaintext nor the token's resolution, only the debug marker.
+echo "${RESULT_FROM_CFN}" | grep -q "\"dynrefSecret\":\"${DYNREF_SECRET_PASSWORD}\"" || {
+  echo "[verify] FAIL: expected DYNREF_SECRET resolved to the secret's password (issue #784), got: ${RESULT_FROM_CFN}"; exit 1;
+}
+echo "${SERVER_LOG}" | grep -q 'Resolved secretsmanager dynamic reference' || {
+  echo "[verify] FAIL: expected the debug line recording the secretsmanager resolution (positive control)"; exit 1;
+}
+if echo "${SERVER_LOG}" | grep -q "${DYNREF_SECRET_PASSWORD}"; then
+  echo "[verify] FAIL: the resolved secret appears in cdkl's own --verbose output (issue #784):"
+  echo "${SERVER_LOG}" | grep "${DYNREF_SECRET_PASSWORD}" | head -5
+  exit 1
+fi
 echo "${RESULT_FROM_CFN}" | grep -q "\"tableName\":\"${DEPLOYED_TABLE}\"" || {
   echo "[verify] FAIL: expected TABLE_NAME=${DEPLOYED_TABLE}, got: ${RESULT_FROM_CFN}"; exit 1;
 }
@@ -240,8 +278,11 @@ echo "${RESULT_FROM_CFN}" | grep -q '"staticValue":"always-the-same"' || {
 echo "[verify] step 7: cdk destroy --force"
 cdk destroy "${STACK}" --force --region "${REGION}" \
   --no-version-reporting --no-asset-metadata --no-path-metadata
+aws secretsmanager delete-secret --secret-id "${SECRET_ARN}" \
+  --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
 
 echo ""
 echo "[verify] All checks passed:"
 echo "[verify]   - existing behavior intact: TABLE_NAME (Ref) substituted, STATIC_VALUE (literal) passed through, baseline drops both intrinsics."
 echo "[verify]   - new behavior: SIBLING_ARN (Fn::GetAtt .Arn) recovered from the deployed function's resolved env via start-api."
+echo "[verify]   - issue #784: DYNREF_SECRET ({{resolve:secretsmanager:...}}) resolved before boot under --from-cfn-stack; the plaintext is in no log line."

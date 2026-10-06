@@ -93,7 +93,9 @@ import {
   DynamicReferenceResolver,
   firstUsableRegion,
   keysNotFromTemplate,
+  keysOverriddenBy,
   resolveDynamicReferencesInEnv,
+  withoutKeys,
 } from '../../local/dynamic-reference-resolver.js';
 import {
   derivePseudoParametersFromRegion,
@@ -1265,7 +1267,18 @@ async function buildContainerEnvWith(
   dynamicRefs: DynamicReferenceResolver
 ): Promise<{ env: Record<string, string>; sensitiveEnvKeys: Set<string> }> {
   const logger = getLogger();
-  let templateEnv: Record<string, unknown> = resolved.environmentVariables;
+  const overrides = readEnvOverridesFile(options.envVars);
+  const cdkPath = readCdkPathOrUndefined(resolved.resource);
+  // Keys an `--env-vars` override replaces never reach state substitution, so
+  // an override also skips a cross-stack dynamic-reference lookup (#784).
+  const overriddenKeys = keysOverriddenBy(
+    resolved.environmentVariables,
+    (env) => resolveEnvVars(resolved.logicalId, cdkPath, env, overrides).resolved
+  );
+  let templateEnv: Record<string, unknown> = withoutKeys(
+    resolved.environmentVariables,
+    overriddenKeys
+  );
   const sensitiveEnvKeys = new Set<string>();
 
   if (stateProvider && loaded) {
@@ -1302,8 +1315,6 @@ async function buildContainerEnvWith(
     }
   }
 
-  const overrides = readEnvOverridesFile(options.envVars);
-  const cdkPath = readCdkPathOrUndefined(resolved.resource);
   const envResult = resolveEnvVars(resolved.logicalId, cdkPath, templateEnv, overrides);
   for (const key of envResult.unresolved) {
     const overrideKeyExample = cdkPath?.replace(/\/Resource$/, '') ?? resolved.logicalId;

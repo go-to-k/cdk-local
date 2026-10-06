@@ -179,6 +179,18 @@ cdk deploy "${STACK}" \
   --no-path-metadata \
   --region "${REGION}"
 echo "[verify] step 3 ok: cdk deploy completed"
+# issue #784: record the secret ARN at once, so every later failure can purge it.
+SECRET_ARN=$(aws cloudformation describe-stack-resources \
+  --stack-name "${STACK}" \
+  --region "${REGION}" \
+  --query 'StackResources[?ResourceType==`AWS::SecretsManager::Secret`].PhysicalResourceId | [0]' \
+  --output text)
+if [ -z "${SECRET_ARN}" ] || [ "${SECRET_ARN}" = "None" ]; then
+  echo "[verify] FAIL: could not read the deployed secret ARN from CloudFormation"
+  SECRET_ARN=""
+  exit 1
+fi
+echo "[verify]   secret: ${SECRET_ARN}"
 
 echo "[verify] step 3b: swap the api-key SSM parameter to a SecureString (issue #99)"
 # SSM rejects an in-place type change on --overwrite, so delete + recreate.
@@ -194,19 +206,8 @@ aws ssm put-parameter \
   --region "${REGION}" >/dev/null
 echo "[verify]   swapped ${SSM_API_KEY_PARAM} -> SecureString"
 
-echo "[verify] step 3c: delete the deploy-time-only parameter; record the secret ARN (issue #784)"
+echo "[verify] step 3c: delete the deploy-time-only parameter (issue #784)"
 aws ssm delete-parameter --name "${SSM_GONE_PARAM}" --region "${REGION}" >/dev/null
-SECRET_ARN=$(aws cloudformation describe-stack-resources \
-  --stack-name "${STACK}" \
-  --region "${REGION}" \
-  --query 'StackResources[?ResourceType==`AWS::SecretsManager::Secret`].PhysicalResourceId | [0]' \
-  --output text)
-if [ -z "${SECRET_ARN}" ] || [ "${SECRET_ARN}" = "None" ]; then
-  echo "[verify] FAIL: could not read the deployed secret ARN from CloudFormation"
-  SECRET_ARN=""
-  exit 1
-fi
-echo "[verify]   secret: ${SECRET_ARN}"
 
 echo "[verify] step 4: read the deployed DynamoDB table name from CloudFormation"
 DEPLOYED_TABLE=$(aws cloudformation describe-stack-resources \

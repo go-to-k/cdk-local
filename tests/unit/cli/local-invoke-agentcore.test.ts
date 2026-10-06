@@ -779,6 +779,54 @@ describe('buildContainerEnv — --from-cfn-stack env substitution', () => {
       WithDecryption: true,
     });
   });
+
+  it('resolves a cross-stack token in the producer region; an --env-vars override skips it', async () => {
+    ssmRegions.length = 0;
+    ssmSendMock.mockReset();
+    ssmSendMock.mockResolvedValue({ Parameter: { Value: 'pl41n', Type: 'String' } });
+    const crossStackProvider = () => ({
+      ...provider(),
+      buildCrossStackResolver: vi.fn().mockResolvedValue({
+        resolveImport: async () => '{{resolve:ssm:/shared/url}}',
+        resolveGetStackOutput: async () => '{{resolve:ssm:/shared/url}}',
+      }),
+    });
+    const env = {
+      URL: {
+        'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Url', Region: 'ap-south-1' },
+      },
+    };
+    const loaded = { resources: {}, region: 'eu-north-1', outputs: {} };
+
+    const first = await buildContainerEnv(
+      runtime('repo:tag', { environmentVariables: env }),
+      cfnOpts,
+      undefined,
+      undefined,
+      crossStackProvider() as never,
+      loaded as never,
+      { stateResources: {} } as never
+    );
+    expect(first.env['URL']).toBe('pl41n');
+    expect(first.sensitiveEnvKeys.has('URL')).toBe(true);
+    expect(ssmRegions).toEqual(['ap-south-1']);
+
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-784-ac-'));
+    const envFile = join(dir, 'env.json');
+    writeFileSync(envFile, JSON.stringify({ Parameters: { URL: 'local' } }));
+    ssmSendMock.mockClear();
+    const second = await buildContainerEnv(
+      runtime('repo:tag', { environmentVariables: env }),
+      { ...(cfnOpts as object), envVars: envFile } as never,
+      undefined,
+      undefined,
+      crossStackProvider() as never,
+      loaded as never,
+      { stateResources: {} } as never
+    );
+    expect(second.env['URL']).toBe('local');
+    expect(ssmSendMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('resolveAssumeRoleArn — bare --assume-role + state', () => {

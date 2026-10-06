@@ -28,6 +28,17 @@ vi.mock('@aws-sdk/client-secrets-manager', () => ({
   },
 }));
 
+vi.mock('@aws-sdk/client-sts', () => ({
+  STSClient: class {
+    async send(): Promise<unknown> {
+      return { Account: '111111111111' };
+    }
+    destroy(): void {}
+  },
+  GetCallerIdentityCommand: class {},
+  AssumeRoleCommand: class {},
+}));
+
 const { resolveLambdaContainerEnv } = await import('../../../src/cli/commands/local-invoke.js');
 const { DynamicReferenceResolutionError } = await import(
   '../../../src/local/dynamic-reference-resolver.js'
@@ -139,7 +150,9 @@ describe('resolveLambdaContainerEnv — cross-stack dynamic reference (host --fr
     } as unknown as LocalStateProvider;
   }
 
-  it('resolves an imported token against the producer (= consumer) region and flags the key', async () => {
+  // An export is regional, so the boundary and the final pass agree on the
+  // region here; the GetStackOutput case below is the one that pins the hook.
+  it('resolves an imported token in the consumer region and flags the key', async () => {
     const result = await resolveLambdaContainerEnv(
       zipLambda({ DB_PASSWORD: { 'Fn::ImportValue': 'Producer-DbPassword' } }),
       { fromState: true } as never,
@@ -149,6 +162,55 @@ describe('resolveLambdaContainerEnv — cross-stack dynamic reference (host --fr
     expect(result.env['DB_PASSWORD']).toBe(PLAINTEXT);
     expect(result.sensitiveEnvKeys).toEqual(['DB_PASSWORD']);
     expect(smRegions).toEqual(['ap-southeast-2']);
+  });
+
+  it('an --env-vars override skips the cross-stack lookup too', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cdkl-784-'));
+    const envFile = path.join(dir, 'env.json');
+    writeFileSync(envFile, JSON.stringify({ Parameters: { DB_PASSWORD: 'local' } }));
+    const result = await resolveLambdaContainerEnv(
+      zipLambda({
+        DB_PASSWORD: {
+          'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Pw', Region: 'eu-central-1' },
+        },
+      }),
+      { fromState: true, envVars: envFile } as never,
+      undefined,
+      { fromState: () => hostProvider() }
+    );
+    expect(result.env['DB_PASSWORD']).toBe('local');
+    expect(smSend).not.toHaveBeenCalled();
+  });
+
+  it('never scans a decrypted SecureString, and flags a deployed fill built from a token', async () => {
+    const provider = {
+      ...hostProvider(),
+      load: async () => ({
+        resources: { Handler: { physicalId: 'fn-phys', resourceType: 'AWS::Lambda::Function', properties: {} } },
+        outputs: {},
+        region: 'ap-southeast-2',
+      }),
+      resolveTemplateSsmParameters: async () => ({
+        values: { SecureParam: `plain-${TOKEN}` },
+        secureStringLogicalIds: ['SecureParam'],
+      }),
+      resolveDeployedFunctionEnv: async () => ({ DB_URL: 'postgres://u:pl41n@db/x' }),
+    } as unknown as LocalStateProvider;
+    const result = await resolveLambdaContainerEnv(
+      zipLambda({
+        API_KEY: { Ref: 'SecureParam' },
+        DB_URL: {
+          'Fn::Join': ['', ['postgres://u:', TOKEN, '@', { 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }]],
+        },
+      }),
+      { fromState: true } as never,
+      undefined,
+      { fromState: () => provider }
+    );
+    expect(smSend).not.toHaveBeenCalled();
+    expect(result.env['API_KEY']).toBe(`plain-${TOKEN}`);
+    expect(result.env['DB_URL']).toBe('postgres://u:pl41n@db/x');
+    expect([...result.sensitiveEnvKeys].sort()).toEqual(['API_KEY', 'DB_URL']);
   });
 
   it('resolves a GetStackOutput token against the Region the intrinsic names', async () => {

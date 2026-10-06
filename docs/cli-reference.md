@@ -286,8 +286,12 @@ Template `Properties.Environment.Variables` entries:
   an error naming the reference and the permission — the token is never
   passed through. The resolved value is kept off the `docker run` argv and
   out of every log line. An `--env-vars` override of the variable skips the
-  lookup. The same rule applies to every command's container env (Lambda,
-  AgentCore, ECS `Environment`).
+  lookup (for an ECS task, only for a same-stack value: a cross-stack one is
+  substituted before the task's overrides apply). The same rule applies to
+  every command's container env (Lambda, AgentCore, ECS `Environment`). A
+  reference in an ECS `Command` / `EntryPoint` / health-check command is
+  refused rather than resolved, because the value would land on the
+  `docker run` command line — move it into `Environment` or `Secrets`.
 
 Standard Lambda runtime env vars are always set:
 `AWS_LAMBDA_FUNCTION_NAME`, `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`,

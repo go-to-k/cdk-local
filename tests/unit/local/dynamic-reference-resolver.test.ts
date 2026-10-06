@@ -18,6 +18,9 @@ import {
   containsDynamicReference,
   firstUsableRegion,
   keysNotFromTemplate,
+  keysOverriddenBy,
+  templateValueHoldsDynamicReference,
+  withoutKeys,
   parseDynamicReference,
   resolveDynamicReferencesInEnv,
 } from '../../../src/local/dynamic-reference-resolver.js';
@@ -90,6 +93,17 @@ describe('containsDynamicReference', () => {
     expect(containsDynamicReference('hello')).toBe(false);
     expect(containsDynamicReference('{{resolve:ssm:/a')).toBe(false);
     expect(containsDynamicReference('{{resolve}}')).toBe(false);
+  });
+  it('detects a malformed token too, so it fails instead of reaching the container as text', async () => {
+    expect(containsDynamicReference('{{resolve:ssm}}')).toBe(true);
+    expect(containsDynamicReference('{{resolve:ssm:/a{b}}')).toBe(true);
+    const { resolver, ssmCalls } = fakeClients({});
+    for (const bad of ['{{resolve:ssm}}', 'x-{{resolve:secretsmanager}}', '{{resolve:ssm:/a{b}}']) {
+      const msg = await failure(resolver.resolveString(bad, { consumer: 'Lambda Fn env var K' }));
+      expect(msg).toMatch(/Malformed CloudFormation dynamic reference/);
+      expect(msg).toContain('Lambda Fn env var K');
+    }
+    expect(ssmCalls).toHaveLength(0);
   });
 });
 
@@ -169,6 +183,7 @@ describe('parseDynamicReference', () => {
 
   it('rejects malformed ssm references and unknown services', () => {
     expect(() => parseDynamicReference('{{resolve:ssm:/p:latest}}')).toThrow(/positive integer/);
+    expect(() => parseDynamicReference('{{resolve:ssm:/p:0}}')).toThrow(/positive integer/);
     expect(() => parseDynamicReference('{{resolve:ssm:/p:1:2}}')).toThrow(/too many segments/);
     expect(() => parseDynamicReference('{{resolve:ssm:}}')).toThrow(/parameter name is empty/);
     expect(() => parseDynamicReference('{{resolve:vault:x}}')).toThrow(/unsupported service/);
@@ -313,6 +328,21 @@ describe('DynamicReferenceResolver — hard-fail errors', () => {
     expect(msg).toContain('{{resolve:ssm:/missing}}');
     expect(msg).toContain('ssm:GetParameter');
     expect(msg).toMatch(/does not exist in us-east-1/);
+  });
+
+  it('a boundary lookup that no override can skip does not suggest --env-vars', async () => {
+    const { resolver } = fakeClients({
+      ssm: () => {
+        throw awsError('AccessDeniedException', 'denied');
+      },
+    });
+    const boundary = await failure(
+      resolver.resolveString('{{resolve:ssm:/p}}', { consumer: 'c', overridable: false })
+    );
+    expect(boundary).not.toContain('--env-vars');
+    expect(boundary).toContain('does not fall back to the unresolved token.');
+    const regular = await failure(resolver.resolveString('{{resolve:ssm:/q}}', { consumer: 'c' }));
+    expect(regular).toContain('override the variable with --env-vars');
   });
 
   it('ssm-secure failures name kms:Decrypt as well', async () => {
@@ -483,5 +513,36 @@ describe('keysNotFromTemplate', () => {
       'E',
     ]);
     expect([...keysNotFromTemplate(undefined, { A: 'x' })]).toEqual(['A']);
+  });
+});
+
+describe('override / template helpers', () => {
+  it('keysOverriddenBy finds replaced and cleared keys, not untouched ones', () => {
+    const template = { A: 'x', B: { Ref: 'R' }, C: 'y' };
+    const out = keysOverriddenBy(template, (env) => {
+      const next = { ...env, A: 'override' };
+      delete (next as Record<string, string>)['B'];
+      return next;
+    });
+    expect([...out].sort()).toEqual(['A', 'B']);
+    expect([...keysOverriddenBy(undefined, (e) => e)]).toEqual([]);
+  });
+
+  it('withoutKeys drops the named keys and keeps __proto__ as an own key', () => {
+    const env: Record<string, string> = { A: '1', B: '2' };
+    Object.defineProperty(env, '__proto__', { value: '3', enumerable: true, writable: true, configurable: true });
+    const out = withoutKeys(env, new Set(['A']));
+    expect(Object.keys(out).sort()).toEqual(['B', '__proto__']);
+  });
+
+  it('templateValueHoldsDynamicReference sees a token split across Fn::Join parts', () => {
+    expect(templateValueHoldsDynamicReference('{{resolve:ssm:/a}}')).toBe(true);
+    expect(
+      templateValueHoldsDynamicReference({
+        'Fn::Join': ['', ['{{resolve:secretsmanager:', { Ref: 'S' }, ':SecretString:k}}']],
+      })
+    ).toBe(true);
+    expect(templateValueHoldsDynamicReference({ Ref: 'Table' })).toBe(false);
+    expect(templateValueHoldsDynamicReference(undefined)).toBe(false);
   });
 });

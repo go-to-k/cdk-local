@@ -4,6 +4,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +57,14 @@ export class LocalStartApiFromCfnStackStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // issue #784: a same-stack secret the echo handler's env references
+    // through a CloudFormation dynamic reference. The password is a fixed
+    // test value kept in sync with verify.sh's DYNREF_SECRET_PASSWORD.
+    const dbSecret = new secretsmanager.Secret(this, 'DbSecret', {
+      secretObjectValue: { password: cdk.SecretValue.unsafePlainText('dynref-api-pw-3b81d0') },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // Sibling function whose ARN the echo handler references via GetAtt.
     // Never invoked locally — it exists only to give the GetAtt a real
     // deployed ARN to resolve to.
@@ -84,6 +93,10 @@ export class LocalStartApiFromCfnStackStack extends cdk.Stack {
         // A literal env var to confirm --from-cfn-stack doesn't break
         // normal-case behavior on its way through.
         STATIC_VALUE: 'always-the-same',
+        // issue #784: `{{resolve:secretsmanager:<Ref>:SecretString:password::}}`
+        // — a Fn::Join over a Ref, so only --from-cfn-stack turns it into a
+        // literal token, which start-api must resolve before boot.
+        DYNREF_SECRET: dbSecret.secretValueFromJson('password').unsafeUnwrap(),
       },
       timeout: cdk.Duration.seconds(10),
     });
