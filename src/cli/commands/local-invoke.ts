@@ -57,6 +57,11 @@ import {
   type StateEnvSubstitutionAudit,
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
+import {
+  DynamicReferenceResolver,
+  keysNotFromTemplate,
+  resolveDynamicReferencesInEnv,
+} from '../../local/dynamic-reference-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
 import {
   resolveRuntimeCodeMountPath,
@@ -987,8 +992,35 @@ export async function resolveLambdaContainerEnv(
   profileCredentials: ResolvedProfileCredentials | undefined,
   extraStateProviders?: ExtraStateProviders
 ): Promise<LambdaContainerEnvResult> {
+  // One resolver per container env, shared by the cross-stack boundary and
+  // the final env pass so each (reference, region) is fetched once (#784).
+  const dynamicRefs = new DynamicReferenceResolver({
+    ...(options.profile !== undefined && { profile: options.profile }),
+  });
+  try {
+    return await resolveLambdaContainerEnvWith(
+      lambda,
+      options,
+      profileCredentials,
+      extraStateProviders,
+      dynamicRefs
+    );
+  } finally {
+    dynamicRefs.dispose();
+  }
+}
+
+async function resolveLambdaContainerEnvWith(
+  lambda: ResolvedLambda,
+  options: LambdaContainerEnvOptions,
+  profileCredentials: ResolvedProfileCredentials | undefined,
+  extraStateProviders: ExtraStateProviders | undefined,
+  dynamicRefs: DynamicReferenceResolver
+): Promise<LambdaContainerEnvResult> {
   const logger = getLogger();
   let stateAudit: StateEnvSubstitutionAudit | undefined;
+  let ownerRegion: string | undefined;
+  const plaintextKeys = new Set<string>();
   let templateEnv = getTemplateEnv(lambda.resource);
   let stateForRoleHint: StackState | undefined;
   // Pick the right LocalStateProvider for the supplied flags. Returns
@@ -1003,6 +1035,7 @@ export async function resolveLambdaContainerEnv(
     try {
       const loaded = await stateProvider.load(lambda.stack.stackName, lambda.stack.region);
       if (loaded) {
+        ownerRegion = loaded.region;
         stateForRoleHint = {
           version: 1,
           stackName: lambda.stack.stackName,
@@ -1013,6 +1046,11 @@ export async function resolveLambdaContainerEnv(
         const subContext: SubstitutionContext = {
           resources: loaded.resources,
           consumerRegion: loaded.region,
+          resolveDynamicReferences: (value, producerRegion) =>
+            dynamicRefs.resolveString(value, {
+              region: producerRegion,
+              consumer: `Lambda ${lambda.logicalId} cross-stack env value`,
+            }),
         };
         if (envHasIntrinsicValue(templateEnv)) {
           const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
@@ -1046,6 +1084,8 @@ export async function resolveLambdaContainerEnv(
             unresolved = fb.stillUnresolved;
             for (const key of fb.filled) {
               resolvedKeys.push(key);
+              // Deploy-time-resolved: already plaintext, never re-scanned.
+              plaintextKeys.add(key);
               logger.debug(`${label}: filled env var ${key} from deployed function config`);
             }
           }
@@ -1076,6 +1116,24 @@ export async function resolveLambdaContainerEnv(
     );
   }
 
+  // CloudFormation dynamic references (`{{resolve:...}}`), resolved against
+  // the region of the stack that owns the env (issue #784). Keys already
+  // holding plaintext (a decrypted SecureString, a deployed-env fill) and
+  // keys a `--env-vars` override replaced are left as they are.
+  for (const key of stateAudit?.sensitiveKeys ?? []) plaintextKeys.add(key);
+  for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
+  const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+    region:
+      ownerRegion ??
+      options.stackRegion ??
+      lambda.stack.region ??
+      options.region ??
+      profileCredentials?.region,
+    label: `Lambda ${lambda.logicalId}`,
+    skipKeys: plaintextKeys,
+    resolver: dynamicRefs,
+  });
+
   let resolvedAssumeRoleArn: string | undefined;
   try {
     resolvedAssumeRoleArn = await resolveAssumeRoleArnForLambda(
@@ -1095,7 +1153,7 @@ export async function resolveLambdaContainerEnv(
     AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
     AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${lambda.logicalId}`,
     AWS_LAMBDA_LOG_STREAM_NAME: 'local',
-    ...envResult.resolved,
+    ...dynamic.env,
   };
   let assumeSucceeded = false;
   if (resolvedAssumeRoleArn) {
@@ -1157,7 +1215,7 @@ export async function resolveLambdaContainerEnv(
 
   return {
     env: dockerEnv,
-    sensitiveEnvKeys: stateAudit?.sensitiveKeys ?? [],
+    sensitiveEnvKeys: [...new Set([...(stateAudit?.sensitiveKeys ?? []), ...dynamic.resolvedKeys])],
     ...(stateForRoleHint !== undefined && { stateForRoleHint }),
     assumeRoleApplied: assumeSucceeded,
   };

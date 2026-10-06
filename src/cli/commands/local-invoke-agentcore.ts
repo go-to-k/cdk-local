@@ -90,6 +90,11 @@ import {
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
 import {
+  DynamicReferenceResolver,
+  keysNotFromTemplate,
+  resolveDynamicReferencesInEnv,
+} from '../../local/dynamic-reference-resolver.js';
+import {
   derivePseudoParametersFromRegion,
   type ImageResolutionContext,
 } from '../../local/intrinsic-image.js';
@@ -1227,6 +1232,37 @@ export async function buildContainerEnv(
   loaded: LocalStateRecord | undefined,
   imageContext: ImageResolutionContext | undefined
 ): Promise<{ env: Record<string, string>; sensitiveEnvKeys: Set<string> }> {
+  const dynamicRefs = new DynamicReferenceResolver({
+    ...(options.profile !== undefined && { profile: options.profile }),
+  });
+  try {
+    return await buildContainerEnvWith(
+      resolved,
+      options,
+      profileCredentials,
+      profileCredsFile,
+      stateProvider,
+      loaded,
+      imageContext,
+      dynamicRefs
+    );
+  } finally {
+    dynamicRefs.dispose();
+  }
+}
+
+async function buildContainerEnvWith(
+  resolved: ResolvedAgentCoreRuntime,
+  options: LocalInvokeAgentCoreOptions,
+  profileCredentials:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+    | undefined,
+  profileCredsFile: ProfileCredentialsFile | undefined,
+  stateProvider: LocalStateProvider | undefined,
+  loaded: LocalStateRecord | undefined,
+  imageContext: ImageResolutionContext | undefined,
+  dynamicRefs: DynamicReferenceResolver
+): Promise<{ env: Record<string, string>; sensitiveEnvKeys: Set<string> }> {
   const logger = getLogger();
   let templateEnv: Record<string, unknown> = resolved.environmentVariables;
   const sensitiveEnvKeys = new Set<string>();
@@ -1235,6 +1271,11 @@ export async function buildContainerEnv(
     const subContext: SubstitutionContext = {
       resources: imageContext?.stateResources ?? loaded.resources,
       consumerRegion: loaded.region,
+      resolveDynamicReferences: (value, producerRegion) =>
+        dynamicRefs.resolveString(value, {
+          region: producerRegion,
+          consumer: `AgentCore Runtime ${resolved.logicalId} cross-stack env value`,
+        }),
     };
     const pseudo =
       imageContext?.pseudoParameters ?? derivePseudoParametersFromRegion(loaded.region);
@@ -1272,7 +1313,20 @@ export async function buildContainerEnv(
     );
   }
 
-  const dockerEnv: Record<string, string> = { ...envResult.resolved };
+  // CloudFormation dynamic references (`{{resolve:...}}`), resolved against
+  // the region of the stack owning the runtime (issue #784). Plaintext keys
+  // (decrypted SecureStrings) and `--env-vars` overrides are left as they are.
+  const skipKeys = keysNotFromTemplate(templateEnv, envResult.resolved);
+  for (const key of sensitiveEnvKeys) skipKeys.add(key);
+  const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+    region: loaded?.region ?? options.stackRegion ?? resolved.stack.region ?? options.region,
+    label: `AgentCore Runtime ${resolved.logicalId}`,
+    skipKeys,
+    resolver: dynamicRefs,
+  });
+  for (const key of dynamic.resolvedKeys) sensitiveEnvKeys.add(key);
+
+  const dockerEnv: Record<string, string> = { ...dynamic.env };
   const assumeRoleArn = await resolveAssumeRoleArn(options, resolved, loaded, stateProvider);
   await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),

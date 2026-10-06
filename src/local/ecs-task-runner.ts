@@ -39,6 +39,11 @@ import {
 } from './ecs-network.js';
 import { resolveEcsSecrets, type ResolvedSecret } from './ecs-secrets-resolver.js';
 import {
+  DynamicReferenceResolver,
+  containsDynamicReference,
+  resolveDynamicReferencesInEnv,
+} from './dynamic-reference-resolver.js';
+import {
   checkVolumeHostPath,
   type ResolvedEcsContainer,
   type ResolvedEcsImage,
@@ -467,10 +472,14 @@ export async function runEcsTask(
   for (const c of task.containers) {
     // A name `appendEnvFlags` will drop (a docker-client var or a malformed
     // name, issue #772) never reaches the limactl argv, so it is not refused.
+    // A dynamic-reference env var (#784) becomes plaintext before boot, so it
+    // counts here too — decided from the token's syntax, before any fetch.
     const refusal = finchSecretArgvRefusal(
-      [...c.secrets.map((s) => s.name), ...c.sensitiveEnvKeys].filter(
-        (n) => !isMalformedEnvKey(n) && !isDockerClientEnvKey(n)
-      ),
+      [
+        ...c.secrets.map((s) => s.name),
+        ...c.sensitiveEnvKeys,
+        ...dynamicReferenceEnvKeys(c, options.envOverrides),
+      ].filter((n) => !isMalformedEnvKey(n) && !isDockerClientEnvKey(n)),
       { label: 'Container', name: c.name }
     );
     if (refusal !== undefined) finchRefusals.push(refusal);
@@ -499,6 +508,37 @@ export async function runEcsTask(
     ...(options.profile !== undefined && { profile: options.profile }),
   });
   const secretsByContainer = groupSecretsByContainer(resolvedSecrets);
+
+  // CloudFormation dynamic references (`{{resolve:...}}`) in container
+  // `Environment` values — the same resolver every container-env builder
+  // uses (issue #784), fail-fast before any network / container exists, like
+  // the Secrets above. Region: the stack owning the task definition.
+  const dynamicEnvByContainer = new Map<
+    string,
+    { env: Record<string, string>; resolvedKeys: string[] }
+  >();
+  const dynamicRefs = new DynamicReferenceResolver({
+    ...(options.profile !== undefined && { profile: options.profile }),
+  });
+  try {
+    for (const c of task.containers) {
+      if (dynamicReferenceEnvKeys(c, options.envOverrides).length === 0) continue;
+      dynamicEnvByContainer.set(
+        c.name,
+        await resolveDynamicReferencesInEnv(c.environment, {
+          region: task.stack.region ?? options.region,
+          label: `Container ${c.name}`,
+          skipKeys: new Set([
+            ...c.sensitiveEnvKeys,
+            ...overriddenEnvKeys(options.envOverrides, c.name),
+          ]),
+          resolver: dynamicRefs,
+        })
+      );
+    }
+  } finally {
+    dynamicRefs.dispose();
+  }
 
   // Bring the network + sidecar up. From this point on the cleanup
   // path is non-trivial — any failure must `destroyTaskNetwork(state.network)`
@@ -568,9 +608,17 @@ export async function runEcsTask(
         `Internal: no resolved image for container '${container.name}'.`
       );
     }
+    const dynamic = dynamicEnvByContainer.get(container.name);
     const built = buildDockerRunArgs({
       task,
-      container,
+      container:
+        dynamic && dynamic.resolvedKeys.length > 0
+          ? {
+              ...container,
+              environment: dynamic.env,
+              sensitiveEnvKeys: [...container.sensitiveEnvKeys, ...dynamic.resolvedKeys],
+            }
+          : container,
       image,
       network: state.network.networkName,
       volumeByName,
@@ -1060,6 +1108,32 @@ async function realizeDockerVolumes(
 
 function randHex(bytes: number): string {
   return randomBytes(bytes).toString('hex');
+}
+
+/** Env keys a `--env-vars` override names for this container (a `null` clear included). */
+function overriddenEnvKeys(
+  overrides: RunEcsTaskOptions['envOverrides'],
+  containerName: string
+): string[] {
+  if (!overrides) return [];
+  return [
+    ...Object.keys(overrides['Parameters'] ?? {}),
+    ...Object.keys(overrides[containerName] ?? {}),
+  ];
+}
+
+/** Env keys whose template value holds a dynamic reference that will be resolved. */
+function dynamicReferenceEnvKeys(
+  container: ResolvedEcsTask['containers'][number],
+  overrides: RunEcsTaskOptions['envOverrides']
+): string[] {
+  const skip = new Set([
+    ...container.sensitiveEnvKeys,
+    ...overriddenEnvKeys(overrides, container.name),
+  ]);
+  return Object.keys(container.environment).filter(
+    (k) => !skip.has(k) && containsDynamicReference(container.environment[k])
+  );
 }
 
 function groupSecretsByContainer(

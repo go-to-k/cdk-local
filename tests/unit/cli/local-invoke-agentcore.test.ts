@@ -14,6 +14,8 @@ const {
   createLocalStateProviderMock,
   verifyJwtViaDiscoveryMock,
   stsSendMock,
+  ssmSendMock,
+  ssmRegions,
 } = vi.hoisted(() => ({
   loadManifestMock: vi.fn(),
   getFileAssetsMock: vi.fn(),
@@ -28,6 +30,24 @@ const {
   createLocalStateProviderMock: vi.fn(),
   verifyJwtViaDiscoveryMock: vi.fn(),
   stsSendMock: vi.fn(),
+  ssmSendMock: vi.fn(),
+  ssmRegions: [] as Array<string | undefined>,
+}));
+
+vi.mock('@aws-sdk/client-ssm', () => ({
+  SSMClient: class {
+    constructor(config: { region?: string }) {
+      ssmRegions.push(config.region);
+    }
+    send = ssmSendMock;
+    destroy(): void {}
+  },
+  GetParameterCommand: class {
+    constructor(public input: unknown) {}
+  },
+  GetParametersCommand: class {
+    constructor(public input: unknown) {}
+  },
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
@@ -727,6 +747,37 @@ describe('buildContainerEnv — --from-cfn-stack env substitution', () => {
     // The value resolved from a SecureString param, so the env key must be
     // flagged sensitive (kept off the docker run argv).
     expect(sensitiveEnvKeys.has('API_KEY')).toBe(true);
+  });
+
+  // Issue #784 — the same dynamic-reference resolver every container-env
+  // builder runs, here against the region the state was loaded from.
+  it('resolves a {{resolve:ssm-secure:...}} env value in the state region, off the argv', async () => {
+    ssmRegions.length = 0;
+    ssmSendMock.mockResolvedValue({ Parameter: { Value: 'pl41n', Type: 'SecureString' } });
+    const resolved = runtime('repo:tag', {
+      environmentVariables: { API_KEY: '{{resolve:ssm-secure:/app/key:2}}', MODE: 'x' },
+    });
+    const loaded = { resources: {}, region: 'eu-north-1', outputs: {} };
+
+    const { env, sensitiveEnvKeys } = await buildContainerEnv(
+      resolved,
+      cfnOpts,
+      undefined,
+      undefined,
+      provider() as never,
+      loaded as never,
+      { stateResources: {} } as never
+    );
+
+    expect(env['API_KEY']).toBe('pl41n');
+    expect(env['MODE']).toBe('x');
+    expect(sensitiveEnvKeys.has('API_KEY')).toBe(true);
+    expect(sensitiveEnvKeys.has('MODE')).toBe(false);
+    expect(ssmRegions).toEqual(['eu-north-1']);
+    expect(ssmSendMock.mock.calls[0]![0].input).toEqual({
+      Name: '/app/key:2',
+      WithDecryption: true,
+    });
   });
 });
 

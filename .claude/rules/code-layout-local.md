@@ -23,7 +23,8 @@ a log line, and a served HTTP response body.
 - Governed sites beyond `sigv4-verify` and the STS relays:
   `cfn-local-state-provider`, `ssm-parameter-resolver`, `state-resolver`,
   `cloudfront-kvs-client`, `cloudfront-s3-origin`, `layer-arn-materializer`,
-  `ecr-puller`, `ecs-secrets-resolver`, `httpv2-service-integration` (an HTTP
+  `ecr-puller`, `ecs-secrets-resolver`, `dynamic-reference-resolver`,
+  `httpv2-service-integration` (an HTTP
   RESPONSE BODY — the widest reader), `local-studio`'s image-context warn.
   Uncovered: `cloudfront-server`'s `Request handling failed:` relay.
 - Two NON-error leaks stay closed: `cfn-local-state-provider` FLATTENS the
@@ -34,6 +35,21 @@ a log line, and a served HTTP response body.
   line), and give cdk-local's OWN throws an identifiable class, re-raised ABOVE
   the relay — the policy is positive, withholding anything that is not a parsed
   service response, cdk-local's own text included.
+
+## `dynamic-reference-resolver` — `{{resolve:...}}` before boot (#784)
+
+- ONE resolver for every container env: each env builder (`resolveLambdaContainerEnv`,
+  `start-api`'s spec, AgentCore's `buildContainerEnv`, `runEcsTask`) runs
+  `resolveDynamicReferencesInEnv` on its final template-derived env, and the
+  cross-stack boundary runs it through `SubstitutionContext.resolveDynamicReferences`
+  with the PRODUCER's region. A new env builder must do both, or a token reaches a
+  container as text.
+- Never scan a value that is already plaintext (a decrypted SecureString, a
+  deployed-env fill, a cross-stack value resolved at the boundary) or an
+  `--env-vars` override: an error would quote a fragment of the secret. Never hand
+  the hook to a path whose output is echoed as an identifier (ECS `Secrets`
+  `ValueFrom`).
+- Hard-fail, never fall back to the token; resolved keys join the sensitive set.
 
 ## AgentCore
 

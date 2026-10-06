@@ -62,6 +62,15 @@ SSM_API_KEY_PARAM="$(integ_scoped_name /cdkl-integ/invoke-from-cfn-stack/api-key
 SSM_API_KEY_PLACEHOLDER="placeholder-not-secret"
 SSM_API_KEY_VALUE="s3cr3t-api-key-9f3a2b"
 
+# issue #784: CloudFormation dynamic references resolved locally. The stack's
+# secret holds DYNREF_SECRET_PASSWORD (kept in sync with the stack constant).
+# SSM_GONE_PARAM exists only for the deploy (CloudFormation resolves the
+# DynrefMissingHandler's `{{resolve:ssm:...}}` at deploy time) and is deleted
+# right after it, so a LOCAL resolve of that reference must fail loudly.
+DYNREF_SECRET_PASSWORD="dynref-pw-7c1e94"
+SSM_GONE_PARAM="$(integ_scoped_name /cdkl-integ/invoke-from-cfn-stack/dynref-gone)"
+SECRET_ARN=""
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-invoke-from-cfn-stack"
 CLI="node ${REPO_ROOT}/dist/cli.js"
@@ -100,6 +109,13 @@ cleanup() {
   if [ "${WE_CREATED_PARAM}" -eq 1 ]; then
     aws ssm delete-parameter --name "${SSM_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
     aws ssm delete-parameter --name "${SSM_API_KEY_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
+    aws ssm delete-parameter --name "${SSM_GONE_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  # issue #784: a stack-deleted secret may linger in its recovery window;
+  # purge it so no secret outlives the run. Best-effort, idempotent.
+  if [ -n "${SECRET_ARN}" ]; then
+    aws secretsmanager delete-secret --secret-id "${SECRET_ARN}" \
+      --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
   fi
   exit "${rc}"
 }
@@ -134,6 +150,14 @@ aws ssm put-parameter \
   --overwrite \
   --region "${REGION}" >/dev/null
 echo "[verify]   put ${SSM_API_KEY_PARAM}=${SSM_API_KEY_PLACEHOLDER} (String, pre-deploy)"
+# issue #784: exists only for the deploy; deleted right after it (step 3c).
+aws ssm put-parameter \
+  --name "${SSM_GONE_PARAM}" \
+  --value "deploy-time-only" \
+  --type String \
+  --overwrite \
+  --region "${REGION}" >/dev/null
+echo "[verify]   put ${SSM_GONE_PARAM} (deploy-time only)"
 
 echo "[verify] step 3: cdk deploy (upstream CDK CLI)"
 # The fixture deliberately uses upstream `cdk deploy` so the resulting
@@ -169,6 +193,20 @@ aws ssm put-parameter \
   --type SecureString \
   --region "${REGION}" >/dev/null
 echo "[verify]   swapped ${SSM_API_KEY_PARAM} -> SecureString"
+
+echo "[verify] step 3c: delete the deploy-time-only parameter; record the secret ARN (issue #784)"
+aws ssm delete-parameter --name "${SSM_GONE_PARAM}" --region "${REGION}" >/dev/null
+SECRET_ARN=$(aws cloudformation describe-stack-resources \
+  --stack-name "${STACK}" \
+  --region "${REGION}" \
+  --query 'StackResources[?ResourceType==`AWS::SecretsManager::Secret`].PhysicalResourceId | [0]' \
+  --output text)
+if [ -z "${SECRET_ARN}" ] || [ "${SECRET_ARN}" = "None" ]; then
+  echo "[verify] FAIL: could not read the deployed secret ARN from CloudFormation"
+  SECRET_ARN=""
+  exit 1
+fi
+echo "[verify]   secret: ${SECRET_ARN}"
 
 echo "[verify] step 4: read the deployed DynamoDB table name from CloudFormation"
 DEPLOYED_TABLE=$(aws cloudformation describe-stack-resources \
@@ -261,6 +299,16 @@ echo "${RESULT_BASELINE}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in baseline response, got: ${RESULT_BASELINE}"
   exit 1
 }
+# issue #784: a LITERAL dynamic reference resolves without a state flag; the
+# same-stack secret reference is a Fn::Join over a Ref, so it is dropped here.
+echo "${RESULT_BASELINE}" | grep -q "\"dynrefSsm\":\"${SSM_PARAM_VALUE}\"" || {
+  echo "[verify] FAIL: expected DYNREF_SSM={{resolve:ssm:...}} resolved to ${SSM_PARAM_VALUE} without a state flag (issue #784), got: ${RESULT_BASELINE}"
+  exit 1
+}
+echo "${RESULT_BASELINE}" | grep -q '"dynrefSecret":"unset"' || {
+  echo "[verify] FAIL: expected DYNREF_SECRET (Fn::Join over a Ref) dropped without a state flag, got: ${RESULT_BASELINE}"
+  exit 1
+}
 
 echo "[verify] step 6: cdkl invoke --from-cfn-stack — expect TABLE_NAME=${DEPLOYED_TABLE}"
 # Bare --from-cfn-stack uses the host stack name verbatim as the CFn
@@ -296,6 +344,22 @@ echo "${RESULT_FROM_CFN}" | grep -q '"dockerConfig":"unset"' || {
   echo "[verify] FAIL: expected DOCKER_CONFIG to be dropped (docker-client name, issue #772), got: ${RESULT_FROM_CFN}"
   exit 1
 }
+# issue #784: same-stack secretsmanager references (json-key, and json-key +
+# version-stage) and a literal ssm reference reach the container RESOLVED.
+for field in dynrefSecret dynrefSecretStage; do
+  echo "${RESULT_FROM_CFN}" | grep -q "\"${field}\":\"${DYNREF_SECRET_PASSWORD}\"" || {
+    echo "[verify] FAIL: expected ${field} resolved to the secret's password (issue #784), got: ${RESULT_FROM_CFN}"
+    exit 1
+  }
+done
+echo "${RESULT_FROM_CFN}" | grep -q "\"dynrefSsm\":\"${SSM_PARAM_VALUE}\"" || {
+  echo "[verify] FAIL: expected DYNREF_SSM resolved to ${SSM_PARAM_VALUE} under --from-cfn-stack (issue #784), got: ${RESULT_FROM_CFN}"
+  exit 1
+}
+if echo "${RESULT_FROM_CFN}" | grep -q '{{resolve:'; then
+  echo "[verify] FAIL: a {{resolve:...}} token reached the container (issue #784): ${RESULT_FROM_CFN}"
+  exit 1
+fi
 
 echo "[verify] step 6b: assert the decrypted SecureString is kept OFF the docker argv (issue #99)"
 # Re-invoke with --verbose so the docker-runner logs the full `docker run`
@@ -354,9 +418,55 @@ if echo "${REFUSAL_LINE}" | grep -q 'API_KEY'; then
 fi
 echo "[verify]   DOCKER_CONFIG refused by name; its value is on neither the argv nor the warning."
 
+echo "[verify] step 6d: a resolved dynamic reference is kept OFF the docker argv and out of every log line (issue #784)"
+echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e DYNREF_SECRET( |$)' || {
+  echo "[verify] FAIL: DYNREF_SECRET not in the value-less '-e DYNREF_SECRET' form on the docker argv: ${DOCKER_RUN_LINE}"
+  exit 1
+}
+if echo "${DOCKER_RUN_LINE}" | grep -qE "${DYNREF_SECRET_PASSWORD}|\{\{resolve:"; then
+  echo "[verify] FAIL: a resolved secret or a {{resolve:...}} token is on the docker run argv: ${DOCKER_RUN_LINE}"
+  exit 1
+fi
+# Every --verbose line EXCEPT the handler's own JSON response (which echoes
+# the env by design) must be free of the plaintext.
+if echo "${DEBUG_OUT}" | grep -v '"dynrefSecret"' | grep -q "${DYNREF_SECRET_PASSWORD}"; then
+  echo "[verify] FAIL: the resolved secret appears in cdkl's own --verbose output (issue #784):"
+  echo "${DEBUG_OUT}" | grep -v '"dynrefSecret"' | grep "${DYNREF_SECRET_PASSWORD}" | head -5
+  exit 1
+fi
+echo "${DEBUG_OUT}" | grep -q 'Resolved secretsmanager dynamic reference' || {
+  echo "[verify] FAIL: expected the debug line recording the secretsmanager resolution (positive control for the negative above)"
+  exit 1
+}
+echo "[verify]   DYNREF_SECRET routed off the argv; the plaintext is in no log line."
+
+echo "[verify] step 6e: a reference to a missing parameter FAILS the invoke, never hands over the token (issue #784)"
+for flags in "" "--from-cfn-stack"; do
+  set +e
+  # shellcheck disable=SC2086
+  GONE_OUT=$(${CLI} invoke "${STACK}/DynrefMissingHandler" ${flags} --no-pull 2>&1)
+  GONE_RC=$?
+  set -e
+  if [ "${GONE_RC}" -eq 0 ]; then
+    echo "[verify] FAIL: invoke with a missing referenced parameter succeeded (flags='${flags}'): ${GONE_OUT}"
+    exit 1
+  fi
+  for needle in "{{resolve:ssm:${SSM_GONE_PARAM}}}" 'ssm:GetParameter' 'does not exist'; do
+    echo "${GONE_OUT}" | grep -qF "${needle}" || {
+      echo "[verify] FAIL: the failure (flags='${flags}') does not name '${needle}':"
+      echo "${GONE_OUT}" | tail -10
+      exit 1
+    }
+  done
+done
+echo "[verify]   the missing-parameter reference failed loudly, naming the reference and the permission."
+
 echo "[verify] step 7: cdk destroy --force"
 cdk destroy "${STACK}" --force --region "${REGION}" \
   --no-version-reporting --no-asset-metadata --no-path-metadata
+# issue #784: purge the secret if the stack delete left it in a recovery window.
+aws secretsmanager delete-secret --secret-id "${SECRET_ARN}" \
+  --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
 
 echo ""
 echo "[verify] All checks passed:"
@@ -365,3 +475,4 @@ echo "[verify]   - GetAtt fallback: SIBLING_ARN (Fn::GetAtt .Arn) recovered from
 echo "[verify]   - issue #94: DB_HOST (Ref to AWS::SSM::Parameter::Value<String>) resolved from SSM under --from-cfn-stack, dropped without it."
 echo "[verify]   - issue #99: API_KEY (SecureString SSM param) decrypted + injected under --from-cfn-stack, and kept OFF the docker run argv (value-less -e API_KEY); String DB_HOST stayed inline as the control."
 echo "[verify]   - issue #772: the same SecureString under the docker-client name DOCKER_CONFIG was dropped with a by-name warning."
+echo "[verify]   - issue #784: {{resolve:secretsmanager:...}} (json-key, version-stage) and {{resolve:ssm:...}} resolved locally, off the argv, out of the logs; a missing parameter failed loudly."

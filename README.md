@@ -200,6 +200,8 @@ Each top-level JSON key picks which target to overlay:
 
 `--env-vars` overlays the env block after the template's literals and any resolved ECS `Secrets[]` have been applied. A per-target key (from the table above) wins over `Parameters`. A `null` value clears the key — use the JSON literal `null`, not the string `"null"`.
 
+CloudFormation dynamic references in a container's env — `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}`, `{{resolve:ssm-secure:...}}` — are resolved with your credentials before the container starts, as CloudFormation resolves them for the deployed resource. A lookup that fails stops the command with an error naming the reference and the IAM permission instead of passing the token through, and an `--env-vars` override of the variable skips the lookup. Rules: [docs/cli-reference.md#environment-variables](docs/cli-reference.md#environment-variables).
+
 `--env-vars` can be combined with `--from-cfn-stack`: the latter resolves intrinsics (`Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` / `Fn::GetAtt`) against the deployed stack first, then `--env-vars` overlays your overrides on top. Running standalone (no `--from-cfn-stack`), env vars whose template value is an intrinsic can't be resolved and are dropped with a warning — `--env-vars` is how you supply a concrete value for them.
 
 When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster reached via a local port forward), use `host.docker.internal` instead of `127.0.0.1` — `127.0.0.1` inside the container is the container itself, not the host where the tunnel listens.

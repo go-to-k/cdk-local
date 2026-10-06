@@ -1077,3 +1077,29 @@ export {
   type StudioHistory,
   type StudioLogSearchOptions,
 } from './local/studio-store.js';
+
+/**
+ * CloudFormation dynamic-reference resolution (issue #784): the one resolver
+ * every cdk-local container-env builder runs on its final template-derived
+ * env, and that the cross-stack substitution boundary runs (via
+ * `SubstitutionContext.resolveDynamicReferences`) against the producer's
+ * region. A host that assembles a container env with its OWN code — rather
+ * than through a cdk-local command factory — calls
+ * `resolveDynamicReferencesInEnv` after its `resolveEnvVars` step (skipping
+ * the keys `keysNotFromTemplate` returns) and wires one shared
+ * `DynamicReferenceResolver` into the substitution context, so a
+ * `{{resolve:...}}` token never reaches the container as text. Resolved keys
+ * belong on the `docker run` value-from-process-env path, like a decrypted
+ * SecureString.
+ */
+export {
+  DynamicReferenceResolutionError,
+  DynamicReferenceResolver,
+  containsDynamicReference,
+  keysNotFromTemplate,
+  parseDynamicReference,
+  resolveDynamicReferencesInEnv,
+  type DynamicReference,
+  type DynamicReferenceResolverOptions,
+  type ResolveEnvDynamicReferencesOptions,
+} from './local/dynamic-reference-resolver.js';

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { DynamicReferenceResolver } from '../../local/dynamic-reference-resolver.js';
 import { Command, Option } from 'commander';
 import {
   appOptions,
@@ -304,6 +305,9 @@ async function localRunTaskCommand(
         'us-east-1';
       const resolver = await stateProvider.buildCrossStackResolver(consumerRegion);
       if (resolver) {
+        const dynamicRefs = new DynamicReferenceResolver({
+          ...(options.profile !== undefined && { profile: options.profile }),
+        });
         const subContext: SubstitutionContext = {
           resources: imageContext?.stateResources ?? {},
           ...(imageContext?.pseudoParameters && {
@@ -317,8 +321,19 @@ async function localRunTaskCommand(
           }),
           consumerRegion,
           crossStackResolver: resolver,
+          // A cross-stack value carrying a `{{resolve:...}}` token resolves
+          // against its producer's region at this boundary (issue #784).
+          resolveDynamicReferences: (value, producerRegion) =>
+            dynamicRefs.resolveString(value, {
+              region: producerRegion,
+              consumer: `Task ${task.taskDefinitionLogicalId} cross-stack env value`,
+            }),
         };
-        await applyCrossStackResolverToTask(task, subContext);
+        try {
+          await applyCrossStackResolverToTask(task, subContext);
+        } finally {
+          dynamicRefs.dispose();
+        }
       }
     } else if (!stateProvider && taskNeeds.needsCrossStackResolver) {
       logger.warn(

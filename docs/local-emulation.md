@@ -35,7 +35,8 @@ for `run-task`). Subsequent runs reuse the cached image; pass
 ### finch on macOS and Windows
 
 `CDK_DOCKER` swaps the container client binary (default `docker`). cdk-local
-passes secret values — decrypted `SecureString` env values, ECS `Secrets`, and
+passes secret values — decrypted `SecureString` env values, resolved
+CloudFormation dynamic references (`{{resolve:...}}`), ECS `Secrets`, and
 the AWS credentials it hands a container or the ECS metadata sidecar — as a
 value-less `-e KEY` flag, with the value in the client's environment, so the
 plaintext does not appear on the container client's command line.
@@ -59,9 +60,10 @@ other local processes can read it. finch also puts `AWS_ACCESS_KEY_ID`,
 on every command. So when `CDK_DOCKER` names finch on macOS or Windows:
 
 - **A container with a secret is refused** before it starts: a Lambda or
-  AgentCore container with a decrypted `SecureString` env value, and an ECS
-  task (`run-task`, and each replica of `start-service` / `start-alb`) with a
-  `Secrets` entry or a decrypted `SecureString` env value. `run-task` refuses
+  AgentCore container with a decrypted `SecureString` env value or a resolved
+  dynamic reference, and an ECS task (`run-task`, and each replica of
+  `start-service` / `start-alb`) with a `Secrets` entry, a decrypted
+  `SecureString` env value, or a dynamic-reference env value. `run-task` refuses
   before any image is pulled, any secret is fetched or its task network is
   created. `start-service` / `start-alb` check each service when its first
   replica boots: the shared network and metadata sidecar already exist then,

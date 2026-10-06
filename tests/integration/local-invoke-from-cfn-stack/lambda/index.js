@@ -15,6 +15,10 @@ exports.handler = async (event) => {
     // issue #772: a SecureString-backed key named after a docker-client
     // variable is dropped, so this stays unset.
     dockerConfig: process.env.DOCKER_CONFIG ?? 'unset',
+    // issue #784: CloudFormation dynamic references, resolved locally.
+    dynrefSecret: process.env.DYNREF_SECRET ?? 'unset',
+    dynrefSecretStage: process.env.DYNREF_SECRET_STAGE ?? 'unset',
+    dynrefSsm: process.env.DYNREF_SSM ?? 'unset',
     event,
   };
 };
