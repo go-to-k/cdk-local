@@ -65,6 +65,15 @@ export class LocalStartApiFromCfnStackStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // issue #784: a NoEcho parameter. Its Ref is filled from the deployed env
+    // under --from-cfn-stack, and that fill must stay off the docker argv.
+    // Default kept in sync with verify.sh's NOECHO_PW_VALUE.
+    const noEchoPw = new cdk.CfnParameter(this, 'NoEchoPw', {
+      type: 'String',
+      noEcho: true,
+      default: 'noecho-api-pw-8e40c2',
+    });
+
     // Sibling function whose ARN the echo handler references via GetAtt.
     // Never invoked locally — it exists only to give the GetAtt a real
     // deployed ARN to resolve to.
@@ -97,6 +106,8 @@ export class LocalStartApiFromCfnStackStack extends cdk.Stack {
         // — a Fn::Join over a Ref, so only --from-cfn-stack turns it into a
         // literal token, which start-api must resolve before boot.
         DYNREF_SECRET: dbSecret.secretValueFromJson('password').unsafeUnwrap(),
+        // A Ref to a NoEcho parameter, recovered by the deployed-env fill.
+        NOECHO_PW: noEchoPw.valueAsString,
       },
       timeout: cdk.Duration.seconds(10),
     });

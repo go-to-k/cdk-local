@@ -1103,7 +1103,7 @@ async function resolveLambdaContainerEnvWith(
               // CloudFormation resolved this value at deploy time; keep it off
               // the `docker run` argv when the template says it may be a
               // secret (#784, `deployedFillMayBeSecret`).
-              if (deployedFillMayBeSecret(declaredEnv?.[key], lambda.stack.template.Parameters)) {
+              if (deployedFillMayBeSecret(declaredEnv?.[key], lambda.stack.template)) {
                 deployedSecretKeys.push(key);
               }
               logger.debug(`${label}: filled env var ${key} from deployed function config`);

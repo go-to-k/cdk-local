@@ -136,26 +136,60 @@ export function withoutKeys<T>(
  *   - `Fn::ImportValue` or `Fn::GetStackOutput`, whose producer output may be
  *     secret-bearing;
  *   - a `Ref` (or `Fn::Sub` `${Name}`) to a template parameter declared
- *     `NoEcho: true`.
+ *     `NoEcho: true`;
+ *   - a `Fn::GetAtt` (or `Fn::Sub` `${Res.Attr}`) on a secret-capable
+ *     attribute: `AWS::IAM::AccessKey.SecretAccessKey`,
+ *     `AWS::AppSync::ApiKey.ApiKey`, `AWS::Cognito::UserPoolClient.ClientSecret`,
+ *     any attribute of a custom resource (`Custom::*` /
+ *     `AWS::CloudFormation::CustomResource`, which can return anything), and a
+ *     nested stack's `Outputs.*` (which can pass a secret through).
  *
- * Every other fill (a `Fn::GetAtt` ARN, a `Ref` to an ordinary parameter)
- * is configuration and stays inline.
+ * Every other fill (an ARN or endpoint `Fn::GetAtt`, a `Ref` to an ordinary
+ * parameter) is configuration and stays inline.
  */
 export function deployedFillMayBeSecret(
   templateValue: unknown,
-  templateParameters?: Record<string, unknown>
+  template?: { Parameters?: Record<string, unknown>; Resources?: Record<string, unknown> }
 ): boolean {
+  const resources = template?.Resources ?? {};
+  const secretAttribute = (logicalId: string, attribute: string): boolean => {
+    const res = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
+    const type =
+      res && typeof res === 'object' ? (res as Record<string, unknown>)['Type'] : undefined;
+    if (typeof type !== 'string') return false;
+    if (type.startsWith('Custom::') || type === 'AWS::CloudFormation::CustomResource') return true;
+    if (type === 'AWS::CloudFormation::Stack') return attribute.startsWith('Outputs.');
+    return (
+      (type === 'AWS::IAM::AccessKey' && attribute === 'SecretAccessKey') ||
+      (type === 'AWS::AppSync::ApiKey' && attribute === 'ApiKey') ||
+      (type === 'AWS::Cognito::UserPoolClient' && attribute === 'ClientSecret')
+    );
+  };
+  const getAttTarget = (arg: unknown): [string, string] | undefined => {
+    if (Array.isArray(arg) && typeof arg[0] === 'string' && typeof arg[1] === 'string') {
+      return [arg[0], arg[1]];
+    }
+    if (typeof arg === 'string' && arg.includes('.')) {
+      const i = arg.indexOf('.');
+      return [arg.slice(0, i), arg.slice(i + 1)];
+    }
+    return undefined;
+  };
   const noEcho = new Set<string>();
-  for (const [name, decl] of Object.entries(templateParameters ?? {})) {
+  for (const [name, decl] of Object.entries(template?.Parameters ?? {})) {
     if (decl && typeof decl === 'object') {
       const flag = (decl as Record<string, unknown>)['NoEcho'];
-      if (flag === true || flag === 'true') noEcho.add(name);
+      // CloudFormation accepts `true` and any casing of the string "true".
+      if (String(flag).toLowerCase() === 'true') noEcho.add(name);
     }
   }
   const subNamesNoEcho = (body: string, bound: ReadonlySet<string>): boolean => {
     for (const m of body.matchAll(/\$\{([^}!][^}]*)\}/g)) {
       const name = m[1]!.trim();
-      if (!bound.has(name) && noEcho.has(name)) return true;
+      if (bound.has(name)) continue;
+      if (noEcho.has(name)) return true;
+      const dot = name.indexOf('.');
+      if (dot > 0 && secretAttribute(name.slice(0, dot), name.slice(dot + 1))) return true;
     }
     return false;
   };
@@ -166,6 +200,10 @@ export function deployedFillMayBeSecret(
     const obj = v as Record<string, unknown>;
     if (Object.hasOwn(obj, 'Fn::ImportValue') || Object.hasOwn(obj, 'Fn::GetStackOutput')) {
       return true;
+    }
+    if (Object.hasOwn(obj, 'Fn::GetAtt')) {
+      const target = getAttTarget(obj['Fn::GetAtt']);
+      if (target && secretAttribute(target[0], target[1])) return true;
     }
     if (Object.hasOwn(obj, 'Ref')) {
       const target = obj['Ref'];

@@ -13,6 +13,7 @@ exports.handler = async () => {
       staticValue: process.env.STATIC_VALUE ?? 'unset',
       // issue #784: a CloudFormation dynamic reference, resolved locally.
       dynrefSecret: process.env.DYNREF_SECRET ?? 'unset',
+      noechoPw: process.env.NOECHO_PW ?? 'unset',
     }),
   };
 };

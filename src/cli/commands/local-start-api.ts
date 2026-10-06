@@ -2329,10 +2329,7 @@ async function buildContainerSpec(args: {
         // `docker run` argv when the template says it may be a secret (#784,
         // `deployedFillMayBeSecret`).
         if (
-          deployedFillMayBeSecret(
-            getTemplateEnv(lambda.resource)?.[key],
-            lambda.stack.template.Parameters
-          )
+          deployedFillMayBeSecret(getTemplateEnv(lambda.resource)?.[key], lambda.stack.template)
         ) {
           deployedSecretKeys.push(key);
         }

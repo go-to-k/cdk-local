@@ -564,8 +564,20 @@ describe('override / template helpers', () => {
 
 describe('deployedFillMayBeSecret', () => {
   const params = {
-    DbPassword: { Type: 'String', NoEcho: true },
-    Stage: { Type: 'String' },
+    Parameters: {
+      DbPassword: { Type: 'String', NoEcho: true },
+      Stage: { Type: 'String' },
+    },
+    Resources: {
+      Key: { Type: 'AWS::IAM::AccessKey' },
+      Api: { Type: 'AWS::AppSync::ApiKey' },
+      Client: { Type: 'AWS::Cognito::UserPoolClient' },
+      Lookup: { Type: 'Custom::AWS' },
+      Generic: { Type: 'AWS::CloudFormation::CustomResource' },
+      Nested: { Type: 'AWS::CloudFormation::Stack' },
+      Sibling: { Type: 'AWS::Lambda::Function' },
+      Db: { Type: 'AWS::RDS::DBCluster' },
+    },
   };
 
   it.each([
@@ -579,6 +591,13 @@ describe('deployedFillMayBeSecret', () => {
     ['a Ref to a NoEcho parameter', { Ref: 'DbPassword' }],
     ['a NoEcho parameter inside an Fn::Sub string', { 'Fn::Sub': 'postgres://u:${DbPassword}@h' }],
     ['a NoEcho Ref nested in Fn::Join', { 'Fn::Join': [':', ['u', { Ref: 'DbPassword' }]] }],
+    ['an IAM access key secret', { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] }],
+    ['an AppSync API key (string GetAtt form)', { 'Fn::GetAtt': 'Api.ApiKey' }],
+    ['a user pool client secret', { 'Fn::GetAtt': ['Client', 'ClientSecret'] }],
+    ['any custom-resource attribute', { 'Fn::GetAtt': ['Lookup', 'Parameter.Value'] }],
+    ['a generic custom-resource attribute', { 'Fn::GetAtt': ['Generic', 'Token'] }],
+    ['a nested-stack output', { 'Fn::GetAtt': ['Nested', 'Outputs.Pw'] }],
+    ['a secret attribute inside an Fn::Sub string', { 'Fn::Sub': 'k=${Key.SecretAccessKey}' }],
   ])('flags %s', (_label, value) => {
     expect(deployedFillMayBeSecret(value, params)).toBe(true);
   });
@@ -590,6 +609,10 @@ describe('deployedFillMayBeSecret', () => {
     ['an Fn::Sub over ordinary names', { 'Fn::Sub': 'arn:${AWS::Partition}:s3:::${Stage}-bucket' }],
     ['an Fn::Sub binding that shadows a NoEcho name', { 'Fn::Sub': ['${DbPassword}', { DbPassword: 'literal' }] }],
     ['a Join of GetAtts', { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ':5432']] }],
+    ['a non-secret attribute of a secret-capable type', { 'Fn::GetAtt': ['Key', 'Id'] }],
+    ['a nested-stack non-output attribute', { 'Fn::GetAtt': ['Nested', 'Arn'] }],
+    ['an escaped Fn::Sub literal', { 'Fn::Sub': 'x-${!DbPassword}' }],
+    ['a GetAtt on an undeclared resource', { 'Fn::GetAtt': ['Missing', 'SecretAccessKey'] }],
     ['undefined', undefined],
   ])('leaves %s inline', (_label, value) => {
     expect(deployedFillMayBeSecret(value, params)).toBe(false);
@@ -597,6 +620,14 @@ describe('deployedFillMayBeSecret', () => {
 
   it('a NoEcho Ref is only flagged when the template declares the parameter NoEcho', () => {
     expect(deployedFillMayBeSecret({ Ref: 'DbPassword' }, undefined)).toBe(false);
-    expect(deployedFillMayBeSecret({ Ref: 'DbPassword' }, { DbPassword: { NoEcho: 'true' } })).toBe(true);
+    expect(
+      deployedFillMayBeSecret({ Ref: 'DbPassword' }, { Parameters: { DbPassword: { NoEcho: 'true' } } })
+    ).toBe(true);
+    expect(
+      deployedFillMayBeSecret({ Ref: 'DbPassword' }, { Parameters: { DbPassword: { NoEcho: 'TRUE' } } })
+    ).toBe(true);
+    expect(
+      deployedFillMayBeSecret({ Ref: 'DbPassword' }, { Parameters: { DbPassword: { NoEcho: false } } })
+    ).toBe(false);
   });
 });

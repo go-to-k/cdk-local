@@ -293,12 +293,15 @@ Template `Properties.Environment.Variables` entries:
   `Environment.Variables` is kept off the argv the same way when its template
   value MAY be a secret: it is, or contains anywhere (inside `Fn::Join` /
   `Fn::Sub` too), a `{{resolve:...}}` reference, an `Fn::ImportValue` /
-  `Fn::GetStackOutput`, or a `Ref` to a `NoEcho` parameter. Under
+  `Fn::GetStackOutput`, a `Ref` to a `NoEcho` parameter, or a `Fn::GetAtt`
+  on a secret-capable attribute (`AWS::IAM::AccessKey.SecretAccessKey`,
+  `AWS::AppSync::ApiKey.ApiKey`, `AWS::Cognito::UserPoolClient.ClientSecret`,
+  any custom-resource attribute, a nested stack's `Outputs.*`). Under
   `CDK_DOCKER=finch` on macOS / Windows such a value is refused like any
   other secret unless `CDKL_ALLOW_SECRETS_ON_ARGV=1` (see
   [finch on macOS and Windows](local-emulation.md#finch-on-macos-and-windows)).
-  Any other recovered value (a `Fn::GetAtt` ARN, a `Ref` to an ordinary
-  parameter) is configuration and stays inline. A
+  Any other recovered value (an ARN or endpoint `Fn::GetAtt`, a `Ref` to an
+  ordinary parameter) is configuration and stays inline. A
   reference in an ECS `Command` / `EntryPoint` / health-check command is
   refused rather than resolved, because the value would land on the
   `docker run` command line — move it into `Environment` or `Secrets`.

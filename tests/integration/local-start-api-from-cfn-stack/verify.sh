@@ -48,6 +48,8 @@ TEST_DIR="${REPO_ROOT}/tests/integration/local-start-api-from-cfn-stack"
 CLI="node ${REPO_ROOT}/dist/cli.js"
 # issue #784: the stack's secret password (kept in sync with the stack).
 DYNREF_SECRET_PASSWORD="dynref-api-pw-3b81d0"
+# A NoEcho template parameter's default (kept in sync with the stack).
+NOECHO_PW_VALUE="noecho-api-pw-8e40c2"
 SECRET_ARN=""
 
 echo "[verify] region=${REGION} stack=${STACK} (CloudFormation-deployed)"
@@ -268,6 +270,17 @@ echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e DYNREF_SECRET( |$)' || {
   echo "${SERVER_LOG}" | tail -20
   exit 1
 }
+# issue #784: a deployed-env fill whose template value MAY be a secret (a Ref
+# to a NoEcho parameter) reaches the container value-less, never inline.
+echo "${RESULT_FROM_CFN}" | grep -q "\"noechoPw\":\"${NOECHO_PW_VALUE}\"" || {
+  echo "[verify] FAIL: expected NOECHO_PW filled from the deployed env, got: ${RESULT_FROM_CFN}"; exit 1;
+}
+echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e NOECHO_PW( |$)' || {
+  echo "[verify] FAIL: the NoEcho-backed fill NOECHO_PW is not value-less on the docker run argv: ${DOCKER_RUN_LINE}"; exit 1;
+}
+if echo "${SERVER_LOG}" | grep -qE "NOECHO_PW=|${NOECHO_PW_VALUE}"; then
+  echo "[verify] FAIL: the NoEcho-backed fill appears in cdkl's own --verbose output (issue #784)"; exit 1;
+fi
 # issue #784: a deployed-env fill whose template value cannot be a secret
 # (the GetAtt-recovered SIBLING_ARN) stays inline as configuration.
 echo "${DOCKER_RUN_LINE}" | grep -q -- "-e SIBLING_ARN=${DEPLOYED_SIBLING_ARN}" || {
