@@ -36,6 +36,14 @@ describe('package export surface', () => {
     // a contract at all unless something fails when they disappear.
     expect(internal).toHaveProperty('describeAwsFailureForWarn');
     expect(internal).toHaveProperty('describeCredentialLoadFailure');
+    // Issue #784: a host with its own container-env builder (cdkd's
+    // `local invoke`) needs the dynamic-reference resolver.
+    expect(internal).toHaveProperty('resolveDynamicReferencesInEnv');
+    expect(internal).toHaveProperty('DynamicReferenceResolver');
+    expect(internal).toHaveProperty('keysNotFromTemplate');
+    expect(internal).toHaveProperty('keysOverriddenBy');
+    expect(internal).toHaveProperty('withoutKeys');
+    expect(internal).toHaveProperty('firstUsableRegion');
   });
 
   it('does NOT leak internal building blocks into the main entry', () => {

@@ -106,6 +106,7 @@ import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import type { ResourceState } from '../types/state.js';
 import { defineOwnKey } from '../utils/own-keys.js';
+import { containsDynamicReference } from './dynamic-reference-resolver.js';
 
 /**
  * Result of substituting a single env-var value against state.
@@ -210,6 +211,14 @@ export interface SubstitutionContext {
    * consumed a sensitive parameter. Optional; ignored when unset.
    */
   onSensitiveParameterConsumed?: (logicalId: string) => void;
+  /**
+   * Called when a cross-stack value's dynamic reference was resolved to
+   * plaintext through {@link resolveDynamicReferences} (issue #784). Distinct
+   * from {@link onSensitiveParameterConsumed} so a host never receives a
+   * non-logical-ID argument there. The env-var helpers install a per-key sink
+   * that marks the consuming key sensitive. Optional; ignored when unset.
+   */
+  onDynamicReferenceResolved?: () => void;
   /** Optional pseudo-parameter bag for AWS::* placeholders. */
   pseudoParameters?: PseudoParameters;
   /**
@@ -226,6 +235,18 @@ export interface SubstitutionContext {
    * when this field is absent.
    */
   consumerRegion?: string;
+  /**
+   * Resolve CloudFormation dynamic references (`{{resolve:...}}`) in a value
+   * returned by the {@link crossStackResolver}, against the PRODUCER's region
+   * (issue #784): a host that persists a secret-bearing output redacted back
+   * to its token hands that token across, and only this boundary still knows
+   * which region produced it. A resolved value fires
+   * {@link onDynamicReferenceResolved} so the consuming key stays off the
+   * `docker run` argv. Throws on failure — a dynamic reference never degrades
+   * to its token. Optional; when unset the token flows through and the
+   * container-env builder resolves it against the consumer's region.
+   */
+  resolveDynamicReferences?: (value: string, producerRegion: string) => Promise<string>;
 }
 
 /**
@@ -941,7 +962,29 @@ async function resolveImportValueAsync(
       reason: `Fn::ImportValue ${displayUntrustedValue(exportName)}: export not found in any deployed stack in this region`,
     };
   }
-  return { kind: 'literal', value: resolved };
+  // An export is regional, so its producer shares the consumer's region.
+  return crossStackLiteral(
+    resolved,
+    context.consumerRegion ?? context.pseudoParameters?.region,
+    context
+  );
+}
+
+/**
+ * Wrap a cross-stack lookup's value as a literal, resolving any dynamic
+ * reference in it against the producer's region first (issue #784).
+ */
+async function crossStackLiteral(
+  value: string,
+  producerRegion: string | undefined,
+  context: SubstitutionContext
+): Promise<StateSubstitutionResult> {
+  if (producerRegion && context.resolveDynamicReferences && containsDynamicReference(value)) {
+    const plain = await context.resolveDynamicReferences(value, producerRegion);
+    context.onDynamicReferenceResolved?.();
+    return { kind: 'literal', value: plain };
+  }
+  return { kind: 'literal', value };
 }
 
 /**
@@ -1065,7 +1108,7 @@ async function resolveGetStackOutputAsync(
       reason: `Fn::GetStackOutput ${displayUntrustedValue(stackName)}.${displayUntrustedValue(outputName)} (${displayUntrustedValue(region)}): output not found in producer stack state`,
     };
   }
-  return { kind: 'literal', value: resolved };
+  return crossStackLiteral(resolved, region, context);
 }
 
 /**
@@ -1181,13 +1224,19 @@ export async function resolveWithSensitivityAsync(
   value: unknown,
   context: SubstitutionContext
 ): Promise<{ result: StateSubstitutionResult; consumedSensitive: boolean }> {
-  if (!context.sensitiveParameters || context.sensitiveParameters.size === 0) {
+  if (
+    (!context.sensitiveParameters || context.sensitiveParameters.size === 0) &&
+    !context.resolveDynamicReferences
+  ) {
     return { result: await substituteAgainstStateAsync(value, context), consumedSensitive: false };
   }
   let consumedSensitive = false;
   const keyContext: SubstitutionContext = {
     ...context,
     onSensitiveParameterConsumed: () => {
+      consumedSensitive = true;
+    },
+    onDynamicReferenceResolved: () => {
       consumedSensitive = true;
     },
   };

@@ -14,6 +14,8 @@ const {
   createLocalStateProviderMock,
   verifyJwtViaDiscoveryMock,
   stsSendMock,
+  ssmSendMock,
+  ssmRegions,
 } = vi.hoisted(() => ({
   loadManifestMock: vi.fn(),
   getFileAssetsMock: vi.fn(),
@@ -28,6 +30,24 @@ const {
   createLocalStateProviderMock: vi.fn(),
   verifyJwtViaDiscoveryMock: vi.fn(),
   stsSendMock: vi.fn(),
+  ssmSendMock: vi.fn(),
+  ssmRegions: [] as Array<string | undefined>,
+}));
+
+vi.mock('@aws-sdk/client-ssm', () => ({
+  SSMClient: class {
+    constructor(config: { region?: string }) {
+      ssmRegions.push(config.region);
+    }
+    send = ssmSendMock;
+    destroy(): void {}
+  },
+  GetParameterCommand: class {
+    constructor(public input: unknown) {}
+  },
+  GetParametersCommand: class {
+    constructor(public input: unknown) {}
+  },
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
@@ -727,6 +747,85 @@ describe('buildContainerEnv — --from-cfn-stack env substitution', () => {
     // The value resolved from a SecureString param, so the env key must be
     // flagged sensitive (kept off the docker run argv).
     expect(sensitiveEnvKeys.has('API_KEY')).toBe(true);
+  });
+
+  // Issue #784 — the same dynamic-reference resolver every container-env
+  // builder runs, here against the region the state was loaded from.
+  it('resolves a {{resolve:ssm-secure:...}} env value in the state region, off the argv', async () => {
+    ssmRegions.length = 0;
+    ssmSendMock.mockResolvedValue({ Parameter: { Value: 'pl41n', Type: 'SecureString' } });
+    const resolved = runtime('repo:tag', {
+      environmentVariables: { API_KEY: '{{resolve:ssm-secure:/app/key:2}}', MODE: 'x' },
+    });
+    const loaded = { resources: {}, region: 'eu-north-1', outputs: {} };
+
+    const { env, sensitiveEnvKeys } = await buildContainerEnv(
+      resolved,
+      cfnOpts,
+      undefined,
+      undefined,
+      provider() as never,
+      loaded as never,
+      { stateResources: {} } as never
+    );
+
+    expect(env['API_KEY']).toBe('pl41n');
+    expect(env['MODE']).toBe('x');
+    expect(sensitiveEnvKeys.has('API_KEY')).toBe(true);
+    expect(sensitiveEnvKeys.has('MODE')).toBe(false);
+    expect(ssmRegions).toEqual(['eu-north-1']);
+    expect(ssmSendMock.mock.calls[0]![0].input).toEqual({
+      Name: '/app/key:2',
+      WithDecryption: true,
+    });
+  });
+
+  it('resolves a cross-stack token in the producer region; an --env-vars override skips it', async () => {
+    ssmRegions.length = 0;
+    ssmSendMock.mockReset();
+    ssmSendMock.mockResolvedValue({ Parameter: { Value: 'pl41n', Type: 'String' } });
+    const crossStackProvider = () => ({
+      ...provider(),
+      buildCrossStackResolver: vi.fn().mockResolvedValue({
+        resolveImport: async () => '{{resolve:ssm:/shared/url}}',
+        resolveGetStackOutput: async () => '{{resolve:ssm:/shared/url}}',
+      }),
+    });
+    const env = {
+      URL: {
+        'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Url', Region: 'ap-south-1' },
+      },
+    };
+    const loaded = { resources: {}, region: 'eu-north-1', outputs: {} };
+
+    const first = await buildContainerEnv(
+      runtime('repo:tag', { environmentVariables: env }),
+      cfnOpts,
+      undefined,
+      undefined,
+      crossStackProvider() as never,
+      loaded as never,
+      { stateResources: {} } as never
+    );
+    expect(first.env['URL']).toBe('pl41n');
+    expect(first.sensitiveEnvKeys.has('URL')).toBe(true);
+    expect(ssmRegions).toEqual(['ap-south-1']);
+
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-784-ac-'));
+    const envFile = join(dir, 'env.json');
+    writeFileSync(envFile, JSON.stringify({ Parameters: { URL: 'local' } }));
+    ssmSendMock.mockClear();
+    const second = await buildContainerEnv(
+      runtime('repo:tag', { environmentVariables: env }),
+      { ...(cfnOpts as object), envVars: envFile } as never,
+      undefined,
+      undefined,
+      crossStackProvider() as never,
+      loaded as never,
+      { stateResources: {} } as never
+    );
+    expect(second.env['URL']).toBe('local');
+    expect(ssmSendMock).not.toHaveBeenCalled();
   });
 });
 

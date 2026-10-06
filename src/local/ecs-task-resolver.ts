@@ -1542,6 +1542,7 @@ export async function applyCrossStackResolverToTask(
   context: SubstitutionContext
 ): Promise<void> {
   if (!context.crossStackResolver) return;
+  const { resolveDynamicReferences: _envOnly, ...secretContext } = context;
   const props = task.resource.Properties ?? {};
   const rawContainers = props['ContainerDefinitions'];
   if (!Array.isArray(rawContainers)) return;
@@ -1605,7 +1606,9 @@ export async function applyCrossStackResolverToTask(
         if (typeof valueFromRaw === 'string' && valueFromRaw.length > 0) continue;
         if (container.secrets.some((s) => s.name === sName)) continue;
         if (!isCrossStackIntrinsic(valueFromRaw)) continue;
-        const sub = await substituteAgainstStateAsync(valueFromRaw, context);
+        // A ValueFrom is an ARN, never a value: no dynamic-reference hook, so
+        // nothing resolved to plaintext can land where an ARN is echoed (#784).
+        const sub = await substituteAgainstStateAsync(valueFromRaw, secretContext);
         if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
           container.secrets.push({ name: sName, valueFrom: sub.value });
           resolvedSecretNames.add(sName);

@@ -1,3 +1,9 @@
+import {
+  deployedFillMayBeSecret,
+  firstUsableRegion,
+  keysNotFromTemplate,
+  resolveDynamicReferencesInEnv,
+} from '../../local/dynamic-reference-resolver.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -2284,6 +2290,8 @@ async function buildContainerSpec(args: {
   let templateEnv = getTemplateEnv(lambda.resource);
   const stateBundle = stateByStack.get(lambda.stack.stackName);
   let stateAudit: ReturnType<typeof substituteEnvVarsFromState>['audit'] | undefined;
+  const plaintextKeys = new Set<string>();
+  const deployedSecretKeys: string[] = [];
   if (stateBundle) {
     const context: SubstitutionContext = { resources: stateBundle.state.resources };
     if (stateBundle.pseudoParameters) {
@@ -2315,12 +2323,26 @@ async function buildContainerSpec(args: {
       unresolved = fb.stillUnresolved;
       for (const key of fb.filled) {
         resolvedKeys.push(key);
+        // Deploy-time-resolved: already plaintext, never re-scanned (#784).
+        plaintextKeys.add(key);
+        // CloudFormation resolved this value at deploy time; keep it off the
+        // `docker run` argv when the template says it may be a secret (#784,
+        // `deployedFillMayBeSecret`).
+        if (
+          deployedFillMayBeSecret(getTemplateEnv(lambda.resource)?.[key], lambda.stack.template)
+        ) {
+          deployedSecretKeys.push(key);
+        }
         getLogger().debug(
           `Lambda ${logicalId}: filled env var ${key} from deployed function config`
         );
       }
     }
-    stateAudit = { resolvedKeys, unresolved, sensitiveKeys: audit.sensitiveKeys };
+    stateAudit = {
+      resolvedKeys,
+      unresolved,
+      sensitiveKeys: [...audit.sensitiveKeys, ...deployedSecretKeys],
+    };
     for (const { key, reason } of unresolved) {
       getLogger().warn(
         `Lambda ${logicalId}: state source could not substitute env var ${key} (${reason}). ` +
@@ -2348,6 +2370,24 @@ async function buildContainerSpec(args: {
     );
   }
 
+  // CloudFormation dynamic references (`{{resolve:...}}`) — the same
+  // resolver every container-env builder uses (issue #784). Resolved once
+  // here at server boot, against the region of the stack owning the Lambda.
+  for (const key of stateAudit?.sensitiveKeys ?? []) plaintextKeys.add(key);
+  for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
+  const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+    region: firstUsableRegion(
+      stateBundle?.region,
+      stackRegionOverride,
+      lambda.stack.region,
+      stsRegion,
+      profileRegion
+    ),
+    label: `Lambda ${logicalId}`,
+    skipKeys: plaintextKeys,
+    ...(profile !== undefined && { profile }),
+  });
+
   const dockerEnv: Record<string, string> = {
     AWS_LAMBDA_FUNCTION_NAME: logicalId,
     AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(lambda.memoryMb),
@@ -2355,7 +2395,7 @@ async function buildContainerSpec(args: {
     AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
     AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${logicalId}`,
     AWS_LAMBDA_LOG_STREAM_NAME: 'local',
-    ...envResult.resolved,
+    ...dynamic.env,
   };
 
   // Issue #256 Option 1: `resolveStartApiAssumeRoleArn` honors the
@@ -2460,10 +2500,8 @@ async function buildContainerSpec(args: {
   // Env keys whose value resolved to a decrypted SecureString SSM parameter
   // (issue #99) — routed off the `docker run` argv via the pool's
   // value-from-process-env form.
-  const sensitiveEnvKeys =
-    stateAudit && stateAudit.sensitiveKeys.length > 0
-      ? new Set(stateAudit.sensitiveKeys)
-      : undefined;
+  const sensitiveKeyList = [...(stateAudit?.sensitiveKeys ?? []), ...dynamic.resolvedKeys];
+  const sensitiveEnvKeys = sensitiveKeyList.length > 0 ? new Set(sensitiveKeyList) : undefined;
 
   if (lambda.kind === 'zip') {
     const spec: ContainerSpec = {
@@ -3507,6 +3545,11 @@ async function reloadAllServers(args: {
 export interface StackStateBundle {
   state: StackState;
   /**
+   * The region the state was loaded from — the owning stack's region, used
+   * first when resolving a `{{resolve:...}}` env value (issue #784).
+   */
+  region?: string;
+  /**
    * AWS pseudo parameters (account / region / partition / URL suffix).
    * `undefined` when none of the stack's reachable Lambdas has a
    * pseudo-parameter intrinsic in its env map (skips the STS hop) OR
@@ -3676,7 +3719,7 @@ export async function loadStateForRoutedStacks(
         outputs: loaded.outputs,
         lastModified: 0,
       };
-      const bundle: StackStateBundle = { state: syntheticState };
+      const bundle: StackStateBundle = { state: syntheticState, region: loaded.region };
       if (stackHasIntrinsicEnv(stackName)) {
         const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
         if (pseudo) bundle.pseudoParameters = pseudo;

@@ -11,6 +11,9 @@ exports.handler = async () => {
       tableName: process.env.TABLE_NAME ?? 'unset',
       siblingArn: process.env.SIBLING_ARN ?? 'unset',
       staticValue: process.env.STATIC_VALUE ?? 'unset',
+      // issue #784: a CloudFormation dynamic reference, resolved locally.
+      dynrefSecret: process.env.DYNREF_SECRET ?? 'unset',
+      noechoPw: process.env.NOECHO_PW ?? 'unset',
     }),
   };
 };

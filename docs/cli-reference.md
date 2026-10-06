@@ -270,6 +270,41 @@ Template `Properties.Environment.Variables` entries:
   emits a warning naming the variable and **drops** it (rather than
   silently substituting garbage); pass `--from-cfn-stack` (see below)
   to recover deployed values, or override intrinsics via `--env-vars`.
+- **CloudFormation dynamic references** (`{{resolve:secretsmanager:...}}`,
+  `{{resolve:ssm:...}}`, `{{resolve:ssm-secure:...}}`) — whether written
+  literally, produced by substituting an intrinsic such as CDK's
+  `secret.secretValueFromJson('password')`, or handed back by a cross-stack
+  `Fn::ImportValue` / `Fn::GetStackOutput` — are resolved before the
+  container starts, the way CloudFormation resolves them at deploy time:
+  `secretsmanager:GetSecretValue` (honouring the `SecretString` / json-key /
+  version-stage / version-id segments) or `ssm:GetParameter`
+  (`WithDecryption` for `ssm-secure`, and an `ssm` `:<version>` suffix),
+  with your credentials (`--profile` included). The region is the
+  reference's own when it is an ARN, else the producing stack's for a
+  cross-stack value, else the region of the stack that owns the env. A
+  missing permission or a missing secret / parameter fails the command with
+  an error naming the reference and the permission — the token is never
+  passed through. The resolved value is kept off the `docker run` argv and
+  out of every log line. An `--env-vars` override of the variable skips the
+  lookup (for an ECS task, only for a same-stack value: a cross-stack one is
+  substituted before the task's overrides apply). The same rule applies to
+  every command's container env (Lambda, AgentCore, ECS `Environment`). A
+  value `--from-cfn-stack` recovers from the deployed function's own
+  `Environment.Variables` is kept off the argv the same way when its template
+  value MAY be a secret: it is, or contains anywhere (inside `Fn::Join` /
+  `Fn::Sub` too), a `{{resolve:...}}` reference, an `Fn::ImportValue` /
+  `Fn::GetStackOutput`, a `Ref` to a `NoEcho` parameter, or a `Fn::GetAtt`
+  on a secret-capable attribute (`AWS::IAM::AccessKey.SecretAccessKey`,
+  `AWS::AppSync::ApiKey.ApiKey`, `AWS::Cognito::UserPoolClient.ClientSecret`,
+  any custom-resource attribute, a nested stack's `Outputs.*`). Under
+  `CDK_DOCKER=finch` on macOS / Windows such a value is refused like any
+  other secret unless `CDKL_ALLOW_SECRETS_ON_ARGV=1` (see
+  [finch on macOS and Windows](local-emulation.md#finch-on-macos-and-windows)).
+  Any other recovered value (an ARN or endpoint `Fn::GetAtt`, a `Ref` to an
+  ordinary parameter) is configuration and stays inline. A
+  reference in an ECS `Command` / `EntryPoint` / health-check command is
+  refused rather than resolved, because the value would land on the
+  `docker run` command line — move it into `Environment` or `Secrets`.
 
 Standard Lambda runtime env vars are always set:
 `AWS_LAMBDA_FUNCTION_NAME`, `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`,

@@ -57,6 +57,15 @@ import {
   type StateEnvSubstitutionAudit,
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
+import {
+  DynamicReferenceResolver,
+  deployedFillMayBeSecret,
+  firstUsableRegion,
+  keysNotFromTemplate,
+  keysOverriddenBy,
+  resolveDynamicReferencesInEnv,
+  withoutKeys,
+} from '../../local/dynamic-reference-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
 import {
   resolveRuntimeCodeMountPath,
@@ -987,9 +996,46 @@ export async function resolveLambdaContainerEnv(
   profileCredentials: ResolvedProfileCredentials | undefined,
   extraStateProviders?: ExtraStateProviders
 ): Promise<LambdaContainerEnvResult> {
+  // One resolver per container env, shared by the cross-stack boundary and
+  // the final env pass so each (reference, region) is fetched once (#784).
+  const dynamicRefs = new DynamicReferenceResolver({
+    ...(options.profile !== undefined && { profile: options.profile }),
+  });
+  try {
+    return await resolveLambdaContainerEnvWith(
+      lambda,
+      options,
+      profileCredentials,
+      extraStateProviders,
+      dynamicRefs
+    );
+  } finally {
+    dynamicRefs.dispose();
+  }
+}
+
+async function resolveLambdaContainerEnvWith(
+  lambda: ResolvedLambda,
+  options: LambdaContainerEnvOptions,
+  profileCredentials: ResolvedProfileCredentials | undefined,
+  extraStateProviders: ExtraStateProviders | undefined,
+  dynamicRefs: DynamicReferenceResolver
+): Promise<LambdaContainerEnvResult> {
   const logger = getLogger();
   let stateAudit: StateEnvSubstitutionAudit | undefined;
-  let templateEnv = getTemplateEnv(lambda.resource);
+  let ownerRegion: string | undefined;
+  const plaintextKeys = new Set<string>();
+  const deployedSecretKeys: string[] = [];
+  const declaredEnv = getTemplateEnv(lambda.resource);
+  const overrides = readEnvOverridesFile(options.envVars);
+  const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
+  // Keys an `--env-vars` override replaces never reach state substitution, so
+  // an override also skips a cross-stack dynamic-reference lookup (#784).
+  const overriddenKeys = keysOverriddenBy(
+    declaredEnv,
+    (env) => resolveEnvVars(lambda.logicalId, lambdaCdkPath, env, overrides).resolved
+  );
+  let templateEnv = declaredEnv && withoutKeys(declaredEnv, overriddenKeys);
   let stateForRoleHint: StackState | undefined;
   // Pick the right LocalStateProvider for the supplied flags. Returns
   // `undefined` when no state-source flag is set.
@@ -1003,6 +1049,7 @@ export async function resolveLambdaContainerEnv(
     try {
       const loaded = await stateProvider.load(lambda.stack.stackName, lambda.stack.region);
       if (loaded) {
+        ownerRegion = loaded.region;
         stateForRoleHint = {
           version: 1,
           stackName: lambda.stack.stackName,
@@ -1013,6 +1060,11 @@ export async function resolveLambdaContainerEnv(
         const subContext: SubstitutionContext = {
           resources: loaded.resources,
           consumerRegion: loaded.region,
+          resolveDynamicReferences: (value, producerRegion) =>
+            dynamicRefs.resolveString(value, {
+              region: producerRegion,
+              consumer: `Lambda ${lambda.logicalId} cross-stack env value`,
+            }),
         };
         if (envHasIntrinsicValue(templateEnv)) {
           const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
@@ -1046,11 +1098,23 @@ export async function resolveLambdaContainerEnv(
             unresolved = fb.stillUnresolved;
             for (const key of fb.filled) {
               resolvedKeys.push(key);
+              // Deploy-time-resolved: already plaintext, never re-scanned.
+              plaintextKeys.add(key);
+              // CloudFormation resolved this value at deploy time; keep it off
+              // the `docker run` argv when the template says it may be a
+              // secret (#784, `deployedFillMayBeSecret`).
+              if (deployedFillMayBeSecret(declaredEnv?.[key], lambda.stack.template)) {
+                deployedSecretKeys.push(key);
+              }
               logger.debug(`${label}: filled env var ${key} from deployed function config`);
             }
           }
         }
-        stateAudit = { resolvedKeys, unresolved, sensitiveKeys: audit.sensitiveKeys };
+        stateAudit = {
+          resolvedKeys,
+          unresolved,
+          sensitiveKeys: [...audit.sensitiveKeys, ...deployedSecretKeys],
+        };
         for (const { key, reason } of unresolved) {
           logger.warn(
             `${label}: could not substitute env var ${key} (${reason}). ` +
@@ -1064,8 +1128,6 @@ export async function resolveLambdaContainerEnv(
     }
   }
 
-  const overrides = readEnvOverridesFile(options.envVars);
-  const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
   const envResult = resolveEnvVars(lambda.logicalId, lambdaCdkPath, templateEnv, overrides);
   for (const key of envResult.unresolved) {
     if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
@@ -1075,6 +1137,25 @@ export async function resolveLambdaContainerEnv(
         `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to recover deployed values.`
     );
   }
+
+  // CloudFormation dynamic references (`{{resolve:...}}`), resolved against
+  // the region of the stack that owns the env (issue #784). Keys already
+  // holding plaintext (a decrypted SecureString, a deployed-env fill) and
+  // keys a `--env-vars` override replaced are left as they are.
+  for (const key of stateAudit?.sensitiveKeys ?? []) plaintextKeys.add(key);
+  for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
+  const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
+    region: firstUsableRegion(
+      ownerRegion,
+      options.stackRegion,
+      lambda.stack.region,
+      options.region,
+      profileCredentials?.region
+    ),
+    label: `Lambda ${lambda.logicalId}`,
+    skipKeys: plaintextKeys,
+    resolver: dynamicRefs,
+  });
 
   let resolvedAssumeRoleArn: string | undefined;
   try {
@@ -1095,7 +1176,7 @@ export async function resolveLambdaContainerEnv(
     AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
     AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${lambda.logicalId}`,
     AWS_LAMBDA_LOG_STREAM_NAME: 'local',
-    ...envResult.resolved,
+    ...dynamic.env,
   };
   let assumeSucceeded = false;
   if (resolvedAssumeRoleArn) {
@@ -1157,7 +1238,7 @@ export async function resolveLambdaContainerEnv(
 
   return {
     env: dockerEnv,
-    sensitiveEnvKeys: stateAudit?.sensitiveKeys ?? [],
+    sensitiveEnvKeys: [...new Set([...(stateAudit?.sensitiveKeys ?? []), ...dynamic.resolvedKeys])],
     ...(stateForRoleHint !== undefined && { stateForRoleHint }),
     assumeRoleApplied: assumeSucceeded,
   };

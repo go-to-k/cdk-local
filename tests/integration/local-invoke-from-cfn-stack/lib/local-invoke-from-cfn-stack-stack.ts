@@ -5,6 +5,7 @@ import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { integScopedName } from '../../_lib/stack-name.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,23 @@ const SSM_DB_HOST_PARAM = integScopedName('/cdkl-integ/invoke-from-cfn-stack/db-
  * `docker run` argv. Kept in sync with `verify.sh`'s `SSM_API_KEY_PARAM`.
  */
 const SSM_API_KEY_PARAM = integScopedName('/cdkl-integ/invoke-from-cfn-stack/api-key');
+
+/**
+ * Issue #784: an SSM parameter `verify.sh` puts BEFORE deploy (CloudFormation
+ * resolves the `{{resolve:ssm:...}}` reference below at deploy time) and
+ * DELETES right after it, so the deployed function is fine but a local
+ * resolve of the same reference must fail loudly, naming the reference and
+ * `ssm:GetParameter`, instead of handing the container the token. Kept in
+ * sync with `verify.sh`'s `SSM_GONE_PARAM`.
+ */
+const SSM_GONE_PARAM = integScopedName('/cdkl-integ/invoke-from-cfn-stack/dynref-gone');
+
+/**
+ * Issue #784: the json-key value of the fixture's same-stack secret. A fixed
+ * test value so `verify.sh` can assert the container received exactly it.
+ * Kept in sync with `verify.sh`'s `DYNREF_SECRET_PASSWORD`.
+ */
+const DYNREF_SECRET_PASSWORD = 'dynref-pw-7c1e94';
 
 /**
  * Run this fixture's Lambdas at the HOST's CPU architecture.
@@ -75,6 +93,22 @@ const HOST_ARCHITECTURE =
 export class LocalInvokeFromCfnStackStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    // issue #784: a same-stack secret the echo handler's env references
+    // through CloudFormation dynamic references.
+    const dbSecret = new secretsmanager.Secret(this, 'DbSecret', {
+      secretObjectValue: { password: cdk.SecretValue.unsafePlainText(DYNREF_SECRET_PASSWORD) },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // issue #784: a NoEcho parameter. Its Ref is not in ListStackResources, so
+    // --from-cfn-stack fills it from the deployed env, and that fill must stay
+    // off the docker argv. Default kept in sync with verify.sh.
+    const noEchoPw = new cdk.CfnParameter(this, 'NoEchoPw', {
+      type: 'String',
+      noEcho: true,
+      default: 'noecho-pw-51d2a7',
+    });
 
     const table = new dynamodb.Table(this, 'MyTable', {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
@@ -128,7 +162,33 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
         // reads. cdkl must drop it (no `-e DOCKER_CONFIG`, nothing in the
         // docker client's spawn env) and warn by name, never the value.
         DOCKER_CONFIG: ssm.StringParameter.valueForStringParameter(this, SSM_API_KEY_PARAM),
+        // issue #784: CloudFormation dynamic references, which CloudFormation
+        // resolves at deploy time and cdkl must resolve locally.
+        // Same-stack secret, ARN form + json-key (CDK renders a Fn::Join with
+        // a Ref, so only --from-cfn-stack turns it into a literal token).
+        DYNREF_SECRET: dbSecret.secretValueFromJson('password').unsafeUnwrap(),
+        // The same secret with an explicit version-stage segment.
+        DYNREF_SECRET_STAGE: cdk.Fn.join('', [
+          '{{resolve:secretsmanager:',
+          dbSecret.secretArn,
+          ':SecretString:password:AWSCURRENT}}',
+        ]),
+        // A literal ssm reference by name: resolved with or without a state flag.
+        DYNREF_SSM: `{{resolve:ssm:${SSM_DB_HOST_PARAM}}}`,
+        // A Ref to a NoEcho parameter, recovered by the deployed-env fill.
+        NOECHO_PW: noEchoPw.valueAsString,
       },
+      timeout: cdk.Duration.seconds(10),
+    });
+
+    // issue #784: its env references a parameter verify.sh deletes after
+    // deploy — the local invoke must FAIL, never fall back to the token.
+    new lambda.Function(this, 'DynrefMissingHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
+      environment: { DYNREF_GONE: `{{resolve:ssm:${SSM_GONE_PARAM}}}` },
       timeout: cdk.Duration.seconds(10),
     });
   }
