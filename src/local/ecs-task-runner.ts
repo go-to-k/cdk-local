@@ -41,6 +41,7 @@ import { resolveEcsSecrets, type ResolvedSecret } from './ecs-secrets-resolver.j
 import {
   DynamicReferenceResolver,
   containsDynamicReference,
+  firstUsableRegion,
   resolveDynamicReferencesInEnv,
 } from './dynamic-reference-resolver.js';
 import {
@@ -526,7 +527,7 @@ export async function runEcsTask(
       dynamicEnvByContainer.set(
         c.name,
         await resolveDynamicReferencesInEnv(c.environment, {
-          region: task.stack.region ?? options.region,
+          region: firstUsableRegion(task.stack.region, options.region),
           label: `Container ${c.name}`,
           skipKeys: new Set([
             ...c.sensitiveEnvKeys,

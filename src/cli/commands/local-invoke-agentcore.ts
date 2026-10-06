@@ -91,6 +91,7 @@ import {
 } from '../../local/state-resolver.js';
 import {
   DynamicReferenceResolver,
+  firstUsableRegion,
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
 } from '../../local/dynamic-reference-resolver.js';
@@ -1319,7 +1320,12 @@ async function buildContainerEnvWith(
   const skipKeys = keysNotFromTemplate(templateEnv, envResult.resolved);
   for (const key of sensitiveEnvKeys) skipKeys.add(key);
   const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
-    region: loaded?.region ?? options.stackRegion ?? resolved.stack.region ?? options.region,
+    region: firstUsableRegion(
+      loaded?.region,
+      options.stackRegion,
+      resolved.stack.region,
+      options.region
+    ),
     label: `AgentCore Runtime ${resolved.logicalId}`,
     skipKeys,
     resolver: dynamicRefs,

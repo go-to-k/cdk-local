@@ -52,6 +52,16 @@ function dynamicReferenceMatcher(): RegExp {
   return new RegExp(DYNAMIC_REFERENCE_SOURCE, 'g');
 }
 
+/**
+ * The first candidate that names a real region. An environment-agnostic CDK
+ * stack synthesizes its region as the literal placeholder `unknown-region`,
+ * which must fall through to the next candidate (or to the SDK default chain)
+ * rather than become an unreachable endpoint host.
+ */
+export function firstUsableRegion(...candidates: Array<string | undefined>): string | undefined {
+  return candidates.find((r) => r !== undefined && r !== '' && r !== 'unknown-region');
+}
+
 /** True when `value` contains at least one `{{resolve:...}}` dynamic reference. */
 export function containsDynamicReference(value: unknown): value is string {
   return typeof value === 'string' && DYNAMIC_REFERENCE_DETECT.test(value);
@@ -282,7 +292,7 @@ export class DynamicReferenceResolver {
         new DynamicReferenceResolutionError(`${err.message.replace(/\.$/, '')} (${opts.consumer}).`)
       );
     }
-    const region = ref.arnRegion ?? opts.region;
+    const region = firstUsableRegion(ref.arnRegion, opts.region);
     const cacheKey = `${region ?? ''}\u0000${raw}`;
     let pending = this.cache.get(cacheKey);
     if (!pending) {

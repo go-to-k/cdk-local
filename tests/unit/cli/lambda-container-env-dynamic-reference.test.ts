@@ -85,6 +85,15 @@ describe('resolveLambdaContainerEnv — same-stack dynamic reference', () => {
     expect(smSend.mock.calls[0]![0].input).toEqual({ SecretId: 'MySecret' });
   });
 
+  it("an env-agnostic stack (`unknown-region`) falls through to --region", async () => {
+    await resolveLambdaContainerEnv(
+      zipLambda({ DB_PASSWORD: TOKEN }, 'unknown-region'),
+      { region: 'eu-west-3' },
+      undefined
+    );
+    expect(smRegions).toEqual(['eu-west-3']);
+  });
+
   it('an --env-vars override on the key skips the lookup', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'cdkl-784-'));
     const envFile = path.join(dir, 'env.json');

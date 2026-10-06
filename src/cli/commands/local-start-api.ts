@@ -1,4 +1,5 @@
 import {
+  firstUsableRegion,
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
 } from '../../local/dynamic-reference-resolver.js';
@@ -2361,7 +2362,7 @@ async function buildContainerSpec(args: {
   for (const key of stateAudit?.sensitiveKeys ?? []) plaintextKeys.add(key);
   for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
   const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
-    region: stackRegionOverride ?? lambda.stack.region ?? stsRegion ?? profileRegion,
+    region: firstUsableRegion(stackRegionOverride, lambda.stack.region, stsRegion, profileRegion),
     label: `Lambda ${logicalId}`,
     skipKeys: plaintextKeys,
     ...(profile !== undefined && { profile }),

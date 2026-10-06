@@ -16,6 +16,7 @@ import {
   DynamicReferenceResolutionError,
   DynamicReferenceResolver,
   containsDynamicReference,
+  firstUsableRegion,
   keysNotFromTemplate,
   parseDynamicReference,
   resolveDynamicReferencesInEnv,
@@ -233,6 +234,14 @@ describe('DynamicReferenceResolver.resolveString — fetch shape', () => {
     await resolver.resolveString('{{resolve:ssm:/q}}', { consumer: 't' });
     expect(smCalls[0]!.region).toBe('eu-west-1');
     expect(ssmCalls.map((c) => c.region)).toEqual(['us-east-1', undefined]);
+  });
+
+  it("never uses an env-agnostic stack's `unknown-region` placeholder as a region", async () => {
+    const { resolver, ssmCalls } = fakeClients({});
+    await resolver.resolveString('{{resolve:ssm:/p}}', { region: 'unknown-region', consumer: 't' });
+    expect(ssmCalls[0]!.region).toBeUndefined();
+    expect(firstUsableRegion('unknown-region', undefined, '', 'eu-west-3')).toBe('eu-west-3');
+    expect(firstUsableRegion(undefined, 'unknown-region')).toBeUndefined();
   });
 
   it('substitutes embedded and multiple tokens in place', async () => {

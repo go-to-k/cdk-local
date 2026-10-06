@@ -59,6 +59,7 @@ import {
 } from '../../local/state-resolver.js';
 import {
   DynamicReferenceResolver,
+  firstUsableRegion,
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
 } from '../../local/dynamic-reference-resolver.js';
@@ -1123,12 +1124,13 @@ async function resolveLambdaContainerEnvWith(
   for (const key of stateAudit?.sensitiveKeys ?? []) plaintextKeys.add(key);
   for (const key of keysNotFromTemplate(templateEnv, envResult.resolved)) plaintextKeys.add(key);
   const dynamic = await resolveDynamicReferencesInEnv(envResult.resolved, {
-    region:
-      ownerRegion ??
-      options.stackRegion ??
-      lambda.stack.region ??
-      options.region ??
-      profileCredentials?.region,
+    region: firstUsableRegion(
+      ownerRegion,
+      options.stackRegion,
+      lambda.stack.region,
+      options.region,
+      profileCredentials?.region
+    ),
     label: `Lambda ${lambda.logicalId}`,
     skipKeys: plaintextKeys,
     resolver: dynamicRefs,
