@@ -552,17 +552,14 @@ export async function runEcsTask(
   });
   try {
     for (const c of task.containers) {
-      if (dynamicReferenceEnvKeys(c, options.envOverrides).length === 0) continue;
+      const tokenKeys = new Set(dynamicReferenceEnvKeys(c, options.envOverrides));
+      if (tokenKeys.size === 0) continue;
       dynamicEnvByContainer.set(
         c.name,
         await resolveDynamicReferencesInEnv(c.environment, {
           region: firstUsableRegion(options.stackRegion, task.stack.region, options.region),
           label: `Container ${c.name}`,
-          skipKeys: new Set(
-            Object.keys(c.environment).filter(
-              (k) => !dynamicReferenceEnvKeys(c, options.envOverrides).includes(k)
-            )
-          ),
+          skipKeys: new Set(Object.keys(c.environment).filter((k) => !tokenKeys.has(k))),
           resolver: dynamicRefs,
         })
       );

@@ -260,6 +260,14 @@ echo "${RESULT_FROM_CFN}" | grep -q "\"dynrefSecret\":\"${DYNREF_SECRET_PASSWORD
 echo "${SERVER_LOG}" | grep -q 'Resolved secretsmanager dynamic reference' || {
   echo "[verify] FAIL: expected the debug line recording the secretsmanager resolution (positive control)"; exit 1;
 }
+# Positive control for the argv negative below: the `docker run` debug line
+# is in the log, carrying DYNREF_SECRET in the value-less `-e KEY` form.
+DOCKER_RUN_LINE=$(echo "${SERVER_LOG}" | grep -E '(^| )run .* -e ' | grep -- '-e DYNREF_SECRET' | head -1)
+echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e DYNREF_SECRET( |$)' || {
+  echo "[verify] FAIL: no 'docker run' debug line with a value-less '-e DYNREF_SECRET' in the --verbose log (issue #784)"
+  echo "${SERVER_LOG}" | tail -20
+  exit 1
+}
 if echo "${SERVER_LOG}" | grep -q "${DYNREF_SECRET_PASSWORD}"; then
   echo "[verify] FAIL: the resolved secret appears in cdkl's own --verbose output (issue #784):"
   echo "${SERVER_LOG}" | grep "${DYNREF_SECRET_PASSWORD}" | head -5
