@@ -213,7 +213,7 @@ describe('resolveLambdaContainerEnv — cross-stack dynamic reference (host --fr
     expect([...result.sensitiveEnvKeys].sort()).toEqual(['API_KEY', 'DB_URL']);
   });
 
-  it('keeps EVERY deployed-env fill off the argv, e.g. an ImportValue of a secret-bearing output', async () => {
+  it('keeps an ImportValue-backed deployed-env fill off the argv', async () => {
     const provider = {
       ...hostProvider(),
       load: async () => ({

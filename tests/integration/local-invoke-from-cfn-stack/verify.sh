@@ -439,7 +439,7 @@ fi
 # the env by design) must be free of the plaintext.
 if echo "${DEBUG_OUT}" | grep -v '"dynrefSecret"' | grep -qE "${DYNREF_SECRET_PASSWORD}|${NOECHO_PW_VALUE}"; then
   echo "[verify] FAIL: the resolved secret appears in cdkl's own --verbose output (issue #784):"
-  echo "${DEBUG_OUT}" | grep -v '"dynrefSecret"' | grep "${DYNREF_SECRET_PASSWORD}" | head -5
+  echo "${DEBUG_OUT}" | grep -v '"dynrefSecret"' | grep -E "${DYNREF_SECRET_PASSWORD}|${NOECHO_PW_VALUE}" | head -5
   exit 1
 fi
 echo "${DEBUG_OUT}" | grep -q 'Resolved secretsmanager dynamic reference' || {
