@@ -1,4 +1,5 @@
 import {
+  deployedFillMayBeSecret,
   firstUsableRegion,
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
@@ -2324,10 +2325,17 @@ async function buildContainerSpec(args: {
         resolvedKeys.push(key);
         // Deploy-time-resolved: already plaintext, never re-scanned (#784).
         plaintextKeys.add(key);
-        // CloudFormation resolved this value at deploy time, so it may be a
-        // secret whatever the template shape: keep EVERY deployed fill off
-        // the `docker run` argv (#784).
-        deployedSecretKeys.push(key);
+        // CloudFormation resolved this value at deploy time; keep it off the
+        // `docker run` argv when the template says it may be a secret (#784,
+        // `deployedFillMayBeSecret`).
+        if (
+          deployedFillMayBeSecret(
+            getTemplateEnv(lambda.resource)?.[key],
+            lambda.stack.template.Parameters
+          )
+        ) {
+          deployedSecretKeys.push(key);
+        }
         getLogger().debug(
           `Lambda ${logicalId}: filled env var ${key} from deployed function config`
         );

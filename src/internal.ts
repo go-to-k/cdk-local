@@ -1099,6 +1099,7 @@ export {
   DynamicReferenceResolutionError,
   DynamicReferenceResolver,
   containsDynamicReference,
+  deployedFillMayBeSecret,
   firstUsableRegion,
   keysNotFromTemplate,
   keysOverriddenBy,

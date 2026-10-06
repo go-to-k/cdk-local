@@ -268,17 +268,12 @@ echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e DYNREF_SECRET( |$)' || {
   echo "${SERVER_LOG}" | tail -20
   exit 1
 }
-# issue #784: EVERY deployed-env fill (here the GetAtt-recovered SIBLING_ARN)
-# was resolved by CloudFormation and may be a secret, so it rides the
-# value-less `-e KEY` form too.
-echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e SIBLING_ARN( |$)' || {
-  echo "[verify] FAIL: the deployed-env fill SIBLING_ARN is not in the value-less '-e SIBLING_ARN' form: ${DOCKER_RUN_LINE}"
+# issue #784: a deployed-env fill whose template value cannot be a secret
+# (the GetAtt-recovered SIBLING_ARN) stays inline as configuration.
+echo "${DOCKER_RUN_LINE}" | grep -q -- "-e SIBLING_ARN=${DEPLOYED_SIBLING_ARN}" || {
+  echo "[verify] FAIL: expected the GetAtt fill inline as -e SIBLING_ARN=<arn>: ${DOCKER_RUN_LINE}"
   exit 1
 }
-if echo "${DOCKER_RUN_LINE}" | grep -q 'SIBLING_ARN='; then
-  echo "[verify] FAIL: the deployed-env fill SIBLING_ARN is inline on the docker run argv: ${DOCKER_RUN_LINE}"
-  exit 1
-fi
 if echo "${SERVER_LOG}" | grep -q "${DYNREF_SECRET_PASSWORD}"; then
   echo "[verify] FAIL: the resolved secret appears in cdkl's own --verbose output (issue #784):"
   echo "${SERVER_LOG}" | grep "${DYNREF_SECRET_PASSWORD}" | head -5

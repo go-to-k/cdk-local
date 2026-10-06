@@ -16,6 +16,7 @@ import {
   DynamicReferenceResolutionError,
   DynamicReferenceResolver,
   containsDynamicReference,
+  deployedFillMayBeSecret,
   firstUsableRegion,
   keysNotFromTemplate,
   keysOverriddenBy,
@@ -558,5 +559,44 @@ describe('override / template helpers', () => {
     Object.defineProperty(env, '__proto__', { value: '3', enumerable: true, writable: true, configurable: true });
     const out = withoutKeys(env, new Set(['A']));
     expect(Object.keys(out).sort()).toEqual(['B', '__proto__']);
+  });
+});
+
+describe('deployedFillMayBeSecret', () => {
+  const params = {
+    DbPassword: { Type: 'String', NoEcho: true },
+    Stage: { Type: 'String' },
+  };
+
+  it.each([
+    ['a literal dynamic reference', '{{resolve:ssm:/a}}'],
+    ['a token split across Fn::Join parts', { 'Fn::Join': ['', ['{{resolve:secretsmanager:', { Ref: 'S' }, ':SecretString:k}}']] }],
+    ['a token inside an Fn::Sub string', { 'Fn::Sub': 'u:{{resolve:ssm:/p}}@h' }],
+    ['Fn::ImportValue', { 'Fn::ImportValue': 'Producer-Pw' }],
+    ['Fn::ImportValue nested in Fn::Join', { 'Fn::Join': ['', ['u:', { 'Fn::ImportValue': 'Pw' }]] }],
+    ['Fn::GetStackOutput', { 'Fn::GetStackOutput': { StackName: 'P', OutputName: 'O' } }],
+    ['Fn::GetStackOutput nested in Fn::Sub bindings', { 'Fn::Sub': ['x-${V}', { V: { 'Fn::GetStackOutput': { StackName: 'P', OutputName: 'O' } } }] }],
+    ['a Ref to a NoEcho parameter', { Ref: 'DbPassword' }],
+    ['a NoEcho parameter inside an Fn::Sub string', { 'Fn::Sub': 'postgres://u:${DbPassword}@h' }],
+    ['a NoEcho Ref nested in Fn::Join', { 'Fn::Join': [':', ['u', { Ref: 'DbPassword' }]] }],
+  ])('flags %s', (_label, value) => {
+    expect(deployedFillMayBeSecret(value, params)).toBe(true);
+  });
+
+  it.each([
+    ['a GetAtt ARN', { 'Fn::GetAtt': ['Sibling', 'Arn'] }],
+    ['a Ref to an ordinary parameter', { Ref: 'Stage' }],
+    ['a Ref to a resource', { Ref: 'Table' }],
+    ['an Fn::Sub over ordinary names', { 'Fn::Sub': 'arn:${AWS::Partition}:s3:::${Stage}-bucket' }],
+    ['an Fn::Sub binding that shadows a NoEcho name', { 'Fn::Sub': ['${DbPassword}', { DbPassword: 'literal' }] }],
+    ['a Join of GetAtts', { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['Db', 'Endpoint.Address'] }, ':5432']] }],
+    ['undefined', undefined],
+  ])('leaves %s inline', (_label, value) => {
+    expect(deployedFillMayBeSecret(value, params)).toBe(false);
+  });
+
+  it('a NoEcho Ref is only flagged when the template declares the parameter NoEcho', () => {
+    expect(deployedFillMayBeSecret({ Ref: 'DbPassword' }, undefined)).toBe(false);
+    expect(deployedFillMayBeSecret({ Ref: 'DbPassword' }, { DbPassword: { NoEcho: 'true' } })).toBe(true);
   });
 });

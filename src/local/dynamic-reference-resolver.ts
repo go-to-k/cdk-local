@@ -122,6 +122,69 @@ export function withoutKeys<T>(
   return out;
 }
 
+/**
+ * Whether a deployed-env fill MAY be a secret, judged from the key's TEMPLATE
+ * value (issue #784). `--from-cfn-stack` fills a key from the deployed
+ * function's own `Environment.Variables` when static substitution could not
+ * resolve it, so the filled value is whatever CloudFormation resolved at
+ * deploy time. It is treated as a secret (kept off the `docker run` argv, and
+ * refused under finch on macOS / Windows unless the operator opts in) when
+ * the template value is, or contains anywhere — including inside `Fn::Join`
+ * parts, an `Fn::Sub` string or its bindings — one of:
+ *
+ *   - a `{{resolve:...}}` dynamic reference;
+ *   - `Fn::ImportValue` or `Fn::GetStackOutput`, whose producer output may be
+ *     secret-bearing;
+ *   - a `Ref` (or `Fn::Sub` `${Name}`) to a template parameter declared
+ *     `NoEcho: true`.
+ *
+ * Every other fill (a `Fn::GetAtt` ARN, a `Ref` to an ordinary parameter)
+ * is configuration and stays inline.
+ */
+export function deployedFillMayBeSecret(
+  templateValue: unknown,
+  templateParameters?: Record<string, unknown>
+): boolean {
+  const noEcho = new Set<string>();
+  for (const [name, decl] of Object.entries(templateParameters ?? {})) {
+    if (decl && typeof decl === 'object') {
+      const flag = (decl as Record<string, unknown>)['NoEcho'];
+      if (flag === true || flag === 'true') noEcho.add(name);
+    }
+  }
+  const subNamesNoEcho = (body: string, bound: ReadonlySet<string>): boolean => {
+    for (const m of body.matchAll(/\$\{([^}!][^}]*)\}/g)) {
+      const name = m[1]!.trim();
+      if (!bound.has(name) && noEcho.has(name)) return true;
+    }
+    return false;
+  };
+  const walk = (v: unknown): boolean => {
+    if (typeof v === 'string') return v.includes('{{resolve:');
+    if (Array.isArray(v)) return v.some(walk);
+    if (v === null || typeof v !== 'object') return false;
+    const obj = v as Record<string, unknown>;
+    if (Object.hasOwn(obj, 'Fn::ImportValue') || Object.hasOwn(obj, 'Fn::GetStackOutput')) {
+      return true;
+    }
+    if (Object.hasOwn(obj, 'Ref')) {
+      const target = obj['Ref'];
+      if (typeof target === 'string' && noEcho.has(target)) return true;
+    }
+    if (Object.hasOwn(obj, 'Fn::Sub')) {
+      const sub = obj['Fn::Sub'];
+      if (typeof sub === 'string' && subNamesNoEcho(sub, new Set())) return true;
+      if (Array.isArray(sub) && typeof sub[0] === 'string') {
+        const bindings =
+          sub[1] && typeof sub[1] === 'object' ? (sub[1] as Record<string, unknown>) : {};
+        if (subNamesNoEcho(sub[0], new Set(Object.keys(bindings)))) return true;
+      }
+    }
+    return Object.values(obj).some(walk);
+  };
+  return walk(templateValue);
+}
+
 /** True when `value` contains at least one `{{resolve:...}}` dynamic reference. */
 export function containsDynamicReference(value: unknown): value is string {
   return typeof value === 'string' && DYNAMIC_REFERENCE_DETECT.test(value);

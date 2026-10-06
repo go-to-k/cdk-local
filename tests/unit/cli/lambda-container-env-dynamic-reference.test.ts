@@ -240,6 +240,39 @@ describe('resolveLambdaContainerEnv — cross-stack dynamic reference (host --fr
     expect(smSend).not.toHaveBeenCalled();
   });
 
+  it('marks a fill sensitive only when its template value may be a secret', async () => {
+    const provider = {
+      ...hostProvider(),
+      load: async () => ({
+        resources: { Handler: { physicalId: 'fn-phys', resourceType: 'AWS::Lambda::Function', properties: {} } },
+        outputs: {},
+        region: 'ap-southeast-2',
+      }),
+      buildCrossStackResolver: async () => ({
+        resolveImport: async () => undefined,
+        resolveGetStackOutput: async () => undefined,
+      }),
+      resolveDeployedFunctionEnv: async () => ({
+        SIBLING_ARN: 'arn:aws:lambda:ap-southeast-2:1:function:s',
+        DB_PASSWORD: 'pl41n-noecho',
+        IMPORTED: 'pl41n-imported',
+      }),
+    } as unknown as LocalStateProvider;
+    const lambda = zipLambda({
+      SIBLING_ARN: { 'Fn::GetAtt': ['Sibling', 'Arn'] },
+      DB_PASSWORD: { 'Fn::Sub': 'p-${DbPassword}' },
+      IMPORTED: { 'Fn::Join': ['', ['x', { 'Fn::ImportValue': 'Pw' }]] },
+    });
+    (lambda.stack.template as Record<string, unknown>)['Parameters'] = {
+      DbPassword: { Type: 'String', NoEcho: true },
+    };
+    const result = await resolveLambdaContainerEnv(lambda, { fromState: true } as never, undefined, {
+      fromState: () => provider,
+    });
+    expect(result.env['SIBLING_ARN']).toBe('arn:aws:lambda:ap-southeast-2:1:function:s');
+    expect([...result.sensitiveEnvKeys].sort()).toEqual(['DB_PASSWORD', 'IMPORTED']);
+  });
+
   it('resolves a GetStackOutput token against the Region the intrinsic names', async () => {
     const result = await resolveLambdaContainerEnv(
       zipLambda({

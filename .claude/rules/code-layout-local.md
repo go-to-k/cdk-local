@@ -50,8 +50,8 @@ a log line, and a served HTTP response body.
   the hook to a path whose output is echoed as an identifier (ECS `Secrets`
   `ValueFrom`).
 - Hard-fail, never fall back to the token; resolved keys join the sensitive set.
-- Every deployed-env fill joins the sensitive set unconditionally: CloudFormation may have
-  resolved a secret into it whatever the template shape (an imported secret-bearing output).
+- A deployed-env fill joins the sensitive set only when `deployedFillMayBeSecret` (one
+  predicate) says its template value may be a secret; a GetAtt ARN stays inline.
 - The boundary reports a resolution through `onDynamicReferenceResolved`, never through
   `onSensitiveParameterConsumed`, whose argument is a logical ID.
 - `--env-vars` overrides are removed from the template env BEFORE state substitution, so

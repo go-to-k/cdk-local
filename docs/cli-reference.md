@@ -288,13 +288,17 @@ Template `Properties.Environment.Variables` entries:
   out of every log line. An `--env-vars` override of the variable skips the
   lookup (for an ECS task, only for a same-stack value: a cross-stack one is
   substituted before the task's overrides apply). The same rule applies to
-  every command's container env (Lambda, AgentCore, ECS `Environment`). Every
+  every command's container env (Lambda, AgentCore, ECS `Environment`). A
   value `--from-cfn-stack` recovers from the deployed function's own
-  `Environment.Variables` is kept off the argv the same way, because
-  CloudFormation may have resolved a secret into it — so under
+  `Environment.Variables` is kept off the argv the same way when its template
+  value MAY be a secret: it is, or contains anywhere (inside `Fn::Join` /
+  `Fn::Sub` too), a `{{resolve:...}}` reference, an `Fn::ImportValue` /
+  `Fn::GetStackOutput`, or a `Ref` to a `NoEcho` parameter. Under
   `CDK_DOCKER=finch` on macOS / Windows such a value is refused like any
   other secret unless `CDKL_ALLOW_SECRETS_ON_ARGV=1` (see
-  [finch on macOS and Windows](local-emulation.md#finch-on-macos-and-windows)). A
+  [finch on macOS and Windows](local-emulation.md#finch-on-macos-and-windows)).
+  Any other recovered value (a `Fn::GetAtt` ARN, a `Ref` to an ordinary
+  parameter) is configuration and stays inline. A
   reference in an ECS `Command` / `EntryPoint` / health-check command is
   refused rather than resolved, because the value would land on the
   `docker run` command line — move it into `Environment` or `Secrets`.

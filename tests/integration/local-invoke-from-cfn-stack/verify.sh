@@ -68,6 +68,9 @@ SSM_API_KEY_VALUE="s3cr3t-api-key-9f3a2b"
 # DynrefMissingHandler's `{{resolve:ssm:...}}` at deploy time) and is deleted
 # right after it, so a LOCAL resolve of that reference must fail loudly.
 DYNREF_SECRET_PASSWORD="dynref-pw-7c1e94"
+# A NoEcho template parameter's default (kept in sync with the stack): its
+# Ref is filled from the deployed env and must stay off the argv.
+NOECHO_PW_VALUE="noecho-pw-51d2a7"
 SSM_GONE_PARAM="$(integ_scoped_name /cdkl-integ/invoke-from-cfn-stack/dynref-gone)"
 SECRET_ARN=""
 
@@ -347,6 +350,10 @@ echo "${RESULT_FROM_CFN}" | grep -q '"dockerConfig":"unset"' || {
 }
 # issue #784: same-stack secretsmanager references (json-key, and json-key +
 # version-stage) and a literal ssm reference reach the container RESOLVED.
+echo "${RESULT_FROM_CFN}" | grep -q "\"noechoPw\":\"${NOECHO_PW_VALUE}\"" || {
+  echo "[verify] FAIL: expected NOECHO_PW filled from the deployed env, got: ${RESULT_FROM_CFN}"
+  exit 1
+}
 for field in dynrefSecret dynrefSecretStage; do
   echo "${RESULT_FROM_CFN}" | grep -q "\"${field}\":\"${DYNREF_SECRET_PASSWORD}\"" || {
     echo "[verify] FAIL: expected ${field} resolved to the secret's password (issue #784), got: ${RESULT_FROM_CFN}"
@@ -439,18 +446,23 @@ echo "${DEBUG_OUT}" | grep -q 'Resolved secretsmanager dynamic reference' || {
   echo "[verify] FAIL: expected the debug line recording the secretsmanager resolution (positive control for the negative above)"
   exit 1
 }
-# issue #784: EVERY deployed-env fill (here the GetAtt-recovered SIBLING_ARN)
-# was resolved by CloudFormation and may be a secret, so it rides the
-# value-less `-e KEY` form too.
-echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e SIBLING_ARN( |$)' || {
-  echo "[verify] FAIL: the deployed-env fill SIBLING_ARN is not in the value-less '-e SIBLING_ARN' form: ${DOCKER_RUN_LINE}"
+# issue #784: a deployed-env fill whose template value cannot be a secret
+# (the GetAtt-recovered SIBLING_ARN) stays inline as configuration.
+echo "${DOCKER_RUN_LINE}" | grep -q -- "-e SIBLING_ARN=${DEPLOYED_SIBLING_ARN}" || {
+  echo "[verify] FAIL: expected the GetAtt fill inline as -e SIBLING_ARN=<arn>: ${DOCKER_RUN_LINE}"
   exit 1
 }
-if echo "${DOCKER_RUN_LINE}" | grep -q 'SIBLING_ARN='; then
-  echo "[verify] FAIL: the deployed-env fill SIBLING_ARN is inline on the docker run argv: ${DOCKER_RUN_LINE}"
+# issue #784: a deployed-env fill whose template value MAY be a secret (a
+# Ref to a NoEcho parameter) rides the value-less `-e KEY` form.
+echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e NOECHO_PW( |$)' || {
+  echo "[verify] FAIL: the NoEcho-backed fill NOECHO_PW is not in the value-less '-e NOECHO_PW' form: ${DOCKER_RUN_LINE}"
+  exit 1
+}
+if echo "${DOCKER_RUN_LINE}" | grep -qE "NOECHO_PW=|${NOECHO_PW_VALUE}"; then
+  echo "[verify] FAIL: the NoEcho-backed fill is on the docker run argv: ${DOCKER_RUN_LINE}"
   exit 1
 fi
-echo "[verify]   DYNREF_SECRET and the deployed fill SIBLING_ARN routed off the argv; the plaintext is in no log line."
+echo "[verify]   DYNREF_SECRET and the NoEcho fill routed off the argv, the GetAtt fill stayed inline; the plaintext is in no log line."
 
 echo "[verify] step 6e: a reference to a missing parameter FAILS the invoke, never hands over the token (issue #784)"
 for flags in "" "--from-cfn-stack"; do

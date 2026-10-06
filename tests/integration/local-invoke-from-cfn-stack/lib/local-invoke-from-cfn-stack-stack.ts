@@ -101,6 +101,15 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // issue #784: a NoEcho parameter. Its Ref is not in ListStackResources, so
+    // --from-cfn-stack fills it from the deployed env, and that fill must stay
+    // off the docker argv. Default kept in sync with verify.sh.
+    const noEchoPw = new cdk.CfnParameter(this, 'NoEchoPw', {
+      type: 'String',
+      noEcho: true,
+      default: 'noecho-pw-51d2a7',
+    });
+
     const table = new dynamodb.Table(this, 'MyTable', {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -166,6 +175,8 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
         ]),
         // A literal ssm reference by name: resolved with or without a state flag.
         DYNREF_SSM: `{{resolve:ssm:${SSM_DB_HOST_PARAM}}}`,
+        // A Ref to a NoEcho parameter, recovered by the deployed-env fill.
+        NOECHO_PW: noEchoPw.valueAsString,
       },
       timeout: cdk.Duration.seconds(10),
     });

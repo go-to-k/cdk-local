@@ -19,6 +19,7 @@ exports.handler = async (event) => {
     dynrefSecret: process.env.DYNREF_SECRET ?? 'unset',
     dynrefSecretStage: process.env.DYNREF_SECRET_STAGE ?? 'unset',
     dynrefSsm: process.env.DYNREF_SSM ?? 'unset',
+    noechoPw: process.env.NOECHO_PW ?? 'unset',
     event,
   };
 };

@@ -59,6 +59,7 @@ import {
 } from '../../local/state-resolver.js';
 import {
   DynamicReferenceResolver,
+  deployedFillMayBeSecret,
   firstUsableRegion,
   keysNotFromTemplate,
   keysOverriddenBy,
@@ -1099,11 +1100,12 @@ async function resolveLambdaContainerEnvWith(
               resolvedKeys.push(key);
               // Deploy-time-resolved: already plaintext, never re-scanned.
               plaintextKeys.add(key);
-              // CloudFormation resolved this value at deploy time, so it may be
-              // a secret (a dynamic reference, an imported secret-bearing
-              // output) whatever the template shape: keep EVERY deployed fill
-              // off the `docker run` argv (#784).
-              deployedSecretKeys.push(key);
+              // CloudFormation resolved this value at deploy time; keep it off
+              // the `docker run` argv when the template says it may be a
+              // secret (#784, `deployedFillMayBeSecret`).
+              if (deployedFillMayBeSecret(declaredEnv?.[key], lambda.stack.template.Parameters)) {
+                deployedSecretKeys.push(key);
+              }
               logger.debug(`${label}: filled env var ${key} from deployed function config`);
             }
           }
