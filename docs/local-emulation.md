@@ -60,8 +60,9 @@ other local processes can read it. finch also puts `AWS_ACCESS_KEY_ID`,
 on every command. So when `CDK_DOCKER` names finch on macOS or Windows:
 
 - **A container with a secret is refused** before it starts: a Lambda or
-  AgentCore container with a decrypted `SecureString` env value or a resolved
-  dynamic reference, and an ECS task (`run-task`, and each replica of
+  AgentCore container with a decrypted `SecureString` env value, a resolved
+  dynamic reference, or a value `--from-cfn-stack` recovered from the deployed
+  function's environment, and an ECS task (`run-task`, and each replica of
   `start-service` / `start-alb`) with a `Secrets` entry, a decrypted
   `SecureString` env value, or a dynamic-reference env value. `run-task` refuses
   before any image is pulled, any secret is fetched or its task network is

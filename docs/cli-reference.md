@@ -291,7 +291,10 @@ Template `Properties.Environment.Variables` entries:
   every command's container env (Lambda, AgentCore, ECS `Environment`). Every
   value `--from-cfn-stack` recovers from the deployed function's own
   `Environment.Variables` is kept off the argv the same way, because
-  CloudFormation may have resolved a secret into it. A
+  CloudFormation may have resolved a secret into it — so under
+  `CDK_DOCKER=finch` on macOS / Windows such a value is refused like any
+  other secret unless `CDKL_ALLOW_SECRETS_ON_ARGV=1` (see
+  [finch on macOS and Windows](local-emulation.md#finch-on-macos-and-windows)). A
   reference in an ECS `Command` / `EntryPoint` / health-check command is
   refused rather than resolved, because the value would land on the
   `docker run` command line — move it into `Environment` or `Secrets`.
