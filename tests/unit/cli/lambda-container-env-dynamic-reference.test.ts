@@ -256,13 +256,19 @@ describe('resolveLambdaContainerEnv — cross-stack dynamic reference (host --fr
         SIBLING_ARN: 'arn:aws:lambda:ap-southeast-2:1:function:s',
         DB_PASSWORD: 'pl41n-noecho',
         IMPORTED: 'pl41n-imported',
+        KEY_SECRET: 'pl41n-access-key',
       }),
     } as unknown as LocalStateProvider;
     const lambda = zipLambda({
       SIBLING_ARN: { 'Fn::GetAtt': ['Sibling', 'Arn'] },
       DB_PASSWORD: { 'Fn::Sub': 'p-${DbPassword}' },
       IMPORTED: { 'Fn::Join': ['', ['x', { 'Fn::ImportValue': 'Pw' }]] },
+      KEY_SECRET: { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] },
     });
+    (lambda.stack.template as Record<string, unknown>)['Resources'] = {
+      Key: { Type: 'AWS::IAM::AccessKey' },
+      Sibling: { Type: 'AWS::Lambda::Function' },
+    };
     (lambda.stack.template as Record<string, unknown>)['Parameters'] = {
       DbPassword: { Type: 'String', NoEcho: true },
     };
@@ -270,7 +276,7 @@ describe('resolveLambdaContainerEnv — cross-stack dynamic reference (host --fr
       fromState: () => provider,
     });
     expect(result.env['SIBLING_ARN']).toBe('arn:aws:lambda:ap-southeast-2:1:function:s');
-    expect([...result.sensitiveEnvKeys].sort()).toEqual(['DB_PASSWORD', 'IMPORTED']);
+    expect([...result.sensitiveEnvKeys].sort()).toEqual(['DB_PASSWORD', 'IMPORTED', 'KEY_SECRET']);
   });
 
   it('resolves a GetStackOutput token against the Region the intrinsic names', async () => {
