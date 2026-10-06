@@ -288,7 +288,10 @@ Template `Properties.Environment.Variables` entries:
   out of every log line. An `--env-vars` override of the variable skips the
   lookup (for an ECS task, only for a same-stack value: a cross-stack one is
   substituted before the task's overrides apply). The same rule applies to
-  every command's container env (Lambda, AgentCore, ECS `Environment`). A
+  every command's container env (Lambda, AgentCore, ECS `Environment`). Every
+  value `--from-cfn-stack` recovers from the deployed function's own
+  `Environment.Variables` is kept off the argv the same way, because
+  CloudFormation may have resolved a secret into it. A
   reference in an ECS `Command` / `EntryPoint` / health-check command is
   refused rather than resolved, because the value would land on the
   `docker run` command line — move it into `Environment` or `Secrets`.

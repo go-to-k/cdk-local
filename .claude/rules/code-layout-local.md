@@ -50,6 +50,10 @@ a log line, and a served HTTP response body.
   the hook to a path whose output is echoed as an identifier (ECS `Secrets`
   `ValueFrom`).
 - Hard-fail, never fall back to the token; resolved keys join the sensitive set.
+- Every deployed-env fill joins the sensitive set unconditionally: CloudFormation may have
+  resolved a secret into it whatever the template shape (an imported secret-bearing output).
+- The boundary reports a resolution through `onDynamicReferenceResolved`, never through
+  `onSensitiveParameterConsumed`, whose argument is a logical ID.
 - `--env-vars` overrides are removed from the template env BEFORE state substitution, so
   they skip the boundary lookup too. A token in an argv field (ECS `Command` /
   `EntryPoint` / health check) is refused, never resolved onto the `docker run` argv.

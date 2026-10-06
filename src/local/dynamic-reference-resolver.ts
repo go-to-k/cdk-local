@@ -43,6 +43,30 @@ export class DynamicReferenceResolutionError extends Error {
 }
 
 /**
+ * A fetch outcome that has not been bound to a consumer yet. The resolver's
+ * cache is shared by every caller of one (reference, region), so a failure
+ * is stored as this builder and rendered into a
+ * {@link DynamicReferenceResolutionError} per caller. Never escapes the
+ * resolver.
+ */
+class DeferredFailure extends Error {
+  readonly build: (consumer: string, overridable: boolean) => string;
+  constructor(build: (consumer: string, overridable: boolean) => string) {
+    super('deferred dynamic-reference failure');
+    this.build = build;
+  }
+  render(opts: ResolveStringOptions): DynamicReferenceResolutionError {
+    return new DynamicReferenceResolutionError(
+      this.build(opts.consumer, opts.overridable !== false)
+    );
+  }
+}
+
+function deferred(build: (consumer: string, overridable: boolean) => string): DeferredFailure {
+  return new DeferredFailure(build);
+}
+
+/**
  * Any `{{resolve:...}}` occurrence. Deliberately broader than the grammar:
  * a malformed token (`{{resolve:ssm}}`, a stray `{` in the body) is detected
  * here and REJECTED by {@link parseDynamicReference}, rather than slipping
@@ -65,19 +89,6 @@ function dynamicReferenceMatcher(): RegExp {
  */
 export function firstUsableRegion(...candidates: Array<string | undefined>): string | undefined {
   return candidates.find((r) => r !== undefined && r !== '' && r !== 'unknown-region');
-}
-
-/**
- * True when a template value — a literal or an intrinsic tree — holds a
- * dynamic reference anywhere, including one split across `Fn::Join` parts
- * (`["{{resolve:secretsmanager:", {"Ref": "S"}, ":SecretString:k}}"]`). Used
- * to flag a key whose value arrives already resolved from elsewhere (a
- * deployed-env fill) as a secret, so it stays off the `docker run` argv.
- */
-export function templateValueHoldsDynamicReference(value: unknown): boolean {
-  if (typeof value === 'string') return value.includes('{{resolve:');
-  if (value === null || typeof value !== 'object') return false;
-  return JSON.stringify(value).includes('{{resolve:');
 }
 
 /**
@@ -353,14 +364,28 @@ export class DynamicReferenceResolver {
     if (!pending) {
       pending =
         ref.service === 'secretsmanager'
-          ? this.fetchSecret(ref, region, opts)
-          : this.fetchParameter(ref, region, opts);
+          ? this.fetchSecret(ref, region)
+          : this.fetchParameter(ref, region);
       this.cache.set(cacheKey, pending);
-      // A failed fetch is not cached: the error propagates to this caller,
+      // A failed fetch is not cached: the error propagates to its callers,
       // and a later call (a --watch rebuild) retries.
       pending.catch(() => this.cache.delete(cacheKey));
     }
-    return pending;
+    // The cache holds the consumer-free OUTCOME; the error (and the debug
+    // line) is rendered per caller, so a second consumer sharing the fetch
+    // is named in its own failure rather than the first one's.
+    const service = ref.service;
+    return pending.then(
+      (value) => {
+        getLogger()
+          .child('dynamic-reference')
+          .debug(`Resolved ${service} dynamic reference for ${opts.consumer}`);
+        return value;
+      },
+      (err: unknown) => {
+        throw err instanceof DeferredFailure ? err.render(opts) : err;
+      }
+    );
   }
 
   private smClient(region: string | undefined): Pick<SecretsManagerClient, 'send' | 'destroy'> {
@@ -398,12 +423,9 @@ export class DynamicReferenceResolver {
   private fetchFailure(
     ref: DynamicReference,
     region: string | undefined,
-    opts: ResolveStringOptions,
     operation: string,
     err: unknown
-  ): DynamicReferenceResolutionError {
-    const consumer = opts.consumer;
-    const overridable = opts.overridable !== false;
+  ): DeferredFailure {
     // Raised BEFORE any value exists, so the relayed SDK detail is about the
     // reference (AccessDenied / ResourceNotFound / ParameterNotFound), never
     // the secret. `describeAwsFailureForWarn` withholds a credential-chain
@@ -415,9 +437,12 @@ export class DynamicReferenceResolver {
     } else if (/AccessDenied|NotAuthorized|UnrecognizedClient|ExpiredToken/.test(name)) {
       hint = ' The credentials cdk-local resolves with were refused.';
     }
-    return new DynamicReferenceResolutionError(
-      `Could not resolve CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} ` +
-        `(${operation} in ${region ?? 'the default region'}): ${describeAwsFailureForWarn(err, operation)}.${hint} ` +
+    // Rendered ONCE: `describeAwsFailureForWarn` emits its own debug line.
+    const detail = describeAwsFailureForWarn(err, operation);
+    return deferred(
+      (consumer, overridable) =>
+        `Could not resolve CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} ` +
+        `(${operation} in ${region ?? 'the default region'}): ${detail}.${hint} ` +
         `Resolving it needs ${requiredPermissionsFor(ref)}. ` +
         'cdk-local does not fall back to the unresolved token' +
         (overridable ? '; override the variable with --env-vars to skip the lookup.' : '.')
@@ -426,10 +451,8 @@ export class DynamicReferenceResolver {
 
   private async fetchSecret(
     ref: SecretsManagerReference,
-    region: string | undefined,
-    opts: ResolveStringOptions
+    region: string | undefined
   ): Promise<string> {
-    const consumer = opts.consumer;
     const operation = 'SecretsManager GetSecretValue';
     let secretString: string | undefined;
     try {
@@ -442,18 +465,17 @@ export class DynamicReferenceResolver {
       );
       secretString = resp.SecretString;
     } catch (err) {
-      throw this.fetchFailure(ref, region, opts, operation, err);
+      throw this.fetchFailure(ref, region, operation, err);
     }
     if (secretString === undefined) {
-      throw new DynamicReferenceResolutionError(
-        `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer}: ` +
+      throw deferred(
+        (consumer) =>
+          `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer}: ` +
           'the secret has no SecretString (binary secrets cannot be referenced).'
       );
     }
-    getLogger()
-      .child('dynamic-reference')
-      .debug(`Resolved secretsmanager dynamic reference for ${consumer}`);
     if (ref.jsonKey === undefined) return secretString;
+    const jsonKey = ref.jsonKey;
 
     let parsed: unknown;
     try {
@@ -462,34 +484,32 @@ export class DynamicReferenceResolver {
       // Never interpolate the parser's message: V8 quotes the parsed input,
       // which is the secret plaintext (issue #554).
       const kind = err instanceof Error ? err.name : 'unknown';
-      throw new DynamicReferenceResolutionError(
-        `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} names json-key ` +
-          `${displayUntrustedValue(ref.jsonKey)} but the secret value is not valid JSON (${kind}). ` +
+      throw deferred(
+        (consumer) =>
+          `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} names json-key ` +
+          `${displayUntrustedValue(jsonKey)} but the secret value is not valid JSON (${kind}). ` +
           'The parser detail is withheld because it would echo the secret plaintext.'
       );
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new DynamicReferenceResolutionError(
-        `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} names json-key ` +
-          `${displayUntrustedValue(ref.jsonKey)} but the secret root is not a JSON object.`
+      throw deferred(
+        (consumer) =>
+          `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} names json-key ` +
+          `${displayUntrustedValue(jsonKey)} but the secret root is not a JSON object.`
       );
     }
-    if (!Object.hasOwn(parsed, ref.jsonKey)) {
-      throw new DynamicReferenceResolutionError(
-        `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} names json-key ` +
-          `${displayUntrustedValue(ref.jsonKey)} but no such key exists in the secret JSON.`
+    if (!Object.hasOwn(parsed, jsonKey)) {
+      throw deferred(
+        (consumer) =>
+          `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} names json-key ` +
+          `${displayUntrustedValue(jsonKey)} but no such key exists in the secret JSON.`
       );
     }
-    const value = (parsed as Record<string, unknown>)[ref.jsonKey];
+    const value = (parsed as Record<string, unknown>)[jsonKey];
     return typeof value === 'string' ? value : JSON.stringify(value);
   }
 
-  private async fetchParameter(
-    ref: SsmReference,
-    region: string | undefined,
-    opts: ResolveStringOptions
-  ): Promise<string> {
-    const consumer = opts.consumer;
+  private async fetchParameter(ref: SsmReference, region: string | undefined): Promise<string> {
     const operation = 'SSM GetParameter';
     let value: string | undefined;
     let type: string | undefined;
@@ -503,24 +523,23 @@ export class DynamicReferenceResolver {
       value = resp.Parameter?.Value;
       type = resp.Parameter?.Type;
     } catch (err) {
-      throw this.fetchFailure(ref, region, opts, operation, err);
+      throw this.fetchFailure(ref, region, operation, err);
     }
     if (value === undefined) {
-      throw new DynamicReferenceResolutionError(
-        `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer}: SSM returned no parameter value.`
+      throw deferred(
+        (consumer) =>
+          `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer}: SSM returned no parameter value.`
       );
     }
     if (ref.service === 'ssm' && type === 'SecureString') {
       // CloudFormation rejects an `ssm` reference to a SecureString; without
       // decryption the value here would be ciphertext.
-      throw new DynamicReferenceResolutionError(
-        `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} names a SecureString parameter; ` +
+      throw deferred(
+        (consumer) =>
+          `CloudFormation dynamic reference ${displayUntrustedValue(ref.raw)} for ${consumer} names a SecureString parameter; ` +
           'use {{resolve:ssm-secure:...}} for SecureString parameters.'
       );
     }
-    getLogger()
-      .child('dynamic-reference')
-      .debug(`Resolved ${ref.service} dynamic reference for ${consumer}`);
     return value;
   }
 }

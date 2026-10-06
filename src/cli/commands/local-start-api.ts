@@ -2,7 +2,6 @@ import {
   firstUsableRegion,
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
-  templateValueHoldsDynamicReference,
 } from '../../local/dynamic-reference-resolver.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -2325,11 +2324,10 @@ async function buildContainerSpec(args: {
         resolvedKeys.push(key);
         // Deploy-time-resolved: already plaintext, never re-scanned (#784).
         plaintextKeys.add(key);
-        // A deployed value built from a dynamic reference IS the secret:
-        // keep it off the `docker run` argv.
-        if (templateValueHoldsDynamicReference(getTemplateEnv(lambda.resource)?.[key])) {
-          deployedSecretKeys.push(key);
-        }
+        // CloudFormation resolved this value at deploy time, so it may be a
+        // secret whatever the template shape: keep EVERY deployed fill off
+        // the `docker run` argv (#784).
+        deployedSecretKeys.push(key);
         getLogger().debug(
           `Lambda ${logicalId}: filled env var ${key} from deployed function config`
         );

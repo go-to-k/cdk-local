@@ -51,6 +51,24 @@ describe('cross-stack dynamic references (#784)', () => {
     expect(audit.sensitiveKeys).toEqual(['DB_PASSWORD']);
   });
 
+  it('reports a boundary resolution through onDynamicReferenceResolved, never as a logical id', async () => {
+    const onSensitive = vi.fn();
+    const onResolved = vi.fn();
+    const { substituteAgainstStateAsync } = await import('../../../src/local/state-resolver.js');
+    const result = await substituteAgainstStateAsync(
+      { 'Fn::ImportValue': 'Producer-DbPassword' },
+      ctx({
+        crossStackResolver: crossStack(TOKEN),
+        resolveDynamicReferences: async () => 'plain',
+        onSensitiveParameterConsumed: onSensitive,
+        onDynamicReferenceResolved: onResolved,
+      })
+    );
+    expect(result).toEqual({ kind: 'literal', value: 'plain' });
+    expect(onResolved).toHaveBeenCalledTimes(1);
+    expect(onSensitive).not.toHaveBeenCalled();
+  });
+
   it('a non-token cross-stack value never calls the hook', async () => {
     const hook = vi.fn(async () => 'never');
     const { env, audit } = await substituteEnvVarsFromStateAsync(

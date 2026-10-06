@@ -63,7 +63,6 @@ import {
   keysNotFromTemplate,
   keysOverriddenBy,
   resolveDynamicReferencesInEnv,
-  templateValueHoldsDynamicReference,
   withoutKeys,
 } from '../../local/dynamic-reference-resolver.js';
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
@@ -1100,11 +1099,11 @@ async function resolveLambdaContainerEnvWith(
               resolvedKeys.push(key);
               // Deploy-time-resolved: already plaintext, never re-scanned.
               plaintextKeys.add(key);
-              // A deployed value built from a dynamic reference IS the secret:
-              // keep it off the `docker run` argv (#784).
-              if (templateValueHoldsDynamicReference(declaredEnv?.[key])) {
-                deployedSecretKeys.push(key);
-              }
+              // CloudFormation resolved this value at deploy time, so it may be
+              // a secret (a dynamic reference, an imported secret-bearing
+              // output) whatever the template shape: keep EVERY deployed fill
+              // off the `docker run` argv (#784).
+              deployedSecretKeys.push(key);
               logger.debug(`${label}: filled env var ${key} from deployed function config`);
             }
           }

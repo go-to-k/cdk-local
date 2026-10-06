@@ -211,6 +211,14 @@ export interface SubstitutionContext {
    * consumed a sensitive parameter. Optional; ignored when unset.
    */
   onSensitiveParameterConsumed?: (logicalId: string) => void;
+  /**
+   * Called when a cross-stack value's dynamic reference was resolved to
+   * plaintext through {@link resolveDynamicReferences} (issue #784). Distinct
+   * from {@link onSensitiveParameterConsumed} so a host never receives a
+   * non-logical-ID argument there. The env-var helpers install a per-key sink
+   * that marks the consuming key sensitive. Optional; ignored when unset.
+   */
+  onDynamicReferenceResolved?: () => void;
   /** Optional pseudo-parameter bag for AWS::* placeholders. */
   pseudoParameters?: PseudoParameters;
   /**
@@ -233,7 +241,7 @@ export interface SubstitutionContext {
    * (issue #784): a host that persists a secret-bearing output redacted back
    * to its token hands that token across, and only this boundary still knows
    * which region produced it. A resolved value fires
-   * {@link onSensitiveParameterConsumed} so the consuming key stays off the
+   * {@link onDynamicReferenceResolved} so the consuming key stays off the
    * `docker run` argv. Throws on failure — a dynamic reference never degrades
    * to its token. Optional; when unset the token flows through and the
    * container-env builder resolves it against the consumer's region.
@@ -973,7 +981,7 @@ async function crossStackLiteral(
 ): Promise<StateSubstitutionResult> {
   if (producerRegion && context.resolveDynamicReferences && containsDynamicReference(value)) {
     const plain = await context.resolveDynamicReferences(value, producerRegion);
-    context.onSensitiveParameterConsumed?.('{{resolve:...}}');
+    context.onDynamicReferenceResolved?.();
     return { kind: 'literal', value: plain };
   }
   return { kind: 'literal', value };
@@ -1226,6 +1234,9 @@ export async function resolveWithSensitivityAsync(
   const keyContext: SubstitutionContext = {
     ...context,
     onSensitiveParameterConsumed: () => {
+      consumedSensitive = true;
+    },
+    onDynamicReferenceResolved: () => {
       consumedSensitive = true;
     },
   };

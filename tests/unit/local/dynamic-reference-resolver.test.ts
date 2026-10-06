@@ -19,7 +19,6 @@ import {
   firstUsableRegion,
   keysNotFromTemplate,
   keysOverriddenBy,
-  templateValueHoldsDynamicReference,
   withoutKeys,
   parseDynamicReference,
   resolveDynamicReferencesInEnv,
@@ -372,6 +371,32 @@ describe('DynamicReferenceResolver — hard-fail errors', () => {
     expect(msg).toContain('Container web env var X');
   });
 
+  it('a shared failing fetch names EACH consumer in its own error', async () => {
+    let calls = 0;
+    const { resolver } = fakeClients({
+      ssm: () => {
+        calls += 1;
+        throw awsError('AccessDeniedException', 'denied');
+      },
+    });
+    const [a, b] = await Promise.all([
+      failure(resolver.resolveString('{{resolve:ssm:/p}}', { consumer: 'Lambda A env var X' })),
+      failure(
+        resolver.resolveString('{{resolve:ssm:/p}}', {
+          consumer: 'Task B cross-stack env value',
+          overridable: false,
+        })
+      ),
+    ]);
+    expect(calls).toBe(1);
+    expect(a).toContain('Lambda A env var X');
+    expect(a).not.toContain('Task B');
+    expect(a).toContain('--env-vars');
+    expect(b).toContain('Task B cross-stack env value');
+    expect(b).not.toContain('Lambda A');
+    expect(b).not.toContain('--env-vars');
+  });
+
   it('a failed fetch is not cached, so a retry fetches again', async () => {
     let n = 0;
     const { resolver } = fakeClients({
@@ -533,16 +558,5 @@ describe('override / template helpers', () => {
     Object.defineProperty(env, '__proto__', { value: '3', enumerable: true, writable: true, configurable: true });
     const out = withoutKeys(env, new Set(['A']));
     expect(Object.keys(out).sort()).toEqual(['B', '__proto__']);
-  });
-
-  it('templateValueHoldsDynamicReference sees a token split across Fn::Join parts', () => {
-    expect(templateValueHoldsDynamicReference('{{resolve:ssm:/a}}')).toBe(true);
-    expect(
-      templateValueHoldsDynamicReference({
-        'Fn::Join': ['', ['{{resolve:secretsmanager:', { Ref: 'S' }, ':SecretString:k}}']],
-      })
-    ).toBe(true);
-    expect(templateValueHoldsDynamicReference({ Ref: 'Table' })).toBe(false);
-    expect(templateValueHoldsDynamicReference(undefined)).toBe(false);
   });
 });

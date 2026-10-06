@@ -213,6 +213,33 @@ describe('resolveLambdaContainerEnv — cross-stack dynamic reference (host --fr
     expect([...result.sensitiveEnvKeys].sort()).toEqual(['API_KEY', 'DB_URL']);
   });
 
+  it('keeps EVERY deployed-env fill off the argv, e.g. an ImportValue of a secret-bearing output', async () => {
+    const provider = {
+      ...hostProvider(),
+      load: async () => ({
+        resources: { Handler: { physicalId: 'fn-phys', resourceType: 'AWS::Lambda::Function', properties: {} } },
+        outputs: {},
+        region: 'ap-southeast-2',
+      }),
+      // The export is not in state, so substitution leaves the key unresolved
+      // and the deployed function's resolved env fills it.
+      buildCrossStackResolver: async () => ({
+        resolveImport: async () => undefined,
+        resolveGetStackOutput: async () => undefined,
+      }),
+      resolveDeployedFunctionEnv: async () => ({ DB_PASSWORD: 'pl41n-from-deploy' }),
+    } as unknown as LocalStateProvider;
+    const result = await resolveLambdaContainerEnv(
+      zipLambda({ DB_PASSWORD: { 'Fn::ImportValue': 'Producer-DbPassword' }, PLAIN: 'x' }),
+      { fromState: true } as never,
+      undefined,
+      { fromState: () => provider }
+    );
+    expect(result.env['DB_PASSWORD']).toBe('pl41n-from-deploy');
+    expect(result.sensitiveEnvKeys).toEqual(['DB_PASSWORD']);
+    expect(smSend).not.toHaveBeenCalled();
+  });
+
   it('resolves a GetStackOutput token against the Region the intrinsic names', async () => {
     const result = await resolveLambdaContainerEnv(
       zipLambda({

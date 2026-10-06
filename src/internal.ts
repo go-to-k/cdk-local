@@ -1086,9 +1086,12 @@ export {
  * region. A host that assembles a container env with its OWN code — rather
  * than through a cdk-local command factory — calls
  * `resolveDynamicReferencesInEnv` after its `resolveEnvVars` step (skipping
- * the keys `keysNotFromTemplate` returns) and wires one shared
- * `DynamicReferenceResolver` into the substitution context, so a
- * `{{resolve:...}}` token never reaches the container as text. Resolved keys
+ * the keys `keysNotFromTemplate` returns, region picked with
+ * `firstUsableRegion`) and wires one shared `DynamicReferenceResolver` into
+ * the substitution context, so a `{{resolve:...}}` token never reaches the
+ * container as text. To let an `--env-vars` override skip the cross-stack
+ * lookup too, it drops the keys `keysOverriddenBy` returns from the template
+ * env (`withoutKeys`) BEFORE substitution. Resolved keys
  * belong on the `docker run` value-from-process-env path, like a decrypted
  * SecureString.
  */
@@ -1096,9 +1099,12 @@ export {
   DynamicReferenceResolutionError,
   DynamicReferenceResolver,
   containsDynamicReference,
+  firstUsableRegion,
   keysNotFromTemplate,
+  keysOverriddenBy,
   parseDynamicReference,
   resolveDynamicReferencesInEnv,
+  withoutKeys,
   type DynamicReference,
   type DynamicReferenceResolverOptions,
   type ResolveEnvDynamicReferencesOptions,

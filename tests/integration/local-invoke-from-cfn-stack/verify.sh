@@ -439,7 +439,18 @@ echo "${DEBUG_OUT}" | grep -q 'Resolved secretsmanager dynamic reference' || {
   echo "[verify] FAIL: expected the debug line recording the secretsmanager resolution (positive control for the negative above)"
   exit 1
 }
-echo "[verify]   DYNREF_SECRET routed off the argv; the plaintext is in no log line."
+# issue #784: EVERY deployed-env fill (here the GetAtt-recovered SIBLING_ARN)
+# was resolved by CloudFormation and may be a secret, so it rides the
+# value-less `-e KEY` form too.
+echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e SIBLING_ARN( |$)' || {
+  echo "[verify] FAIL: the deployed-env fill SIBLING_ARN is not in the value-less '-e SIBLING_ARN' form: ${DOCKER_RUN_LINE}"
+  exit 1
+}
+if echo "${DOCKER_RUN_LINE}" | grep -q 'SIBLING_ARN='; then
+  echo "[verify] FAIL: the deployed-env fill SIBLING_ARN is inline on the docker run argv: ${DOCKER_RUN_LINE}"
+  exit 1
+fi
+echo "[verify]   DYNREF_SECRET and the deployed fill SIBLING_ARN routed off the argv; the plaintext is in no log line."
 
 echo "[verify] step 6e: a reference to a missing parameter FAILS the invoke, never hands over the token (issue #784)"
 for flags in "" "--from-cfn-stack"; do
