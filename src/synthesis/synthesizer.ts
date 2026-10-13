@@ -40,7 +40,16 @@ export interface SynthesisResult {
  * What a command synthesizes the CDK app with. {@link Synthesizer} (toolkit-lib)
  * is the default; an embedding host passes its own to keep synthesis — context
  * lookups, Stage enumeration, macro expansion — identical to its other
- * commands. Every caller reads only `stacks`.
+ * commands. A host's synthesizer must do what the built-in one does:
+ *
+ * - write the Cloud Assembly to `opts.output` (default `cdk.out`): a `--watch`
+ *   reload reads `<output>/<stack>.assets.json` from disk, and the file watcher
+ *   ignores only that directory;
+ * - read `opts.app` as a pre-synthesized assembly when it is an existing
+ *   directory;
+ * - set `assetOutdir` (the app's absolute output directory) and
+ *   `assetManifestPath` on every stack that ships assets: `assetOutdir` is the
+ *   containment bound for every asset path the assembly supplies.
  */
 export interface CdkAppSynthesizer {
   synthesize(opts: SynthesisOptions): Promise<SynthesisResult>;
