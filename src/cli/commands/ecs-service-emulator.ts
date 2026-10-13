@@ -16,7 +16,11 @@ import { CdkLocalError, LocalStartServiceError } from '../../utils/error-handler
 import { resolveMultiTarget } from '../../local/target-picker.js';
 import type { TargetEntry } from '../../local/target-lister.js';
 import { singleFlight } from '../../utils/single-flight.js';
-import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import {
+  Synthesizer,
+  type CdkAppSynthesizer,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
 import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
@@ -482,7 +486,8 @@ export async function runEcsServiceEmulator(
   targets: string[],
   options: EcsServiceEmulatorOptions,
   strategy: EmulatorStrategy,
-  extraStateProviders: ExtraStateProviders | undefined
+  extraStateProviders: ExtraStateProviders | undefined,
+  hostSynthesizer?: CdkAppSynthesizer
 ): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
@@ -640,7 +645,7 @@ export async function runEcsServiceEmulator(
     }
 
     logger.info('Synthesizing CDK app...');
-    const synthesizer = new Synthesizer();
+    const synthesizer: CdkAppSynthesizer = hostSynthesizer ?? new Synthesizer();
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,
@@ -1005,7 +1010,7 @@ async function reloadAllServices(args: {
     runState: ServiceRunState;
     controller?: ServiceController;
   }>;
-  synthesizer: Synthesizer;
+  synthesizer: CdkAppSynthesizer;
   synthOpts: SynthesisOptions;
   strategy: EmulatorStrategy;
   resolvedTargets: string[];

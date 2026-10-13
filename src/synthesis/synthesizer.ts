@@ -37,6 +37,16 @@ export interface SynthesisResult {
 }
 
 /**
+ * What a command synthesizes the CDK app with. {@link Synthesizer} (toolkit-lib)
+ * is the default; an embedding host passes its own to keep synthesis — context
+ * lookups, Stage enumeration, macro expansion — identical to its other
+ * commands. Every caller reads only `stacks`.
+ */
+export interface CdkAppSynthesizer {
+  synthesize(opts: SynthesisOptions): Promise<SynthesisResult>;
+}
+
+/**
  * Thin wrapper around {@link AssemblyReader} exposing a `Synthesizer`
  * API used by the `cdkl invoke` / `start-api` / `run-task` /
  * `start-service` commands.

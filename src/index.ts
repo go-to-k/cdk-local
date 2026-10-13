@@ -54,6 +54,16 @@ export {
  * runnable targets each `cdkl` command accepts, grouped by command.
  * Backs `cdkl list` and is reusable for interactive target pickers.
  */
+/**
+ * The seam a host passes as `synthesizer` to the serve factories so they
+ * synthesize the CDK app with the host's own synthesizer.
+ */
+export type {
+  CdkAppSynthesizer,
+  SynthesisOptions,
+  SynthesisResult,
+} from './synthesis/synthesizer.js';
+
 export {
   listTargets,
   countTargets,

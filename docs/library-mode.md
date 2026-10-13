@@ -42,6 +42,27 @@ The dispatcher enforces mutual exclusion across `--from-cfn-stack` and
 every registered extra flag, so users get one consistent error message
 when they pass conflicting flags.
 
+## Synthesizing with your own synthesizer
+
+`start-agentcore`, `start-cloudfront`, `start-service` and `start-alb` take a
+`synthesizer` option. Pass one and the command synthesizes the CDK app with it,
+on boot and on every `--watch` reload, instead of the built-in
+`@aws-cdk/toolkit-lib` synthesizer. A host that has its own synthesis (its own
+context-provider lookups, Stage enumeration) keeps every command on that one
+path. Any object with a `synthesize(opts)` method that returns `{ stacks }`
+fits `CdkAppSynthesizer`:
+
+```typescript
+import { createLocalStartServiceCommand, type CdkAppSynthesizer } from 'cdk-local';
+
+const synthesizer: CdkAppSynthesizer = {
+  synthesize: (opts) => mySynth({ app: opts.app, output: opts.output, context: opts.context }),
+};
+program.addCommand(createLocalStartServiceCommand({ extraStateProviders, synthesizer }));
+```
+
+Without it, the built-in synthesizer runs, as in `cdkl` itself.
+
 ## Your `commander` major must match cdk-local's
 
 `addCommand` splices a cdk-local-built `Command` into **your** Commander
@@ -249,7 +270,7 @@ shared docker network + Cloud Map / Service Connect overlay, optionally
 stands up the ALB front-door per listener, and tears everything down on
 SIGINT — every CLI behavior the upstream `cdkl` commands have:
 
-- `runEcsServiceEmulator(targets, options, strategy, extraStateProviders?)`
+- `runEcsServiceEmulator(targets, options, strategy, extraStateProviders?, synthesizer?)`
   — the entry point both upstream CLI commands wrap. `strategy` decides
   per-command behavior (target selection, picker prompts, front-door plan
   resolution); `serviceStrategy` and `albStrategy` are the two strategies
