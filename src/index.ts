@@ -50,6 +50,16 @@ export {
 } from './cli/commands/local-studio.js';
 
 /**
+ * The seam a host passes as `synthesizer` to the serve factories so they
+ * synthesize the CDK app with the host's own synthesizer.
+ */
+export type {
+  CdkAppSynthesizer,
+  SynthesisOptions,
+  SynthesisResult,
+} from './synthesis/synthesizer.js';
+
+/**
  * Target enumeration — turns a synthesized Cloud Assembly into the
  * runnable targets each `cdkl` command accepts, grouped by command.
  * Backs `cdkl list` and is reusable for interactive target pickers.

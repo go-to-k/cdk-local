@@ -7,6 +7,7 @@ import {
   type CdkLocalEmbedConfig,
 } from '../../local/embed-config.js';
 import type { ExtraStateProviders } from './local-state-source.js';
+import type { CdkAppSynthesizer } from '../../synthesis/synthesizer.js';
 import {
   addCommonEcsServiceOptions,
   addImageOverrideOptions,
@@ -27,6 +28,8 @@ export {
  */
 export interface CreateLocalStartServiceCommandOptions {
   extraStateProviders?: ExtraStateProviders;
+  /** Synthesizes the CDK app in place of the built-in toolkit-lib one. */
+  synthesizer?: CdkAppSynthesizer;
   /** Embed-time branding overrides for a host wrapping this factory. */
   embedConfig?: CdkLocalEmbedConfig;
 }
@@ -95,7 +98,13 @@ export function createLocalStartServiceCommand(
     )
     .action(
       withErrorHandling(async (targets: string[], options: EcsServiceEmulatorOptions) => {
-        await runEcsServiceEmulator(targets, options, serviceStrategy(), opts.extraStateProviders);
+        await runEcsServiceEmulator(
+          targets,
+          options,
+          serviceStrategy(),
+          opts.extraStateProviders,
+          opts.synthesizer
+        );
       })
     );
 

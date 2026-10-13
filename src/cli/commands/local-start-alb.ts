@@ -18,6 +18,7 @@ import {
   type FrontDoorForwardTarget,
 } from '../../local/elb-front-door-resolver.js';
 import type { ExtraStateProviders } from './local-state-source.js';
+import type { CdkAppSynthesizer } from '../../synthesis/synthesizer.js';
 import {
   addCommonEcsServiceOptions,
   addImageOverrideOptions,
@@ -35,6 +36,8 @@ import {
  */
 export interface CreateLocalStartAlbCommandOptions {
   extraStateProviders?: ExtraStateProviders;
+  /** Synthesizes the CDK app in place of the built-in toolkit-lib one. */
+  synthesizer?: CdkAppSynthesizer;
   /** Embed-time branding overrides for a host wrapping this factory. */
   embedConfig?: CdkLocalEmbedConfig;
 }
@@ -355,7 +358,8 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
           targets,
           options,
           albStrategy(options),
-          opts.extraStateProviders
+          opts.extraStateProviders,
+          opts.synthesizer
         );
       })
     );

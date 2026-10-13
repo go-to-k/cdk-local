@@ -11,7 +11,11 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
-import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import {
+  Synthesizer,
+  type CdkAppSynthesizer,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
 import {
@@ -187,7 +191,8 @@ export function resolveAgentCoreServePlan(protocol: string): AgentCoreServePlan 
 async function localStartAgentCoreCommand(
   target: string | undefined,
   options: LocalStartAgentCoreOptions,
-  extraStateProviders: ExtraStateProviders | undefined
+  extraStateProviders: ExtraStateProviders | undefined,
+  hostSynthesizer?: CdkAppSynthesizer
 ): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
@@ -284,7 +289,7 @@ async function localStartAgentCoreCommand(
   }
 
   logger.info('Synthesizing CDK app...');
-  const synthesizer = new Synthesizer();
+  const synthesizer: CdkAppSynthesizer = hostSynthesizer ?? new Synthesizer();
   const context = parseContextOptions(options.context);
   const synthOpts: SynthesisOptions = {
     app: appCmd,
@@ -705,6 +710,8 @@ async function localStartAgentCoreCommand(
 
 export interface CreateLocalStartAgentCoreCommandOptions {
   extraStateProviders?: ExtraStateProviders;
+  /** Synthesizes the CDK app in place of the built-in toolkit-lib one. */
+  synthesizer?: CdkAppSynthesizer;
   /** Embed-time branding overrides for a host wrapping this factory. */
   embedConfig?: CdkLocalEmbedConfig;
 }
@@ -740,7 +747,12 @@ export function createLocalStartAgentCoreCommand(
     )
     .action(
       withErrorHandling(async (target: string | undefined, options: LocalStartAgentCoreOptions) => {
-        await localStartAgentCoreCommand(target, options, opts.extraStateProviders);
+        await localStartAgentCoreCommand(
+          target,
+          options,
+          opts.extraStateProviders,
+          opts.synthesizer
+        );
       })
     );
 

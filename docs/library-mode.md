@@ -42,6 +42,40 @@ The dispatcher enforces mutual exclusion across `--from-cfn-stack` and
 every registered extra flag, so users get one consistent error message
 when they pass conflicting flags.
 
+## Synthesizing with your own synthesizer
+
+`start-agentcore`, `start-cloudfront`, `start-service` and `start-alb` take a
+`synthesizer` option. Pass one and the command synthesizes the CDK app with it,
+on boot and on every `--watch` reload, instead of the built-in
+`@aws-cdk/toolkit-lib` synthesizer. A host that has its own synthesis (its own
+context-provider lookups, Stage enumeration) keeps every command on that one
+path. Any object with a `synthesize(opts)` method that returns `{ stacks }`
+fits `CdkAppSynthesizer`:
+
+```typescript
+import { createLocalStartServiceCommand, type CdkAppSynthesizer } from 'cdk-local';
+
+const synthesizer: CdkAppSynthesizer = {
+  synthesize: (opts) => mySynth({ app: opts.app, output: opts.output, context: opts.context }),
+};
+program.addCommand(createLocalStartServiceCommand({ extraStateProviders, synthesizer }));
+```
+
+Without it, the built-in synthesizer runs, as in `cdkl` itself.
+
+Your synthesizer must behave like the built-in one where these commands rely on
+it:
+
+- Write the Cloud Assembly to `opts.output` (default `cdk.out`). A `--watch`
+  reload reads `<output>/<stack>.assets.json` from disk, and the file watcher
+  ignores only that directory (besides `cdk.out`, `node_modules` and `.git`), so an assembly written elsewhere loses
+  soft-reload and can re-trigger the watcher on every synth.
+- Read `opts.app` as a pre-synthesized assembly when it names an existing
+  directory (`--app cdk.out`).
+- Set `assetOutdir` (the app's absolute output directory) and
+  `assetManifestPath` on every stack that ships assets. `assetOutdir` bounds
+  every asset path the assembly supplies.
+
 ## Your `commander` major must match cdk-local's
 
 `addCommand` splices a cdk-local-built `Command` into **your** Commander
@@ -249,7 +283,7 @@ shared docker network + Cloud Map / Service Connect overlay, optionally
 stands up the ALB front-door per listener, and tears everything down on
 SIGINT — every CLI behavior the upstream `cdkl` commands have:
 
-- `runEcsServiceEmulator(targets, options, strategy, extraStateProviders?)`
+- `runEcsServiceEmulator(targets, options, strategy, extraStateProviders?, synthesizer?)`
   — the entry point both upstream CLI commands wrap. `strategy` decides
   per-command behavior (target selection, picker prompts, front-door plan
   resolution); `serviceStrategy` and `albStrategy` are the two strategies

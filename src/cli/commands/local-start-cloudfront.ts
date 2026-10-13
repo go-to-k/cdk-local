@@ -60,7 +60,11 @@ import {
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getLogger } from '../../utils/logger.js';
-import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import {
+  Synthesizer,
+  type CdkAppSynthesizer,
+  type SynthesisOptions,
+} from '../../synthesis/synthesizer.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { CLOUDFRONT_DISTRIBUTION_TYPE } from '../../local/cloudfront-resolver.js';
@@ -126,6 +130,8 @@ interface LocalStartCloudFrontOptions {
 export interface CreateLocalStartCloudFrontCommandOptions {
   /** Embed-time branding overrides for a host wrapping this factory. */
   embedConfig?: CdkLocalEmbedConfig;
+  /** Synthesizes the CDK app in place of the built-in toolkit-lib one. */
+  synthesizer?: CdkAppSynthesizer;
   /**
    * Additional state-source factories a host CLI can inject so its own
    * `--from-state`-style source is picked up by the deployed-state resolution
@@ -699,7 +705,8 @@ export function annotateDeployedS3Origins(
 async function localStartCloudFrontCommand(
   target: string | undefined,
   options: LocalStartCloudFrontOptions,
-  extraStateProviders?: ExtraStateProviders
+  extraStateProviders?: ExtraStateProviders,
+  hostSynthesizer?: CdkAppSynthesizer
 ): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
@@ -734,7 +741,7 @@ async function localStartCloudFrontCommand(
     stacks: StackInfo[];
   }> => {
     logger.info('Synthesizing CDK app...');
-    const synthesizer = new Synthesizer();
+    const synthesizer: CdkAppSynthesizer = hostSynthesizer ?? new Synthesizer();
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,
@@ -985,7 +992,12 @@ export function createLocalStartCloudFrontCommand(
     .action(
       withErrorHandling(
         async (target: string | undefined, options: LocalStartCloudFrontOptions) => {
-          await localStartCloudFrontCommand(target, options, opts.extraStateProviders);
+          await localStartCloudFrontCommand(
+            target,
+            options,
+            opts.extraStateProviders,
+            opts.synthesizer
+          );
         }
       )
     );
