@@ -44,7 +44,7 @@ export interface SynthesisResult {
  *
  * - write the Cloud Assembly to `opts.output` (default `cdk.out`): a `--watch`
  *   reload reads `<output>/<stack>.assets.json` from disk, and the file watcher
- *   ignores only that directory;
+ *   ignores only that directory (besides `cdk.out`, `node_modules`, `.git`);
  * - read `opts.app` as a pre-synthesized assembly when it is an existing
  *   directory;
  * - set `assetOutdir` (the app's absolute output directory) and

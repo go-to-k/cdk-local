@@ -68,7 +68,7 @@ it:
 
 - Write the Cloud Assembly to `opts.output` (default `cdk.out`). A `--watch`
   reload reads `<output>/<stack>.assets.json` from disk, and the file watcher
-  ignores only that directory, so an assembly written elsewhere loses
+  ignores only that directory (besides `cdk.out`, `node_modules` and `.git`), so an assembly written elsewhere loses
   soft-reload and can re-trigger the watcher on every synth.
 - Read `opts.app` as a pre-synthesized assembly when it names an existing
   directory (`--app cdk.out`).
