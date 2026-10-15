@@ -1,3 +1,4 @@
+import { redactDockerArgvValues } from '../utils/docker-argv-redaction.js';
 import type { DockerImageAssetSource } from '../types/assets.js';
 import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../utils/docker-cmd.js';
 import { getEmbedConfig } from '../local/embed-config.js';
@@ -240,8 +241,11 @@ export async function buildDockerImage(
         )
       : cdkOutDir;
 
+    // Value-bearing docker flags in the manifest's own command line
+    // (`--build-arg K=V`, `--cache-to ...,secret=...`) are masked for display;
+    // the argv spawned below is the original.
     logger.debug(
-      `Building Docker image via executable: ${displayUntrustedValue(source.executable.join(' '))} ` +
+      `Building Docker image via executable: ${displayUntrustedValue(redactDockerArgvValues(source.executable).join(' '))} ` +
         `(cwd=${displayUntrustedValue(cwd)})`
     );
     warnManifestExecutable(cmd, source.executable, cwd);
@@ -292,8 +296,11 @@ export async function buildDockerImage(
   // the read or write it describes. Warn only — see the module.
   warnEscapingBuildKitPaths(source, contextDir, assetOutdir);
 
+  // `--build-arg` values and `--cache-from` / `--cache-to` credential params
+  // are masked: a build arg is where a CDK app passes an `NPM_TOKEN`, and
+  // `--verbose` puts this line on the terminal.
   logger.debug(
-    `${getDockerCmd()} ${buildArgs.join(' ')} (cwd=${displayUntrustedValue(contextDir)})`
+    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs).join(' ')} (cwd=${displayUntrustedValue(contextDir)})`
   );
 
   try {

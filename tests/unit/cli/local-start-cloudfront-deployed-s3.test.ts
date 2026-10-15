@@ -38,7 +38,8 @@ vi.mock('../../../src/local/cloudfront-distribution-config.js', () => ({
   resolveDeployedOriginBucket: bucketResolverMock,
 }));
 
-const { resolveDeployedS3Origins, annotateDeployedS3Origins, warnUnusedCacheOrigin } = await import(
+const { resolveDeployedS3Origins, annotateDeployedS3Origins, warnUnusedCacheOrigin, warnUnsupported } =
+  await import(
   '../../../src/cli/commands/local-start-cloudfront.js'
 );
 const { setLogger } = await import('../../../src/utils/logger.js');
@@ -388,5 +389,33 @@ describe('warnUnusedCacheOrigin', () => {
     const warns = captureWarns();
     warnUnusedCacheOrigin({} as never);
     expect(warns).toHaveLength(0);
+  });
+});
+
+describe('warnUnsupported — unresolved S3 origin remedy (go-to-k/cdkd#4967)', () => {
+  function captured(): string[] {
+    const warns: string[] = [];
+    setLogger({
+      info: () => undefined,
+      warn: (m: string) => warns.push(m),
+      error: () => undefined,
+      debug: () => undefined,
+    } as never);
+    return warns;
+  }
+  const unresolved = (): ResolvedDistribution =>
+    distribution({ kind: 's3-unresolved', originId: 'o1', bucketLogicalId: 'Bucket123' });
+
+  it("names a host's state flag beside --from-cfn-stack", () => {
+    const warns = captured();
+    warnUnsupported(unresolved(), { fromState: vi.fn() });
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('Pass --from-cfn-stack or --from-state to serve the deployed bucket');
+  });
+
+  it('names only --from-cfn-stack for the standalone CLI', () => {
+    const warns = captured();
+    warnUnsupported(unresolved());
+    expect(warns[0]).toContain('Pass --from-cfn-stack to serve the deployed bucket');
   });
 });

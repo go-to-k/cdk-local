@@ -611,7 +611,10 @@ export function buildLambdaBootOptions(
 }
 
 /** Emit boot-time WARNs for parts of the distribution cdk-local does not serve. */
-function warnUnsupported(distribution: ResolvedDistribution): void {
+export function warnUnsupported(
+  distribution: ResolvedDistribution,
+  extraStateProviders?: ExtraStateProviders
+): void {
   const logger = getLogger();
   for (const origin of distribution.origins.values()) {
     if (origin.kind === 'custom') {
@@ -622,7 +625,9 @@ function warnUnsupported(distribution: ResolvedDistribution): void {
     } else if (origin.kind === 's3-unresolved') {
       logger.warn(
         `Origin '${origin.originId}' is an S3 origin with no resolvable local source (no BucketDeployment found, or its source could not be located in the cloud assembly). ` +
-          `Pass --from-cfn-stack to serve the deployed bucket from real S3 on demand, or point it at a local directory with --origin ${origin.originId}=<dir>. Requests routed to it return 502.`
+          // Name the host's state flags too: under a host CLI, its own
+          // `--from-state` is a remedy as well (go-to-k/cdkd#4967).
+          `Pass ${stateSourceFlagNames(extraStateProviders).join(' or ')} to serve the deployed bucket from real S3 on demand, or point it at a local directory with --origin ${origin.originId}=<dir>. Requests routed to it return 502.`
       );
     }
   }
@@ -868,7 +873,7 @@ async function localStartCloudFrontCommand(
     extraStateProviders
   );
 
-  warnUnsupported(initial.distribution);
+  warnUnsupported(initial.distribution, extraStateProviders);
   warnUnusedCacheOrigin(options, extraStateProviders);
 
   // Resolve + attach the cf KeyValueStore module to every KVS-reading function
@@ -968,7 +973,7 @@ async function localStartCloudFrontCommand(
             annotateDeployedS3Origins(reloaded.distribution, deployedS3.buckets);
             // Drop any read-through cache so the reload reflects fresh S3 content.
             for (const reader of deployedS3.readers.values()) reader.clearCache();
-            warnUnsupported(reloaded.distribution);
+            warnUnsupported(reloaded.distribution, extraStateProviders);
             await attachKvsModules(
               reloaded.distribution,
               reloaded.stacks,
