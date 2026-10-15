@@ -60,6 +60,7 @@ const stacks = [{ stackName: 'Stack', region: 'us-west-2' } as StackInfo];
 describe('resolveDeployedS3Origins', () => {
   it('promotes an s3-unresolved origin to s3-deployed using the state physical id', async () => {
     createProviderMock.mockReturnValue({
+      dispose: vi.fn(),
       load: vi.fn().mockResolvedValue({ resources: { Bucket123: { physicalId: 'my-site-bucket' } } }),
     });
     const dist = distribution({ kind: 's3-unresolved', originId: 'o1', bucketLogicalId: 'Bucket123' });
@@ -94,7 +95,7 @@ describe('resolveDeployedS3Origins', () => {
     const load = vi.fn().mockResolvedValue({
       resources: { Bucket123: { physicalId: 'host-state-bucket' } },
     });
-    createProviderMock.mockReturnValue({ load });
+    createProviderMock.mockReturnValue({ load, dispose: vi.fn() });
     const providers = { fromState: vi.fn() };
     const dist = distribution({ kind: 's3-unresolved', originId: 'o1', bucketLogicalId: 'Bucket123' });
 
@@ -123,6 +124,30 @@ describe('resolveDeployedS3Origins', () => {
     );
   });
 
+  it('disposes the provider it loaded, and falls back to the state record region for the reader', async () => {
+    const dispose = vi.fn();
+    createProviderMock.mockReturnValue({
+      dispose,
+      load: vi.fn().mockResolvedValue({
+        region: 'eu-west-1',
+        resources: { Bucket123: { physicalId: 'b' } },
+      }),
+    });
+    readerMock.mockClear();
+    const dist = distribution({ kind: 's3-unresolved', originId: 'o1', bucketLogicalId: 'Bucket123' });
+    // An env-agnostic stack: no synth region.
+    await resolveDeployedS3Origins(
+      dist,
+      [{ stackName: 'Stack' } as StackInfo],
+      { fromState: true } as never,
+      undefined,
+      logger,
+      { fromState: vi.fn() }
+    );
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(readerMock).toHaveBeenCalledWith('b', expect.objectContaining({ region: 'eu-west-1' }));
+  });
+
   it("stays a no-op when the host's provider is registered but its flag is off", async () => {
     createProviderMock.mockClear();
     const dist = distribution({ kind: 's3-unresolved', originId: 'o1', bucketLogicalId: 'Bucket123' });
@@ -143,6 +168,7 @@ describe('resolveDeployedS3Origins', () => {
 
   it('leaves the origin unresolved when the bucket physical id is not in state', async () => {
     createProviderMock.mockReturnValue({
+      dispose: vi.fn(),
       load: vi.fn().mockResolvedValue({ resources: {} }),
     });
     const dist = distribution({ kind: 's3-unresolved', originId: 'o1', bucketLogicalId: 'Bucket123' });
@@ -161,7 +187,10 @@ describe('resolveDeployedS3Origins', () => {
   });
 
   it('does not touch an origin that already has a local source', async () => {
-    createProviderMock.mockReturnValue({ load: vi.fn().mockResolvedValue({ resources: {} }) });
+    createProviderMock.mockReturnValue({
+      dispose: vi.fn(),
+      load: vi.fn().mockResolvedValue({ resources: {} }),
+    });
     const dist = distribution({ kind: 's3', originId: 'o1', localDirs: ['/tmp/site'] });
 
     const { readers } = await resolveDeployedS3Origins(
@@ -177,7 +206,10 @@ describe('resolveDeployedS3Origins', () => {
   });
 
   it('uses a literal bucketName from the DomainName directly (external/imported bucket)', async () => {
-    createProviderMock.mockReturnValue({ load: vi.fn().mockResolvedValue({ resources: {} }) });
+    createProviderMock.mockReturnValue({
+      dispose: vi.fn(),
+      load: vi.fn().mockResolvedValue({ resources: {} }),
+    });
     readerMock.mockClear();
     const dist = distribution({ kind: 's3-unresolved', originId: 'o1', bucketName: 'ext-bucket' });
 
@@ -197,6 +229,7 @@ describe('resolveDeployedS3Origins', () => {
 
   it('falls back to GetDistributionConfig for a deployedConfigOnly origin (pure intrinsic)', async () => {
     createProviderMock.mockReturnValue({
+      dispose: vi.fn(),
       load: vi.fn().mockResolvedValue({ resources: { Dist: { physicalId: 'E123ABC' } } }),
     });
     bucketResolverMock.mockResolvedValueOnce('resolved-from-config');
@@ -223,6 +256,7 @@ describe('resolveDeployedS3Origins', () => {
 
   it('leaves a deployedConfigOnly origin unresolved when GetDistributionConfig cannot resolve it', async () => {
     createProviderMock.mockReturnValue({
+      dispose: vi.fn(),
       load: vi.fn().mockResolvedValue({ resources: { Dist: { physicalId: 'E123ABC' } } }),
     });
     bucketResolverMock.mockResolvedValueOnce(undefined);
@@ -242,6 +276,7 @@ describe('resolveDeployedS3Origins', () => {
 
   it('threads extraStateProviders into createLocalStateProvider (host --from-state parity, issue #426)', async () => {
     createProviderMock.mockReturnValue({
+      dispose: vi.fn(),
       load: vi.fn().mockResolvedValue({ resources: { Bucket123: { physicalId: 'b' } } }),
     });
     createProviderMock.mockClear();
@@ -266,6 +301,7 @@ describe('resolveDeployedS3Origins', () => {
 
   it('threads cache: true into the reader only when --cache-origin is set', async () => {
     createProviderMock.mockReturnValue({
+      dispose: vi.fn(),
       load: vi.fn().mockResolvedValue({ resources: { Bucket123: { physicalId: 'b' } } }),
     });
 
@@ -339,6 +375,13 @@ describe('warnUnusedCacheOrigin', () => {
     const warns = captureWarns();
     warnUnusedCacheOrigin({ cacheOrigin: true, fromState: true } as never, { fromState: vi.fn() });
     expect(warns).toHaveLength(0);
+  });
+
+  it("names the host's flag beside --from-cfn-stack when no state source is active", () => {
+    const warns = captureWarns();
+    warnUnusedCacheOrigin({ cacheOrigin: true } as never, { fromState: vi.fn() });
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('no effect without --from-cfn-stack or --from-state');
   });
 
   it('is silent when --cache-origin is not set', () => {

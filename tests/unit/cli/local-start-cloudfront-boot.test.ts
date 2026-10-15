@@ -31,7 +31,8 @@ vi.mock('../../../src/cli/commands/local-invoke.js', () => ({
   resolveLambdaContainerEnv: resolveContainerEnvMock,
 }));
 
-const { bootLambdaUrlOrigins, bootLambdaEdgeFunctions, buildLambdaEnvOptions } = await import(
+const { bootLambdaUrlOrigins, bootLambdaEdgeFunctions, buildLambdaEnvOptions, buildLambdaBootOptions } =
+  await import(
   '../../../src/cli/commands/local-start-cloudfront.js'
 );
 
@@ -226,5 +227,14 @@ describe("host extra state providers reach the Lambda container env (go-to-k/cdk
       fromCfnStack: 'MyStack',
       region: 'us-east-1',
     });
+  });
+
+  it('buildLambdaBootOptions carries the registry the command hands both boot paths', () => {
+    const options = { host: '127.0.0.1', pull: false, fromState: true } as never;
+    const boot = buildLambdaBootOptions(options, undefined, providers);
+    expect(boot.extraStateProviders).toBe(providers);
+    expect(boot.skipPull).toBe(true);
+    expect(boot.envOptions).toMatchObject({ fromState: true });
+    expect('extraStateProviders' in buildLambdaBootOptions(options, undefined, undefined)).toBe(false);
   });
 });

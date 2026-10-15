@@ -50,7 +50,8 @@ describe('attachKvsModules — state-source gate', () => {
     const load = vi.fn().mockResolvedValue({
       resources: { Store: { physicalId: 'arn:aws:cloudfront::123456789012:key-value-store/abc' } },
     });
-    createProviderMock.mockReturnValue({ load });
+    const dispose = vi.fn();
+    createProviderMock.mockReturnValue({ load, dispose });
     const providers = { fromState: vi.fn() };
 
     await attachKvsModules(dist, stacks, { fromState: true } as never, undefined, logger, providers);
@@ -65,6 +66,7 @@ describe('attachKvsModules — state-source gate', () => {
       providers
     );
     expect(load).toHaveBeenCalledWith('Stack', 'us-west-2');
+    expect(dispose).toHaveBeenCalledOnce();
     expect(ref).toMatchObject({ arn: 'arn:aws:cloudfront::123456789012:key-value-store/abc' });
   });
 

@@ -150,6 +150,17 @@ export function activeStateSourceFlag(
 }
 
 /**
+ * Every state-source flag a command accepts, for a message telling the user
+ * which flag enables a state-backed path: `--from-cfn-stack`, then each host
+ * flag in registration order.
+ */
+export function stateSourceFlagNames(
+  extraStateProviders: ExtraStateProviders | undefined
+): string[] {
+  return ['--from-cfn-stack', ...Object.keys(extraStateProviders ?? {}).map(toFlagName)];
+}
+
+/**
  * The host's own option fields to carry onto an options bag a command rebuilds
  * from an allow-list before handing it to {@link createLocalStateProvider}
  * (directly or through `resolveLambdaContainerEnv`). The dispatcher activates

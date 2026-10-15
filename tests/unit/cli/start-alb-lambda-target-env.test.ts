@@ -153,6 +153,25 @@ describe('buildFrontDoor — ALB Lambda-target container env (issue #380)', () =
     }
   });
 
+  it('lets the collapsed assume-role value win over the copied host bag', async () => {
+    const options = {
+      containerHost: '127.0.0.1',
+      pull: true,
+      assumeTaskRole: 'arn:aws:iam::123456789012:role/legacy',
+      fromState: true,
+    } as never;
+
+    const { servers } = await buildFrontDoor(lambdaPlan(), options, logger, { fromState: vi.fn() } as never);
+    try {
+      const [, envOptions] = resolveContainerEnvMock.mock.calls[0]!;
+      expect((envOptions as { assumeRole?: unknown }).assumeRole).toBe(
+        'arn:aws:iam::123456789012:role/legacy'
+      );
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+
   it('keeps the allow-listed bag exact when no host providers are registered', async () => {
     const options = {
       containerHost: '127.0.0.1',
