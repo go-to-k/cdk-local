@@ -40,6 +40,7 @@ import { resolveExecutionRoleArnFromState } from './local-invoke.js';
 import {
   createLocalStateProvider,
   isCfnFlagPresent,
+  hasExtraStateProviderActive,
   rejectExplicitCfnStackWithMultipleStacks,
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
@@ -3619,21 +3620,6 @@ export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | unde
  * warn and leave `pseudoParameters: undefined` — substitution still
  * runs for non-`AWS::*` refs.
  */
-/**
- * Returns true when at least one host-provided extra state-provider flag
- * is active in the options bag.
- */
-function hasExtraStateProviderActive(
-  options: LocalStartApiOptions,
-  extraStateProviders: ExtraStateProviders | undefined
-): boolean {
-  if (!extraStateProviders) return false;
-  for (const key of Object.keys(extraStateProviders)) {
-    if ((options as unknown as Record<string, unknown>)[key]) return true;
-  }
-  return false;
-}
-
 export async function loadStateForRoutedStacks(
   stacks: readonly StackInfo[],
   routes: readonly DiscoveredRoute[],

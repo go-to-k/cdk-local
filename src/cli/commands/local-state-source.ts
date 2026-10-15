@@ -108,6 +108,67 @@ export function isCfnFlagPresent(opts: Pick<LocalStateSourceOptions, 'fromCfnSta
 }
 
 /**
+ * True when at least one host-registered extra state-provider flag (e.g. a
+ * host's `--from-state`) is set in the options bag — the same activation test
+ * {@link createLocalStateProvider} applies (`options[key]` truthy).
+ */
+export function hasExtraStateProviderActive(
+  options: object,
+  extraStateProviders: ExtraStateProviders | undefined
+): boolean {
+  if (!extraStateProviders) return false;
+  const bag = options as Record<string, unknown>;
+  return Object.keys(extraStateProviders).some((key) => Boolean(bag[key]));
+}
+
+/**
+ * True when ANY state source is active: `--from-cfn-stack` or a
+ * host-registered extra provider. A command that gates a state-backed path
+ * on {@link isCfnFlagPresent} alone leaves a host's provider registered but
+ * unreachable (go-to-k/cdk-local#699).
+ */
+export function isStateSourceActive(
+  options: Pick<LocalStateSourceOptions, 'fromCfnStack'>,
+  extraStateProviders: ExtraStateProviders | undefined
+): boolean {
+  return isCfnFlagPresent(options) || hasExtraStateProviderActive(options, extraStateProviders);
+}
+
+/**
+ * The `--flag` naming the active state source, for a log line that says where
+ * a value came from. `undefined` when no state source is active.
+ */
+export function activeStateSourceFlag(
+  options: Pick<LocalStateSourceOptions, 'fromCfnStack'>,
+  extraStateProviders: ExtraStateProviders | undefined
+): string | undefined {
+  if (isCfnFlagPresent(options)) return '--from-cfn-stack';
+  if (!extraStateProviders) return undefined;
+  const bag = options as Record<string, unknown>;
+  const key = Object.keys(extraStateProviders).find((k) => Boolean(bag[k]));
+  return key === undefined ? undefined : toFlagName(key);
+}
+
+/**
+ * The host's own option fields to carry onto an options bag a command rebuilds
+ * from an allow-list before handing it to {@link createLocalStateProvider}
+ * (directly or through `resolveLambdaContainerEnv`). The dispatcher activates
+ * an extra provider only when `options[key]` is truthy, and the provider's
+ * factory reads its companion fields (a host's `--state-bucket`, say) from the
+ * same bag, so an allow-list that names only cdk-local's own keys registers the
+ * provider and never selects it. With no extra providers registered this is
+ * empty, so the standalone CLI's bag is unchanged. Spread it FIRST so the
+ * caller's explicit keys still win.
+ */
+export function hostStateSourceFields(
+  options: object,
+  extraStateProviders: ExtraStateProviders | undefined
+): Record<string, unknown> {
+  if (!extraStateProviders || Object.keys(extraStateProviders).length === 0) return {};
+  return { ...(options as Record<string, unknown>) };
+}
+
+/**
  * Resolve the region used for the CFn client. The CFn provider is
  * region-bound at construction time; we apply the precedence chain
  * `--stack-region` > `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION`

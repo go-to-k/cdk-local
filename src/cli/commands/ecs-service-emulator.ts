@@ -69,6 +69,7 @@ import {
 import { matchStacks } from '../stack-matcher.js';
 import {
   createLocalStateProvider,
+  hostStateSourceFields,
   rejectExplicitCfnStackWithMultipleStacks,
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
@@ -1972,7 +1973,11 @@ async function resolveAlbLambdaTargetEnv(
   if (lambdas.size === 0) return out;
 
   const effectiveAssumeRole = resolveEcsAssumeRoleOption(options);
+  // Host fields first (a host's `--from-state` + its companions): without them
+  // the dispatcher never selects the host's provider for a Lambda target
+  // (go-to-k/cdk-local#699). cdk-local's own keys below still win.
   const envOptions: LambdaContainerEnvOptions = {
+    ...hostStateSourceFields(options, extraStateProviders),
     ...(options.fromCfnStack !== undefined && { fromCfnStack: options.fromCfnStack }),
     ...(effectiveAssumeRole !== undefined && { assumeRole: effectiveAssumeRole }),
     ...(options.region !== undefined && { region: options.region }),

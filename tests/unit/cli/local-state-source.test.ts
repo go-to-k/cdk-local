@@ -9,8 +9,12 @@ vi.mock('../../../src/utils/profile-region.js', () => ({
 }));
 
 import {
+  activeStateSourceFlag,
   createLocalStateProvider,
+  hasExtraStateProviderActive,
+  hostStateSourceFields,
   isCfnFlagPresent,
+  isStateSourceActive,
   resolveCfnStackName,
   resolveCfnRegion,
   resolveCfnFallbackRegion,
@@ -373,5 +377,37 @@ describe('createLocalStateProvider — extraStateProviders dispatcher', () => {
     );
     expect(cfnProvider).toBeInstanceOf(CfnLocalStateProvider);
     cfnProvider?.dispose();
+  });
+});
+
+describe('state-source activity helpers (go-to-k/cdk-local#699)', () => {
+  const providers: ExtraStateProviders = { fromState: () => ({}) as LocalStateProvider };
+
+  it('hasExtraStateProviderActive follows the dispatcher activation rule (options[key] truthy)', () => {
+    expect(hasExtraStateProviderActive({ fromState: true }, providers)).toBe(true);
+    expect(hasExtraStateProviderActive({ fromState: false }, providers)).toBe(false);
+    expect(hasExtraStateProviderActive({ fromState: true }, undefined)).toBe(false);
+  });
+
+  it('isStateSourceActive is true for --from-cfn-stack OR an active host provider', () => {
+    expect(isStateSourceActive({ fromCfnStack: true }, undefined)).toBe(true);
+    expect(isStateSourceActive({ fromState: true } as LocalStateSourceOptions, providers)).toBe(true);
+    expect(isStateSourceActive({}, providers)).toBe(false);
+  });
+
+  it('activeStateSourceFlag names the active flag in --kebab-case', () => {
+    expect(activeStateSourceFlag({ fromCfnStack: 'S' }, providers)).toBe('--from-cfn-stack');
+    expect(activeStateSourceFlag({ fromState: true } as LocalStateSourceOptions, providers)).toBe(
+      '--from-state'
+    );
+    expect(activeStateSourceFlag({}, providers)).toBeUndefined();
+  });
+
+  it('hostStateSourceFields copies the bag only when a host registered providers', () => {
+    const bag = { fromState: true, stateBucket: 'b' };
+    expect(hostStateSourceFields(bag, providers)).toEqual(bag);
+    expect(hostStateSourceFields(bag, providers)).not.toBe(bag);
+    expect(hostStateSourceFields(bag, undefined)).toEqual({});
+    expect(hostStateSourceFields(bag, {})).toEqual({});
   });
 });
