@@ -1091,8 +1091,10 @@ async function prepareOneImage(
  * `docker volume create` for every `DockerVolumeConfiguration` entry.
  * Anonymous + host-path volumes need no create call — they're realized
  * at `docker run` time via `-v <hostPath>:<containerPath>`.
+ *
+ * Exported for unit testing.
  */
-async function realizeDockerVolumes(
+export async function realizeDockerVolumes(
   volumes: ResolvedEcsVolume[],
   state: EcsRunState
 ): Promise<Map<string, ResolvedEcsVolume & { dockerVolumeName?: string }>> {

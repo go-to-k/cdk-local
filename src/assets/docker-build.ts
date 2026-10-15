@@ -270,7 +270,7 @@ export async function buildDockerImage(
   if (!source.directory) {
     throw options.wrapError(
       // Field NAMES only: the values carry build args and cache credentials.
-      `DockerImageAssetSource must set either 'directory' or 'executable' (fields present: ${Object.keys(source).join(', ') || 'none'})`
+      `DockerImageAssetSource must set either 'directory' or 'executable' (fields present: ${displayUntrustedValue(Object.keys(source).join(', ') || 'none')})`
     );
   }
   if (!options.tag) {

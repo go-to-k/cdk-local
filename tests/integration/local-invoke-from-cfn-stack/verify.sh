@@ -448,9 +448,10 @@ echo "${DEBUG_OUT}" | grep -q 'Resolved secretsmanager dynamic reference' || {
   exit 1
 }
 # issue #784: a deployed-env fill whose template value cannot be a secret
-# (the GetAtt-recovered SIBLING_ARN) stays inline as configuration.
-echo "${DOCKER_RUN_LINE}" | grep -q -- "-e SIBLING_ARN=${DEPLOYED_SIBLING_ARN}" || {
-  echo "[verify] FAIL: expected the GetAtt fill inline as -e SIBLING_ARN=<arn>: ${DOCKER_RUN_LINE}"
+# (the GetAtt-recovered SIBLING_ARN) stays inline as configuration. The debug
+# line masks every -e value, so the inline FORM reads `-e SIBLING_ARN=***`.
+echo "${DOCKER_RUN_LINE}" | grep -qF -- "-e SIBLING_ARN=***" || {
+  echo "[verify] FAIL: expected the GetAtt fill inline as -e SIBLING_ARN=<value> (masked on the debug line as ***; the value itself is asserted on the function response): ${DOCKER_RUN_LINE}"
   exit 1
 }
 # issue #784: a deployed-env fill whose template value MAY be a secret (a
