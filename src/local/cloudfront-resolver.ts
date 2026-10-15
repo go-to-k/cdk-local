@@ -24,9 +24,10 @@ import { resolveResponseHeadersPolicyCors, type CorsConfig } from './cors-handle
  * content is resolved from the BucketDeployment source asset in the cloud
  * assembly + CloudFront Functions doing the routing.
  *
- * Scope (v1, issue #363): S3 origins only. A custom (non-S3) origin and a
- * Lambda@Edge `LambdaFunctionAssociations` association are recorded but
- * WARN-and-skip at request time — cdk-local does not emulate them. The origin's
+ * Scope: S3 origins, Lambda Function URL origins and Lambda@Edge
+ * `LambdaFunctionAssociations` (the latter two are booted into RIE containers
+ * by the start-cloudfront command). Any other custom origin is recorded but
+ * WARN-and-skip at request time — cdk-local does not emulate it. The origin's
  * local content is resolved by walking the distribution's S3 origins back to
  * their `Custom::CDKBucketDeployment` source asset; an origin with no
  * resolvable local source is surfaced as `s3-unresolved` so the boot path can

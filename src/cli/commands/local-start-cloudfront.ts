@@ -981,7 +981,9 @@ export function createLocalStartCloudFrontCommand(
         'from the BucketDeployment source in the cloud assembly) and its Lambda Function URL origins (the backing ' +
         'Lambda is run locally via RIE), plus its viewer-request / viewer-response CloudFront Functions, ' +
         'reproducing the distribution routing locally so a rewrite / routing change is verifiable in seconds. ' +
-        'Serves S3 and Lambda Function URL origins; other custom origins and Lambda@Edge are not run (warn-and-skip). ' +
+        'Serves S3 and Lambda Function URL origins, and runs Lambda@Edge functions in local RIE containers (Docker is ' +
+        'required for a Function URL origin or a Lambda@Edge association; one that fails to boot is warn-and-skipped). ' +
+        'Other custom origins are not run (warn-and-skip; requests routed to one return 502). ' +
         'Tip: omit the target in a terminal to pick interactively.'
     )
     .argument(
