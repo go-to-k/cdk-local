@@ -7,7 +7,7 @@
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runDockerStreaming } from '../../../src/utils/docker-cmd.js';
+import { runDockerForeground, runDockerStreaming } from '../../../src/utils/docker-cmd.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', () => ({ spawn: spawnMock }));
@@ -38,5 +38,17 @@ describe('spawnStreaming streamLive', () => {
     expect(written).toContain('progress on stderr\n');
     // The captured stdout is still returned to the caller unchanged.
     expect(result.stdout).toContain('#5 [2/3] RUN npm ci');
+  });
+});
+
+describe('spawnForeground (docker pull)', () => {
+  it("maps the child's stdout onto the parent's stderr (fd 2), never its stdout", async () => {
+    const child = new EventEmitter();
+    spawnMock.mockReturnValue(child);
+    const done = runDockerForeground(['pull', 'public.ecr.aws/lambda/nodejs:22']);
+    child.emit('close', 0);
+    await done;
+    const opts = spawnMock.mock.calls[0]![2] as { stdio: unknown };
+    expect(opts.stdio).toEqual(['inherit', 2, 'inherit']);
   });
 });

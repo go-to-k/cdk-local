@@ -181,6 +181,12 @@ This is what keeps a single-shot invoke's stdout payload-clean
 response. `setEmbedConfig` replaces the whole config, so pass `logger` in
 every config you install (the factories' `embedConfig` included).
 
+cdk-local keeps its own console logger in three cases: in a process where
+`CDKL_LOG_LEVEL` or `CDKL_LOG_STREAM` is set (`studio` sets them on the
+children it spawns to control what reaches its LOGS panel and on which
+pipe), when the host logger calls back into cdk-local's logger (no
+recursion), and for any line the host logger throws on.
+
 ### Shim hosts that don't use the factories
 
 A host that re-exports cdk-local's leaf modules as shims

@@ -438,7 +438,11 @@ export async function spawnForeground(
     const child = spawn(cmd, args, {
       cwd: options.cwd,
       env,
-      stdio: 'inherit',
+      // The child's stdout goes to the parent's stderr (fd 2): every caller is a
+      // `docker pull`, whose progress is diagnostic, and stdout stays reserved
+      // for a payload (`invoke ... | jq`, go-to-k/cdkd#2429). A TTY stderr keeps
+      // the progress animation.
+      stdio: ['inherit', 2, 'inherit'],
     });
     child.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') {

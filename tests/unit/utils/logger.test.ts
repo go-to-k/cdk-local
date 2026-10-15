@@ -424,4 +424,50 @@ describe('ConsoleLogger with an embedding host logger (go-to-k/cdkd#2429)', () =
     expect(info).toHaveBeenCalledWith('hello');
     expect(host.info).not.toHaveBeenCalled();
   });
+
+  it('falls back to the console instead of recursing when the host is a cdk-local logger', async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const self = new ConsoleLogger('info', false);
+    setEmbedConfig({ logger: self });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    expect(() => self.info('once')).not.toThrow();
+    expect(info).toHaveBeenCalledWith('once');
+    expect(() => self.getLevel()).not.toThrow();
+  });
+
+  it('falls back to the console when the host logger throws', async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost();
+    host.warn.mockImplementation(() => {
+      throw new Error('host sink closed');
+    });
+    setEmbedConfig({ logger: host });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    expect(() => new ConsoleLogger('info', false).warn('cleanup failed')).not.toThrow();
+    expect(warn).toHaveBeenCalledWith('WARN: cleanup failed');
+  });
+
+  it.each(['CDKL_LOG_STREAM', 'CDKL_LOG_LEVEL'])(
+    'keeps the console logger in a studio child (%s set), honoring its level',
+    async (name) => {
+      const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+      const host = makeHost('debug');
+      setEmbedConfig({ logger: host });
+      const prev = process.env[name];
+      process.env[name] = name === 'CDKL_LOG_STREAM' ? 'stderr' : 'warn';
+      vi.spyOn(console, 'info').mockImplementation(() => undefined);
+      vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        const logger = new ConsoleLogger('warn', false);
+        logger.info('Synthesizing CDK app...');
+        expect(host.info).not.toHaveBeenCalled();
+        expect(logger.getLevel()).toBe('warn');
+      } finally {
+        if (prev === undefined) delete process.env[name];
+        else process.env[name] = prev;
+      }
+    }
+  );
 });
