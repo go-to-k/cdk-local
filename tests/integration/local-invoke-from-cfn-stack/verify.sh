@@ -398,8 +398,9 @@ if echo "${DOCKER_RUN_LINE}" | grep -q "${SSM_API_KEY_VALUE}"; then
   echo "[verify] FAIL: SecureString value present anywhere on the docker run argv (issue #99 regression): ${DOCKER_RUN_LINE}"
   exit 1
 fi
-# Control: a plain String SSM param keeps the inline form (not over-routed).
-echo "${DOCKER_RUN_LINE}" | grep -q "DB_HOST=${SSM_PARAM_VALUE}" || {
+# Control: a plain String SSM param keeps the inline `-e KEY=VALUE` form (not
+# over-routed); the debug line masks every -e value, so it reads `-e DB_HOST=***`.
+echo "${DOCKER_RUN_LINE}" | grep -qF -- "-e DB_HOST=***" || {
   echo "[verify] FAIL: expected the plain String DB_HOST to stay inline as -e DB_HOST=<value> (control), got: ${DOCKER_RUN_LINE}"
   exit 1
 }
@@ -447,9 +448,10 @@ echo "${DEBUG_OUT}" | grep -q 'Resolved secretsmanager dynamic reference' || {
   exit 1
 }
 # issue #784: a deployed-env fill whose template value cannot be a secret
-# (the GetAtt-recovered SIBLING_ARN) stays inline as configuration.
-echo "${DOCKER_RUN_LINE}" | grep -q -- "-e SIBLING_ARN=${DEPLOYED_SIBLING_ARN}" || {
-  echo "[verify] FAIL: expected the GetAtt fill inline as -e SIBLING_ARN=<arn>: ${DOCKER_RUN_LINE}"
+# (the GetAtt-recovered SIBLING_ARN) stays inline as configuration. The debug
+# line masks every -e value, so the inline FORM reads `-e SIBLING_ARN=***`.
+echo "${DOCKER_RUN_LINE}" | grep -qF -- "-e SIBLING_ARN=***" || {
+  echo "[verify] FAIL: expected the GetAtt fill inline as -e SIBLING_ARN=<value> (masked on the debug line as ***; the value itself is asserted on the function response): ${DOCKER_RUN_LINE}"
   exit 1
 }
 # issue #784: a deployed-env fill whose template value MAY be a secret (a

@@ -282,9 +282,10 @@ if echo "${SERVER_LOG}" | grep -qE "NOECHO_PW=|${NOECHO_PW_VALUE}"; then
   echo "[verify] FAIL: the NoEcho-backed fill appears in cdkl's own --verbose output (issue #784)"; exit 1;
 fi
 # issue #784: a deployed-env fill whose template value cannot be a secret
-# (the GetAtt-recovered SIBLING_ARN) stays inline as configuration.
-echo "${DOCKER_RUN_LINE}" | grep -q -- "-e SIBLING_ARN=${DEPLOYED_SIBLING_ARN}" || {
-  echo "[verify] FAIL: expected the GetAtt fill inline as -e SIBLING_ARN=<arn>: ${DOCKER_RUN_LINE}"
+# (the GetAtt-recovered SIBLING_ARN) stays inline as configuration. The debug
+# line masks every -e value, so the inline FORM reads `-e SIBLING_ARN=***`.
+echo "${DOCKER_RUN_LINE}" | grep -qF -- "-e SIBLING_ARN=***" || {
+  echo "[verify] FAIL: expected the GetAtt fill inline as -e SIBLING_ARN=<value> (masked on the debug line as ***; the value itself is asserted on the function response): ${DOCKER_RUN_LINE}"
   exit 1
 }
 if echo "${SERVER_LOG}" | grep -q "${DYNREF_SECRET_PASSWORD}"; then
