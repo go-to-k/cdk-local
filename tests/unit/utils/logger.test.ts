@@ -329,3 +329,99 @@ describe('ConsoleLogger compact-mode level prefix', () => {
     }
   });
 });
+
+describe('ConsoleLogger with an embedding host logger (go-to-k/cdkd#2429)', () => {
+  // A host that reserves stdout for a payload must be able to keep every line
+  // cdk-local logs off it, and its --verbose must reach cdk-local's debug lines.
+  // The embed config's `logger` takes over output, level filtering and level.
+  type Level = 'debug' | 'info' | 'warn' | 'error';
+  function makeHost(initial: Level = 'info') {
+    let level: Level = initial;
+    return {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      setLevel: vi.fn((l: Level) => {
+        level = l;
+      }),
+      getLevel: vi.fn(() => level),
+    };
+  }
+
+  afterEach(async () => {
+    const { resetEmbedConfig } = await import('../../../src/local/embed-config.js');
+    resetEmbedConfig();
+    setLogger(new ConsoleLogger('info', false));
+    vi.restoreAllMocks();
+  });
+
+  it('hands every level to the host unformatted and writes nothing to the console', async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost();
+    setEmbedConfig({ logger: host });
+    const spies = [
+      vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      vi.spyOn(console, 'info').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+    ];
+    const logger = new ConsoleLogger('info', false);
+
+    logger.info('Building container image (platform=linux/amd64)...');
+    logger.warn('careful', { a: 1 });
+    logger.error('broken');
+    logger.debug('detail');
+
+    expect(host.info).toHaveBeenCalledWith('Building container image (platform=linux/amd64)...');
+    expect(host.warn).toHaveBeenCalledWith('careful', { a: 1 });
+    expect(host.error).toHaveBeenCalledWith('broken');
+    // The host owns the level filter, so a debug line reaches it at info.
+    expect(host.debug).toHaveBeenCalledWith('detail');
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("forwards setLevel to the host and reads the host's level back", async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost('info');
+    setEmbedConfig({ logger: host });
+    const logger = new ConsoleLogger('info', false);
+
+    logger.setLevel('debug'); // what a cdk-local command does under --verbose
+    expect(host.setLevel).toHaveBeenCalledWith('debug');
+    host.setLevel('warn');
+    expect(logger.getLevel()).toBe('warn');
+  });
+
+  it("routes a child logger through the host, prefixed under the host's debug level", async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost('debug');
+    setEmbedConfig({ logger: host });
+    const parent = new ConsoleLogger('info', false);
+    setLogger(parent);
+    const child = parent.child('role-arn');
+    host.setLevel.mockClear();
+
+    child.info('assumed');
+    child.warn('fallback');
+
+    expect(host.info).toHaveBeenCalledWith('[role-arn] assumed');
+    expect(host.warn).toHaveBeenCalledWith('[role-arn] fallback');
+    // A child mirrors the level; it must not push it back into the host.
+    expect(host.setLevel).not.toHaveBeenCalled();
+  });
+
+  it('writes to the console again once the host logger is cleared', async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost();
+    setEmbedConfig({ logger: host });
+    setEmbedConfig({ cliName: 'x' }); // a later factory without a logger
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    new ConsoleLogger('info', false).info('hello');
+
+    expect(info).toHaveBeenCalledWith('hello');
+    expect(host.info).not.toHaveBeenCalled();
+  });
+});

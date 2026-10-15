@@ -8,7 +8,14 @@
  * console logger with no output buffer or live progress renderer suffices.
  */
 
+import { getEmbedConfig, type EmbedHostLogger } from '../local/embed-config.js';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/** The embedding host's logger, when one was supplied via the embed config. */
+function hostLogger(): EmbedHostLogger | undefined {
+  return getEmbedConfig().logger;
+}
 
 export interface Logger {
   debug(message: string, ...args: unknown[]): void;
@@ -89,7 +96,7 @@ export function resolveDefaultUseColors(): boolean {
  * - compact (info level): clean output without timestamps or prefixes
  */
 export class ConsoleLogger implements Logger {
-  private level: LogLevel;
+  protected level: LogLevel;
   private useColors: boolean;
 
   constructor(level: LogLevel = 'info', useColors: boolean = resolveDefaultUseColors()) {
@@ -166,24 +173,44 @@ export class ConsoleLogger implements Logger {
   }
 
   debug(message: string, ...args: unknown[]): void {
+    const host = hostLogger();
+    if (host) {
+      host.debug(message, ...args);
+      return;
+    }
     if (this.shouldLog('debug')) {
       this.emit('debug', this.formatMessage('debug', message, ...args));
     }
   }
 
   info(message: string, ...args: unknown[]): void {
+    const host = hostLogger();
+    if (host) {
+      host.info(message, ...args);
+      return;
+    }
     if (this.shouldLog('info')) {
       this.emit('info', this.formatMessage('info', message, ...args));
     }
   }
 
   warn(message: string, ...args: unknown[]): void {
+    const host = hostLogger();
+    if (host) {
+      host.warn(message, ...args);
+      return;
+    }
     if (this.shouldLog('warn')) {
       this.emit('warn', this.formatMessage('warn', message, ...args));
     }
   }
 
   error(message: string, ...args: unknown[]): void {
+    const host = hostLogger();
+    if (host) {
+      host.error(message, ...args);
+      return;
+    }
     if (this.shouldLog('error')) {
       this.emit('error', this.formatMessage('error', message, ...args));
     }
@@ -191,10 +218,11 @@ export class ConsoleLogger implements Logger {
 
   setLevel(level: LogLevel): void {
     this.level = level;
+    hostLogger()?.setLevel(level);
   }
 
   getLevel(): LogLevel {
-    return this.level;
+    return hostLogger()?.getLevel() ?? this.level;
   }
 
   child(prefix: string): ChildLogger {
@@ -214,8 +242,10 @@ class ChildLogger extends ConsoleLogger {
   }
 
   private syncLevel(): void {
+    // Assign the field, not setLevel(): a child mirrors the level, and must not
+    // push it back into an embedding host's logger.
     if (globalLogger) {
-      this.setLevel(globalLogger.getLevel());
+      this.level = globalLogger.getLevel();
     }
   }
 

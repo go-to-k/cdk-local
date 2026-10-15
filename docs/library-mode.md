@@ -160,6 +160,27 @@ warn-and-pass" instead of cdk-local's opt-in "remove `--strict-sigv4`
 only message text — the actual deny / pass decision is driven by the
 `sigV4Strict` argument the host passes to `startApiServer`.
 
+### Routing cdk-local's log lines through the host's logger
+
+By default cdk-local writes its own progress / warning lines to the console
+(info and debug to stdout, warn and error to stderr). A host with its own
+logger passes it as `logger`, and cdk-local hands it every line instead,
+unformatted: the host decides which stream each level lands on, filters by
+its own level, and formats the line. cdk-local's level changes (a command's
+`--verbose`) are forwarded to it with `setLevel`, and its level reads come
+from `getLevel`, so a host's `--verbose` also reaches the debug lines
+cdk-local's warnings point at. Any object with `debug` / `info` / `warn` /
+`error` / `setLevel` / `getLevel` fits `EmbedHostLogger`:
+
+```typescript
+setEmbedConfig({ cliName: 'mytool local', logger: myToolLogger });
+```
+
+This is what keeps a single-shot invoke's stdout payload-clean
+(`mytool local invoke Fn | jq`) when the host reserves stdout for the
+response. `setEmbedConfig` replaces the whole config, so pass `logger` in
+every config you install (the factories' `embedConfig` included).
+
 ### Shim hosts that don't use the factories
 
 A host that re-exports cdk-local's leaf modules as shims
