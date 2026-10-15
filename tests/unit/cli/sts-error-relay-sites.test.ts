@@ -777,6 +777,7 @@ describe('go-to-k/cdkd#3393 — the --profile fallback name is rendered, not int
   it.each(drivers)('%s: a plain name still prints bare', async (reached, drive) => {
     await drive('dev');
     const line = warnLines.find((l) => l.includes(reached));
+    expect(line, 'the fixture did not reach the fallback notice').toBeDefined();
     expect(line).toContain('Falling back to --profile dev.');
   });
 });
