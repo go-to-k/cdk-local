@@ -329,3 +329,160 @@ describe('ConsoleLogger compact-mode level prefix', () => {
     }
   });
 });
+
+describe('ConsoleLogger with an embedding host logger (go-to-k/cdkd#2429)', () => {
+  // A host that reserves stdout for a payload must be able to keep every line
+  // cdk-local logs off it, and its --verbose must reach cdk-local's debug lines.
+  // The embed config's `logger` takes over output, level filtering and level.
+  type Level = 'debug' | 'info' | 'warn' | 'error';
+  function makeHost(initial: Level = 'info') {
+    let level: Level = initial;
+    return {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      setLevel: vi.fn((l: Level) => {
+        level = l;
+      }),
+      getLevel: vi.fn(() => level),
+    };
+  }
+
+  afterEach(async () => {
+    const { resetEmbedConfig } = await import('../../../src/local/embed-config.js');
+    resetEmbedConfig();
+    setLogger(new ConsoleLogger('info', false));
+    vi.restoreAllMocks();
+  });
+
+  it('hands every level to the host unformatted and writes nothing to the console', async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost();
+    setEmbedConfig({ logger: host });
+    const spies = [
+      vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      vi.spyOn(console, 'info').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+    ];
+    const logger = new ConsoleLogger('info', false);
+
+    logger.info('Building container image (platform=linux/amd64)...');
+    logger.warn('careful', { a: 1 });
+    logger.error('broken');
+    logger.debug('detail');
+
+    expect(host.info).toHaveBeenCalledWith('Building container image (platform=linux/amd64)...');
+    expect(host.warn).toHaveBeenCalledWith('careful', { a: 1 });
+    expect(host.error).toHaveBeenCalledWith('broken');
+    // The host owns the level filter, so a debug line reaches it at info.
+    expect(host.debug).toHaveBeenCalledWith('detail');
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("forwards setLevel to the host and reads the host's level back", async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost('info');
+    setEmbedConfig({ logger: host });
+    const logger = new ConsoleLogger('info', false);
+
+    logger.setLevel('debug'); // what a cdk-local command does under --verbose
+    expect(host.setLevel).toHaveBeenCalledWith('debug');
+    host.setLevel('warn');
+    expect(logger.getLevel()).toBe('warn');
+  });
+
+  it("routes a child logger through the host, prefixed under the host's debug level", async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost('debug');
+    setEmbedConfig({ logger: host });
+    const parent = new ConsoleLogger('info', false);
+    setLogger(parent);
+    const child = parent.child('role-arn');
+    host.setLevel.mockClear();
+
+    child.info('assumed');
+    child.warn('fallback');
+
+    expect(host.info).toHaveBeenCalledWith('[role-arn] assumed');
+    expect(host.warn).toHaveBeenCalledWith('[role-arn] fallback');
+    // A child mirrors the level; it must not push it back into the host.
+    expect(host.setLevel).not.toHaveBeenCalled();
+  });
+
+  it('writes to the console again once the host logger is cleared', async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost();
+    setEmbedConfig({ logger: host });
+    setEmbedConfig({ cliName: 'x' }); // a later factory without a logger
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    new ConsoleLogger('info', false).info('hello');
+
+    expect(info).toHaveBeenCalledWith('hello');
+    expect(host.info).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the console instead of recursing when the host is a cdk-local logger', async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const self = new ConsoleLogger('info', false);
+    // A counting host that delegates straight back into cdk-local's logger.
+    const host = {
+      debug: vi.fn((m: string) => self.debug(m)),
+      info: vi.fn((m: string) => self.info(m)),
+      warn: vi.fn((m: string) => self.warn(m)),
+      error: vi.fn((m: string) => self.error(m)),
+      setLevel: vi.fn((l: Level) => self.setLevel(l)),
+      getLevel: vi.fn(() => self.getLevel()),
+    };
+    setEmbedConfig({ logger: host });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    self.info('once');
+    // One forward, one console write: the re-entry reached the console
+    // directly instead of forwarding again (a missing guard recurses until the
+    // stack overflows, and the catch in forward() would otherwise hide it).
+    expect(host.info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith('once');
+    expect(self.getLevel()).toBe('info');
+    expect(host.getLevel).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the console when the host logger throws', async () => {
+    const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+    const host = makeHost();
+    host.warn.mockImplementation(() => {
+      throw new Error('host sink closed');
+    });
+    setEmbedConfig({ logger: host });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    expect(() => new ConsoleLogger('info', false).warn('cleanup failed')).not.toThrow();
+    expect(warn).toHaveBeenCalledWith('WARN: cleanup failed');
+  });
+
+  it.each(['CDKL_LOG_STREAM', 'CDKL_LOG_LEVEL'])(
+    'keeps the console logger in a studio child (%s set), honoring its level',
+    async (name) => {
+      const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+      const host = makeHost('debug');
+      setEmbedConfig({ logger: host });
+      const prev = process.env[name];
+      process.env[name] = name === 'CDKL_LOG_STREAM' ? 'stderr' : 'warn';
+      vi.spyOn(console, 'info').mockImplementation(() => undefined);
+      vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        const logger = new ConsoleLogger('warn', false);
+        logger.info('Synthesizing CDK app...');
+        expect(host.info).not.toHaveBeenCalled();
+        expect(logger.getLevel()).toBe('warn');
+      } finally {
+        if (prev === undefined) delete process.env[name];
+        else process.env[name] = prev;
+      }
+    }
+  );
+});

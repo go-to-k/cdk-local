@@ -16,6 +16,21 @@
  * config is supplied every field falls back to cdk-local's own defaults,
  * leaving native `cdkl` behavior byte-identical.
  */
+/**
+ * The logger surface a host hands cdk-local through
+ * {@link CdkLocalEmbedConfig.logger}. Structurally a subset of cdk-local's own
+ * `Logger`, so a host's logger with the usual four level methods plus
+ * `setLevel` / `getLevel` fits without an adapter.
+ */
+export interface EmbedHostLogger {
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+  setLevel(level: 'debug' | 'info' | 'warn' | 'error'): void;
+  getLevel(): 'debug' | 'info' | 'warn' | 'error';
+}
+
 export interface CdkLocalEmbedConfig {
   /**
    * Command prefix for subcommand references in user-facing strings, e.g.
@@ -70,6 +85,19 @@ export interface CdkLocalEmbedConfig {
    * flag (cdkd passes `'--allow-unverified-sigv4'`). Default `'--strict-sigv4'`.
    */
   sigV4OptFlag?: string;
+  /**
+   * The host's own logger. When set, every line cdk-local logs (from the
+   * global logger and every `child()` logger) is handed to it UNFORMATTED
+   * instead of being written to the console, and cdk-local's level reads and
+   * `--verbose` level raises go to it too. The host therefore owns the stream
+   * each level lands on, the level filter, and the formatting — so a host that
+   * reserves stdout for a payload (a single-shot invoke piped to `jq`) can keep
+   * cdk-local's progress lines off it, and a host's `--verbose` reaches the
+   * debug lines cdk-local's own messages point at. A `child()` logger's
+   * `[prefix]` is still prepended under debug. Default: unset (cdk-local's
+   * console logger).
+   */
+  logger?: EmbedHostLogger;
 }
 
 export interface ResolvedEmbedConfig {
@@ -81,6 +109,7 @@ export interface ResolvedEmbedConfig {
   envPrefix: string;
   sigV4StrictByDefault: boolean;
   sigV4OptFlag: string;
+  logger?: EmbedHostLogger;
 }
 
 const DEFAULTS: ResolvedEmbedConfig = {
@@ -112,6 +141,7 @@ export function setEmbedConfig(config?: CdkLocalEmbedConfig): void {
     envPrefix: config?.envPrefix ?? DEFAULTS.envPrefix,
     sigV4StrictByDefault: config?.sigV4StrictByDefault ?? DEFAULTS.sigV4StrictByDefault,
     sigV4OptFlag: config?.sigV4OptFlag ?? DEFAULTS.sigV4OptFlag,
+    ...(config?.logger !== undefined && { logger: config.logger }),
   };
 }
 

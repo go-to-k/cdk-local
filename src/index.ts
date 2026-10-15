@@ -84,7 +84,7 @@ export {
   type LocalStateSourceOptions,
 } from './cli/commands/local-state-source.js';
 
-export type { CdkLocalEmbedConfig } from './local/embed-config.js';
+export type { CdkLocalEmbedConfig, EmbedHostLogger } from './local/embed-config.js';
 /**
  * Embed-config setter / getter / reset. A host that does NOT use cdk-local's
  * Commander factories (which install the config themselves) but DOES re-export

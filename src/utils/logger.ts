@@ -8,7 +8,47 @@
  * console logger with no output buffer or live progress renderer suffices.
  */
 
+import { getEmbedConfig, type EmbedHostLogger } from '../local/embed-config.js';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/** True while a call is being handed to the host logger (re-entry guard). */
+let forwarding = false;
+
+/**
+ * The embedding host's logger, when one was supplied via the embed config AND
+ * the process is not a `cdkl studio` child. Studio sets `CDKL_LOG_LEVEL` /
+ * `CDKL_LOG_STREAM` on the children it spawns to control what reaches its LOGS
+ * panel and which pipe carries it (issues #403 / #608); an embedding host's
+ * studio spawns the HOST's binary, so under either variable cdk-local keeps its
+ * own console logger and honors them. Also undefined while a forward is in
+ * flight, so a host logger that calls back into cdk-local's logger (or IS one)
+ * falls through to the console instead of recursing.
+ */
+function hostLogger(): EmbedHostLogger | undefined {
+  if (forwarding) return undefined;
+  if (process.env['CDKL_LOG_STREAM'] !== undefined || process.env['CDKL_LOG_LEVEL'] !== undefined) {
+    return undefined;
+  }
+  return getEmbedConfig().logger;
+}
+
+/**
+ * Hand one call to the host logger. Returns false when it threw, so the caller
+ * falls back to the console: a host logger failing must not turn a log line
+ * into an exception inside cdk-local's cleanup paths.
+ */
+function forward(run: () => void): boolean {
+  forwarding = true;
+  try {
+    run();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    forwarding = false;
+  }
+}
 
 export interface Logger {
   debug(message: string, ...args: unknown[]): void;
@@ -89,7 +129,7 @@ export function resolveDefaultUseColors(): boolean {
  * - compact (info level): clean output without timestamps or prefixes
  */
 export class ConsoleLogger implements Logger {
-  private level: LogLevel;
+  protected level: LogLevel;
   private useColors: boolean;
 
   constructor(level: LogLevel = 'info', useColors: boolean = resolveDefaultUseColors()) {
@@ -166,24 +206,32 @@ export class ConsoleLogger implements Logger {
   }
 
   debug(message: string, ...args: unknown[]): void {
+    const host = hostLogger();
+    if (host && forward(() => host.debug(message, ...args))) return;
     if (this.shouldLog('debug')) {
       this.emit('debug', this.formatMessage('debug', message, ...args));
     }
   }
 
   info(message: string, ...args: unknown[]): void {
+    const host = hostLogger();
+    if (host && forward(() => host.info(message, ...args))) return;
     if (this.shouldLog('info')) {
       this.emit('info', this.formatMessage('info', message, ...args));
     }
   }
 
   warn(message: string, ...args: unknown[]): void {
+    const host = hostLogger();
+    if (host && forward(() => host.warn(message, ...args))) return;
     if (this.shouldLog('warn')) {
       this.emit('warn', this.formatMessage('warn', message, ...args));
     }
   }
 
   error(message: string, ...args: unknown[]): void {
+    const host = hostLogger();
+    if (host && forward(() => host.error(message, ...args))) return;
     if (this.shouldLog('error')) {
       this.emit('error', this.formatMessage('error', message, ...args));
     }
@@ -191,10 +239,15 @@ export class ConsoleLogger implements Logger {
 
   setLevel(level: LogLevel): void {
     this.level = level;
+    const host = hostLogger();
+    if (host) forward(() => host.setLevel(level));
   }
 
   getLevel(): LogLevel {
-    return this.level;
+    const host = hostLogger();
+    let level: LogLevel | undefined;
+    if (host) forward(() => (level = host.getLevel()));
+    return level ?? this.level;
   }
 
   child(prefix: string): ChildLogger {
@@ -214,8 +267,10 @@ class ChildLogger extends ConsoleLogger {
   }
 
   private syncLevel(): void {
+    // Assign the field, not setLevel(): a child mirrors the level, and must not
+    // push it back into an embedding host's logger.
     if (globalLogger) {
-      this.setLevel(globalLogger.getLevel());
+      this.level = globalLogger.getLevel();
     }
   }
 
