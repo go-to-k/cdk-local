@@ -3,9 +3,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { ResolvedEcsContainer, ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
 
-// Issue #772: a resolved secret or SecureString env key whose NAME is a
-// variable the docker client / loader reads is dropped (no `-e` flag, no
-// spawn-env entry) with a warning naming the key only.
 const { execFileMock, stubs } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
   stubs: {
@@ -112,7 +109,6 @@ function runnableOptions(task: ResolvedEcsTask) {
     imagePlanByContainer: new Map(task.containers.map((c) => [c.name, 'busybox:latest'])),
   };
 }
-
 
 const SECRET = 'literal-env-SENTINEL';
 
