@@ -210,4 +210,16 @@ describe('createLocalStartCloudFrontCommand — option surface', () => {
     const parsed = fresh.parse(['My/Dist', '--no-pull'], { from: 'user' });
     expect(parsed.opts().pull).toBe(false);
   });
+
+  it('describes Lambda@Edge as run locally, not as warn-and-skipped', () => {
+    // The boot path runs every Lambda@Edge association in an RIE container
+    // (bootLambdaEdgeFunctions); the help once claimed the opposite.
+    const description = cmd.description();
+    expect(description).not.toMatch(/Lambda@Edge (are|is) not run/);
+    expect(description).toMatch(/runs Lambda@Edge functions in local RIE containers/);
+    // A Function URL origin's boot failure is fatal (bootLambdaUrlOrigins throws);
+    // only a Lambda@Edge boot failure is warn-and-skipped.
+    expect(description).toMatch(/Function URL origin that fails to boot stops start-up/);
+    expect(description).toMatch(/Lambda@Edge function that fails to boot is warn-and-skipped/);
+  });
 });

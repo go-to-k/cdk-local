@@ -245,7 +245,7 @@ async function handleRequest(
     const invoke = edgeInvokers.get(assoc.functionLogicalId);
     if (!invoke) {
       logger.warn(
-        `Lambda@Edge ${eventType} function '${assoc.functionLogicalId}' was not booted (added after start-up); skipping. Restart start-cloudfront.`
+        `Lambda@Edge ${eventType} function '${assoc.functionLogicalId}' was not booted (it failed to boot at start-up, see the boot warning, or was added after start-up); skipping. Restart start-cloudfront.`
       );
       continue;
     }
@@ -397,7 +397,7 @@ async function runEdgeResponseStage(
   const invoke = edgeInvokers.get(assoc.functionLogicalId);
   if (!invoke) {
     logger.warn(
-      `Lambda@Edge ${eventType} function '${assoc.functionLogicalId}' was not booted (added after start-up); skipping. Restart start-cloudfront.`
+      `Lambda@Edge ${eventType} function '${assoc.functionLogicalId}' was not booted (it failed to boot at start-up, see the boot warning, or was added after start-up); skipping. Restart start-cloudfront.`
     );
     return undefined;
   }
