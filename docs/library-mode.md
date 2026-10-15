@@ -42,6 +42,14 @@ The dispatcher enforces mutual exclusion across `--from-cfn-stack` and
 every registered extra flag, so users get one consistent error message
 when they pass conflicting flags.
 
+A registered flag reaches every state-backed path of the command it is
+passed to, exactly where `--from-cfn-stack` would: on `start-cloudfront` that
+is the deployed-S3 origin, KeyValueStore reads, and the Function URL origin /
+Lambda@Edge container environment; on `start-alb` it is the Lambda target
+groups as well as the ECS services. Your factory receives the full parsed
+options bag, so it can read its own companion flags (a bucket, a prefix)
+alongside the activating one.
+
 ## Synthesizing with your own synthesizer
 
 `start-agentcore`, `start-cloudfront`, `start-service` and `start-alb` take a

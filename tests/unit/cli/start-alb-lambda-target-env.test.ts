@@ -103,7 +103,9 @@ describe('buildFrontDoor — ALB Lambda-target container env (issue #380)', () =
       const [passedLambda, envOptions, profileCreds, passedProviders] =
         resolveContainerEnvMock.mock.calls[0]!;
       expect((passedLambda as ResolvedLambda).logicalId).toBe('EchoFn');
-      expect(envOptions).toEqual({
+      // A host registered state providers, so its own fields ride along too
+      // (go-to-k/cdk-local#699); cdk-local's keys keep their collapsed values.
+      expect(envOptions).toMatchObject({
         fromCfnStack: 'MyStack',
         assumeRole: true,
         region: 'us-east-1',
@@ -125,6 +127,63 @@ describe('buildFrontDoor — ALB Lambda-target container env (issue #380)', () =
       });
       expect(runnerOpts.sensitiveEnvKeys).toEqual(new Set(['DB_SECRET']));
       expect(lambdaRunners).toHaveLength(1);
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+
+  it("carries a host's state-source fields so its extra provider is selected (go-to-k/cdk-local#699)", async () => {
+    const options = {
+      containerHost: '127.0.0.1',
+      pull: true,
+      fromState: true,
+      stateBucket: 'my-state-bucket',
+    } as never;
+    const providers = { fromState: vi.fn() } as never;
+
+    const { servers } = await buildFrontDoor(lambdaPlan(), options, logger, providers);
+    try {
+      const [, envOptions, , passedProviders] = resolveContainerEnvMock.mock.calls[0]!;
+      // The dispatcher activates `fromState` only when the bag it receives
+      // carries it truthy, and the factory reads `stateBucket` from the same bag.
+      expect(envOptions).toMatchObject({ fromState: true, stateBucket: 'my-state-bucket' });
+      expect(passedProviders).toBe(providers);
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+
+  it('lets the collapsed assume-role value win over the copied host bag', async () => {
+    const options = {
+      containerHost: '127.0.0.1',
+      pull: true,
+      assumeTaskRole: 'arn:aws:iam::123456789012:role/legacy',
+      fromState: true,
+    } as never;
+
+    const { servers } = await buildFrontDoor(lambdaPlan(), options, logger, { fromState: vi.fn() } as never);
+    try {
+      const [, envOptions] = resolveContainerEnvMock.mock.calls[0]!;
+      expect((envOptions as { assumeRole?: unknown }).assumeRole).toBe(
+        'arn:aws:iam::123456789012:role/legacy'
+      );
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+
+  it('keeps the allow-listed bag exact when no host providers are registered', async () => {
+    const options = {
+      containerHost: '127.0.0.1',
+      pull: true,
+      fromCfnStack: 'MyStack',
+      fromState: true,
+    } as never;
+
+    const { servers } = await buildFrontDoor(lambdaPlan(), options, logger, undefined);
+    try {
+      const [, envOptions] = resolveContainerEnvMock.mock.calls[0]!;
+      expect(envOptions).toEqual({ fromCfnStack: 'MyStack' });
     } finally {
       await Promise.all(servers.map((s) => s.close()));
     }

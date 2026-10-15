@@ -25,8 +25,11 @@ import {
   type ResolvedProfileCredentials,
 } from './local-invoke.js';
 import {
+  activeStateSourceFlag,
   createLocalStateProvider,
-  isCfnFlagPresent,
+  hostStateSourceFields,
+  isStateSourceActive,
+  stateSourceFlagNames,
   type LocalStateSourceOptions,
   type ExtraStateProviders,
 } from './local-state-source.js';
@@ -135,7 +138,8 @@ export interface CreateLocalStartCloudFrontCommandOptions {
   /**
    * Additional state-source factories a host CLI can inject so its own
    * `--from-state`-style source is picked up by the deployed-state resolution
-   * paths (the KVS resolver + the deployed-S3 origin resolver). Absent =>
+   * paths (the KVS resolver, the deployed-S3 origin resolver, and the Function
+   * URL origin / Lambda@Edge container env). Absent =>
    * cdk-local's built-in `--from-cfn-stack` only.
    */
   extraStateProviders?: ExtraStateProviders;
@@ -275,7 +279,7 @@ export function normalizeKvsFileKeys(
  * via the `GetKey` API. Unresolved associations log an actionable WARN (the
  * runtime then fails the read with the same guidance).
  */
-async function attachKvsModules(
+export async function attachKvsModules(
   distribution: ResolvedDistribution,
   stacks: StackInfo[],
   options: LocalStartCloudFrontOptions,
@@ -291,7 +295,7 @@ async function attachKvsModules(
     ? normalizeKvsFileKeys(parseKvsFileOverrides(options.kvsFile), stack.template)
     : parseKvsFileOverrides(options.kvsFile);
 
-  const resolveDeployedKvs = isCfnFlagPresent(options)
+  const resolveDeployedKvs = isStateSourceActive(options, extraStateProviders)
     ? async (kvsLogicalId: string): Promise<DeployedKvsRef | undefined> => {
         const provider = createLocalStateProvider(
           options as unknown as LocalStateSourceOptions,
@@ -300,7 +304,12 @@ async function attachKvsModules(
           extraStateProviders
         );
         if (!provider) return undefined;
-        const record = await provider.load(distribution.stackName, synthRegion);
+        let record;
+        try {
+          record = await provider.load(distribution.stackName, synthRegion);
+        } finally {
+          provider.dispose();
+        }
         const physicalId = record?.resources[kvsLogicalId]?.physicalId;
         if (!physicalId) return undefined;
         // `ListStackResources` returns the store's NAME (the `Ref` value) as its
@@ -425,6 +434,8 @@ export async function bootLambdaUrlOrigins(
      */
     envOptions: LambdaContainerEnvOptions;
     profileCredentials?: ResolvedProfileCredentials;
+    /** The host's extra state providers, so a host flag (e.g. `--from-state`) reaches the env (#699). */
+    extraStateProviders?: ExtraStateProviders;
   }
 ): Promise<{ invokers: LambdaUrlInvokerMap; runners: FrontDoorLambdaRunner[] }> {
   const logger = getLogger();
@@ -445,7 +456,8 @@ export async function bootLambdaUrlOrigins(
       const containerEnv = await resolveLambdaContainerEnv(
         lambda,
         opts.envOptions,
-        opts.profileCredentials
+        opts.profileCredentials,
+        opts.extraStateProviders
       );
       runner = createFrontDoorLambdaRunner(lambda, {
         containerHost: opts.containerHost,
@@ -494,6 +506,8 @@ export async function bootLambdaEdgeFunctions(
     skipPull: boolean;
     envOptions: LambdaContainerEnvOptions;
     profileCredentials?: ResolvedProfileCredentials;
+    /** The host's extra state providers, so a host flag (e.g. `--from-state`) reaches the env (#699). */
+    extraStateProviders?: ExtraStateProviders;
   }
 ): Promise<{ invokers: LambdaUrlInvokerMap; runners: FrontDoorLambdaRunner[] }> {
   const logger = getLogger();
@@ -518,7 +532,8 @@ export async function bootLambdaEdgeFunctions(
       const containerEnv = await resolveLambdaContainerEnv(
         lambda,
         opts.envOptions,
-        opts.profileCredentials
+        opts.profileCredentials,
+        opts.extraStateProviders
       );
       const runner = createFrontDoorLambdaRunner(lambda, {
         containerHost: opts.containerHost,
@@ -545,6 +560,54 @@ export async function bootLambdaEdgeFunctions(
     }
   }
   return { invokers, runners };
+}
+
+/**
+ * The options bag a Function URL origin / Lambda@Edge container's env is
+ * resolved from: cdk-local's own state-source + assume-role keys, plus every
+ * host-injected field when the host registered extra state providers — the
+ * provider's activation key (a host's `--from-state`) and the companion
+ * fields its factory reads would otherwise be dropped by the allow-list, and
+ * the host's provider would never be selected (go-to-k/cdk-local#699).
+ */
+export function buildLambdaEnvOptions(
+  options: LocalStartCloudFrontOptions,
+  extraStateProviders: ExtraStateProviders | undefined
+): LambdaContainerEnvOptions {
+  return {
+    ...hostStateSourceFields(options, extraStateProviders),
+    ...(options.fromCfnStack !== undefined && { fromCfnStack: options.fromCfnStack }),
+    ...(options.assumeRole !== undefined && { assumeRole: options.assumeRole }),
+    ...(options.region !== undefined && { region: options.region }),
+    ...(options.profile !== undefined && { profile: options.profile }),
+    ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+  };
+}
+
+/**
+ * The options both Lambda boot paths ({@link bootLambdaUrlOrigins},
+ * {@link bootLambdaEdgeFunctions}) take: container host, pull policy, the env
+ * options from {@link buildLambdaEnvOptions}, and the host's extra state
+ * providers so a host flag reaches the container env (go-to-k/cdk-local#699).
+ */
+export function buildLambdaBootOptions(
+  options: LocalStartCloudFrontOptions,
+  profileCredentials: ResolvedProfileCredentials | undefined,
+  extraStateProviders: ExtraStateProviders | undefined
+): {
+  containerHost: string;
+  skipPull: boolean;
+  envOptions: LambdaContainerEnvOptions;
+  profileCredentials?: ResolvedProfileCredentials;
+  extraStateProviders?: ExtraStateProviders;
+} {
+  return {
+    containerHost: options.host,
+    skipPull: options.pull === false,
+    envOptions: buildLambdaEnvOptions(options, extraStateProviders),
+    ...(profileCredentials !== undefined && { profileCredentials }),
+    ...(extraStateProviders !== undefined && { extraStateProviders }),
+  };
 }
 
 /** Emit boot-time WARNs for parts of the distribution cdk-local does not serve. */
@@ -576,13 +639,17 @@ function warnUnsupported(distribution: ResolvedDistribution): void {
  * harmless on its own, and in `cdkl studio` the `--from-cfn-stack` binding is
  * editable per-session, so a hard failure here would be brittle.
  */
-export function warnUnusedCacheOrigin(options: LocalStartCloudFrontOptions): void {
-  if (options.cacheOrigin === true && !isCfnFlagPresent(options)) {
+export function warnUnusedCacheOrigin(
+  options: LocalStartCloudFrontOptions,
+  extraStateProviders?: ExtraStateProviders
+): void {
+  if (options.cacheOrigin === true && !isStateSourceActive(options, extraStateProviders)) {
+    const flags = stateSourceFlagNames(extraStateProviders).join(' or ');
     getLogger().warn(
-      '--cache-origin has no effect without --from-cfn-stack: it caches a deployed-S3 ' +
-        'read-through origin, which is only built under --from-cfn-stack. A local ' +
+      `--cache-origin has no effect without ${flags}: it caches a deployed-S3 ` +
+        `read-through origin, which is only built under a state source. A local ` +
         'BucketDeployment / --origin <id>=<dir> origin serves from disk and is not cached. ' +
-        'Pass --from-cfn-stack to enable the deployed-S3 origin (then --cache-origin applies), ' +
+        `Pass ${flags} to enable the deployed-S3 origin (then --cache-origin applies), ` +
         'or drop --cache-origin.'
     );
   }
@@ -594,13 +661,13 @@ export function warnUnusedCacheOrigin(options: LocalStartCloudFrontOptions): voi
  * {@link S3OriginReader} per origin. This is the front/back-split path: the CDK
  * repo defines the distribution + bucket but the static files were uploaded out
  * of band, so there is nothing in the cloud assembly to serve locally. Under
- * `--from-cfn-stack`, the bucket's physical NAME is resolved from deployed state
+ * `--from-cfn-stack` (or a host's extra state provider), the bucket's physical NAME is resolved from deployed state
  * (`ListStackResources`) and the reader serves it from real S3 on demand.
  *
  * Returns the readers (keyed by origin id, handed to the server) + the
  * origin-id -> bucket-name map (re-applied on each `--watch` reload via
  * {@link annotateDeployedS3Origins}, since the pure resolver re-emits the origin
- * as `s3-unresolved`). A no-op without `--from-cfn-stack` or when the bucket's
+ * as `s3-unresolved`). A no-op without an active state source or when the bucket's
  * physical id is not in state (the origin stays `s3-unresolved` -> the existing
  * boot WARN + 502, with `--origin <id>=<dir>` as the escape hatch).
  */
@@ -614,21 +681,27 @@ export async function resolveDeployedS3Origins(
 ): Promise<{ readers: Map<string, S3OriginReader>; buckets: Map<string, string> }> {
   const readers = new Map<string, S3OriginReader>();
   const buckets = new Map<string, string>();
-  if (!isCfnFlagPresent(options)) return { readers, buckets };
+  const stateFlag = activeStateSourceFlag(options, extraStateProviders);
+  if (stateFlag === undefined) return { readers, buckets };
 
   const stack = stacks.find((s) => s.stackName === distribution.stackName);
   const synthRegion = stack?.region;
-  // The bucket's region for the S3 client: explicit --stack-region / --region
-  // wins, else the synth region the distribution's stack was synthesized for.
-  const region = options.stackRegion ?? options.region ?? synthRegion;
-
   const provider = createLocalStateProvider(
     options as unknown as LocalStateSourceOptions,
     distribution.stackName,
     synthRegion,
     extraStateProviders
   );
-  const record = provider ? await provider.load(distribution.stackName, synthRegion) : undefined;
+  let record;
+  try {
+    record = provider ? await provider.load(distribution.stackName, synthRegion) : undefined;
+  } finally {
+    provider?.dispose();
+  }
+  // The bucket's region for the S3 client: explicit --stack-region / --region
+  // wins, else the synth region, else the region the state record was found
+  // in (an env-agnostic stack has no synth region).
+  const region = options.stackRegion ?? options.region ?? synthRegion ?? record?.region;
   // The deployed distribution's physical id (for the GetDistributionConfig
   // fallback) — `ListStackResources` records it under the distribution's
   // logical id.
@@ -677,7 +750,7 @@ export async function resolveDeployedS3Origins(
     });
     logger.info(
       `Origin '${origin.originId}': no local BucketDeployment source; serving from deployed S3 ` +
-        `(bucket=${bucketName}, resolved via ${via}) on demand under --from-cfn-stack.`
+        `(bucket=${bucketName}, resolved via ${via}) on demand under ${stateFlag}.`
     );
   }
   return { readers, buckets };
@@ -784,7 +857,7 @@ async function localStartCloudFrontCommand(
 
   // Promote any S3 origin with no local BucketDeployment source to a deployed-S3
   // read-through origin (issue #405), building one S3 reader per origin. No-op
-  // without --from-cfn-stack. Run BEFORE warnUnsupported so a promoted origin
+  // without a state source (--from-cfn-stack or a host provider). Run BEFORE warnUnsupported so a promoted origin
   // does not also emit the unresolved-source WARN.
   const deployedS3 = await resolveDeployedS3Origins(
     initial.distribution,
@@ -796,20 +869,10 @@ async function localStartCloudFrontCommand(
   );
 
   warnUnsupported(initial.distribution);
-  warnUnusedCacheOrigin(options);
-  // State-source + assume-role options threaded into the shared container-env
-  // resolver so a Function URL origin Lambda gets its env vars + deployed
-  // values + execution role, exactly like `cdkl invoke` (issue #380).
-  const envOptions: LambdaContainerEnvOptions = {
-    ...(options.fromCfnStack !== undefined && { fromCfnStack: options.fromCfnStack }),
-    ...(options.assumeRole !== undefined && { assumeRole: options.assumeRole }),
-    ...(options.region !== undefined && { region: options.region }),
-    ...(options.profile !== undefined && { profile: options.profile }),
-    ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
-  };
+  warnUnusedCacheOrigin(options, extraStateProviders);
 
   // Resolve + attach the cf KeyValueStore module to every KVS-reading function
-  // (--kvs-file local map / --from-cfn-stack deployed GetKey). Independent of
+  // (--kvs-file local map / state-source deployed GetKey). Independent of
   // the Lambda-origin boot; re-run on every --watch reload below.
   await attachKvsModules(
     initial.distribution,
@@ -822,12 +885,10 @@ async function localStartCloudFrontCommand(
 
   // Boot a warm RIE container per Lambda Function URL origin (issue #376).
   // No Function URL origin -> empty map -> start-cloudfront stays pure-local.
-  const bootOpts = {
-    containerHost: options.host,
-    skipPull: options.pull === false,
-    envOptions,
-    ...(profileCredentials !== undefined && { profileCredentials }),
-  };
+  // State-source + assume-role options threaded into the shared container-env
+  // resolver so a Function URL origin Lambda gets its env vars + deployed
+  // values + execution role, exactly like `cdkl invoke` (issue #380).
+  const bootOpts = buildLambdaBootOptions(options, profileCredentials, extraStateProviders);
   const { invokers: lambdaInvokers, runners: lambdaRunners } = await bootLambdaUrlOrigins(
     initial.distribution,
     initial.stacks,

@@ -31,7 +31,8 @@ vi.mock('../../../src/cli/commands/local-invoke.js', () => ({
   resolveLambdaContainerEnv: resolveContainerEnvMock,
 }));
 
-const { bootLambdaUrlOrigins } = await import(
+const { bootLambdaUrlOrigins, bootLambdaEdgeFunctions, buildLambdaEnvOptions, buildLambdaBootOptions } =
+  await import(
   '../../../src/cli/commands/local-start-cloudfront.js'
 );
 
@@ -107,7 +108,8 @@ describe('bootLambdaUrlOrigins', () => {
     expect(resolveContainerEnvMock).toHaveBeenCalledWith(
       { logicalId: 'Fn' },
       envOptions,
-      profileCredentials
+      profileCredentials,
+      undefined
     );
     // The resolver's env + sensitive keys reach the runner factory.
     const runnerOpts = createRunnerMock.mock.calls[0]![1];
@@ -158,5 +160,81 @@ describe('bootLambdaUrlOrigins', () => {
     );
     // The first (successfully started) runner is torn down on the rollback.
     expect(runners[0]!.stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe("host extra state providers reach the Lambda container env (go-to-k/cdk-local#699)", () => {
+  const providers = { fromState: vi.fn() };
+
+  it('bootLambdaUrlOrigins forwards the registry to the shared env resolver', async () => {
+    const dist = distributionWith([
+      { kind: 'lambda-url', originId: 'a', functionLogicalId: 'Fn', functionUrlLogicalId: 'FnUrl' },
+    ]);
+    await bootLambdaUrlOrigins(dist, stacks, { ...bootOpts, extraStateProviders: providers });
+    expect(resolveContainerEnvMock).toHaveBeenCalledWith(
+      { logicalId: 'Fn' },
+      bootOpts.envOptions,
+      undefined,
+      providers
+    );
+  });
+
+  it('bootLambdaEdgeFunctions forwards the registry to the shared env resolver', async () => {
+    const dist: ResolvedDistribution = {
+      ...distributionWith([{ kind: 's3', originId: 'o1', localDirs: ['/tmp/x'] }]),
+      behaviors: [
+        {
+          targetOriginId: 'o1',
+          lambdaEdge: {
+            viewerRequest: { functionLogicalId: 'EdgeFn', includeBody: false },
+          },
+        } as never,
+      ],
+    };
+    await bootLambdaEdgeFunctions(dist, stacks, { ...bootOpts, extraStateProviders: providers });
+    expect(resolveContainerEnvMock).toHaveBeenCalledWith(
+      { logicalId: 'EdgeFn' },
+      bootOpts.envOptions,
+      undefined,
+      providers
+    );
+  });
+
+  it("buildLambdaEnvOptions carries the host's own fields when providers are registered", () => {
+    const options = {
+      fromState: true,
+      stateBucket: 'my-state-bucket',
+      statePrefix: 'cdkd',
+      region: 'us-east-1',
+      port: '3000',
+    } as never;
+    expect(buildLambdaEnvOptions(options, providers)).toMatchObject({
+      fromState: true,
+      stateBucket: 'my-state-bucket',
+      statePrefix: 'cdkd',
+      region: 'us-east-1',
+    });
+  });
+
+  it('buildLambdaEnvOptions stays an exact allow-list with no providers registered', () => {
+    const options = {
+      fromState: true,
+      fromCfnStack: 'MyStack',
+      region: 'us-east-1',
+      port: '3000',
+    } as never;
+    expect(buildLambdaEnvOptions(options, undefined)).toEqual({
+      fromCfnStack: 'MyStack',
+      region: 'us-east-1',
+    });
+  });
+
+  it('buildLambdaBootOptions carries the registry the command hands both boot paths', () => {
+    const options = { host: '127.0.0.1', pull: false, fromState: true } as never;
+    const boot = buildLambdaBootOptions(options, undefined, providers);
+    expect(boot.extraStateProviders).toBe(providers);
+    expect(boot.skipPull).toBe(true);
+    expect(boot.envOptions).toMatchObject({ fromState: true });
+    expect('extraStateProviders' in buildLambdaBootOptions(options, undefined, undefined)).toBe(false);
   });
 });
