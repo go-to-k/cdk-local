@@ -428,12 +428,27 @@ describe('ConsoleLogger with an embedding host logger (go-to-k/cdkd#2429)', () =
   it('falls back to the console instead of recursing when the host is a cdk-local logger', async () => {
     const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
     const self = new ConsoleLogger('info', false);
-    setEmbedConfig({ logger: self });
+    // A counting host that delegates straight back into cdk-local's logger.
+    const host = {
+      debug: vi.fn((m: string) => self.debug(m)),
+      info: vi.fn((m: string) => self.info(m)),
+      warn: vi.fn((m: string) => self.warn(m)),
+      error: vi.fn((m: string) => self.error(m)),
+      setLevel: vi.fn((l: Level) => self.setLevel(l)),
+      getLevel: vi.fn(() => self.getLevel()),
+    };
+    setEmbedConfig({ logger: host });
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
-    expect(() => self.info('once')).not.toThrow();
+    self.info('once');
+    // One forward, one console write: the re-entry reached the console
+    // directly instead of forwarding again (a missing guard recurses until the
+    // stack overflows, and the catch in forward() would otherwise hide it).
+    expect(host.info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledTimes(1);
     expect(info).toHaveBeenCalledWith('once');
-    expect(() => self.getLevel()).not.toThrow();
+    expect(self.getLevel()).toBe('info');
+    expect(host.getLevel).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the console when the host logger throws', async () => {
