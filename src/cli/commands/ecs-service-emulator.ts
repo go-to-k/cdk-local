@@ -2939,7 +2939,7 @@ async function resolveAndBuildImageOverrides(args: {
 
   if (overrides.size === 0) return { tags: new Map(), overrides: new Map() };
 
-  // Build every covered Dockerfile. Per-build progress goes to stdout
+  // Build every covered Dockerfile. Per-build progress goes to stderr
   // via the docker-runner's streamLive path; the per-target
   // "Building override image..." line surfaces ahead of each build.
   //

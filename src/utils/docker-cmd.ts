@@ -268,7 +268,11 @@ export async function spawnStreaming(
 
     child.stdout!.on('data', (chunk: Buffer) => {
       stdoutChunks.push(chunk);
-      if (streamLive) process.stdout.write(chunk);
+      // A streamed child's stdout is build / pull progress, never the command's
+      // result, so it goes to stderr: stdout stays reserved for a payload
+      // (`invoke --verbose ... | jq`), which a host's logger bridge makes
+      // reachable at debug level (go-to-k/cdkd#2429).
+      if (streamLive) process.stderr.write(chunk);
     });
     child.stderr!.on('data', (chunk: Buffer) => {
       stderrChunks.push(chunk);
