@@ -55,7 +55,9 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => sink };
 });
 
-const { displayUntrustedValue } = await import('../../../src/utils/assembly-path.js');
+const { displayUntrustedValue, isPasteableCommandArg } = await import(
+  '../../../src/utils/assembly-path.js'
+);
 const { resolveAssetSourcePath, resetWholeAssemblyWarnings } = await import(
   '../../../src/assets/asset-source-path.js'
 );
@@ -738,4 +740,16 @@ describe('cloudfront-static-origin.ts', () => {
     expectContained(escape!);
     expectContained(hidden!);
   });
+});
+
+describe('isPasteableCommandArg (go-to-k/cdkd#3393)', () => {
+  it.each(['dev', 'prod-account_1', 'a.b', 'Parent~Child', '0abc'])('accepts %j', (v) => {
+    expect(isPasteableCommandArg(v)).toBe(true);
+  });
+  it.each(['', '-x', '--endpoint-url=x', '~root', 'a b', "a'b", 'a=b', 'pro\u001b[2Kd', 'café', 'a'.repeat(600)])(
+    'refuses %j',
+    (v) => {
+      expect(isPasteableCommandArg(v)).toBe(false);
+    }
+  );
 });

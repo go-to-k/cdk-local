@@ -103,6 +103,16 @@ describe('writeProfileCredentialsFile', () => {
     ).rejects.toThrow(/forbidden character/);
   });
 
+  it('renders the refused name escaped, so a newline in it cannot forge a line (go-to-k/cdkd#3393)', async () => {
+    const err = await writeProfileCredentialsFile('a\nWARN: b', {
+      accessKeyId: 'A',
+      secretAccessKey: 'B',
+    }).catch((e: unknown) => e);
+    const message = (err as Error).message;
+    expect(message).not.toContain('\n');
+    expect(message).toContain('profile name "a WARN: b" contains a forbidden character');
+  });
+
   it('rejects a profile name containing CR/LF (would break the docker -e env line)', async () => {
     await expect(
       writeProfileCredentialsFile('a\nb', { accessKeyId: 'A', secretAccessKey: 'B' })

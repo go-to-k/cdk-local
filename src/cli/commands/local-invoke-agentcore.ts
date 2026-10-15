@@ -920,7 +920,7 @@ export async function resolveHostCredentialsForSigV4(
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(assumeRoleArn)}) failed for --sigv4 signing: ` +
           `${sigv4Detail}. ` +
-          `Falling back to ${options.profile ? `--profile ${options.profile}` : 'shell credentials'}.`
+          `Falling back to ${options.profile ? `--profile ${displayUntrustedValue(options.profile)}` : 'shell credentials'}.`
       );
     }
   }
@@ -1170,7 +1170,7 @@ export async function resolveAgentCoreCodeImageFromS3(
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(assumeRoleArn)}) failed for the fromS3 bundle download: ` +
           `${bundleDetail}. ` +
-          `Falling back to ${options.profile ? `--profile ${options.profile}` : 'the default credentials'}.`
+          `Falling back to ${options.profile ? `--profile ${displayUntrustedValue(options.profile)}` : 'the default credentials'}.`
       );
     }
   }

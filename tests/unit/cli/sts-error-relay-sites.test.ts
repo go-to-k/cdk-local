@@ -712,3 +712,72 @@ describe('#645 — assumeRoleDetail renders both branches of the relay policy', 
     }
   });
 });
+
+describe('go-to-k/cdkd#3393 — the --profile fallback name is rendered, not interpolated raw', () => {
+  // A copied profile name can carry a terminal control sequence; the two
+  // `Falling back to --profile <name>` notices must not put it on the line.
+  const FORGED_PROFILE = 'pro\u001b[2Kd';
+
+  let warnLines: string[];
+
+  beforeEach(() => {
+    warnLines = [];
+    vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
+      warnLines.push(String(m));
+    });
+    vi.spyOn(getLogger(), 'debug').mockImplementation(() => {});
+    vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    sendMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const drivers: Array<[string, (profile: string) => Promise<void>]> = [
+    [
+      'failed for --sigv4 signing',
+      (profile) =>
+        tolerate(() =>
+          resolveHostCredentialsForSigV4(
+            { assumeRole: ROLE_ARN, profile } as never,
+            agentRuntime(),
+            undefined,
+            'us-east-1',
+            undefined
+          )
+        ),
+    ],
+    [
+      'failed for the fromS3 bundle download',
+      (profile) =>
+        tolerate(() =>
+          resolveAgentCoreCodeImageFromS3(
+            agentRuntime(),
+            { runtime: 'python3.12', entryPoint: ['app.py'] } as never,
+            { bucket: 'bkt', key: 'bundle.zip' } as never,
+            { assumeRole: ROLE_ARN, profile } as never,
+            'x86_64',
+            undefined,
+            undefined
+          )
+        ),
+    ],
+  ];
+
+  it.each(drivers)('%s: a forged name is escaped inside the boundary', async (reached, drive) => {
+    await drive(FORGED_PROFILE);
+    const line = warnLines.find((l) => l.includes(reached));
+    expect(line, 'the fixture did not reach the fallback notice').toBeDefined();
+    expect(line).not.toContain('\u001b');
+    // The control character is flattened, and the altered value is quoted.
+    expect(line).toContain('Falling back to --profile "pro [2Kd".');
+  });
+
+  it.each(drivers)('%s: a plain name still prints bare', async (reached, drive) => {
+    await drive('dev');
+    const line = warnLines.find((l) => l.includes(reached));
+    expect(line, 'the fixture did not reach the fallback notice').toBeDefined();
+    expect(line).toContain('Falling back to --profile dev.');
+  });
+});

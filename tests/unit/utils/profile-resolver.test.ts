@@ -216,3 +216,29 @@ describe('buildStsClientConfig — proxy environment threading (issue #634)', ()
     });
   });
 });
+
+describe('resolveProfileCredentials — profile name rendering (go-to-k/cdkd#3393)', () => {
+  it('escapes a forged name and does not write the sso login command out for it', async () => {
+    credsProviderMock.mockResolvedValue({});
+    const err = await resolveProfileCredentials('pro\u001b[2Kd').catch((e: unknown) => e);
+    const message = (err as Error).message;
+    expect(message).not.toContain('\u001b');
+    expect(message).toContain('--profile "pro [2Kd":');
+    expect(message).not.toContain('aws sso login --profile');
+    expect(message).toContain('run `aws sso login` for that profile');
+  });
+
+  it('refuses to write a leading-dash name into the command (an option even when quoted)', async () => {
+    credsProviderMock.mockResolvedValue({});
+    const err = await resolveProfileCredentials('--endpoint-url=http://x').catch((e: unknown) => e);
+    expect((err as Error).message).not.toContain('aws sso login --profile');
+  });
+
+  it('keeps the pasteable command for a plain name', async () => {
+    credsProviderMock.mockResolvedValue({});
+    const err = await resolveProfileCredentials('dev-account_1').catch((e: unknown) => e);
+    const message = (err as Error).message;
+    expect(message).toContain("--profile dev-account_1:");
+    expect(message).toContain('`aws sso login --profile dev-account_1`');
+  });
+});

@@ -1,6 +1,7 @@
 import { STSClient } from '@aws-sdk/client-sts';
 import { buildProxyClientConfig } from './aws-proxy.js';
 import type { AwsProxyClientConfig } from './aws-proxy.js';
+import { displayUntrustedValue, isPasteableCommandArg } from './assembly-path.js';
 
 /**
  * Resolve `--profile <p>` to a concrete credential set AND the profile's
@@ -34,11 +35,17 @@ export async function resolveProfileCredentials(profile: string): Promise<{
     const credsProvider = sts.config.credentials;
     const creds = typeof credsProvider === 'function' ? await credsProvider() : credsProvider;
     if (!creds || !creds.accessKeyId || !creds.secretAccessKey) {
+      // The name is the user's own argv, but it reaches the terminal: render it
+      // through the shared untrusted-value boundary, and write the
+      // `aws sso login` command out only for a name that is safe to paste bare
+      // (go-to-k/cdkd#3393).
+      const ssoHint = isPasteableCommandArg(profile)
+        ? 'Check `aws sso login --profile ' + profile + '` for SSO profiles'
+        : 'For an SSO profile, run `aws sso login` for that profile (the command is not written ' +
+          'out because the name as rendered may not be the one your shell would act on)';
       throw new Error(
-        `--profile '${profile}': credential provider chain resolved without usable credentials. ` +
-          'Check `aws sso login --profile ' +
-          profile +
-          '` for SSO profiles, or `~/.aws/credentials` / `~/.aws/config` for regular profiles.'
+        `--profile ${displayUntrustedValue(profile)}: credential provider chain resolved without usable credentials. ` +
+          `${ssoHint}, or check \`~/.aws/credentials\` / \`~/.aws/config\` for regular profiles.`
       );
     }
     let region: string | undefined;
