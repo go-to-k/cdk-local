@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vite-plus/test';
 import { redactDockerArgvValues } from '../../../src/utils/docker-argv-redaction.js';
 
 // Ported with the implementation from the host CLI's suite (go-to-k/cdkd
-// tests/unit/utils/docker-cmd.test.ts, describe 'redactDockerArgvValues').
+// tests/unit/utils/docker-cmd.test.ts, describe 'redactDockerArgvValues'). Bare
+// issue numbers below (#2623, ...) are go-to-k/cdkd issues.
 describe('redactDockerArgvValues', () => {
   it('masks the VALUE of -e / --env / --opt / --label and keeps the KEY', () => {
     expect(

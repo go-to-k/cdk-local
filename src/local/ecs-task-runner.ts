@@ -1,3 +1,4 @@
+import { describeExitWithoutArgv } from '../utils/docker-argv-redaction.js';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
@@ -712,7 +713,7 @@ export async function runEcsTask(
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       throw new DockerRunnerError(
-        `docker run failed for container '${container.name}': ${e.stderr?.trim() || e.message || String(err)}`
+        `docker run failed for container '${container.name}': ${e.stderr?.trim() || describeExitWithoutArgv(err)}`
       );
     }
     state.startedContainers.push({ name: container.name, id });
@@ -1126,7 +1127,7 @@ async function realizeDockerVolumes(
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       throw new DockerRunnerError(
-        `docker volume create failed for '${v.name}': ${e.stderr?.trim() || e.message || String(err)}`
+        `docker volume create failed for '${v.name}': ${e.stderr?.trim() || describeExitWithoutArgv(err)}`
       );
     }
     out.set(v.name, { ...v, dockerVolumeName });

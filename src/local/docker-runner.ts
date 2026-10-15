@@ -1,3 +1,5 @@
+import { flattenToOneLine } from './credential-error.js';
+import { redactDockerArgvValues, describeExitWithoutArgv } from '../utils/docker-argv-redaction.js';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { promisify } from 'node:util';
@@ -324,7 +326,11 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   args.push(opts.image, ...entryPointTail, ...opts.cmd);
 
   const logger = getLogger().child('docker');
-  logger.debug(`${getDockerCmd()} ${redactAwsCredentialsInArgs(args).join(' ')}`);
+  // Every `-e` / `--env` / `--label` VALUE is masked, not only the AWS
+  // credential keys: a literal template env value or an `--env-vars` override
+  // is where a local secret sits. Flattened so a control character in a value
+  // cannot draw on the terminal.
+  logger.debug(flattenToOneLine(`${getDockerCmd()} ${redactDockerArgvValues(args).join(' ')}`));
   if (collisions.length > 0) {
     logger.warn(
       describeRefusedSensitiveEnvKeys(
@@ -353,8 +359,10 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     return stdout.trim();
   } catch (error) {
     const err = error as { stderr?: string; message?: string };
+    // Not `err.message`: execFile folds the whole argv (`-e K=V` included)
+    // into it, so an empty stderr would print every env value.
     throw new DockerRunnerError(
-      `docker run failed: ${err.stderr?.trim() || err.message || String(error)}`
+      `docker run failed: ${err.stderr?.trim() || describeExitWithoutArgv(error)}`
     );
   }
 }
@@ -452,9 +460,7 @@ export function pickFreePort(): Promise<number> {
  * Env keys whose VALUES are sensitive (AWS credentials). These are
  * routed through docker's value-from-process-env form by
  * {@link appendEnvFlags} so the value never appears in `docker run`'s
- * argv (`ps` / `/proc/<pid>/cmdline`), and they are also redacted by
- * {@link redactAwsCredentialsInArgs} as a defense for any path that
- * still emits the inline `-e <KEY>=<value>` form into the debug log.
+ * argv (`ps` / `/proc/<pid>/cmdline`).
  */
 export const SENSITIVE_ENV_KEYS: ReadonlySet<string> = new Set([
   'AWS_ACCESS_KEY_ID',
@@ -562,10 +568,9 @@ export function execEnvForSecrets(passthrough: Record<string, string>): {
 /**
  * Returns a copy of `args` with any `-e <KEY>=<value>` pair whose KEY is
  * in {@link SENSITIVE_ENV_KEYS} replaced with `-e <KEY>=***`. The actual
- * `args` passed to `spawn` are never mutated — this is for log output
- * only. With {@link appendEnvFlags} routing credentials through the
- * value-less `-e KEY` form this rarely fires, but it stays as defense for
- * any inline-form credential that slips into a logged command.
+ * `args` passed to `spawn` are never mutated. The `docker run` debug line
+ * uses the stricter `redactDockerArgvValues` (every `-e` value); this
+ * narrower form is kept for callers that need only the credential keys.
  */
 export function redactAwsCredentialsInArgs(args: readonly string[]): string[] {
   const out: string[] = [];

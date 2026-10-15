@@ -1,3 +1,4 @@
+import { describeExitWithoutArgv } from '../utils/docker-argv-redaction.js';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -365,7 +366,7 @@ async function createNetworkAndSidecar(args: {
     await destroyNetworkOnly(networkName);
     const e = err as { stderr?: string; message?: string };
     throw new DockerRunnerError(
-      `Failed to start metadata-endpoints sidecar: ${e.stderr?.trim() || e.message || String(err)}`
+      `Failed to start metadata-endpoints sidecar: ${e.stderr?.trim() || describeExitWithoutArgv(err)}`
     );
   }
 }

@@ -19,15 +19,13 @@ const REDACTED_ARGV_VALUE = '***';
  *
  * - `-e` / `--env` — a container's `Environment.Variables` (Lambda) or
  *   `ContainerDefinition.Environment` (ECS), plus `--env-vars` overrides.
- *   Values that cdkd classifies as sensitive never get here at all
- *   ({@link partitionSensitiveEnv} emits those as a value-less `-e KEY`),
- *   but everything else does: connection strings, endpoints, API base URLs.
+ *   Values classified as sensitive never get here at all (`appendEnvFlags`
+ *   emits those as a value-less `-e KEY`), but everything else does: connection strings, endpoints, API base URLs.
  * - `--opt` — `DockerVolumeConfiguration.DriverOpts`, which for the `local`
  *   driver carries mount options (`o=addr=…,username=…,password=…`).
  * - `--label` — `DockerVolumeConfiguration.Labels`, user-authored metadata.
  * - `--build-arg` — a `DockerImageAsset`'s `buildArgs`, forwarded by
- *   `src/assets/docker-build.ts` on BOTH the deploy-time ECR publish path and
- *   `cdkd local run-task`'s image build
+ *   `src/assets/docker-build.ts` on every local image build
  *   ([#2623](https://github.com/go-to-k/cdkd/issues/2623)). The value is
  *   frequently NOT a secret and IS diagnostic (a version pin, a base-image
  *   tag), which is why this one needed arguing rather than assuming — the
@@ -42,7 +40,7 @@ const REDACTED_ARGV_VALUE = '***';
  *   unaffected.
  *
  * A flag NOT in this list keeps its value. For most of the argv that is
- * because the value is cdkd-authored or infrastructure-shaped — a container
+ * because the value is tool-authored or infrastructure-shaped — a container
  * id, an image ref, a `--subnet` CIDR, a `--format` template — and is the
  * diagnostic.
  *
@@ -62,7 +60,7 @@ const REDACTED_ARGV_VALUE = '***';
  *
  * - `--secret id=<id>,src=<path>` (or `,env=<NAME>`) — BuildKit resolves the
  *   material itself at build time and docker has NO inline-value syntax, so
- *   cdkd never holds the secret to leak. Masking would also blank the `id`,
+ *   the tool never holds the secret to leak. Masking would also blank the `id`,
  *   since the mask keys on the first `=` and `id` is what sits there — trading
  *   the whole diagnostic ("which secret, sourced from where") for a path.
  * - `--build-context <name>=<path|image-ref|git-url>` — a path or a ref, like
@@ -313,14 +311,12 @@ function maskArgvFlagValue(flag: string, value: string): string | undefined {
   if (ARGV_VALUE_BEARING_FLAGS.has(flag)) {
     const eqIdx = value.indexOf('=');
     // `>= 0`, not `> 0`: an EMPTY key (`-e =value`) still carries a value.
-    // `partitionSensitiveEnv` fail-closes a malformed key only on its
-    // SENSITIVE branch, so a non-sensitive `{ Name: '', Value: <secret> }`
-    // reaches the argv as a literal `-e =<secret>` — and a `> 0` guard walks
-    // straight past it. Same fail-closed posture as `isMalformedEnvKey`
-    // (#2186 rounds 4-5).
+    // A non-sensitive `{ Name: '', Value: <secret> }` can reach the argv as a
+    // literal `-e =<secret>`, and a `> 0` guard walks straight past it
+    // (go-to-k/cdkd#2186).
     return eqIdx >= 0
       ? `${value.substring(0, eqIdx)}=${REDACTED_ARGV_VALUE}`
-      : // A value-less `-e KEY` (the form `partitionSensitiveEnv` emits for a
+      : // A value-less `-e KEY` (the form `appendEnvFlags` emits for a
         // sensitive key) has nothing to mask.
         undefined;
   }
@@ -499,7 +495,7 @@ function trailingShortFlagOfCluster(arg: string): string | undefined {
  * takes the NEXT token). The last three are handled because a user's own
  * build script may spell them
  * ([#2623](https://github.com/go-to-k/cdkd/issues/2623)).
- * A value-less `-e KEY` (the form {@link partitionSensitiveEnv} emits for a
+ * A value-less `-e KEY` (the form `appendEnvFlags` emits for a
  * sensitive key) has nothing to mask and is returned unchanged. `args` is
  * never mutated: the redacted copy is for DISPLAY only, never for `spawn`.
  */
@@ -546,4 +542,18 @@ export function redactDockerArgvValues(args: readonly string[]): string[] {
     out.push(cur);
   }
   return out;
+}
+
+/**
+ * A docker CLI failure described WITHOUT the argv, for when its stderr is
+ * empty. `execFile` folds the whole command line into `err.message`
+ * (`Command failed: docker run ... -e K=V ...`), so falling back to it prints
+ * every value this module masks on the debug line.
+ */
+export function describeExitWithoutArgv(err: unknown): string {
+  const e = err as { code?: unknown; signal?: unknown };
+  if (typeof e?.signal === 'string' && e.signal !== '') return `killed by ${e.signal}`;
+  if (typeof e?.code === 'number') return `exited with code ${e.code}`;
+  if (typeof e?.code === 'string' && e.code !== '') return `failed (${e.code})`;
+  return 'failed with no output';
 }

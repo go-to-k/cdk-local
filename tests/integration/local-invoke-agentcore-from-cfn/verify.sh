@@ -189,8 +189,9 @@ if echo "${DOCKER_RUN_LINE}" | grep -q "${API_KEY_VALUE}"; then
   echo "[verify] FAIL: decrypted SecureString value LEAKED onto the docker run argv: ${DOCKER_RUN_LINE}"
   exit 1
 fi
-# Control: the plain String GREETING keeps the inline form.
-echo "${DOCKER_RUN_LINE}" | grep -q "GREETING=${GREETING_VALUE}" || {
+# Control: the plain String GREETING keeps the inline `-e KEY=VALUE` form; the
+# debug line masks every -e value, so it reads `-e GREETING=***`.
+echo "${DOCKER_RUN_LINE}" | grep -qF -- "-e GREETING=***" || {
   echo "[verify] FAIL: expected the plain String GREETING to stay inline as -e GREETING=<value> (control), got: ${DOCKER_RUN_LINE}"
   exit 1
 }

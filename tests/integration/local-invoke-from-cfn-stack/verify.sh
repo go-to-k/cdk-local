@@ -398,8 +398,9 @@ if echo "${DOCKER_RUN_LINE}" | grep -q "${SSM_API_KEY_VALUE}"; then
   echo "[verify] FAIL: SecureString value present anywhere on the docker run argv (issue #99 regression): ${DOCKER_RUN_LINE}"
   exit 1
 fi
-# Control: a plain String SSM param keeps the inline form (not over-routed).
-echo "${DOCKER_RUN_LINE}" | grep -q "DB_HOST=${SSM_PARAM_VALUE}" || {
+# Control: a plain String SSM param keeps the inline `-e KEY=VALUE` form (not
+# over-routed); the debug line masks every -e value, so it reads `-e DB_HOST=***`.
+echo "${DOCKER_RUN_LINE}" | grep -qF -- "-e DB_HOST=***" || {
   echo "[verify] FAIL: expected the plain String DB_HOST to stay inline as -e DB_HOST=<value> (control), got: ${DOCKER_RUN_LINE}"
   exit 1
 }
