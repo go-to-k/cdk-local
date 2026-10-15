@@ -217,5 +217,9 @@ describe('createLocalStartCloudFrontCommand — option surface', () => {
     const description = cmd.description();
     expect(description).not.toMatch(/Lambda@Edge (are|is) not run/);
     expect(description).toMatch(/runs Lambda@Edge functions in local RIE containers/);
+    // A Function URL origin's boot failure is fatal (bootLambdaUrlOrigins throws);
+    // only a Lambda@Edge boot failure is warn-and-skipped.
+    expect(description).toMatch(/Function URL origin that fails to boot stops start-up/);
+    expect(description).toMatch(/Lambda@Edge function that fails to boot is warn-and-skipped/);
   });
 });
