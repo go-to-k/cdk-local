@@ -31,6 +31,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { getEmbedConfig } from '../../local/embed-config.js';
+import { displayUntrustedValue } from '../../utils/assembly-path.js';
 
 /**
  * Path inside the container where the credentials file is mounted. Fixed
@@ -97,7 +98,7 @@ export async function writeProfileCredentialsFile(
   }
   if (/[\r\n[\]]/.test(profileName)) {
     throw new Error(
-      `writeProfileCredentialsFile: profile name '${profileName}' contains a forbidden character ` +
+      `writeProfileCredentialsFile: profile name ${displayUntrustedValue(profileName)} contains a forbidden character ` +
         `(any of CR, LF, '[', ']' would corrupt the INI file or the docker -e env var).`
     );
   }

@@ -538,3 +538,25 @@ export function displayUntrustedValue(value: string): string {
   });
   return `"${body}"`;
 }
+
+/**
+ * Allow-list for a value cdk-local writes INTO a command it tells the user to
+ * run (`aws sso login --profile <name>`). A leading letter or digit closes both
+ * the option case (`--profile=x` is still a flag after quoting) and leading-`~`
+ * tilde expansion; the rest of the set needs no shell quoting. Mirrors the
+ * host's `PASTEABLE_STATE_IDENT` (go-to-k/cdkd#3393).
+ */
+const PASTEABLE_COMMAND_ARG = /^[A-Za-z0-9][A-Za-z0-9~_.-]*$/;
+
+/**
+ * Is `value` safe to print bare as an argument of a command the user is told
+ * to paste? True only when it matches {@link PASTEABLE_COMMAND_ARG} AND
+ * {@link displayUntrustedValue} renders it unchanged (which adds the length
+ * cap). A caller whose value fails this names the command WITHOUT the value
+ * rather than quoting it: a quoted `'--x'` is still an option, and a command
+ * that looks runnable is exactly what must not carry a value cdk-local cannot
+ * vouch for.
+ */
+export function isPasteableCommandArg(value: string): boolean {
+  return PASTEABLE_COMMAND_ARG.test(value) && displayUntrustedValue(value) === value;
+}
