@@ -351,7 +351,7 @@ export interface AwsProxyClientConfig {
  * agents — must never be shared across clients, or one client's `destroy()`
  * strands its siblings.
  */
-function buildProxyRequestHandler(): NodeHttpHandler {
+export function buildProxyRequestHandler(): NodeHttpHandler {
   const agent = new EnvRoutingProxyAgent();
   return new NodeHttpHandler({
     httpAgent: agent,

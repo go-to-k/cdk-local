@@ -19,7 +19,11 @@ import {
   normalizeStartApiAssumeRole,
   type AssumeRoleOption,
 } from '../options.js';
-import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
+import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
+import {
+  workloadStsClientConfig,
+  applyWorkloadEnvCredentials,
+} from '../../utils/workload-identity.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { displayUntrustedValue } from '../../utils/assembly-path.js';
@@ -3209,6 +3213,9 @@ function forwardAwsEnv(env: Record<string, string>): void {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
+  // Caller mode (go-to-k/cdk-local#783): the copied triple is the --role-arn role; hand the
+  // container the caller's instead. Before any --profile / --assume-role injection, which still wins.
+  applyWorkloadEnvCredentials(env);
 }
 
 /**
@@ -3784,7 +3791,7 @@ export async function resolvePseudoParametersForStartApi(
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
     // Thread `--profile` so the resolved account is the profile's account,
     // not whatever the default credential chain points at (issue #245).
-    const sts = new STSClient(buildStsClientConfig({ region, profile: options.profile }));
+    const sts = new STSClient(workloadStsClientConfig({ region, profile: options.profile }));
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;

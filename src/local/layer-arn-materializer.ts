@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, normalize, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { buildProxyClientConfig, proxyAwareFetch } from '../utils/aws-proxy.js';
+import { proxyAwareFetch } from '../utils/aws-proxy.js';
+import { workloadClientConfig } from '../utils/workload-identity.js';
 import { getLogger } from '../utils/logger.js';
 import type { ResolvedArnLambdaLayer } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -368,13 +369,14 @@ async function assumeRoleForLayer(
   }
 }
 
+// A literal layer ARN is code the developer did not write, so it resolves as the workload identity, unlike the fromS3 bundle (see utils/workload-identity.ts).
 async function defaultLambdaClientFactory(): Promise<
   (region: string, credentials?: AwsCredentials) => LambdaSendClient
 > {
   const { LambdaClient } = await import('@aws-sdk/client-lambda');
   return (region, credentials) =>
     new LambdaClient({
-      ...buildProxyClientConfig(),
+      ...workloadClientConfig(),
       region,
       ...(credentials && {
         credentials: {
@@ -390,12 +392,14 @@ async function defaultLambdaClientFactory(): Promise<
 
 async function defaultStsClientFactory(): Promise<(region: string) => StsSendClient> {
   const { STSClient } = await import('@aws-sdk/client-sts');
+  // A literal layer ARN is code the developer did not write, so it resolves as the
+  // workload identity, unlike the fromS3 bundle (see utils/workload-identity.ts).
   // sts-audit: ignore: this is a region-only factory whose call chain
   // does not yet receive `--profile` (issue #448's --layer-role-arn flow
   // assumes default-credential-chain access to the layer's account);
   // when --profile threading is extended to layer materialization, this
   // becomes a `buildStsClientConfig({ region, profile })` call.
-  return (region) => new STSClient({ ...buildProxyClientConfig(), region });
+  return (region) => new STSClient({ ...workloadClientConfig(), region });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

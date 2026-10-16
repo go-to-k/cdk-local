@@ -15,8 +15,16 @@ vi.mock('@aws-sdk/client-sts', () => ({
   },
 }));
 
-const { applyAgentCoreCredentialEnv, resolveAssumeRoleArn, buildAgentCoreImageContext } =
-  await import('../../../src/cli/commands/local-invoke-agentcore.js');
+const {
+  applyAgentCoreCredentialEnv,
+  resolveAssumeRoleArn,
+  buildAgentCoreImageContext,
+  resolveHostCredentialsForSigV4,
+} = await import('../../../src/cli/commands/local-invoke-agentcore.js');
+const { resetEmbedConfig, setEmbedConfig } = await import('../../../src/local/embed-config.js');
+const { recordAssumedRole, resetWorkloadIdentity } = await import(
+  '../../../src/utils/workload-identity.js'
+);
 import type { ResolvedAgentCoreRuntime } from '../../../src/local/agentcore-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from '../../../src/local/local-state-provider.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
@@ -313,5 +321,102 @@ describe('applyAgentCoreCredentialEnv', () => {
     const env: Record<string, string> = {};
     await applyAgentCoreCredentialEnv(env, { assumeRoleArn: 'arn:aws:iam::1:role/Agent' });
     expect(env['AWS_ACCESS_KEY_ID']).toBe('AKIADEV');
+  });
+});
+
+describe('caller workload identity (go-to-k/cdk-local#783)', () => {
+  const savedEnv = { ...process.env };
+  const CALLER = { accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' };
+
+  beforeEach(() => {
+    sendMock.mockReset();
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIAROLE';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'roleSecret';
+    process.env['AWS_SESSION_TOKEN'] = 'roleToken';
+    delete process.env['AWS_PROFILE'];
+    resetWorkloadIdentity();
+    resetEmbedConfig();
+  });
+
+  afterEach(() => {
+    process.env = { ...savedEnv };
+    resetWorkloadIdentity();
+    resetEmbedConfig();
+    vi.restoreAllMocks();
+  });
+
+  it('forwardAwsEnv: caller mode hands the container the caller triple, not the role', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole(CALLER);
+    const env: Record<string, string> = {};
+    await applyAgentCoreCredentialEnv(env, {});
+    expect(env['AWS_ACCESS_KEY_ID']).toBe('AKIACALLER');
+    expect(env['AWS_SECRET_ACCESS_KEY']).toBe('callerSecret');
+    expect('AWS_SESSION_TOKEN' in env).toBe(false);
+  });
+
+  it('forwardAwsEnv: caller mode with no static caller triple strips the triple', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole(undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const env: Record<string, string> = {};
+    await applyAgentCoreCredentialEnv(env, {});
+    expect(env).not.toHaveProperty('AWS_ACCESS_KEY_ID');
+    expect(env).not.toHaveProperty('AWS_SESSION_TOKEN');
+  });
+
+  it('forwardAwsEnv: a --profile overlay still wins over the restored caller triple', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole(CALLER);
+    const env: Record<string, string> = {};
+    await applyAgentCoreCredentialEnv(env, {
+      profileCredentials: { accessKeyId: 'AKIAPROFILE', secretAccessKey: 'profileSecret' },
+    });
+    expect(env['AWS_ACCESS_KEY_ID']).toBe('AKIAPROFILE');
+  });
+
+  it('forwardAwsEnv: role mode forwards the process env as before', async () => {
+    recordAssumedRole(CALLER);
+    const env: Record<string, string> = {};
+    await applyAgentCoreCredentialEnv(env, {});
+    expect(env['AWS_ACCESS_KEY_ID']).toBe('AKIAROLE');
+    expect(env['AWS_SESSION_TOKEN']).toBe('roleToken');
+  });
+
+  describe('resolveHostCredentialsForSigV4 env fallback', () => {
+    const call = () =>
+      resolveHostCredentialsForSigV4(
+        {} as never,
+        runtime(),
+        undefined,
+        'us-east-1',
+        undefined
+      );
+
+    it('caller mode signs as the caller', async () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(CALLER);
+      expect(await call()).toEqual({ accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' });
+      // The process env itself is untouched (only a copy was corrected).
+      expect(process.env['AWS_ACCESS_KEY_ID']).toBe('AKIAROLE');
+    });
+
+    it('caller mode with a stripped result takes the no-credentials path', async () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(undefined);
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await expect(call()).rejects.toMatchObject({
+        code: 'LOCAL_INVOKE_AGENTCORE_SIGV4_NO_CREDENTIALS',
+      });
+    });
+
+    it('role mode signs as the env triple (the role)', async () => {
+      recordAssumedRole(CALLER);
+      expect(await call()).toEqual({
+        accessKeyId: 'AKIAROLE',
+        secretAccessKey: 'roleSecret',
+        sessionToken: 'roleToken',
+      });
+    });
   });
 });

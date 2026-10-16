@@ -31,6 +31,7 @@ describe('embed-config', () => {
       envPrefix: 'CDKL',
       sigV4StrictByDefault: false,
       sigV4OptFlag: '--strict-sigv4',
+      workloadIdentity: 'role',
     });
   });
 
@@ -54,6 +55,7 @@ describe('embed-config', () => {
       envPrefix: 'CDKD',
       sigV4StrictByDefault: true,
       sigV4OptFlag: '--allow-unverified-sigv4',
+      workloadIdentity: 'role',
     });
   });
 
@@ -68,6 +70,7 @@ describe('embed-config', () => {
       envPrefix: 'CDKL',
       sigV4StrictByDefault: false,
       sigV4OptFlag: '--strict-sigv4',
+      workloadIdentity: 'role',
     });
   });
 

@@ -1,6 +1,6 @@
 import { getEmbedConfig } from './embed-config.js';
 import { getLogger } from '../utils/logger.js';
-import { buildProxyClientConfig } from '../utils/aws-proxy.js';
+import { workloadClientConfig } from '../utils/workload-identity.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import {
@@ -219,7 +219,7 @@ function defaultFetchObject(
       init = (async () => {
         const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
         const client = new S3Client({
-          ...buildProxyClientConfig(),
+          ...workloadClientConfig(),
           ...(options.region && { region: options.region }),
           ...(options.credentials && {
             credentials: {

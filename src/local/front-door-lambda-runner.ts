@@ -24,6 +24,7 @@ import {
 import { assetPathDirs, materializeAssetCodeDir } from './lambda-resolver.js';
 import type { ResolvedImageLambda, ResolvedLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { applyWorkloadEnvCredentials } from '../utils/workload-identity.js';
 
 /**
  * Issue #123 (Lambda-target slice) — boot a single Lambda function in a
@@ -111,6 +112,9 @@ function forwardAwsEnv(): Record<string, string> {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
+  // Caller mode (go-to-k/cdk-local#783): the copied triple is the --role-arn role; hand the
+  // container the caller's instead. Before any --profile / --assume-role injection, which still wins.
+  applyWorkloadEnvCredentials(env);
   return env;
 }
 

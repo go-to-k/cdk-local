@@ -8,6 +8,7 @@ import {
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { buildProxyClientConfig } from '../utils/aws-proxy.js';
+import { workloadStsClientConfig } from '../utils/workload-identity.js';
 import { buildStsClientConfig } from '../utils/profile-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
@@ -390,7 +391,7 @@ async function assumeRoleForEcr(
   logger.debug(`Assuming role ${roleArn} for ECR pull...`);
   // Thread `--profile` so the AssumeRole source identity is the profile's,
   // matching the rest of the pull path.
-  const sts = new STSClient(buildStsClientConfig({ region: callerRegion, profile }));
+  const sts = new STSClient(workloadStsClientConfig({ region: callerRegion, profile }));
   try {
     const response = await sts.send(
       new AssumeRoleCommand({

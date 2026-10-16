@@ -98,6 +98,24 @@ export interface CdkLocalEmbedConfig {
    * console logger).
    */
   logger?: EmbedHostLogger;
+  /**
+   * Which identity resolves the emulated WORKLOAD's inputs once `--role-arn`
+   * has assumed a role. `'role'` (the default, and standalone `cdkl`'s
+   * contract) runs everything as the assumed role. `'caller'` keeps the role
+   * for what it is for — synth, the ECR pull, a fromS3 code bundle — and
+   * resolves the workload's inputs as the identity the process had BEFORE
+   * the assume: the credential triple handed to a container, task secrets,
+   * `{{resolve:...}}`, `${AWS::AccountId}`, `--from-cfn-stack`, the
+   * `--assume-role` / `--assume-task-role` / `--ecr-role-arn` /
+   * `--layer-role-arn` hops, literal layer ARNs, and the CloudFront engine's
+   * deployed reads. For a host whose `--role-arn` is a DEPLOY identity.
+   *
+   * Bound: the caller snapshot lives in the process that assumed. A child
+   * process spawned after the assume (`cdkl studio`'s runners) inherits the
+   * role's triple and no snapshot, so this mode does not reach it.
+   * See `src/utils/workload-identity.ts`. Default `'role'`.
+   */
+  workloadIdentity?: 'role' | 'caller';
 }
 
 export interface ResolvedEmbedConfig {
@@ -110,6 +128,7 @@ export interface ResolvedEmbedConfig {
   sigV4StrictByDefault: boolean;
   sigV4OptFlag: string;
   logger?: EmbedHostLogger;
+  workloadIdentity: 'role' | 'caller';
 }
 
 const DEFAULTS: ResolvedEmbedConfig = {
@@ -121,6 +140,7 @@ const DEFAULTS: ResolvedEmbedConfig = {
   envPrefix: 'CDKL',
   sigV4StrictByDefault: false,
   sigV4OptFlag: '--strict-sigv4',
+  workloadIdentity: 'role',
 };
 
 let current: ResolvedEmbedConfig = DEFAULTS;
@@ -141,6 +161,7 @@ export function setEmbedConfig(config?: CdkLocalEmbedConfig): void {
     envPrefix: config?.envPrefix ?? DEFAULTS.envPrefix,
     sigV4StrictByDefault: config?.sigV4StrictByDefault ?? DEFAULTS.sigV4StrictByDefault,
     sigV4OptFlag: config?.sigV4OptFlag ?? DEFAULTS.sigV4OptFlag,
+    workloadIdentity: config?.workloadIdentity === 'caller' ? 'caller' : 'role',
     ...(config?.logger !== undefined && { logger: config.logger }),
   };
 }

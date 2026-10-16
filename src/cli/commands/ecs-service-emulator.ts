@@ -26,7 +26,7 @@ import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
 import { resolveProfileCredentials, createWatchPredicates } from './local-start-api.js';
-import { buildStsClientConfig } from '../../utils/profile-resolver.js';
+import { workloadStsClientConfig } from '../../utils/workload-identity.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -2440,7 +2440,7 @@ async function resolvePlaceholderAccount(
   // Thread `--profile` so the resolved account is the profile's account
   // (matching the inline same-stack IAM role resolution under
   // `--from-cfn-stack --profile <p>`) (issue #245).
-  const sts = new STSClient(buildStsClientConfig({ region, profile }));
+  const sts = new STSClient(workloadStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
@@ -2622,7 +2622,7 @@ async function resolveCallerAccountId(
   profile: string | undefined
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient(buildStsClientConfig({ region, profile }));
+  const sts = new STSClient(workloadStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
