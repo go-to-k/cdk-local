@@ -25,6 +25,7 @@ const { resetEmbedConfig, setEmbedConfig } = await import('../../../src/local/em
 const { recordAssumedRole, resetWorkloadIdentity } = await import(
   '../../../src/utils/workload-identity.js'
 );
+const { getLogger } = await import('../../../src/utils/logger.js');
 import type { ResolvedAgentCoreRuntime } from '../../../src/local/agentcore-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from '../../../src/local/local-state-provider.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
@@ -249,6 +250,17 @@ describe('buildAgentCoreImageContext', () => {
   });
 });
 
+/** Restore process.env key by key (never replace the object: other holders keep their reference). */
+function restoreEnv(saved: NodeJS.ProcessEnv): void {
+  for (const k of Object.keys(process.env)) {
+    if (!(k in saved)) delete process.env[k];
+  }
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+}
+
 describe('applyAgentCoreCredentialEnv', () => {
   const savedEnv = { ...process.env };
 
@@ -262,7 +274,7 @@ describe('applyAgentCoreCredentialEnv', () => {
   });
 
   afterEach(() => {
-    process.env = { ...savedEnv };
+    restoreEnv(savedEnv);
     vi.restoreAllMocks();
   });
 
@@ -339,7 +351,7 @@ describe('caller workload identity (go-to-k/cdk-local#783)', () => {
   });
 
   afterEach(() => {
-    process.env = { ...savedEnv };
+    restoreEnv(savedEnv);
     resetWorkloadIdentity();
     resetEmbedConfig();
     vi.restoreAllMocks();
@@ -355,14 +367,30 @@ describe('caller workload identity (go-to-k/cdk-local#783)', () => {
     expect('AWS_SESSION_TOKEN' in env).toBe(false);
   });
 
-  it('forwardAwsEnv: caller mode with no static caller triple strips the triple', async () => {
+  it('forwardAwsEnv: caller mode with no static caller triple strips the triple and warns once', async () => {
     setEmbedConfig({ workloadIdentity: 'caller' });
     recordAssumedRole(undefined);
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
     const env: Record<string, string> = {};
     await applyAgentCoreCredentialEnv(env, {});
     expect(env).not.toHaveProperty('AWS_ACCESS_KEY_ID');
     expect(env).not.toHaveProperty('AWS_SESSION_TOKEN');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('--profile');
+    await applyAgentCoreCredentialEnv({}, {});
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwardAwsEnv: a stripped triple with a --profile overlay does NOT warn', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole(undefined);
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    const env: Record<string, string> = {};
+    await applyAgentCoreCredentialEnv(env, {
+      profileCredentials: { accessKeyId: 'AKIAPROFILE', secretAccessKey: 'profileSecret' },
+    });
+    expect(env['AWS_ACCESS_KEY_ID']).toBe('AKIAPROFILE');
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('forwardAwsEnv: a --profile overlay still wins over the restored caller triple', async () => {
@@ -404,10 +432,12 @@ describe('caller workload identity (go-to-k/cdk-local#783)', () => {
     it('caller mode with a stripped result takes the no-credentials path', async () => {
       setEmbedConfig({ workloadIdentity: 'caller' });
       recordAssumedRole(undefined);
-      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
       await expect(call()).rejects.toMatchObject({
         code: 'LOCAL_INVOKE_AGENTCORE_SIGV4_NO_CREDENTIALS',
       });
+      // It throws its own error; the container-env strip warning is not its to give.
+      expect(warn).not.toHaveBeenCalled();
     });
 
     it('role mode signs as the env triple (the role)', async () => {

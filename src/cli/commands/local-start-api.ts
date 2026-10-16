@@ -23,6 +23,7 @@ import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import {
   workloadStsClientConfig,
   applyWorkloadEnvCredentials,
+  warnWorkloadCredentialsStripped,
 } from '../../utils/workload-identity.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
@@ -2093,7 +2094,8 @@ export function resolveStartApiAssumeRoleArn(args: {
  * message if the Lambda's code can't be resolved (asset directory
  * missing, runtime not supported).
  */
-async function buildContainerSpec(args: {
+/** Exported for the caller-identity container-env tests (go-to-k/cdk-local#783); not public API. */
+export async function buildContainerSpec(args: {
   logicalId: string;
   stacks: StackInfo[];
   overrides: EnvOverrideFile | undefined;
@@ -2419,7 +2421,7 @@ async function buildContainerSpec(args: {
     dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
     if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
   } else {
-    forwardAwsEnv(dockerEnv);
+    const forwarded = forwardAwsEnv(dockerEnv);
     // Issue #654: when `--profile <p>` is set AND this Lambda has no
     // `--assume-role` mapping, overlay the profile-resolved credentials
     // on top of whatever `forwardAwsEnv` copied from `process.env`. The
@@ -2445,6 +2447,9 @@ async function buildContainerSpec(args: {
         // to use a mismatched (long-lived AKID + foreign session).
         delete dockerEnv['AWS_SESSION_TOKEN'];
       }
+    }
+    if (forwarded === 'stripped' && !dockerEnv['AWS_ACCESS_KEY_ID']) {
+      warnWorkloadCredentialsStripped();
     }
 
     // Profile-aware SDK config inside container: when the server boot
@@ -3201,7 +3206,9 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
  * handler's AWS SDK calls can authenticate. Used when --assume-role is
  * NOT set for that Lambda — SAM-compatible default.
  */
-function forwardAwsEnv(env: Record<string, string>): void {
+function forwardAwsEnv(
+  env: Record<string, string>
+): ReturnType<typeof applyWorkloadEnvCredentials> {
   const passThrough = [
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
@@ -3215,7 +3222,7 @@ function forwardAwsEnv(env: Record<string, string>): void {
   }
   // Caller mode (go-to-k/cdk-local#783): the copied triple is the --role-arn role; hand the
   // container the caller's instead. Before any --profile / --assume-role injection, which still wins.
-  applyWorkloadEnvCredentials(env);
+  return applyWorkloadEnvCredentials(env);
 }
 
 /**

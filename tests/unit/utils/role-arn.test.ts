@@ -656,9 +656,36 @@ describe('applyRoleArnIfSet — workload identity record (go-to-k/cdk-local#783)
     }
     await applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined });
     expect(assumedRoleRecorded()).toBe(true);
-    // The caller-chain provider, not the (now overwritten) env triple.
-    const creds = workloadClientConfig().credentials;
-    expect(typeof creds).toBe('function');
+    // The caller-chain provider this installs is exercised (defaultProvider invoked on the
+    // default profile) in workload-identity.test.ts; here only the record is asserted.
+  });
+
+  it('caller mode: the assumeRoleCredentials hop is signed by the caller triple', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole({ accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' });
+    await assumeRoleCredentials({
+      roleArn: ROLE_ARN,
+      region: 'eu-west-1',
+      profile: undefined,
+      sessionNameSuffix: 'invoke',
+    });
+    const cfg = clientConfigs[0] as { credentials?: () => Promise<unknown>; region?: string };
+    expect(cfg.region).toBe('eu-west-1');
+    expect(await cfg.credentials!()).toEqual({
+      accessKeyId: 'AKIACALLER',
+      secretAccessKey: 'callerSecret',
+    });
+  });
+
+  it('role mode: the assumeRoleCredentials hop injects no credentials even after a record', async () => {
+    recordAssumedRole({ accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' });
+    await assumeRoleCredentials({
+      roleArn: ROLE_ARN,
+      region: 'eu-west-1',
+      profile: undefined,
+      sessionNameSuffix: 'invoke',
+    });
+    expect(clientConfigs[0]).not.toHaveProperty('credentials');
   });
 
   it('caller mode: a second call throws SECOND_ASSUME_MESSAGE before any STS send', async () => {

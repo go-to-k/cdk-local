@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+
+const defaultProviderMock = vi.hoisted(() => vi.fn());
+vi.mock('@aws-sdk/credential-provider-node', () => ({ defaultProvider: defaultProviderMock }));
+
 import { resetEmbedConfig, setEmbedConfig } from '../../../src/local/embed-config.js';
 import { buildProxyClientConfig } from '../../../src/utils/aws-proxy.js';
 import { buildStsClientConfig } from '../../../src/utils/profile-resolver.js';
@@ -10,6 +14,7 @@ import {
   readEnvCallerCredentials,
   recordAssumedRole,
   resetWorkloadIdentity,
+  warnWorkloadCredentialsStripped,
   workloadClientConfig,
   workloadStsClientConfig,
 } from '../../../src/utils/workload-identity.js';
@@ -49,6 +54,7 @@ describe('workload-identity', () => {
     resetWorkloadIdentity();
     resetEmbedConfig();
     vi.restoreAllMocks();
+    defaultProviderMock.mockReset();
   });
 
   describe("role mode (the default) is byte-identical", () => {
@@ -167,7 +173,7 @@ describe('workload-identity', () => {
       expect('AWS_SESSION_TOKEN' in env).toBe(false);
     });
 
-    it('strips the triple and warns exactly once when the caller had no static triple', () => {
+    it('strips the triple and does NOT warn itself when the caller had no static triple', () => {
       const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
       recordAssumedRole(undefined);
       const first: Record<string, string | undefined> = {
@@ -181,8 +187,74 @@ describe('workload-identity', () => {
       const second: Record<string, string | undefined> = { AWS_ACCESS_KEY_ID: 'AKIAROLE' };
       expect(applyWorkloadEnvCredentials(second)).toBe('stripped');
       expect(second).toEqual({});
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('warnWorkloadCredentialsStripped warns at most once per process, naming --profile', () => {
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+      warnWorkloadCredentialsStripped();
+      warnWorkloadCredentialsStripped();
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]![0])).toContain('--profile');
+      resetWorkloadIdentity();
+      warnWorkloadCredentialsStripped();
+      expect(warn).toHaveBeenCalledTimes(2);
+    });
+
+    it('shape 3 builds the default chain on the default profile and returns its credentials', async () => {
+      const resolved = { accessKeyId: 'AKIACHAIN', secretAccessKey: 'chainSecret' };
+      const inner = vi.fn().mockResolvedValue(resolved);
+      defaultProviderMock.mockReturnValue(inner);
+      recordAssumedRole(undefined);
+      const cfg = workloadClientConfig();
+      expect(defaultProviderMock).not.toHaveBeenCalled();
+      const props = { marker: 1 };
+      await expect((cfg.credentials as (p: unknown) => Promise<unknown>)(props)).resolves.toBe(
+        resolved
+      );
+      expect(inner).toHaveBeenCalledWith(props);
+      expect(defaultProviderMock).toHaveBeenCalledTimes(1);
+      const arg = defaultProviderMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(arg['profile']).toBe('default');
+      expect(arg['logger']).toBeDefined();
+      expect(arg).not.toHaveProperty('clientConfig');
+      expect(cfg).not.toHaveProperty('requestHandler');
+    });
+
+    it('shape 3 passes the proxy request handler to the chain under HTTPS_PROXY', async () => {
+      process.env['HTTPS_PROXY'] = 'http://proxy.example:3128';
+      defaultProviderMock.mockReturnValue(async () => ({ accessKeyId: 'a', secretAccessKey: 's' }));
+      recordAssumedRole(undefined);
+      const cfg = workloadClientConfig();
+      await (cfg.credentials as (p?: unknown) => Promise<unknown>)();
+      const arg = defaultProviderMock.mock.calls[0]![0] as {
+        clientConfig?: { requestHandler?: unknown };
+      };
+      expect(arg.clientConfig?.requestHandler).toBeDefined();
+    });
+
+    it('the chain logger drops the false multiple-sources warning and forwards other warns', async () => {
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+      defaultProviderMock.mockReturnValue(async () => ({ accessKeyId: 'a', secretAccessKey: 's' }));
+      recordAssumedRole(undefined);
+      await (workloadClientConfig().credentials as (p?: unknown) => Promise<unknown>)();
+      const chainLogger = (
+        defaultProviderMock.mock.calls[0]![0] as { logger: { warn: (...a: unknown[]) => void } }
+      ).logger;
+      chainLogger.warn('Multiple credential sources detected: Both AWS_PROFILE and ...');
+      expect(warn).not.toHaveBeenCalled();
+      chainLogger.warn('some other chain warning');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('some other chain warning');
+    });
+
+    it('shape 2 under HTTPS_PROXY keeps the base requestHandler', async () => {
+      process.env['HTTPS_PROXY'] = 'http://proxy.example:3128';
+      recordAssumedRole(CALLER);
+      const cfg = workloadClientConfig();
+      expect(cfg.requestHandler).toBeDefined();
+      expect(typeof cfg.credentials).toBe('function');
+      expect(await (cfg.credentials as () => Promise<unknown>)()).toEqual(CALLER);
     });
   });
 

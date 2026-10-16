@@ -24,7 +24,10 @@ import {
 import { assetPathDirs, materializeAssetCodeDir } from './lambda-resolver.js';
 import type { ResolvedImageLambda, ResolvedLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
-import { applyWorkloadEnvCredentials } from '../utils/workload-identity.js';
+import {
+  applyWorkloadEnvCredentials,
+  warnWorkloadCredentialsStripped,
+} from '../utils/workload-identity.js';
 
 /**
  * Issue #123 (Lambda-target slice) — boot a single Lambda function in a
@@ -114,7 +117,10 @@ function forwardAwsEnv(): Record<string, string> {
   }
   // Caller mode (go-to-k/cdk-local#783): the copied triple is the --role-arn role; hand the
   // container the caller's instead. Before any --profile / --assume-role injection, which still wins.
-  applyWorkloadEnvCredentials(env);
+  // This env is final (no overlay follows), so a strip that left it empty is warned here.
+  if (applyWorkloadEnvCredentials(env) === 'stripped' && !env['AWS_ACCESS_KEY_ID']) {
+    warnWorkloadCredentialsStripped();
+  }
   return env;
 }
 

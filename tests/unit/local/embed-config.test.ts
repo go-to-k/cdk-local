@@ -88,6 +88,19 @@ describe('embed-config', () => {
     expect(getEmbedConfig()).toEqual(first);
   });
 
+  it("workloadIdentity: 'caller' resolves to 'caller'; undefined and any other value to 'role'", () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    expect(getEmbedConfig().workloadIdentity).toBe('caller');
+    setEmbedConfig({});
+    expect(getEmbedConfig().workloadIdentity).toBe('role');
+    setEmbedConfig({ workloadIdentity: undefined });
+    expect(getEmbedConfig().workloadIdentity).toBe('role');
+    setEmbedConfig({ workloadIdentity: 'Caller' as never });
+    expect(getEmbedConfig().workloadIdentity).toBe('role');
+    setEmbedConfig({ workloadIdentity: 'role' });
+    expect(getEmbedConfig().workloadIdentity).toBe('role');
+  });
+
   it('resetEmbedConfig restores defaults', () => {
     setEmbedConfig({ productName: 'cdkd' });
     resetEmbedConfig();

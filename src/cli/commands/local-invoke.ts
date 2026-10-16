@@ -14,6 +14,7 @@ import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import {
   workloadStsClientConfig,
   applyWorkloadEnvCredentials,
+  warnWorkloadCredentialsStripped,
 } from '../../utils/workload-identity.js';
 import { resolveContainerFallbackRegion } from './local-start-api.js';
 import { getLogger } from '../../utils/logger.js';
@@ -907,7 +908,9 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-function forwardAwsEnv(env: Record<string, string>): void {
+function forwardAwsEnv(
+  env: Record<string, string>
+): ReturnType<typeof applyWorkloadEnvCredentials> {
   const passThrough = [
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
@@ -921,7 +924,7 @@ function forwardAwsEnv(env: Record<string, string>): void {
   }
   // Caller mode (go-to-k/cdk-local#783): the copied triple is the --role-arn role; hand the
   // container the caller's instead. Before any --profile / --assume-role injection, which still wins.
-  applyWorkloadEnvCredentials(env);
+  return applyWorkloadEnvCredentials(env);
 }
 
 export function applyProfileCredentialsOverlay(
@@ -1231,8 +1234,11 @@ async function resolveLambdaContainerEnvWith(
     }
   }
   if (!assumeSucceeded) {
-    forwardAwsEnv(dockerEnv);
+    const forwarded = forwardAwsEnv(dockerEnv);
     applyProfileCredentialsOverlay(dockerEnv, profileCredentials, false);
+    if (forwarded === 'stripped' && !dockerEnv['AWS_ACCESS_KEY_ID']) {
+      warnWorkloadCredentialsStripped();
+    }
   }
   if (!dockerEnv['AWS_REGION'] && !dockerEnv['AWS_DEFAULT_REGION']) {
     const fallbackRegion = resolveContainerFallbackRegion({

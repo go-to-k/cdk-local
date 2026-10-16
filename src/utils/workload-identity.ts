@@ -200,9 +200,9 @@ export function workloadStsClientConfig(args: {
  * without `--role-arn`. No profile gate: a `--profile` overlay applied
  * afterwards still outranks this, as it does today. Returns what it did.
  *
- * The strip is warned once per process, naming the remedy, because a
- * long-running container's credential error otherwise lands far from its
- * cause.
+ * It does not warn: a `--profile` overlay applied afterwards may still give
+ * the container an identity, so the caller of a 'stripped' result warns with
+ * {@link warnWorkloadCredentialsStripped} once the env is final and still empty.
  */
 export function applyWorkloadEnvCredentials(
   env: Record<string, string | undefined>
@@ -219,13 +219,22 @@ export function applyWorkloadEnvCredentials(
   delete env['AWS_ACCESS_KEY_ID'];
   delete env['AWS_SECRET_ACCESS_KEY'];
   delete env['AWS_SESSION_TOKEN'];
-  if (!stripWarned) {
-    stripWarned = true;
-    getLogger().warn(
-      'The --role-arn role is not handed to the emulated workload, and your shell had no ' +
-        'static AWS credentials to hand it instead, so the container receives none. ' +
-        'Pass --profile <name>, or export static credentials, to give it an identity.'
-    );
-  }
   return 'stripped';
+}
+
+/**
+ * Warn that the container receives no credentials, once per process, naming
+ * the remedy: a long-running container's credential error otherwise lands far
+ * from its cause. Call it only when {@link applyWorkloadEnvCredentials}
+ * returned 'stripped' AND the final env (after any `--profile` overlay) still
+ * has no `AWS_ACCESS_KEY_ID`.
+ */
+export function warnWorkloadCredentialsStripped(): void {
+  if (stripWarned) return;
+  stripWarned = true;
+  getLogger().warn(
+    'The --role-arn role is not handed to the emulated workload, and your shell had no ' +
+      'static AWS credentials to hand it instead, so the container receives none. ' +
+      'Pass --profile <name>, or export static credentials, to give it an identity.'
+  );
 }

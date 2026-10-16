@@ -391,6 +391,9 @@ async function assumeRoleForEcr(
   logger.debug(`Assuming role ${roleArn} for ECR pull...`);
   // Thread `--profile` so the AssumeRole source identity is the profile's,
   // matching the rest of the pull path.
+  // Deliberate: this hop is SIGNED by the workload identity (caller mode: the caller, as the
+  // --ecr-role-arn docs promise "the CLI's resolved credentials"), while GetCallerIdentity and
+  // the ECR client stay on the role. See utils/workload-identity.ts.
   const sts = new STSClient(workloadStsClientConfig({ region: callerRegion, profile }));
   try {
     const response = await sts.send(

@@ -110,6 +110,11 @@ export interface CdkLocalEmbedConfig {
    * `--layer-role-arn` hops, literal layer ARNs, and the CloudFront engine's
    * deployed reads. For a host whose `--role-arn` is a DEPLOY identity.
    *
+   * In caller mode the `--ecr-role-arn` / `--layer-role-arn` / `--assume-role`
+   * hops are SIGNED by the caller, so a target role's trust policy must trust
+   * the caller, not only the deploy role; the credentials those hops return
+   * still do the pull / fetch.
+   *
    * Bound: the caller snapshot lives in the process that assumed. A child
    * process spawned after the assume (`cdkl studio`'s runners) inherits the
    * role's triple and no snapshot, so this mode does not reach it.

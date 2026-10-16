@@ -123,6 +123,7 @@ import { resolveProfileCredentials } from './local-start-api.js';
 import {
   workloadStsClientConfig,
   applyWorkloadEnvCredentials,
+  warnWorkloadCredentialsStripped,
 } from '../../utils/workload-identity.js';
 import {
   applyProfileCredentialsOverlay,
@@ -1576,8 +1577,11 @@ export async function applyAgentCoreCredentialEnv(
     }
   }
   if (!assumeSucceeded) {
-    forwardAwsEnv(dockerEnv);
+    const forwarded = forwardAwsEnv(dockerEnv);
     applyProfileCredentialsOverlay(dockerEnv, args.profileCredentials, false);
+    if (forwarded === 'stripped' && !dockerEnv['AWS_ACCESS_KEY_ID']) {
+      warnWorkloadCredentialsStripped();
+    }
     if (args.profileCredsFile) {
       dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = args.profileCredsFile.containerPath;
       dockerEnv['AWS_PROFILE'] = args.profileCredsFile.profileName;
@@ -1791,7 +1795,9 @@ export function platformToArchitecture(platform: string): 'x86_64' | 'arm64' {
   return platform === 'linux/amd64' ? 'x86_64' : 'arm64';
 }
 
-function forwardAwsEnv(env: Record<string, string>): void {
+function forwardAwsEnv(
+  env: Record<string, string>
+): ReturnType<typeof applyWorkloadEnvCredentials> {
   const passThrough = [
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
@@ -1805,7 +1811,7 @@ function forwardAwsEnv(env: Record<string, string>): void {
   }
   // Caller mode (go-to-k/cdk-local#783): the copied triple is the --role-arn role; hand the
   // container the caller's instead. Before any --profile / --assume-role injection, which still wins.
-  applyWorkloadEnvCredentials(env);
+  return applyWorkloadEnvCredentials(env);
 }
 
 async function assumeAgentCoreExecutionRole(
