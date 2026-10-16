@@ -449,7 +449,9 @@ export async function bootLambdaUrlOrigins(
   for (const functionLogicalId of functionLogicalIds) {
     let runner: FrontDoorLambdaRunner;
     try {
-      const lambda = resolveLambdaTarget(functionLogicalId, stacks);
+      // Qualify with the distribution's own stack: a bare logical id is refused
+      // as soon as the assembly holds a second stack (#798).
+      const lambda = resolveLambdaTarget(`${distribution.stackName}:${functionLogicalId}`, stacks);
       // Resolve the container env (declared env vars + --from-cfn-stack state
       // substitution + --assume-role / shell creds) the same way `cdkl invoke`
       // does, so the Function URL Lambda reaches its deployed resources.
@@ -528,7 +530,9 @@ export async function bootLambdaEdgeFunctions(
   }
   for (const functionLogicalId of functionLogicalIds) {
     try {
-      const lambda = resolveLambdaTarget(functionLogicalId, stacks);
+      // Qualify with the distribution's own stack: a bare logical id is refused
+      // as soon as the assembly holds a second stack (#798).
+      const lambda = resolveLambdaTarget(`${distribution.stackName}:${functionLogicalId}`, stacks);
       const containerEnv = await resolveLambdaContainerEnv(
         lambda,
         opts.envOptions,
