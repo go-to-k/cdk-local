@@ -36,11 +36,11 @@ const CLIENT_NAME = /^[A-Z][A-Za-z0-9_$]*Client$/;
 const WORKLOAD_SEAMS = ['workloadClientConfig(', 'workloadStsClientConfig('] as const;
 /**
  * The `${AWS::AccountId}` / placeholder-account lookups spread this instead:
- * the pseudo parameter names the DEPLOY account, so under caller mode the
- * lookup runs as the `--role-arn` role. It is its own passing class, counted
+ * the account follows where the stack was read (the caller under
+ * `--from-cfn-stack`, else the `--role-arn` role). It is its own passing class, counted
  * exactly per file (see EXPECTED_DEPLOY_ACCOUNT_SITES).
  */
-const DEPLOY_ACCOUNT_SEAM = 'deployAccountStsClientConfig(';
+const DEPLOY_ACCOUNT_SEAM = 'accountLookupStsClientConfig(';
 const EXPECTED_DEPLOY_ACCOUNT_SITES: Record<string, number> = {
   'src/cli/commands/ecs-service-emulator.ts': 2,
   'src/cli/commands/local-run-task.ts': 2,
@@ -117,7 +117,7 @@ describe('workload identity site fence (#783)', () => {
     expect(allSites.filter((s) => s.workload).length).toBeGreaterThanOrEqual(WORKLOAD_FLOOR);
   });
 
-  it('exactly the account-id lookups use deployAccountStsClientConfig', () => {
+  it('exactly the account-id lookups use accountLookupStsClientConfig', () => {
     const counts: Record<string, number> = {};
     for (const s of deployAccountSites) counts[s.file] = (counts[s.file] ?? 0) + 1;
     expect(counts).toEqual(EXPECTED_DEPLOY_ACCOUNT_SITES);
@@ -132,7 +132,7 @@ describe('workload identity site fence (#783)', () => {
       const where = sites.map((s) => `${s.file}:${s.line}`).join(', ');
       if (!entry) {
         problems.push(
-          `${where}: client does not spread workloadClientConfig( / workloadStsClientConfig( / deployAccountStsClientConfig( and is not allowlisted`
+          `${where}: client does not spread workloadClientConfig( / workloadStsClientConfig( / accountLookupStsClientConfig( and is not allowlisted`
         );
       } else if (sites.length > entry.count) {
         problems.push(

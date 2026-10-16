@@ -17,6 +17,7 @@ import {
   warnWorkloadCredentialsStripped,
   workloadClientConfig,
   workloadStsClientConfig,
+  accountLookupStsClientConfig,
   deployAccountStsClientConfig,
 } from '../../../src/utils/workload-identity.js';
 
@@ -370,6 +371,33 @@ describe('workload-identity', () => {
       role.accessKeyId = 'AKIAMUTATED';
       role.secretAccessKey = 'mutated';
       expect(await creds(deployAccountStsClientConfig({}))).toEqual(ROLE);
+    });
+  });
+
+  describe('accountLookupStsClientConfig (the account follows where the stack was read)', () => {
+    const creds = (cfg: { credentials?: unknown }) =>
+      (cfg.credentials as () => Promise<unknown>)();
+
+    it('--from-cfn-stack in caller mode resolves the CALLER triple', async () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(CALLER, ROLE);
+      expect(await creds(accountLookupStsClientConfig({ readFromCfnStack: true }))).toEqual(CALLER);
+    });
+
+    it('no state source / host state provider in caller mode resolves the ROLE triple', async () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(CALLER, ROLE);
+      expect(await creds(accountLookupStsClientConfig({ readFromCfnStack: false }))).toEqual(ROLE);
+      expect(await creds(accountLookupStsClientConfig({ region: 'us-east-1' }))).toEqual(ROLE);
+    });
+
+    it('role mode equals buildStsClientConfig either way', () => {
+      recordAssumedRole(CALLER, ROLE);
+      for (const readFromCfnStack of [true, false]) {
+        expect(
+          accountLookupStsClientConfig({ region: 'us-east-1', profile: 'p', readFromCfnStack })
+        ).toEqual(buildStsClientConfig({ region: 'us-east-1', profile: 'p' }));
+      }
     });
   });
 

@@ -39,6 +39,7 @@ import {
   createLocalStateProvider,
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
+  isCfnFlagPresent,
 } from './local-state-source.js';
 import type { LocalStateProvider, LocalStateRecord } from '../../local/local-state-provider.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -122,7 +123,7 @@ import { singleFlight } from '../../utils/single-flight.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
   workloadStsClientConfig,
-  deployAccountStsClientConfig,
+  accountLookupStsClientConfig,
   applyWorkloadEnvCredentials,
   warnWorkloadCredentialsStripped,
 } from '../../utils/workload-identity.js';
@@ -1467,7 +1468,7 @@ export async function buildAgentCoreImageContext(
 
   let accountId: string | undefined;
   try {
-    accountId = await resolveCallerAccountId(region, options.profile);
+    accountId = await resolveCallerAccountId(region, options.profile, isCfnFlagPresent(options));
   } catch (err) {
     // Issue #570: never interpolate the SDK error's `message` into this
     // default-level line -- see `describeAwsFailureForWarn` in
@@ -1504,13 +1505,14 @@ export async function buildAgentCoreImageContext(
   return { context, loaded: loaded ?? undefined };
 }
 
-/** STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter (threads `--profile`; runs as the `--role-arn` role under caller mode, the DEPLOY account). */
+/** STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter (threads `--profile`; runs as the `--role-arn` role under caller mode unless `--from-cfn-stack`, which reads as the caller). */
 async function resolveCallerAccountId(
   region: string | undefined,
-  profile: string | undefined
+  profile: string | undefined,
+  readFromCfnStack = false
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient(deployAccountStsClientConfig({ region, profile }));
+  const sts = new STSClient(accountLookupStsClientConfig({ region, profile, readFromCfnStack }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;

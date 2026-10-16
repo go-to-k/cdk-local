@@ -131,7 +131,8 @@ function findOffenders(filePath: string): { line: number; text: string }[] {
     if (
       args.includes('buildStsClientConfig(') ||
       args.includes('workloadStsClientConfig(') ||
-      args.includes('deployAccountStsClientConfig(')
+      args.includes('deployAccountStsClientConfig(') ||
+      args.includes('accountLookupStsClientConfig(')
     ) {
       continue;
     }

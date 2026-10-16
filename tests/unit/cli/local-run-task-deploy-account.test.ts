@@ -67,6 +67,15 @@ describe('resolvePlaceholderAccount runs as the deploy role in caller mode', () 
     expect(await cfg.credentials!()).toEqual(ROLE);
   });
 
+  it('--from-cfn-stack resolves the account as the CALLER (the stack was read there)', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole(CALLER, ROLE);
+    const arn = `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/r`;
+    await resolvePlaceholderAccountForTest(arn, 'us-east-1', undefined, true);
+    const cfg = stsCtorMock.mock.calls[0]![0] as { credentials?: () => Promise<unknown> };
+    expect(await cfg.credentials!()).toEqual(CALLER);
+  });
+
   it('role mode threads the profile and injects no credentials', async () => {
     const arn = `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/r`;
     await resolvePlaceholderAccountForTest(arn, 'us-east-1', 'dev');

@@ -18,9 +18,8 @@
  * or RECEIVES — secrets, parameters, `{{resolve:...}}`, `--from-cfn-stack`,
  * a literal layer ARN (code the developer did not write),
  * the container's credential triple and every assume-role hop — is the
- * caller's. `${AWS::AccountId}` (and the placeholder task-role account) names
- * the deploy account, so its lookup runs as the recorded role
- * ({@link deployAccountStsClientConfig}).
+ * caller's. `${AWS::AccountId}` (and the placeholder task-role account) follows
+ * WHERE THE STACK WAS READ ({@link accountLookupStsClientConfig}).
  *
  * The snapshot is module state, written once per process by the code that
  * performs the assume. A child process spawned after the assume inherits the
@@ -246,6 +245,30 @@ export function deployAccountStsClientConfig(args: {
     ...(args.profile && { profile: args.profile }),
     credentials,
   };
+}
+
+/**
+ * The STS client config for a `${AWS::AccountId}` / placeholder-account lookup
+ * in caller mode: the account FOLLOWS WHERE THE STACK WAS READ.
+ *
+ * - `--from-cfn-stack` (`readFromCfnStack`): the stack is read as the CALLER
+ *   ({@link workloadStsClientConfig}) and CloudFormation can only read the
+ *   caller's own account, so a successful read means the stack lives there;
+ *   resolving the account as the role would mix two accounts in ARNs / URIs.
+ * - A host's extra state provider (`--from-state`-style) or no state source:
+ *   the stack is the DEPLOY account's, so the lookup runs as the recorded
+ *   role ({@link deployAccountStsClientConfig}).
+ *
+ * Outside caller mode (and standalone `cdkl`) both equal `buildStsClientConfig`.
+ */
+export function accountLookupStsClientConfig(args: {
+  region?: string | undefined;
+  profile?: string | undefined;
+  readFromCfnStack?: boolean | undefined;
+}): { region?: string; profile?: string } & AwsProxyClientConfig {
+  return args.readFromCfnStack
+    ? workloadStsClientConfig({ region: args.region, profile: args.profile })
+    : deployAccountStsClientConfig({ region: args.region, profile: args.profile });
 }
 
 /**
