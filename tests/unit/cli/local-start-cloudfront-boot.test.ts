@@ -56,7 +56,7 @@ beforeEach(() => {
   createRunnerMock.mockReset();
   resolveContainerEnvMock.mockReset();
   runners.length = 0;
-  resolveLambdaTargetMock.mockImplementation((id: string) => ({ logicalId: id }));
+  resolveLambdaTargetMock.mockImplementation((id: string) => ({ logicalId: id.slice(id.indexOf(':') + 1) }));
   // The shared env resolver is exercised in its own tests; here it is a stub so
   // the orchestration (dedup / rollback) is isolated from state/STS resolution.
   resolveContainerEnvMock.mockResolvedValue({
@@ -160,6 +160,32 @@ describe('bootLambdaUrlOrigins', () => {
     );
     // The first (successfully started) runner is torn down on the rollback.
     expect(runners[0]!.stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe('backing functions resolve within the distribution stack (go-to-k/cdk-local#798)', () => {
+  const twoStacks: StackInfo[] = [
+    ...stacks,
+    { stackName: 'Other', displayName: 'Other', artifactId: 'Other', template: {}, dependencyNames: [] },
+  ];
+
+  it('bootLambdaUrlOrigins qualifies the Function URL origin target with the distribution stack', async () => {
+    const dist = distributionWith([
+      { kind: 'lambda-url', originId: 'a', functionLogicalId: 'Fn', functionUrlLogicalId: 'FnUrl' },
+    ]);
+    await bootLambdaUrlOrigins(dist, twoStacks, bootOpts);
+    expect(resolveLambdaTargetMock).toHaveBeenCalledWith('Stack:Fn', twoStacks);
+  });
+
+  it('bootLambdaEdgeFunctions qualifies the Lambda@Edge target with the distribution stack', async () => {
+    const dist: ResolvedDistribution = {
+      ...distributionWith([{ kind: 's3', originId: 'o1', localDirs: ['/tmp/x'] }]),
+      behaviors: [
+        { targetOriginId: 'o1', lambdaEdge: { viewerRequest: { functionLogicalId: 'EdgeFn', includeBody: false } } } as never,
+      ],
+    };
+    await bootLambdaEdgeFunctions(dist, twoStacks, bootOpts);
+    expect(resolveLambdaTargetMock).toHaveBeenCalledWith('Stack:EdgeFn', twoStacks);
   });
 });
 
