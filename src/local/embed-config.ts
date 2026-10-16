@@ -110,10 +110,12 @@ export interface CdkLocalEmbedConfig {
    * `--layer-role-arn` hops, literal layer ARNs, and the CloudFront engine's
    * deployed reads. For a host whose `--role-arn` is a DEPLOY identity.
    *
-   * The exception is `${AWS::AccountId}` (and the placeholder task-role
-   * account): it names the DEPLOY account, so it resolves as the `--role-arn`
-   * role even in caller mode, and cross-account values point where the stack
-   * lives. Without the second argument of `recordAssumedRole` the
+   * `${AWS::AccountId}` (and the placeholder task-role account) follows WHERE
+   * THE STACK WAS READ: under `--from-cfn-stack` the stack is read as the
+   * caller (CloudFormation reads only the caller's own account), so the
+   * account is the caller's; with a host's own state provider or no state
+   * source it is the DEPLOY account, resolved as the `--role-arn` role.
+   * Without the second argument of `recordAssumedRole` the
    * lookup falls back to `buildStsClientConfig`: the selected PROFILE's account
    * when a profile is set (the caller's account, the wrong one for a
    * cross-account role), else the default chain (the env, i.e. the role). So a

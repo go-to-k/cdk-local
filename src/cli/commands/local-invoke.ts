@@ -12,7 +12,7 @@ import {
 } from '../options.js';
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import {
-  deployAccountStsClientConfig,
+  accountLookupStsClientConfig,
   applyWorkloadEnvCredentials,
   warnWorkloadCredentialsStripped,
 } from '../../utils/workload-identity.js';
@@ -38,6 +38,7 @@ import {
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
   type LocalStateSourceOptions,
+  isCfnFlagPresent,
 } from './local-state-source.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import {
@@ -782,7 +783,7 @@ export function envHasCrossStackIntrinsic(
  */
 export async function resolvePseudoParametersForInvoke(
   stackRegion: string | undefined,
-  options: { region?: string; profile?: string }
+  options: { region?: string; profile?: string; fromCfnStack?: string | boolean }
 ): Promise<
   { accountId?: string; region?: string; partition?: string; urlSuffix?: string } | undefined
 > {
@@ -801,8 +802,15 @@ export async function resolvePseudoParametersForInvoke(
     // Thread `--profile` so the resolved account is the profile's account,
     // not whatever the default credential chain points at (issue #245).
     // Under `workloadIdentity: 'caller'` the lookup runs as the `--role-arn`
-    // role: `${AWS::AccountId}` is the DEPLOY account, not the caller's.
-    const sts = new STSClient(deployAccountStsClientConfig({ region, profile: options.profile }));
+    // role, except under `--from-cfn-stack` (read as the caller, so the stack's
+    // account is the caller's).
+    const sts = new STSClient(
+      accountLookupStsClientConfig({
+        region,
+        profile: options.profile,
+        readFromCfnStack: isCfnFlagPresent(options),
+      })
+    );
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;

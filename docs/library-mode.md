@@ -175,8 +175,9 @@ assumed a role: `'role'` runs everything as the assumed role (standalone
 bundle and resolves the workload's inputs (the container's credential
 triple, secrets, `{{resolve:...}}`, `--from-cfn-stack`, literal layer ARNs,
 the CloudFront engine's deployed reads) as the identity the process had
-before the assume. The exception is `${AWS::AccountId}`: it names the deploy
-account, so it resolves as the `--role-arn` role even in caller mode. In
+before the assume. `${AWS::AccountId}` follows where the stack
+was read: the caller's account under `--from-cfn-stack`, the deploy account
+(the `--role-arn` role) with a host state provider or no state source. In
 caller mode the `--ecr-role-arn` / `--layer-role-arn` /
 `--assume-role` hops are signed by the caller, so a target role's trust
 policy must trust the caller, not only the deploy role. See
@@ -226,9 +227,12 @@ recordAssumedRole(readEnvCallerCredentials(), role); // then overwrite AWS_* wit
 ```
 
 The second argument is the assumed role's own `{ accessKeyId, secretAccessKey,
-sessionToken }`. `${AWS::AccountId}` is the one input that does NOT follow the
-caller: it resolves to the deploy account (the role's), so a cross-account
-deploy role yields the account where the stack lives. Without the second
+sessionToken }`. `${AWS::AccountId}` follows where the stack was read: under
+`--from-cfn-stack` the stack is read as the caller (CloudFormation reads only
+the caller's own account), so it resolves to the caller's account; with a host
+state provider or no state source it resolves to the deploy account (the
+role's), so a cross-account deploy role yields the account where the stack
+lives. Without the second
 argument the lookup falls back to `buildStsClientConfig`: the selected profile's
 account when a profile is set (the caller's account, the wrong one for a
 cross-account role), else the default chain (the env, i.e. the role). So a host

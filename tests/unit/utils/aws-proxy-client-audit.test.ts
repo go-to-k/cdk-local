@@ -79,12 +79,13 @@ const CLIENT_NAME = /^[A-Z][A-Za-z0-9_$]*Client$/;
 // `workloadIdentity: 'caller'`, and they spread the proxy fragment internally.
 // `deployAccountStsClientConfig(` is the `${AWS::AccountId}` lookup spelling: it equals
 // `buildStsClientConfig(` unless caller mode recorded a role, and spreads the proxy
-// fragment in both branches.
+// fragment in both branches. `accountLookupStsClientConfig(` picks between the two.
 const PROXY_SEAMS = ['buildProxyClientConfig(', 'workloadClientConfig('] as const;
 const STS_SEAMS = [
   'buildStsClientConfig(',
   'workloadStsClientConfig(',
   'deployAccountStsClientConfig(',
+  'accountLookupStsClientConfig(',
 ] as const;
 const ALL_SEAMS = [...PROXY_SEAMS, ...STS_SEAMS];
 const hasSeam = (text: string): boolean => ALL_SEAMS.some((seam) => text.includes(seam));

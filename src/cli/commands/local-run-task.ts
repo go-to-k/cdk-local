@@ -20,7 +20,7 @@ import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { resolveProfileCredentials } from './local-start-api.js';
-import { deployAccountStsClientConfig } from '../../utils/workload-identity.js';
+import { accountLookupStsClientConfig } from '../../utils/workload-identity.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -61,6 +61,7 @@ import {
   createLocalStateProvider,
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
+  isCfnFlagPresent,
 } from './local-state-source.js';
 import {
   getEmbedConfig,
@@ -383,11 +384,7 @@ async function localRunTaskCommand(
             `Pass the ARN explicitly: --assume-role <arn>`
         );
       }
-      resolvedRoleArn = await resolvePlaceholderAccount(
-        task.taskRoleArn,
-        options.region,
-        options.profile
-      );
+      resolvedRoleArn = await resolveTaskRoleArnForOptions(task.taskRoleArn, options);
       assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
     } else if (typeof effectiveAssumeRole === 'string') {
       resolvedRoleArn = effectiveAssumeRole;
@@ -542,14 +539,15 @@ class PlaceholderAccountError extends Error {
 async function resolvePlaceholderAccount(
   arn: string,
   region: string | undefined,
-  profile: string | undefined
+  profile: string | undefined,
+  readFromCfnStack: boolean
 ): Promise<string> {
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  // The placeholder task-role ARN lives in the DEPLOY account, so under
-  // `workloadIdentity: 'caller'` the lookup runs as the `--role-arn` role, not
-  // the caller; otherwise `--profile` is threaded (issue #245).
-  const sts = new STSClient(deployAccountStsClientConfig({ region, profile }));
+  // Under `workloadIdentity: 'caller'` the account follows where the stack was
+  // read: the caller under `--from-cfn-stack`, else the `--role-arn` role (the
+  // deploy account); otherwise `--profile` is threaded (issue #245).
+  const sts = new STSClient(accountLookupStsClientConfig({ region, profile, readFromCfnStack }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
@@ -598,6 +596,23 @@ async function resolvePlaceholderAccount(
  * the library surface — it is not re-exported from `index.ts` / `internal.ts`.
  */
 export { resolvePlaceholderAccount as resolvePlaceholderAccountForTest };
+
+/**
+ * Fill the account segment of a placeholder task-role ARN for `options`. The
+ * account follows where the stack was read, so `--from-cfn-stack` is threaded
+ * from the options bag here rather than at each call site.
+ */
+async function resolveTaskRoleArnForOptions(
+  arn: string,
+  options: {
+    region?: string | undefined;
+    profile?: string | undefined;
+    fromCfnStack?: string | boolean;
+  }
+): Promise<string> {
+  return resolvePlaceholderAccount(arn, options.region, options.profile, isCfnFlagPresent(options));
+}
+export { resolveTaskRoleArnForOptions as resolveTaskRoleArnForOptionsForTest };
 
 /**
  * Assume `roleArn` and return temp credentials.
@@ -649,7 +664,7 @@ export async function buildEcsImageResolutionContext(
     }
     let accountId: string | undefined;
     try {
-      accountId = await resolveCallerAccountId(region, options.profile);
+      accountId = await resolveCallerAccountId(region, options.profile, isCfnFlagPresent(options));
     } catch (err) {
       // Issue #570: never interpolate the SDK error's `message` into this
       // default-level line -- see `describeAwsFailureForWarn` in
@@ -731,17 +746,18 @@ function pickCandidateStack(
 
 async function resolveCallerAccountId(
   region: string | undefined,
-  profile: string | undefined
+  profile: string | undefined,
+  readFromCfnStack: boolean
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   // Thread `--profile` so the resolved account is the profile's account
   // (e.g. the deployed account behind `--from-cfn-stack`), not whatever
   // the default credential chain points at. Under `workloadIdentity: 'caller'`
-  // with a `--role-arn`, the lookup runs as the role (the DEPLOY account),
-  // not the caller. Without this, the
+  // with a `--role-arn`, the account follows where the stack was read: the
+  // caller under `--from-cfn-stack`, else the role (the DEPLOY account). Without this, the
   // `${AWS::AccountId}` substitution that builds same-stack ECR image
   // URIs picks the wrong account and the subsequent `docker pull` 404s.
-  const sts = new STSClient(deployAccountStsClientConfig({ region, profile }));
+  const sts = new STSClient(accountLookupStsClientConfig({ region, profile, readFromCfnStack }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
