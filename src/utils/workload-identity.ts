@@ -16,9 +16,11 @@
  * keeps synth, the ECR image pull and a fromS3 code bundle (the emulated
  * unit's own artifact, produced by this deploy); everything the workload READS
  * or RECEIVES — secrets, parameters, `{{resolve:...}}`, `--from-cfn-stack`,
- * `${AWS::AccountId}`, a literal layer ARN (code the developer did not write),
+ * a literal layer ARN (code the developer did not write),
  * the container's credential triple and every assume-role hop — is the
- * caller's.
+ * caller's. `${AWS::AccountId}` (and the placeholder task-role account) names
+ * the deploy account, so its lookup runs as the recorded role
+ * ({@link deployAccountStsClientConfig}).
  *
  * The snapshot is module state, written once per process by the code that
  * performs the assume. A child process spawned after the assume inherits the
@@ -80,7 +82,10 @@ export const SECOND_ASSUME_MESSAGE =
  *
  * `role` is the assumed role's own credentials. Supply it so the
  * `${AWS::AccountId}` lookup resolves the deploy account; without it that
- * lookup falls back to the default chain.
+ * lookup falls back to `buildStsClientConfig`: the selected PROFILE's account
+ * when a profile is set (the caller's account, the wrong one for a
+ * cross-account role), else the default chain (the env, i.e. the role). A host
+ * that records its own assume should always pass the role triple.
  *
  * Both triples are COPIED, so a holder of the original object cannot rewrite
  * the identity a caller-mode client runs as.
@@ -212,8 +217,11 @@ export function workloadStsClientConfig(args: {
  * parameter names the account the stack was DEPLOYED to, which is the
  * `--role-arn` role's account, so under caller mode the lookup runs as the
  * recorded role: a cross-account deploy role then yields the account where
- * the stack's resources and images actually live. Outside caller mode, or when
- * the recorder supplied no role credentials, it equals `buildStsClientConfig`.
+ * the stack's resources and images actually live. The `profile` key is kept so
+ * the client's REGION can still come from the profile's config; the explicit
+ * `credentials` (the role) outrank the profile's credentials in SDK v3. Outside
+ * caller mode, or when the recorder supplied no role credentials, it equals
+ * `buildStsClientConfig`.
  */
 export function deployAccountStsClientConfig(args: {
   region?: string | undefined;
@@ -232,7 +240,12 @@ export function deployAccountStsClientConfig(args: {
     secretAccessKey: role.secretAccessKey,
     ...(role.sessionToken ? { sessionToken: role.sessionToken } : {}),
   });
-  return { ...buildProxyClientConfig(), ...(args.region && { region: args.region }), credentials };
+  return {
+    ...buildProxyClientConfig(),
+    ...(args.region && { region: args.region }),
+    ...(args.profile && { profile: args.profile }),
+    credentials,
+  };
 }
 
 /**

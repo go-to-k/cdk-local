@@ -656,7 +656,7 @@ describe('applyRoleArnIfSet — workload identity record (go-to-k/cdk-local#783)
     process.env['AWS_SECRET_ACCESS_KEY'] = 'callerSecret';
     await applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined });
     const cfg = deployAccountStsClientConfig({ region: 'us-east-1', profile: 'dev' });
-    expect(cfg).not.toHaveProperty('profile');
+    expect(cfg).toHaveProperty('profile', 'dev');
     expect(await (cfg.credentials as () => Promise<unknown>)()).toEqual({
       accessKeyId: 'AKIATEST',
       secretAccessKey: 'secretTEST',

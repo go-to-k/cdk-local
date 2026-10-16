@@ -318,12 +318,22 @@ describe('workload-identity', () => {
       );
     });
 
-    it('caller mode with a recorded role resolves the ROLE triple and carries no profile', async () => {
+    it('caller mode with a recorded role resolves the ROLE triple and keeps the profile for region', async () => {
       setEmbedConfig({ workloadIdentity: 'caller' });
       recordAssumedRole(CALLER, ROLE);
       const cfg = deployAccountStsClientConfig({ region: 'eu-west-1', profile: 'dev' });
       expect(cfg.region).toBe('eu-west-1');
-      expect(cfg).not.toHaveProperty('profile');
+      expect(cfg.profile).toBe('dev');
+      expect(await creds(cfg)).toEqual(ROLE);
+    });
+
+    it('caller mode with a proxy env keeps requestHandler and resolves the ROLE triple', async () => {
+      process.env['HTTPS_PROXY'] = 'http://proxy.example:3128';
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(CALLER, ROLE);
+      const cfg = deployAccountStsClientConfig({ region: 'us-east-1', profile: 'dev' });
+      expect(cfg.requestHandler).toBeDefined();
+      expect(cfg.profile).toBe('dev');
       expect(await creds(cfg)).toEqual(ROLE);
     });
 

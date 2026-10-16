@@ -38,11 +38,17 @@ const WORKLOAD_SEAMS = ['workloadClientConfig(', 'workloadStsClientConfig('] as 
  * The `${AWS::AccountId}` / placeholder-account lookups spread this instead:
  * the pseudo parameter names the DEPLOY account, so under caller mode the
  * lookup runs as the `--role-arn` role. It is its own passing class, counted
- * exactly (see EXPECTED_DEPLOY_ACCOUNT_SITES).
+ * exactly per file (see EXPECTED_DEPLOY_ACCOUNT_SITES).
  */
 const DEPLOY_ACCOUNT_SEAM = 'deployAccountStsClientConfig(';
-const EXPECTED_DEPLOY_ACCOUNT_SITES = 7;
-const WORKLOAD_FLOOR = 13;
+const EXPECTED_DEPLOY_ACCOUNT_SITES: Record<string, number> = {
+  'src/cli/commands/ecs-service-emulator.ts': 2,
+  'src/cli/commands/local-run-task.ts': 2,
+  'src/cli/commands/local-invoke.ts': 1,
+  'src/cli/commands/local-invoke-agentcore.ts': 1,
+  'src/cli/commands/local-start-api.ts': 1,
+};
+const WORKLOAD_FLOOR = 24;
 
 type SiteClass = 'role' | 'profile-resolution' | 'first-assume-hop';
 
@@ -112,16 +118,9 @@ describe('workload identity site fence (#783)', () => {
   });
 
   it('exactly the account-id lookups use deployAccountStsClientConfig', () => {
-    expect(deployAccountSites).toHaveLength(EXPECTED_DEPLOY_ACCOUNT_SITES);
-    expect(new Set(deployAccountSites.map((s) => s.file))).toEqual(
-      new Set([
-        'src/cli/commands/ecs-service-emulator.ts',
-        'src/cli/commands/local-run-task.ts',
-        'src/cli/commands/local-invoke.ts',
-        'src/cli/commands/local-invoke-agentcore.ts',
-        'src/cli/commands/local-start-api.ts',
-      ])
-    );
+    const counts: Record<string, number> = {};
+    for (const s of deployAccountSites) counts[s.file] = (counts[s.file] ?? 0) + 1;
+    expect(counts).toEqual(EXPECTED_DEPLOY_ACCOUNT_SITES);
   });
 
   it('every non-workload site is allowlisted, and the allowlist is exact', () => {

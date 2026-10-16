@@ -229,7 +229,10 @@ The second argument is the assumed role's own `{ accessKeyId, secretAccessKey,
 sessionToken }`. `${AWS::AccountId}` is the one input that does NOT follow the
 caller: it resolves to the deploy account (the role's), so a cross-account
 deploy role yields the account where the stack lives. Without the second
-argument that lookup falls back to the default credential chain.
+argument the lookup falls back to `buildStsClientConfig`: the selected profile's
+account when a profile is set (the caller's account, the wrong one for a
+cross-account role), else the default chain (the env, i.e. the role). So a host
+that records its own assume should always pass the role triple.
 
 The record is write-once per process (a second call throws), and it lives in
 the process that assumed: a child process spawned afterwards inherits the

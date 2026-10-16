@@ -28,26 +28,42 @@ import { TASK_ROLE_ACCOUNT_PLACEHOLDER } from '../../../src/local/ecs-task-resol
 
 const ROLE = { accessKeyId: 'AKIAROLE', secretAccessKey: 'roleSecret', sessionToken: 'roleTok' };
 const CALLER = { accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' };
+const ENV_KEYS = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
+  'NO_PROXY',
+  'no_proxy',
+  'AWS_PROFILE',
+] as const;
 
 describe('resolvePlaceholderAccount runs as the deploy role in caller mode', () => {
+  let saved: Record<string, string | undefined>;
   beforeEach(() => {
+    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+    for (const k of ENV_KEYS) delete process.env[k];
     stsCtorMock.mockReset();
     resetWorkloadIdentity();
     resetEmbedConfig();
   });
   afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
     resetWorkloadIdentity();
     resetEmbedConfig();
   });
 
-  it('constructs the STS client with the role credentials and no profile', async () => {
+  it('constructs the STS client with the role credentials and keeps the profile for region', async () => {
     setEmbedConfig({ workloadIdentity: 'caller' });
     recordAssumedRole(CALLER, ROLE);
     const arn = `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/r`;
     const out = await resolvePlaceholderAccountForTest(arn, 'us-east-1', 'dev');
     expect(out).toBe('arn:aws:iam::222222222222:role/r');
     const cfg = stsCtorMock.mock.calls[0]![0] as { credentials?: () => Promise<unknown> };
-    expect(cfg).not.toHaveProperty('profile');
+    expect(cfg).toHaveProperty('profile', 'dev');
     expect(await cfg.credentials!()).toEqual(ROLE);
   });
 
