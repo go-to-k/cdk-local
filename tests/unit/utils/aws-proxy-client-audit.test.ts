@@ -74,8 +74,13 @@ const SCAN_ROOTS = [join(repoRoot, 'src')];
 const CLIENT_NAME = /^[A-Z][A-Za-z0-9_$]*Client$/;
 
 /** The proxy seam itself, and the STS config builder that spreads it. */
-const PROXY_SEAM = 'buildProxyClientConfig(';
-const STS_SEAM = 'buildStsClientConfig(';
+// `workloadClientConfig(` / `workloadStsClientConfig(` (src/utils/workload-identity.ts)
+// are the workload-input spellings: each equals its `build*` twin unless the host chose
+// `workloadIdentity: 'caller'`, and they spread the proxy fragment internally.
+const PROXY_SEAMS = ['buildProxyClientConfig(', 'workloadClientConfig('] as const;
+const STS_SEAMS = ['buildStsClientConfig(', 'workloadStsClientConfig('] as const;
+const ALL_SEAMS = [...PROXY_SEAMS, ...STS_SEAMS];
+const hasSeam = (text: string): boolean => ALL_SEAMS.some((seam) => text.includes(seam));
 
 /** A `profile` identifier — a key, or the value expression that feeds one. */
 const PROFILE_TOKEN = /\bprofile\b/;
@@ -126,8 +131,7 @@ function findOffenders(filePath: string): { line: number; text: string }[] {
       offenders.push({ line: c.line, text: c.text });
       continue;
     }
-    if (c.args.includes(PROXY_SEAM)) continue;
-    if (c.args.includes(STS_SEAM)) continue;
+    if (hasSeam(c.args)) continue;
     if (c.optedOut) continue;
     offenders.push({ line: c.line, text: c.text });
   }
@@ -152,7 +156,7 @@ function findOffenders(filePath: string): { line: number; text: string }[] {
  */
 function splitAtSeam(args: string): { fragment: string; rest: string } | null {
   let best: { at: number; seam: string } | undefined;
-  for (const seam of [PROXY_SEAM, STS_SEAM]) {
+  for (const seam of ALL_SEAMS) {
     const at = args.indexOf(seam);
     if (at >= 0 && (best === undefined || at < best.at)) best = { at, seam };
   }
@@ -221,7 +225,7 @@ function findOrderOffenders(filePath: string): { line: number; text: string }[] 
   const offenders: { line: number; text: string }[] = [];
   for (const c of constructions(filePath)) {
     if (c.args === null || c.optedOut) continue;
-    const seamIndexes = [c.args.indexOf(PROXY_SEAM), c.args.indexOf(STS_SEAM)].filter(
+    const seamIndexes = ALL_SEAMS.map((seam) => c.args!.indexOf(seam)).filter(
       (i) => i >= 0
     );
     // No seam at all is policy 1's business, not this one.

@@ -4,6 +4,13 @@ import { getLogger } from './logger.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import { buildStsClientConfig } from './profile-resolver.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../local/credential-error.js';
+import {
+  SECOND_ASSUME_MESSAGE,
+  workloadStsClientConfig,
+  assumedRoleRecorded,
+  readEnvCallerCredentials,
+  recordAssumedRole,
+} from './workload-identity.js';
 
 /**
  * Upper bound on a value this module is willing to treat as a role ARN.
@@ -297,7 +304,9 @@ export async function assumeRoleCredentials(opts: {
   // Thread `--profile` so the AssumeRole call is signed with the
   // profile's credentials (matching `aws sts assume-role --profile
   // <p>`), not the default env-shadowed chain (issue #245).
-  const sts = new STSClient(buildStsClientConfig({ region: opts.region, profile: opts.profile }));
+  const sts = new STSClient(
+    workloadStsClientConfig({ region: opts.region, profile: opts.profile })
+  );
   const shownArn = flattenToOneLine(opts.roleArn);
   let response: AssumeRoleCommandOutput;
   try {
@@ -382,6 +391,13 @@ export async function applyRoleArnIfSet(opts: {
     throw new Error(refusedRoleArnMessage(roleArn));
   }
 
+  // Under `workloadIdentity: 'caller'` a second assume would snapshot the FIRST
+  // role as "the caller" and hand it to the workload, so it is refused BEFORE
+  // the hop, while nothing has been overwritten yet (go-to-k/cdk-local#783).
+  if (assumedRoleRecorded() && getEmbedConfig().workloadIdentity === 'caller') {
+    throw new Error(SECOND_ASSUME_MESSAGE);
+  }
+
   const logger = getLogger().child('role-arn');
   // FLATTENED at every interpolation (issue #579 review round 4). Since #607
   // this value has already passed {@link isIamRoleArn} directly above, which
@@ -425,6 +441,10 @@ export async function applyRoleArnIfSet(opts: {
   if (!AccessKeyId || !SecretAccessKey || !SessionToken) {
     throw new Error(`AssumeRole response missing credentials fields for role ${shownArn}`);
   }
+  // Snapshot the caller's triple BEFORE the overwrite below makes it
+  // unrecoverable. Only the first assume records it (the second is refused
+  // above in caller mode, and harmless in the default mode).
+  if (!assumedRoleRecorded()) recordAssumedRole(readEnvCallerCredentials());
   process.env['AWS_ACCESS_KEY_ID'] = AccessKeyId;
   process.env['AWS_SECRET_ACCESS_KEY'] = SecretAccessKey;
   process.env['AWS_SESSION_TOKEN'] = SessionToken;

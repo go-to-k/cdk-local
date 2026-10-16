@@ -1,6 +1,6 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import { buildProxyClientConfig } from '../utils/aws-proxy.js';
+import { workloadClientConfig } from '../utils/workload-identity.js';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -496,7 +496,7 @@ export class DynamicReferenceResolver {
       c =
         this.options.secretsManagerClientFactory?.(region) ??
         new SecretsManagerClient({
-          ...buildProxyClientConfig({ profile: this.options.profile }),
+          ...workloadClientConfig({ profile: this.options.profile }),
           ...(region && { region }),
           ...(this.options.profile && { profile: this.options.profile }),
         });
@@ -512,7 +512,7 @@ export class DynamicReferenceResolver {
       c =
         this.options.ssmClientFactory?.(region) ??
         new SSMClient({
-          ...buildProxyClientConfig({ profile: this.options.profile }),
+          ...workloadClientConfig({ profile: this.options.profile }),
           ...(region && { region }),
           ...(this.options.profile && { profile: this.options.profile }),
         });

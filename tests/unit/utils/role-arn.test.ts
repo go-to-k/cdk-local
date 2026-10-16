@@ -46,6 +46,14 @@ import {
   AssumeRoleFailure,
 } from '../../../src/utils/role-arn.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { resetEmbedConfig, setEmbedConfig } from '../../../src/local/embed-config.js';
+import {
+  SECOND_ASSUME_MESSAGE,
+  assumedRoleRecorded,
+  recordAssumedRole,
+  resetWorkloadIdentity,
+  workloadClientConfig,
+} from '../../../src/utils/workload-identity.js';
 
 const ROLE_ARN = 'arn:aws:iam::111111111111:role/AppRole';
 
@@ -588,6 +596,124 @@ describe('applyRoleArnIfSet — the uncaught AssumeRole relay (issue #579)', () 
     expect(line).not.toContain('\n');
     expect(sent).toHaveLength(1);
     expect(process.env['AWS_ACCESS_KEY_ID']).toBe('AKIATEST');
+  });
+});
+
+describe('applyRoleArnIfSet — workload identity record (go-to-k/cdk-local#783)', () => {
+  const ENV_KEYS = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_PROFILE'];
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    sent.length = 0;
+    clientConfigs.length = 0;
+    destroyed.count = 0;
+    sendImpl.fn = async () => ({
+      Credentials: {
+        AccessKeyId: 'AKIATEST',
+        SecretAccessKey: 'secretTEST',
+        SessionToken: 'tokTEST',
+      },
+    });
+    savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+    delete process.env['AWS_PROFILE'];
+    resetWorkloadIdentity();
+    resetEmbedConfig();
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
+    }
+    resetWorkloadIdentity();
+    resetEmbedConfig();
+    vi.restoreAllMocks();
+  });
+
+  it('records the pre-assume triple before overwriting the env', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIACALLER';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'callerSecret';
+    process.env['AWS_SESSION_TOKEN'] = 'callerToken';
+    await applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined });
+    expect(process.env['AWS_ACCESS_KEY_ID']).toBe('AKIATEST');
+    expect(assumedRoleRecorded()).toBe(true);
+    const creds = await (workloadClientConfig().credentials as () => Promise<unknown>)();
+    expect(creds).toEqual({
+      accessKeyId: 'AKIACALLER',
+      secretAccessKey: 'callerSecret',
+      sessionToken: 'callerToken',
+    });
+  });
+
+  it('records "no static triple" when the env held none', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    for (const k of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) {
+      delete process.env[k];
+    }
+    await applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined });
+    expect(assumedRoleRecorded()).toBe(true);
+    // The caller-chain provider this installs is exercised (defaultProvider invoked on the
+    // default profile) in workload-identity.test.ts; here only the record is asserted.
+  });
+
+  it('caller mode: the assumeRoleCredentials hop is signed by the caller triple', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole({ accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' });
+    await assumeRoleCredentials({
+      roleArn: ROLE_ARN,
+      region: 'eu-west-1',
+      profile: undefined,
+      sessionNameSuffix: 'invoke',
+    });
+    const cfg = clientConfigs[0] as { credentials?: () => Promise<unknown>; region?: string };
+    expect(cfg.region).toBe('eu-west-1');
+    expect(await cfg.credentials!()).toEqual({
+      accessKeyId: 'AKIACALLER',
+      secretAccessKey: 'callerSecret',
+    });
+  });
+
+  it('role mode: the assumeRoleCredentials hop injects no credentials even after a record', async () => {
+    recordAssumedRole({ accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' });
+    await assumeRoleCredentials({
+      roleArn: ROLE_ARN,
+      region: 'eu-west-1',
+      profile: undefined,
+      sessionNameSuffix: 'invoke',
+    });
+    expect(clientConfigs[0]).not.toHaveProperty('credentials');
+  });
+
+  it('caller mode: a second call throws SECOND_ASSUME_MESSAGE before any STS send', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    await applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined });
+    const sentBefore = sent.length;
+    const clientsBefore = clientConfigs.length;
+    await expect(
+      applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined })
+    ).rejects.toThrow(SECOND_ASSUME_MESSAGE);
+    expect(sent).toHaveLength(sentBefore);
+    expect(clientConfigs).toHaveLength(clientsBefore);
+  });
+
+  it('role mode: a second call still assumes, as today', async () => {
+    await applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined });
+    await applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined });
+    expect(sent).toHaveLength(2);
+    expect(process.env['AWS_ACCESS_KEY_ID']).toBe('AKIATEST');
+  });
+
+  it('a host-recorded assume is also refused a second time by applyRoleArnIfSet in caller mode', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole(undefined);
+    await expect(
+      applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined })
+    ).rejects.toThrow(SECOND_ASSUME_MESSAGE);
+    expect(sent).toHaveLength(0);
   });
 });
 

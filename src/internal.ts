@@ -942,6 +942,29 @@ export {
   type AwsProxyClientConfig,
 } from './utils/aws-proxy.js';
 
+/**
+ * Workload identity under `--role-arn` (go-to-k/cdk-local#783). A host whose
+ * `--role-arn` is a DEPLOY identity sets the embed config's
+ * `workloadIdentity: 'caller'`. When the host performs the assume itself
+ * (its own `applyRoleArnIfSet`), it calls `recordAssumedRole` with the
+ * pre-assume triple (`readEnvCallerCredentials()` read BEFORE it overwrites
+ * `AWS_*`), so cdk-local's workload sites — a literal layer ARN fetch, a
+ * `--from-cfn-stack` provider — resolve as the caller on the host's own
+ * commands too. Write-once per process: a second record throws
+ * `SECOND_ASSUME_MESSAGE`. `workloadClientConfig` / `workloadStsClientConfig`
+ * are the fragments those sites spread.
+ */
+export {
+  recordAssumedRole,
+  assumedRoleRecorded,
+  readEnvCallerCredentials,
+  resetWorkloadIdentity,
+  workloadClientConfig,
+  workloadStsClientConfig,
+  SECOND_ASSUME_MESSAGE,
+  type CallerCredentials,
+} from './utils/workload-identity.js';
+
 export { addStudioSpecificOptions } from './cli/commands/local-studio.js';
 
 /**

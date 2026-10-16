@@ -47,6 +47,11 @@ vi.mock('../../../src/local/runtime-image.js', () => ({
 const { createFrontDoorLambdaRunner } = await import(
   '../../../src/local/front-door-lambda-runner.js'
 );
+const { resetEmbedConfig, setEmbedConfig } = await import('../../../src/local/embed-config.js');
+const { recordAssumedRole, resetWorkloadIdentity } = await import(
+  '../../../src/utils/workload-identity.js'
+);
+const { getLogger } = await import('../../../src/utils/logger.js');
 
 // A real on-disk asset directory: resolveZipImagePlan now stats codePath (to
 // distinguish an unzipped dir from a `.zip` file via materializeAssetCodeDir),
@@ -226,5 +231,59 @@ describe('createFrontDoorLambdaRunner', () => {
     const runner = createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' });
     await runner.stop();
     await expect(runner.start()).rejects.toThrow(/after stop/);
+  });
+});
+
+describe('createFrontDoorLambdaRunner — caller workload identity (go-to-k/cdk-local#783)', () => {
+  const KEYS = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN'] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIAROLE';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'roleSecret';
+    process.env['AWS_SESSION_TOKEN'] = 'roleToken';
+    resetWorkloadIdentity();
+    resetEmbedConfig();
+  });
+
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    resetWorkloadIdentity();
+    resetEmbedConfig();
+    vi.restoreAllMocks();
+  });
+
+  it('caller mode restores the caller triple in the forwarded env (not the role)', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole({ accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' });
+    await createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' }).start();
+    const env = runDetachedMock.mock.calls[0]![0].env;
+    expect(env.AWS_ACCESS_KEY_ID).toBe('AKIACALLER');
+    expect(env.AWS_SECRET_ACCESS_KEY).toBe('callerSecret');
+    expect('AWS_SESSION_TOKEN' in env).toBe(false);
+  });
+
+  it('caller mode with no static caller triple strips the triple and warns once', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole(undefined);
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    await createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' }).start();
+    const env = runDetachedMock.mock.calls[0]![0].env;
+    expect('AWS_ACCESS_KEY_ID' in env).toBe(false);
+    expect('AWS_SECRET_ACCESS_KEY' in env).toBe(false);
+    expect('AWS_SESSION_TOKEN' in env).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('role mode forwards the process env as before', async () => {
+    recordAssumedRole({ accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' });
+    await createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' }).start();
+    const env = runDetachedMock.mock.calls[0]![0].env;
+    expect(env.AWS_ACCESS_KEY_ID).toBe('AKIAROLE');
+    expect(env.AWS_SESSION_TOKEN).toBe('roleToken');
   });
 });

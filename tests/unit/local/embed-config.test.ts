@@ -31,6 +31,7 @@ describe('embed-config', () => {
       envPrefix: 'CDKL',
       sigV4StrictByDefault: false,
       sigV4OptFlag: '--strict-sigv4',
+      workloadIdentity: 'role',
     });
   });
 
@@ -54,6 +55,7 @@ describe('embed-config', () => {
       envPrefix: 'CDKD',
       sigV4StrictByDefault: true,
       sigV4OptFlag: '--allow-unverified-sigv4',
+      workloadIdentity: 'role',
     });
   });
 
@@ -68,6 +70,7 @@ describe('embed-config', () => {
       envPrefix: 'CDKL',
       sigV4StrictByDefault: false,
       sigV4OptFlag: '--strict-sigv4',
+      workloadIdentity: 'role',
     });
   });
 
@@ -83,6 +86,19 @@ describe('embed-config', () => {
     const first = getEmbedConfig();
     setEmbedConfig(override);
     expect(getEmbedConfig()).toEqual(first);
+  });
+
+  it("workloadIdentity: 'caller' resolves to 'caller'; undefined and any other value to 'role'", () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    expect(getEmbedConfig().workloadIdentity).toBe('caller');
+    setEmbedConfig({});
+    expect(getEmbedConfig().workloadIdentity).toBe('role');
+    setEmbedConfig({ workloadIdentity: undefined });
+    expect(getEmbedConfig().workloadIdentity).toBe('role');
+    setEmbedConfig({ workloadIdentity: 'Caller' as never });
+    expect(getEmbedConfig().workloadIdentity).toBe('role');
+    setEmbedConfig({ workloadIdentity: 'role' });
+    expect(getEmbedConfig().workloadIdentity).toBe('role');
   });
 
   it('resetEmbedConfig restores defaults', () => {

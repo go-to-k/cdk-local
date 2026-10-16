@@ -98,6 +98,33 @@ export interface CdkLocalEmbedConfig {
    * console logger).
    */
   logger?: EmbedHostLogger;
+  /**
+   * Which identity resolves the emulated WORKLOAD's inputs once `--role-arn`
+   * has assumed a role. `'role'` (the default, and standalone `cdkl`'s
+   * contract) runs everything as the assumed role. `'caller'` keeps the role
+   * for what it is for — synth, the ECR pull, a fromS3 code bundle — and
+   * resolves the workload's inputs as the identity the process had BEFORE
+   * the assume: the credential triple handed to a container, task secrets,
+   * `{{resolve:...}}`, `${AWS::AccountId}`, `--from-cfn-stack`, the
+   * `--assume-role` / `--assume-task-role` / `--ecr-role-arn` /
+   * `--layer-role-arn` hops, literal layer ARNs, and the CloudFront engine's
+   * deployed reads. For a host whose `--role-arn` is a DEPLOY identity.
+   *
+   * In caller mode the `--ecr-role-arn` / `--layer-role-arn` / `--assume-role`
+   * hops are SIGNED by the caller, so a target role's trust policy must trust
+   * the caller, not only the deploy role; the credentials those hops return
+   * still do the pull / fetch.
+   *
+   * Bound: the caller snapshot lives in the process that assumed. A child
+   * process spawned after the assume (`cdkl studio`'s runners) inherits the
+   * role's triple and no snapshot, so this mode does not reach it.
+   *
+   * The host must mirror its `--profile` flag into `AWS_PROFILE`: several
+   * workload sites receive no `profile` argument and read the selection from
+   * the environment, so an unmirrored flag resolves the caller's pre-assume
+   * identity there instead of the profile. See `src/utils/workload-identity.ts`. Default `'role'`.
+   */
+  workloadIdentity?: 'role' | 'caller';
 }
 
 export interface ResolvedEmbedConfig {
@@ -110,6 +137,7 @@ export interface ResolvedEmbedConfig {
   sigV4StrictByDefault: boolean;
   sigV4OptFlag: string;
   logger?: EmbedHostLogger;
+  workloadIdentity: 'role' | 'caller';
 }
 
 const DEFAULTS: ResolvedEmbedConfig = {
@@ -121,6 +149,7 @@ const DEFAULTS: ResolvedEmbedConfig = {
   envPrefix: 'CDKL',
   sigV4StrictByDefault: false,
   sigV4OptFlag: '--strict-sigv4',
+  workloadIdentity: 'role',
 };
 
 let current: ResolvedEmbedConfig = DEFAULTS;
@@ -141,6 +170,7 @@ export function setEmbedConfig(config?: CdkLocalEmbedConfig): void {
     envPrefix: config?.envPrefix ?? DEFAULTS.envPrefix,
     sigV4StrictByDefault: config?.sigV4StrictByDefault ?? DEFAULTS.sigV4StrictByDefault,
     sigV4OptFlag: config?.sigV4OptFlag ?? DEFAULTS.sigV4OptFlag,
+    workloadIdentity: config?.workloadIdentity === 'caller' ? 'caller' : 'role',
     ...(config?.logger !== undefined && { logger: config.logger }),
   };
 }

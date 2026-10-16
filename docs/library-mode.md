@@ -168,6 +168,18 @@ warn-and-pass" instead of cdk-local's opt-in "remove `--strict-sigv4`
 only message text — the actual deny / pass decision is driven by the
 `sigV4Strict` argument the host passes to `startApiServer`.
 
+`workloadIdentity` (`'role'` | `'caller'`, default `'role'`) chooses which
+identity resolves the emulated workload's inputs once `--role-arn` has
+assumed a role: `'role'` runs everything as the assumed role (standalone
+`cdkl`), `'caller'` keeps the role for synth, the ECR pull and a fromS3 code
+bundle and resolves the workload's inputs (the container's credential
+triple, secrets, `{{resolve:...}}`, `--from-cfn-stack`, literal layer ARNs,
+the CloudFront engine's deployed reads) as the identity the process had
+before the assume. In caller mode the `--ecr-role-arn` / `--layer-role-arn` /
+`--assume-role` hops are signed by the caller, so a target role's trust
+policy must trust the caller, not only the deploy role. See
+[Caller-identity mode](#caller-identity-mode-workloadidentity-caller).
+
 ### Routing cdk-local's log lines through the host's logger
 
 By default cdk-local writes its own progress / warning lines to the console
@@ -186,14 +198,35 @@ setEmbedConfig({ cliName: 'mytool local', logger: myToolLogger });
 
 This is what keeps a single-shot invoke's stdout payload-clean
 (`mytool local invoke Fn | jq`) when the host reserves stdout for the
-response. `setEmbedConfig` replaces the whole config, so pass `logger` in
-every config you install (the factories' `embedConfig` included).
+response. `setEmbedConfig` replaces the whole config, so pass `logger` and
+`workloadIdentity` in every config you install (the factories' `embedConfig`
+included); a config without `workloadIdentity` falls back to `'role'`.
 
 cdk-local keeps its own console logger in three cases: in a process where
 `CDKL_LOG_LEVEL` or `CDKL_LOG_STREAM` is set (`studio` sets them on the
 children it spawns to control what reaches its LOGS panel and on which
 pipe), when the host logger calls back into cdk-local's logger (no
 recursion), and for any line the host logger throws on.
+
+### Caller-identity mode (`workloadIdentity: 'caller'`)
+
+A host whose `--role-arn` is a deploy identity sets
+`workloadIdentity: 'caller'` so the emulated workload does not run as that
+role. When cdk-local itself performs the assume (`--role-arn`), it records
+the caller's pre-assume credentials. A host that performs the assume itself
+must do the same, BEFORE it overwrites `AWS_*`:
+
+```typescript
+import { readEnvCallerCredentials, recordAssumedRole } from 'cdk-local/internal';
+
+recordAssumedRole(readEnvCallerCredentials()); // then overwrite AWS_* with the role
+```
+
+The record is write-once per process (a second call throws), and it lives in
+the process that assumed: a child process spawned afterwards inherits the
+role's triple and no record. The host must also mirror its `--profile` flag
+into `AWS_PROFILE`, because several workload sites read the profile
+selection from the environment rather than from an argument.
 
 ### Shim hosts that don't use the factories
 

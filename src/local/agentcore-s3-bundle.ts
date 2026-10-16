@@ -133,6 +133,7 @@ function resolveSafeEntryPath(root: string, entry: string): string {
   return dest;
 }
 
+// A fromS3 code bundle is the unit's own artifact, so it stays on the role (see utils/workload-identity.ts).
 function defaultFetchObject(
   options: DownloadS3BundleOptions
 ): (location: S3BundleLocation) => Promise<Uint8Array> {

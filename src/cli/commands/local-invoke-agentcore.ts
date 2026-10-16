@@ -120,7 +120,11 @@ import {
 import type { FileAsset } from '../../types/assets.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import { resolveProfileCredentials } from './local-start-api.js';
-import { buildStsClientConfig } from '../../utils/profile-resolver.js';
+import {
+  workloadStsClientConfig,
+  applyWorkloadEnvCredentials,
+  warnWorkloadCredentialsStripped,
+} from '../../utils/workload-identity.js';
 import {
   applyProfileCredentialsOverlay,
   assumeRoleDetail,
@@ -934,10 +938,18 @@ export async function resolveHostCredentialsForSigV4(
       };
     }
   }
-  const accessKeyId = process.env['AWS_ACCESS_KEY_ID'];
-  const secretAccessKey = process.env['AWS_SECRET_ACCESS_KEY'];
+  // Caller mode: this env holds the --role-arn role; sign as the caller instead. A stripped
+  // triple means no host credentials, the same as an empty env.
+  const hostEnv: Record<string, string | undefined> = {
+    AWS_ACCESS_KEY_ID: process.env['AWS_ACCESS_KEY_ID'],
+    AWS_SECRET_ACCESS_KEY: process.env['AWS_SECRET_ACCESS_KEY'],
+    AWS_SESSION_TOKEN: process.env['AWS_SESSION_TOKEN'],
+  };
+  applyWorkloadEnvCredentials(hostEnv);
+  const accessKeyId = hostEnv['AWS_ACCESS_KEY_ID'];
+  const secretAccessKey = hostEnv['AWS_SECRET_ACCESS_KEY'];
   if (accessKeyId && secretAccessKey) {
-    const sessionToken = process.env['AWS_SESSION_TOKEN'];
+    const sessionToken = hostEnv['AWS_SESSION_TOKEN'];
     return {
       accessKeyId,
       secretAccessKey,
@@ -1497,7 +1509,7 @@ async function resolveCallerAccountId(
   profile: string | undefined
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient(buildStsClientConfig({ region, profile }));
+  const sts = new STSClient(workloadStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
@@ -1565,8 +1577,11 @@ export async function applyAgentCoreCredentialEnv(
     }
   }
   if (!assumeSucceeded) {
-    forwardAwsEnv(dockerEnv);
+    const forwarded = forwardAwsEnv(dockerEnv);
     applyProfileCredentialsOverlay(dockerEnv, args.profileCredentials, false);
+    if (forwarded === 'stripped' && !dockerEnv['AWS_ACCESS_KEY_ID']) {
+      warnWorkloadCredentialsStripped();
+    }
     if (args.profileCredsFile) {
       dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = args.profileCredsFile.containerPath;
       dockerEnv['AWS_PROFILE'] = args.profileCredsFile.profileName;
@@ -1780,7 +1795,9 @@ export function platformToArchitecture(platform: string): 'x86_64' | 'arm64' {
   return platform === 'linux/amd64' ? 'x86_64' : 'arm64';
 }
 
-function forwardAwsEnv(env: Record<string, string>): void {
+function forwardAwsEnv(
+  env: Record<string, string>
+): ReturnType<typeof applyWorkloadEnvCredentials> {
   const passThrough = [
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
@@ -1792,6 +1809,9 @@ function forwardAwsEnv(env: Record<string, string>): void {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
+  // Caller mode (go-to-k/cdk-local#783): the copied triple is the --role-arn role; hand the
+  // container the caller's instead. Before any --profile / --assume-role injection, which still wins.
+  return applyWorkloadEnvCredentials(env);
 }
 
 async function assumeAgentCoreExecutionRole(
@@ -1830,7 +1850,7 @@ async function assumeAgentCoreExecutionRole(
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
   // Thread `--profile` so AssumeRole is signed with the profile's
   // credentials, not the default env-shadowed chain (issue #245).
-  const sts = new STSClient(buildStsClientConfig({ region, profile }));
+  const sts = new STSClient(workloadStsClientConfig({ region, profile }));
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
