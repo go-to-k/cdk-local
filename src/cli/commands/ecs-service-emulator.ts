@@ -1841,12 +1841,7 @@ async function resolveServiceAndRunnerOpts(
           `has no resolvable TaskRoleArn. Pass the ARN explicitly: --assume-role <arn>`
       );
     }
-    resolvedRoleArn = await resolvePlaceholderAccount(
-      service.task.taskRoleArn,
-      options.region,
-      options.profile,
-      isCfnFlagPresent(options)
-    );
+    resolvedRoleArn = await resolveTaskRoleArnForOptions(service.task.taskRoleArn, options);
     assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
   } else if (typeof effectiveAssumeRole === 'string') {
     resolvedRoleArn = effectiveAssumeRole;
@@ -2436,7 +2431,7 @@ async function resolvePlaceholderAccount(
   arn: string,
   region: string | undefined,
   profile: string | undefined,
-  readFromCfnStack = false
+  readFromCfnStack: boolean
 ): Promise<string> {
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
@@ -2483,6 +2478,23 @@ async function resolvePlaceholderAccount(
  * `index.ts` / `internal.ts`.
  */
 export { resolvePlaceholderAccount as resolvePlaceholderAccountForTest };
+
+/**
+ * Fill the account segment of a placeholder task-role ARN for `options`. The
+ * account follows where the stack was read, so `--from-cfn-stack` is threaded
+ * from the options bag here rather than at each call site.
+ */
+async function resolveTaskRoleArnForOptions(
+  arn: string,
+  options: {
+    region?: string | undefined;
+    profile?: string | undefined;
+    fromCfnStack?: string | boolean;
+  }
+): Promise<string> {
+  return resolvePlaceholderAccount(arn, options.region, options.profile, isCfnFlagPresent(options));
+}
+export { resolveTaskRoleArnForOptions as resolveTaskRoleArnForOptionsForTest };
 
 async function assumeTaskRole(
   roleArn: string,
@@ -2623,7 +2635,7 @@ function pickCandidateStack(
 async function resolveCallerAccountId(
   region: string | undefined,
   profile: string | undefined,
-  readFromCfnStack = false
+  readFromCfnStack: boolean
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   const sts = new STSClient(accountLookupStsClientConfig({ region, profile, readFromCfnStack }));

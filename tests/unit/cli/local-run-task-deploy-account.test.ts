@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 // go-to-k/cdkd#5001: under `workloadIdentity: 'caller'` the placeholder
-// task-role ARN's account (and `${AWS::AccountId}`) is the DEPLOY account, so
-// the GetCallerIdentity client must run as the recorded `--role-arn` role, not
-// the caller and not the profile.
+// task-role ARN's account (and `${AWS::AccountId}`) follows where the stack was
+// read. Without `--from-cfn-stack` that is the DEPLOY account, so the
+// GetCallerIdentity client runs as the recorded `--role-arn` role (not the
+// caller, not the profile); under `--from-cfn-stack` it runs as the caller.
 
 const stsCtorMock = vi.hoisted(() => vi.fn());
 
@@ -38,7 +39,7 @@ const ENV_KEYS = [
   'AWS_PROFILE',
 ] as const;
 
-describe('resolvePlaceholderAccount runs as the deploy role in caller mode', () => {
+describe('resolvePlaceholderAccount follows where the stack was read in caller mode', () => {
   let saved: Record<string, string | undefined>;
   beforeEach(() => {
     saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -60,7 +61,7 @@ describe('resolvePlaceholderAccount runs as the deploy role in caller mode', () 
     setEmbedConfig({ workloadIdentity: 'caller' });
     recordAssumedRole(CALLER, ROLE);
     const arn = `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/r`;
-    const out = await resolvePlaceholderAccountForTest(arn, 'us-east-1', 'dev');
+    const out = await resolvePlaceholderAccountForTest(arn, 'us-east-1', 'dev', false);
     expect(out).toBe('arn:aws:iam::222222222222:role/r');
     const cfg = stsCtorMock.mock.calls[0]![0] as { credentials?: () => Promise<unknown> };
     expect(cfg).toHaveProperty('profile', 'dev');
@@ -78,7 +79,7 @@ describe('resolvePlaceholderAccount runs as the deploy role in caller mode', () 
 
   it('role mode threads the profile and injects no credentials', async () => {
     const arn = `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/r`;
-    await resolvePlaceholderAccountForTest(arn, 'us-east-1', 'dev');
+    await resolvePlaceholderAccountForTest(arn, 'us-east-1', 'dev', false);
     const cfg = stsCtorMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(cfg['profile']).toBe('dev');
     expect(cfg).not.toHaveProperty('credentials');

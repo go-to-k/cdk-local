@@ -1509,7 +1509,7 @@ export async function buildAgentCoreImageContext(
 async function resolveCallerAccountId(
   region: string | undefined,
   profile: string | undefined,
-  readFromCfnStack = false
+  readFromCfnStack: boolean
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   const sts = new STSClient(accountLookupStsClientConfig({ region, profile, readFromCfnStack }));
