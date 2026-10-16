@@ -93,13 +93,20 @@ const LAYER: ResolvedArnLambdaLayer = {
 
 describe('layer ARN materializer — default clients under workloadIdentity (go-to-k/cdk-local#783)', () => {
   const dirs: string[] = [];
+  // workloadClientConfig injects nothing when AWS_PROFILE is set, so an
+  // exported profile in the shell running the suite would flip these cases.
+  let savedAwsProfile: string | undefined;
   beforeEach(() => {
+    savedAwsProfile = process.env['AWS_PROFILE'];
+    delete process.env['AWS_PROFILE'];
     stsConfigs.length = 0;
     lambdaConfigs.length = 0;
     resetWorkloadIdentity();
     resetEmbedConfig();
   });
   afterEach(() => {
+    if (savedAwsProfile === undefined) delete process.env['AWS_PROFILE'];
+    else process.env['AWS_PROFILE'] = savedAwsProfile;
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
     resetWorkloadIdentity();
     resetEmbedConfig();

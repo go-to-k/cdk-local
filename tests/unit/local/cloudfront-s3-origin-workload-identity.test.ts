@@ -25,7 +25,12 @@ import {
 } from '../../../src/utils/workload-identity.js';
 
 describe('CloudFront S3 origin — workloadIdentity (go-to-k/cdk-local#783)', () => {
+  // workloadClientConfig injects nothing when AWS_PROFILE is set, so an
+  // exported profile in the shell running the suite would flip these cases.
+  let savedAwsProfile: string | undefined;
   beforeEach(() => {
+    savedAwsProfile = process.env['AWS_PROFILE'];
+    delete process.env['AWS_PROFILE'];
     s3Configs.length = 0;
     resetWorkloadIdentity();
     resetEmbedConfig();
@@ -33,6 +38,8 @@ describe('CloudFront S3 origin — workloadIdentity (go-to-k/cdk-local#783)', ()
     recordAssumedRole({ accessKeyId: 'AKIACALLER', secretAccessKey: 'callerSecret' });
   });
   afterEach(() => {
+    if (savedAwsProfile === undefined) delete process.env['AWS_PROFILE'];
+    else process.env['AWS_PROFILE'] = savedAwsProfile;
     resetWorkloadIdentity();
     resetEmbedConfig();
   });

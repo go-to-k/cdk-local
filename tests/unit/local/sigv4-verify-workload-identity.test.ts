@@ -22,11 +22,18 @@ import {
 } from '../../../src/utils/workload-identity.js';
 
 describe('sigv4-verify defaultCredentialsLoader — workloadIdentity (go-to-k/cdk-local#783)', () => {
+  // workloadClientConfig injects nothing when AWS_PROFILE is set, so an
+  // exported profile in the shell running the suite would flip these cases.
+  let savedAwsProfile: string | undefined;
   beforeEach(() => {
+    savedAwsProfile = process.env['AWS_PROFILE'];
+    delete process.env['AWS_PROFILE'];
     resetWorkloadIdentity();
     resetEmbedConfig();
   });
   afterEach(() => {
+    if (savedAwsProfile === undefined) delete process.env['AWS_PROFILE'];
+    else process.env['AWS_PROFILE'] = savedAwsProfile;
     resetWorkloadIdentity();
     resetEmbedConfig();
   });
