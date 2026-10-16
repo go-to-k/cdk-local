@@ -193,21 +193,6 @@ export function workloadStsClientConfig(args: {
 }
 
 /**
- * Resolve the workload identity to concrete credentials, for a site that must
- * hand a client explicit `credentials` (a `credentials` option fed today only
- * by `--profile`). `undefined` means "unchanged": the site keeps what it does
- * today.
- */
-export function workloadCredentialsOverride(
-  opts: { profile?: string | undefined } = {}
-): AwsCredentialIdentityProvider | undefined {
-  const rec = callerRecord();
-  if (!rec) return undefined;
-  if (opts.profile || process.env['AWS_PROFILE']) return undefined;
-  return workloadClientConfig(opts).credentials;
-}
-
-/**
  * Correct a container env that was built by copying the process's `AWS_*`
  * triple. Under caller mode after an assume, the copy holds the ROLE: restore
  * the caller's pre-assume triple, or STRIP the triple when the caller had no

@@ -11,7 +11,6 @@ import {
   recordAssumedRole,
   resetWorkloadIdentity,
   workloadClientConfig,
-  workloadCredentialsOverride,
   workloadStsClientConfig,
 } from '../../../src/utils/workload-identity.js';
 
@@ -71,7 +70,6 @@ describe('workload-identity', () => {
       recordAssumedRole(CALLER);
       expect(workloadClientConfig()).toEqual(buildProxyClientConfig());
       expect(workloadClientConfig()).not.toHaveProperty('credentials');
-      expect(workloadCredentialsOverride()).toBeUndefined();
     });
 
     it('workloadStsClientConfig equals buildStsClientConfig', () => {
@@ -101,7 +99,6 @@ describe('workload-identity', () => {
 
     it('without a recorded assume, everything is unchanged', async () => {
       expect(workloadClientConfig()).toEqual(buildProxyClientConfig());
-      expect(workloadCredentialsOverride()).toBeUndefined();
       const env: Record<string, string | undefined> = { AWS_ACCESS_KEY_ID: 'AKIAX' };
       expect(applyWorkloadEnvCredentials(env)).toBe('unchanged');
       expect(env).toEqual({ AWS_ACCESS_KEY_ID: 'AKIAX' });
@@ -115,8 +112,6 @@ describe('workload-identity', () => {
       const sts = workloadStsClientConfig({ region: 'eu-west-1' });
       expect(sts.region).toBe('eu-west-1');
       expect(await (sts.credentials as () => Promise<unknown>)()).toEqual(CALLER);
-      const override = workloadCredentialsOverride();
-      expect(await (override as () => Promise<unknown>)()).toEqual(CALLER);
     });
 
     it('omits sessionToken when the caller had none', async () => {
@@ -128,14 +123,12 @@ describe('workload-identity', () => {
     it('injects no credentials when a profile is passed', () => {
       recordAssumedRole(CALLER);
       expect(workloadClientConfig({ profile: 'dev' })).not.toHaveProperty('credentials');
-      expect(workloadCredentialsOverride({ profile: 'dev' })).toBeUndefined();
     });
 
     it('injects no credentials when AWS_PROFILE is set', () => {
       recordAssumedRole(CALLER);
       process.env['AWS_PROFILE'] = 'dev';
       expect(workloadClientConfig()).not.toHaveProperty('credentials');
-      expect(workloadCredentialsOverride()).toBeUndefined();
     });
 
     it('after recordAssumedRole(undefined), credentials is the caller-chain provider', () => {
@@ -143,7 +136,6 @@ describe('workload-identity', () => {
       const cfg = workloadClientConfig();
       expect(typeof cfg.credentials).toBe('function');
       expect(buildProxyClientConfig()).not.toHaveProperty('credentials');
-      expect(typeof workloadCredentialsOverride()).toBe('function');
     });
 
     it('applyWorkloadEnvCredentials restores the caller triple', () => {

@@ -113,7 +113,11 @@ export interface CdkLocalEmbedConfig {
    * Bound: the caller snapshot lives in the process that assumed. A child
    * process spawned after the assume (`cdkl studio`'s runners) inherits the
    * role's triple and no snapshot, so this mode does not reach it.
-   * See `src/utils/workload-identity.ts`. Default `'role'`.
+   *
+   * The host must mirror its `--profile` flag into `AWS_PROFILE`: several
+   * workload sites receive no `profile` argument and read the selection from
+   * the environment, so an unmirrored flag resolves the caller's pre-assume
+   * identity there instead of the profile. See `src/utils/workload-identity.ts`. Default `'role'`.
    */
   workloadIdentity?: 'role' | 'caller';
 }
