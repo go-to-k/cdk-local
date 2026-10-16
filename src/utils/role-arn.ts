@@ -444,7 +444,13 @@ export async function applyRoleArnIfSet(opts: {
   // Snapshot the caller's triple BEFORE the overwrite below makes it
   // unrecoverable. Only the first assume records it (the second is refused
   // above in caller mode, and harmless in the default mode).
-  if (!assumedRoleRecorded()) recordAssumedRole(readEnvCallerCredentials());
+  if (!assumedRoleRecorded()) {
+    recordAssumedRole(readEnvCallerCredentials(), {
+      accessKeyId: AccessKeyId,
+      secretAccessKey: SecretAccessKey,
+      sessionToken: SessionToken,
+    });
+  }
   process.env['AWS_ACCESS_KEY_ID'] = AccessKeyId;
   process.env['AWS_SECRET_ACCESS_KEY'] = SecretAccessKey;
   process.env['AWS_SESSION_TOKEN'] = SessionToken;

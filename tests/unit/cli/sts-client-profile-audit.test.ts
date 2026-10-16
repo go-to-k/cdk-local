@@ -126,7 +126,15 @@ function findOffenders(filePath: string): { line: number; text: string }[] {
     }
     // `workloadStsClientConfig(` is the workload-input twin (src/utils/workload-identity.ts):
     // it forwards `profile` the same way and only differs under `workloadIdentity: 'caller'`.
-    if (args.includes('buildStsClientConfig(') || args.includes('workloadStsClientConfig(')) continue;
+    // `deployAccountStsClientConfig(` is the `${AWS::AccountId}` twin: it forwards `profile`
+    // identically in role mode and drops it only to run as the recorded role in caller mode.
+    if (
+      args.includes('buildStsClientConfig(') ||
+      args.includes('workloadStsClientConfig(') ||
+      args.includes('deployAccountStsClientConfig(')
+    ) {
+      continue;
+    }
     if (/^\s*\{\s*profile\s*,?\s*\}\s*$/s.test(args)) continue;
     // Opt-out marker on the contiguous comment block directly above.
     if (hasOptOutMarker(lines, lineNo, 'sts-audit: ignore')) continue;

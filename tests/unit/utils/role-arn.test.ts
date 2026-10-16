@@ -51,6 +51,7 @@ import {
   SECOND_ASSUME_MESSAGE,
   assumedRoleRecorded,
   recordAssumedRole,
+  deployAccountStsClientConfig,
   resetWorkloadIdentity,
   workloadClientConfig,
 } from '../../../src/utils/workload-identity.js';
@@ -646,6 +647,20 @@ describe('applyRoleArnIfSet — workload identity record (go-to-k/cdk-local#783)
       accessKeyId: 'AKIACALLER',
       secretAccessKey: 'callerSecret',
       sessionToken: 'callerToken',
+    });
+  });
+
+  it('records the role triple it received from STS (for the ${AWS::AccountId} lookup)', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIACALLER';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'callerSecret';
+    await applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined });
+    const cfg = deployAccountStsClientConfig({ region: 'us-east-1', profile: 'dev' });
+    expect(cfg).not.toHaveProperty('profile');
+    expect(await (cfg.credentials as () => Promise<unknown>)()).toEqual({
+      accessKeyId: 'AKIATEST',
+      secretAccessKey: 'secretTEST',
+      sessionToken: 'tokTEST',
     });
   });
 

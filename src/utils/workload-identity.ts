@@ -41,6 +41,22 @@ export interface CallerCredentials {
 interface AssumedRoleRecord {
   /** The pre-assume static triple, or `undefined` when the env carried none. */
   caller: CallerCredentials | undefined;
+  /**
+   * The assumed role's own credentials, when the recorder supplied them. Read
+   * only by {@link deployAccountStsClientConfig}: `${AWS::AccountId}` names the
+   * DEPLOY account, so its lookup runs as the role even in caller mode.
+   */
+  role: CallerCredentials | undefined;
+}
+
+function copyCredentials(c: CallerCredentials | undefined): CallerCredentials | undefined {
+  return c
+    ? {
+        accessKeyId: c.accessKeyId,
+        secretAccessKey: c.secretAccessKey,
+        ...(c.sessionToken ? { sessionToken: c.sessionToken } : {}),
+      }
+    : undefined;
 }
 
 let record: AssumedRoleRecord | undefined;
@@ -62,20 +78,19 @@ export const SECOND_ASSUME_MESSAGE =
  * overwrites `AWS_*` — cdk-local's `applyRoleArnIfSet`, or a host's own
  * equivalent — BEFORE it overwrites them. Write-once: a second call throws.
  *
- * The triple is COPIED, so a holder of the original object cannot rewrite the
- * identity every caller-mode client runs as.
+ * `role` is the assumed role's own credentials. Supply it so the
+ * `${AWS::AccountId}` lookup resolves the deploy account; without it that
+ * lookup falls back to the default chain.
+ *
+ * Both triples are COPIED, so a holder of the original object cannot rewrite
+ * the identity a caller-mode client runs as.
  */
-export function recordAssumedRole(caller: CallerCredentials | undefined): void {
+export function recordAssumedRole(
+  caller: CallerCredentials | undefined,
+  role?: CallerCredentials
+): void {
   if (record !== undefined) throw new Error(SECOND_ASSUME_MESSAGE);
-  record = {
-    caller: caller
-      ? {
-          accessKeyId: caller.accessKeyId,
-          secretAccessKey: caller.secretAccessKey,
-          ...(caller.sessionToken ? { sessionToken: caller.sessionToken } : {}),
-        }
-      : undefined,
-  };
+  record = { caller: copyCredentials(caller), role: copyCredentials(role) };
 }
 
 /** Whether {@link recordAssumedRole} has run in this process. */
@@ -190,6 +205,34 @@ export function workloadStsClientConfig(args: {
     ...(args.region && { region: args.region }),
     ...(args.profile && { profile: args.profile }),
   };
+}
+
+/**
+ * The STS client config for a `${AWS::AccountId}` lookup. The pseudo
+ * parameter names the account the stack was DEPLOYED to, which is the
+ * `--role-arn` role's account, so under caller mode the lookup runs as the
+ * recorded role: a cross-account deploy role then yields the account where
+ * the stack's resources and images actually live. Outside caller mode, or when
+ * the recorder supplied no role credentials, it equals `buildStsClientConfig`.
+ */
+export function deployAccountStsClientConfig(args: {
+  region?: string | undefined;
+  profile?: string | undefined;
+}): { region?: string; profile?: string } & AwsProxyClientConfig {
+  const role = callerRecord()?.role;
+  if (!role) {
+    return {
+      ...buildProxyClientConfig({ profile: args.profile }),
+      ...(args.region && { region: args.region }),
+      ...(args.profile && { profile: args.profile }),
+    };
+  }
+  const credentials: AwsCredentialIdentityProvider = async () => ({
+    accessKeyId: role.accessKeyId,
+    secretAccessKey: role.secretAccessKey,
+    ...(role.sessionToken ? { sessionToken: role.sessionToken } : {}),
+  });
+  return { ...buildProxyClientConfig(), ...(args.region && { region: args.region }), credentials };
 }
 
 /**

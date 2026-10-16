@@ -961,6 +961,7 @@ export {
   resetWorkloadIdentity,
   workloadClientConfig,
   workloadStsClientConfig,
+  deployAccountStsClientConfig,
   SECOND_ASSUME_MESSAGE,
   type CallerCredentials,
 } from './utils/workload-identity.js';

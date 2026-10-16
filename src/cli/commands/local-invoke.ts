@@ -12,7 +12,7 @@ import {
 } from '../options.js';
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import {
-  workloadStsClientConfig,
+  deployAccountStsClientConfig,
   applyWorkloadEnvCredentials,
   warnWorkloadCredentialsStripped,
 } from '../../utils/workload-identity.js';
@@ -800,7 +800,9 @@ export async function resolvePseudoParametersForInvoke(
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
     // Thread `--profile` so the resolved account is the profile's account,
     // not whatever the default credential chain points at (issue #245).
-    const sts = new STSClient(workloadStsClientConfig({ region, profile: options.profile }));
+    // Under `workloadIdentity: 'caller'` the lookup runs as the `--role-arn`
+    // role: `${AWS::AccountId}` is the DEPLOY account, not the caller's.
+    const sts = new STSClient(deployAccountStsClientConfig({ region, profile: options.profile }));
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;

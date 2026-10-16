@@ -20,7 +20,7 @@ import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { resolveProfileCredentials } from './local-start-api.js';
-import { workloadStsClientConfig } from '../../utils/workload-identity.js';
+import { deployAccountStsClientConfig } from '../../utils/workload-identity.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -546,10 +546,10 @@ async function resolvePlaceholderAccount(
 ): Promise<string> {
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  // Thread `--profile` so the resolved account is the profile's account
-  // (matching the inline same-stack IAM role resolution under
-  // `--from-cfn-stack --profile <p>`) (issue #245).
-  const sts = new STSClient(workloadStsClientConfig({ region, profile }));
+  // The placeholder task-role ARN lives in the DEPLOY account, so under
+  // `workloadIdentity: 'caller'` the lookup runs as the `--role-arn` role, not
+  // the caller; otherwise `--profile` is threaded (issue #245).
+  const sts = new STSClient(deployAccountStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
@@ -736,10 +736,12 @@ async function resolveCallerAccountId(
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   // Thread `--profile` so the resolved account is the profile's account
   // (e.g. the deployed account behind `--from-cfn-stack`), not whatever
-  // the default credential chain points at. Without this, the
+  // the default credential chain points at. Under `workloadIdentity: 'caller'`
+  // with a `--role-arn`, the lookup runs as the role (the DEPLOY account),
+  // not the caller. Without this, the
   // `${AWS::AccountId}` substitution that builds same-stack ECR image
   // URIs picks the wrong account and the subsequent `docker pull` 404s.
-  const sts = new STSClient(workloadStsClientConfig({ region, profile }));
+  const sts = new STSClient(deployAccountStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
