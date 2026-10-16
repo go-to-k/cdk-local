@@ -122,6 +122,7 @@ import { singleFlight } from '../../utils/single-flight.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
   workloadStsClientConfig,
+  deployAccountStsClientConfig,
   applyWorkloadEnvCredentials,
   warnWorkloadCredentialsStripped,
 } from '../../utils/workload-identity.js';
@@ -1503,13 +1504,13 @@ export async function buildAgentCoreImageContext(
   return { context, loaded: loaded ?? undefined };
 }
 
-/** STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter (threads `--profile`). */
+/** STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter (threads `--profile`; runs as the `--role-arn` role under caller mode, the DEPLOY account). */
 async function resolveCallerAccountId(
   region: string | undefined,
   profile: string | undefined
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient(workloadStsClientConfig({ region, profile }));
+  const sts = new STSClient(deployAccountStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;

@@ -34,6 +34,21 @@ const SRC = join(repoRoot, 'src');
 
 const CLIENT_NAME = /^[A-Z][A-Za-z0-9_$]*Client$/;
 const WORKLOAD_SEAMS = ['workloadClientConfig(', 'workloadStsClientConfig('] as const;
+/**
+ * The `${AWS::AccountId}` / placeholder-account lookups spread this instead:
+ * the pseudo parameter names the DEPLOY account, so under caller mode the
+ * lookup runs as the `--role-arn` role. It is its own passing class, counted
+ * exactly per file (see EXPECTED_DEPLOY_ACCOUNT_SITES).
+ */
+const DEPLOY_ACCOUNT_SEAM = 'deployAccountStsClientConfig(';
+const EXPECTED_DEPLOY_ACCOUNT_SITES: Record<string, number> = {
+  'src/cli/commands/ecs-service-emulator.ts': 2,
+  'src/cli/commands/local-run-task.ts': 2,
+  'src/cli/commands/local-invoke.ts': 1,
+  'src/cli/commands/local-invoke-agentcore.ts': 1,
+  'src/cli/commands/local-start-api.ts': 1,
+};
+const WORKLOAD_FLOOR = 24;
 
 type SiteClass = 'role' | 'profile-resolution' | 'first-assume-hop';
 
@@ -69,6 +84,7 @@ interface Site {
   readonly file: string;
   readonly line: number;
   readonly workload: boolean;
+  readonly deployAccount: boolean;
 }
 
 function sitesIn(abs: string): Site[] {
@@ -85,18 +101,26 @@ function sitesIn(abs: string): Site[] {
       file,
       line: code.slice(0, m.index!).split('\n').length,
       workload: args !== null && WORKLOAD_SEAMS.some((s) => args.includes(s)),
+      deployAccount: args !== null && args.includes(DEPLOY_ACCOUNT_SEAM),
     });
   }
   return sites;
 }
 
 const allSites = collectTsFiles(SRC).flatMap(sitesIn);
-const nonWorkload = allSites.filter((s) => !s.workload);
+const deployAccountSites = allSites.filter((s) => s.deployAccount);
+const nonWorkload = allSites.filter((s) => !s.workload && !s.deployAccount);
 
 describe('workload identity site fence (#783)', () => {
   it('finds the construction sites (parser floor)', () => {
     expect(allSites.length).toBeGreaterThanOrEqual(25);
-    expect(allSites.filter((s) => s.workload).length).toBeGreaterThanOrEqual(20);
+    expect(allSites.filter((s) => s.workload).length).toBeGreaterThanOrEqual(WORKLOAD_FLOOR);
+  });
+
+  it('exactly the account-id lookups use deployAccountStsClientConfig', () => {
+    const counts: Record<string, number> = {};
+    for (const s of deployAccountSites) counts[s.file] = (counts[s.file] ?? 0) + 1;
+    expect(counts).toEqual(EXPECTED_DEPLOY_ACCOUNT_SITES);
   });
 
   it('every non-workload site is allowlisted, and the allowlist is exact', () => {
@@ -108,7 +132,7 @@ describe('workload identity site fence (#783)', () => {
       const where = sites.map((s) => `${s.file}:${s.line}`).join(', ');
       if (!entry) {
         problems.push(
-          `${where}: client does not spread workloadClientConfig( / workloadStsClientConfig( and is not allowlisted`
+          `${where}: client does not spread workloadClientConfig( / workloadStsClientConfig( / deployAccountStsClientConfig( and is not allowlisted`
         );
       } else if (sites.length > entry.count) {
         problems.push(

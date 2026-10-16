@@ -175,7 +175,9 @@ assumed a role: `'role'` runs everything as the assumed role (standalone
 bundle and resolves the workload's inputs (the container's credential
 triple, secrets, `{{resolve:...}}`, `--from-cfn-stack`, literal layer ARNs,
 the CloudFront engine's deployed reads) as the identity the process had
-before the assume. In caller mode the `--ecr-role-arn` / `--layer-role-arn` /
+before the assume. The exception is `${AWS::AccountId}`: it names the deploy
+account, so it resolves as the `--role-arn` role even in caller mode. In
+caller mode the `--ecr-role-arn` / `--layer-role-arn` /
 `--assume-role` hops are signed by the caller, so a target role's trust
 policy must trust the caller, not only the deploy role. See
 [Caller-identity mode](#caller-identity-mode-workloadidentity-caller).
@@ -219,8 +221,18 @@ must do the same, BEFORE it overwrites `AWS_*`:
 ```typescript
 import { readEnvCallerCredentials, recordAssumedRole } from 'cdk-local/internal';
 
-recordAssumedRole(readEnvCallerCredentials()); // then overwrite AWS_* with the role
+// `role` is the credentials returned by the host's own AssumeRole call.
+recordAssumedRole(readEnvCallerCredentials(), role); // then overwrite AWS_* with the role
 ```
+
+The second argument is the assumed role's own `{ accessKeyId, secretAccessKey,
+sessionToken }`. `${AWS::AccountId}` is the one input that does NOT follow the
+caller: it resolves to the deploy account (the role's), so a cross-account
+deploy role yields the account where the stack lives. Without the second
+argument the lookup falls back to `buildStsClientConfig`: the selected profile's
+account when a profile is set (the caller's account, the wrong one for a
+cross-account role), else the default chain (the env, i.e. the role). So a host
+that records its own assume should always pass the role triple.
 
 The record is write-once per process (a second call throws), and it lives in
 the process that assumed: a child process spawned afterwards inherits the

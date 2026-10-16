@@ -105,10 +105,19 @@ export interface CdkLocalEmbedConfig {
    * for what it is for — synth, the ECR pull, a fromS3 code bundle — and
    * resolves the workload's inputs as the identity the process had BEFORE
    * the assume: the credential triple handed to a container, task secrets,
-   * `{{resolve:...}}`, `${AWS::AccountId}`, `--from-cfn-stack`, the
+   * `{{resolve:...}}`, `--from-cfn-stack`, the
    * `--assume-role` / `--assume-task-role` / `--ecr-role-arn` /
    * `--layer-role-arn` hops, literal layer ARNs, and the CloudFront engine's
    * deployed reads. For a host whose `--role-arn` is a DEPLOY identity.
+   *
+   * The exception is `${AWS::AccountId}` (and the placeholder task-role
+   * account): it names the DEPLOY account, so it resolves as the `--role-arn`
+   * role even in caller mode, and cross-account values point where the stack
+   * lives. Without the second argument of `recordAssumedRole` the
+   * lookup falls back to `buildStsClientConfig`: the selected PROFILE's account
+   * when a profile is set (the caller's account, the wrong one for a
+   * cross-account role), else the default chain (the env, i.e. the role). So a
+   * host that records its own assume should always pass the role triple.
    *
    * In caller mode the `--ecr-role-arn` / `--layer-role-arn` / `--assume-role`
    * hops are SIGNED by the caller, so a target role's trust policy must trust

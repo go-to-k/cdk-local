@@ -17,6 +17,7 @@ import {
   warnWorkloadCredentialsStripped,
   workloadClientConfig,
   workloadStsClientConfig,
+  deployAccountStsClientConfig,
 } from '../../../src/utils/workload-identity.js';
 
 const ENV_KEYS = [
@@ -29,6 +30,12 @@ const ENV_KEYS = [
   'HTTP_PROXY',
   'http_proxy',
 ] as const;
+
+const ROLE = {
+  accessKeyId: 'AKIAROLE',
+  secretAccessKey: 'roleSecret',
+  sessionToken: 'roleToken',
+};
 
 const CALLER = {
   accessKeyId: 'AKIACALLER',
@@ -281,6 +288,88 @@ describe('workload-identity', () => {
       input.secretAccessKey = 'mutated';
       const creds = await (workloadClientConfig().credentials as () => Promise<unknown>)();
       expect(creds).toEqual(CALLER);
+    });
+  });
+
+  describe('deployAccountStsClientConfig (${AWS::AccountId} is the deploy account)', () => {
+    const creds = (cfg: { credentials?: unknown }) =>
+      (cfg.credentials as () => Promise<unknown>)();
+
+    it('role mode equals buildStsClientConfig, with and without profile', () => {
+      expect(deployAccountStsClientConfig({ region: 'us-east-1', profile: 'p' })).toEqual(
+        buildStsClientConfig({ region: 'us-east-1', profile: 'p' })
+      );
+      expect(deployAccountStsClientConfig({})).toEqual(buildStsClientConfig({}));
+    });
+
+    it('role mode equals buildStsClientConfig with a proxy env, even after a recorded role', () => {
+      process.env['HTTPS_PROXY'] = 'http://proxy.example:3128';
+      recordAssumedRole(CALLER, ROLE);
+      const d = deployAccountStsClientConfig({ region: 'us-east-1' });
+      const b = buildStsClientConfig({ region: 'us-east-1' });
+      expect(Object.keys(d).sort()).toEqual(Object.keys(b).sort());
+      expect(d.requestHandler).toBeDefined();
+    });
+
+    it('caller mode without a recorded assume equals buildStsClientConfig', () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      expect(deployAccountStsClientConfig({ profile: 'p' })).toEqual(
+        buildStsClientConfig({ profile: 'p' })
+      );
+    });
+
+    it('caller mode with a recorded role resolves the ROLE triple and keeps the profile for region', async () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(CALLER, ROLE);
+      const cfg = deployAccountStsClientConfig({ region: 'eu-west-1', profile: 'dev' });
+      expect(cfg.region).toBe('eu-west-1');
+      expect(cfg.profile).toBe('dev');
+      expect(await creds(cfg)).toEqual(ROLE);
+    });
+
+    it('caller mode with a proxy env keeps requestHandler and resolves the ROLE triple', async () => {
+      process.env['HTTPS_PROXY'] = 'http://proxy.example:3128';
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(CALLER, ROLE);
+      const cfg = deployAccountStsClientConfig({ region: 'us-east-1', profile: 'dev' });
+      expect(cfg.requestHandler).toBeDefined();
+      expect(cfg.profile).toBe('dev');
+      expect(await creds(cfg)).toEqual(ROLE);
+    });
+
+    it('caller mode resolves the role even when AWS_PROFILE is set', async () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(CALLER, ROLE);
+      process.env['AWS_PROFILE'] = 'dev';
+      const cfg = deployAccountStsClientConfig({});
+      expect(cfg).not.toHaveProperty('profile');
+      expect(await creds(cfg)).toEqual(ROLE);
+    });
+
+    it('omits sessionToken when the role had none', async () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(CALLER, { accessKeyId: 'AKIAR', secretAccessKey: 'rs' });
+      expect(await creds(deployAccountStsClientConfig({}))).toEqual({
+        accessKeyId: 'AKIAR',
+        secretAccessKey: 'rs',
+      });
+    });
+
+    it('caller mode after recordAssumedRole(caller) with no role falls back to buildStsClientConfig', () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      recordAssumedRole(CALLER);
+      expect(deployAccountStsClientConfig({ region: 'us-east-1', profile: 'p' })).toEqual(
+        buildStsClientConfig({ region: 'us-east-1', profile: 'p' })
+      );
+    });
+
+    it('recordAssumedRole copies the role triple', async () => {
+      setEmbedConfig({ workloadIdentity: 'caller' });
+      const role = { ...ROLE };
+      recordAssumedRole(CALLER, role);
+      role.accessKeyId = 'AKIAMUTATED';
+      role.secretAccessKey = 'mutated';
+      expect(await creds(deployAccountStsClientConfig({}))).toEqual(ROLE);
     });
   });
 
