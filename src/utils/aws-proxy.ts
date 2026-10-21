@@ -30,8 +30,9 @@ export { isLoopbackHost };
  * `buildProxyClientConfig()` is the single seam: it returns an EMPTY config
  * when no proxy environment variable is set (zero behavior change for
  * existing users) or none that is set names a usable scheme, and a
- * `{ requestHandler, credentials }` fragment otherwise. Every AWS SDK client construction in cdk-local spreads it (directly, or
- * via `buildStsClientConfig` for the STS sites);
+ * `{ requestHandler, credentials }` fragment otherwise. Every AWS SDK client
+ * construction in cdk-local spreads it (directly, or via
+ * `buildStsClientConfig` for the STS sites);
  * `tests/unit/utils/aws-proxy-client-audit.test.ts` fences the sweep so a new
  * construction site cannot silently skip it.
  *
@@ -96,10 +97,10 @@ function isSpeakableProxyEnvValue(value: string): boolean {
 }
 
 /**
- * The proxy variables that are SET, when every one of them names a scheme
- * these agents cannot speak — the state in which every request, whatever its
- * target, resolves to a DIRECT connection (issue go-to-k/cdk-local#674).
- * `undefined` otherwise: nothing set, or at least one usable value.
+ * Whether at least one proxy variable is SET and every one of them names a
+ * scheme these agents cannot speak — the state in which every request,
+ * whatever its target, resolves to a DIRECT connection (issue
+ * go-to-k/cdk-local#674).
  *
  * Deliberately an OVER-approximation of "something may be proxied": it asks
  * whether ANY set variable is usable, not which one wins for a given scheme,
@@ -110,10 +111,12 @@ function isSpeakableProxyEnvValue(value: string): boolean {
  * proxy a request actually needed. It also leaves the precedence rules where
  * they live, in `proxy-from-env`, rather than spelling them a second time.
  */
-function unspeakableProxyEnvValues(): string[] | undefined {
+/** One AWS endpoint per scheme the SDK seam issues; see the build-time warn. */
+const AWS_ENDPOINT_PROBES = ['https://sts.amazonaws.com', 'http://sts.amazonaws.com'] as const;
+
+function everySetProxyEnvValueIsUnspeakable(): boolean {
   const set = PROXY_ENV_VARIABLES.map((key) => process.env[key] ?? '').filter((v) => v !== '');
-  if (set.length === 0 || set.some(isSpeakableProxyEnvValue)) return undefined;
-  return set;
+  return set.length > 0 && !set.some(isSpeakableProxyEnvValue);
 }
 
 /**
@@ -448,11 +451,15 @@ export function buildProxyClientConfig(
   opts: { profile?: string | undefined } = {}
 ): AwsProxyClientConfig {
   if (!isProxyEnvConfigured()) return {};
-  const unspeakable = unspeakableProxyEnvValues();
-  if (unspeakable) {
-    // Trimmed like `resolveProxyForTarget`'s value, so both sites name the
-    // same scheme and share one warn-once memo entry.
-    for (const value of unspeakable) warnUnspeakableProxy(value.trim());
+  if (everySetProxyEnvValueIsUnspeakable()) {
+    // Warn only for what a request would actually SELECT, by asking the ONE
+    // routing decision about a representative AWS endpoint per scheme: it
+    // applies the shadowing (lowercase over uppercase) and the `NO_PROXY`
+    // exemption itself, so `NO_PROXY='*'` or `.amazonaws.com` stays silent
+    // exactly as request-time routing would, and it shares the warn-once
+    // memo. Every value it can select here is unspeakable, so it
+    // always answers DIRECT; the answer is discarded.
+    for (const probe of AWS_ENDPOINT_PROBES) resolveProxyForTarget(probe);
     return {};
   }
   const profile = opts.profile;

@@ -114,8 +114,8 @@ stripped-ANSI pipe; `resolveConfiguredLogLevel` + `CdklIoHost` honor
 - `buildProxyClientConfig()` — EVERY AWS SDK client construction in `src/**`
   spreads this fragment, directly or via `buildStsClientConfig`. It is `{}` with
   no proxy variable set, AND when every set one names an unspeakable scheme
-  (`ALL_PROXY=socks5://` alone) — warning once per scheme there, since no request
-  reaches `resolveProxyForTarget` to do it (#674); otherwise a routing `requestHandler` plus a
+  (`ALL_PROXY=socks5://` alone) — warning there for what an AWS request would
+  select, since none reaches `resolveProxyForTarget` to do it (#674); otherwise a routing `requestHandler` plus a
   default-chain `credentials` provider whose `clientConfig` threads the handler
   into the SSO / SSOOIDC hops the service client's own handler never reaches.
 - `proxyAwareFetch(url)` — the non-SDK seam (the presigned layer-ZIP download,
@@ -142,7 +142,8 @@ stripped-ANSI pipe; `resolveConfiguredLogLevel` + `CdklIoHost` honor
   direct egress is broken with nothing left to configure. An UNPARSABLE proxy
   value still THROWS.
 - `isLoopbackHost` (in `loopback-host.ts`, the ONE module behind studio-proxy's
-  narrower `isLoopbackHostname` / `isWildcardHostname` too, #666) normalises first: `URL.hostname` KEEPS an IPv6 literal's
+  narrower `isLoopbackHostname` / `isWildcardHostname` too, #666) normalises
+  first: `URL.hostname` KEEPS an IPv6 literal's
   brackets (`http://[::1]/` -> `"[::1]"`), so bare `'::1'` comparisons are dead
   code; it treats the wildcard address as this machine. A target the proxy
   environment does not cover — a `NO_PROXY` match or ANY loopback host — goes back

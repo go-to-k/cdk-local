@@ -790,6 +790,32 @@ describe('aws-proxy (issue #634)', () => {
       });
 
       it.each([
+        ['NO_PROXY=* (proxying disabled outright)', '*'],
+        ['a NO_PROXY suffix covering every AWS endpoint', '.amazonaws.com'],
+      ])('still returns {} but stays SILENT under %s, as request-time routing would', (_l, noProxy) => {
+        process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+        process.env['NO_PROXY'] = noProxy;
+        let config: unknown;
+        const lines = captureWarns(() => {
+          config = buildProxyClientConfig();
+        });
+        expect(config).toEqual({});
+        expect(lines).toEqual([]);
+      });
+
+      it('names only the value proxy-from-env would SELECT, not a shadowed uppercase twin', () => {
+        process.env['all_proxy'] = 'socks5://127.0.0.1:1080';
+        process.env['ALL_PROXY'] = 'socks4://127.0.0.1:1081';
+        let config: unknown;
+        const lines = captureWarns(() => {
+          config = buildProxyClientConfig();
+        });
+        expect(config).toEqual({});
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('"socks5"');
+      });
+
+      it.each([
         [
           'a speakable HTTP_PROXY beside a SOCKS HTTPS_PROXY',
           { HTTPS_PROXY: 'socks5://127.0.0.1:1080', HTTP_PROXY: 'http://proxy.internal:3128' },
