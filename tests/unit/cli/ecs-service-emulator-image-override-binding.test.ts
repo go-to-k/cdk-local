@@ -398,3 +398,40 @@ describe('addImageOverrideOptions wiring (issue #238)', () => {
     expect(block![0]).toMatch(/addImageOverrideOptions\(cmd\)/);
   });
 });
+
+/**
+ * Issue #659 site-level binding. `canonicalizeImageOverrideKeys` (unit-covered
+ * in the engine suite) only fixes the documented `AppService=<dockerfile>` form
+ * if the boot-time helper feeds it the pinned entries' aliases AND hands its
+ * OUTPUT — not the raw parse — to both the resolver and the orphan check. The
+ * `--strict-overrides` guard must also run inside that helper, before any
+ * replica boots. The end-to-end proof is the
+ * `local-start-service-image-override` integ fixture.
+ */
+describe('ecs-service-emulator --image-override key canonicalization (issue #659)', () => {
+  const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+  const start = source.indexOf('async function resolveAndBuildImageOverrides(');
+  const helper = source.slice(start, source.indexOf('\n}\n', start));
+
+  it('canonicalizes the parsed flags against the pinned entries' aliases', () => {
+    expect(start, 'resolveAndBuildImageOverrides missing').toBeGreaterThan(-1);
+    expect(helper).toMatch(/pinnedAliases\.set\(entry\.target, entry\.aliases\)/);
+    expect(helper).toMatch(
+      /const rawFlags = canonicalizeImageOverrideKeys\(\s*parseImageOverrideFlags\(/
+    );
+    // No second, un-canonicalized parse that a later call could pick up.
+    expect(helper.match(/parseImageOverrideFlags\(/g)).toHaveLength(1);
+    expect(helper).toMatch(/resolveImageOverrides\(\{\s*rawFlags,/);
+    expect(helper).toMatch(/enforceImageOverrideOrphans\(rawFlags, overrides\)/);
+  });
+
+  it('enforces --strict-overrides before the override builds (and so before any boot)', () => {
+    const strictIdx = helper.indexOf('enforceStrictOverrides(');
+    const buildIdx = helper.indexOf('runImageOverrideBuilds(');
+    expect(strictIdx, 'pre-boot enforceStrictOverrides missing').toBeGreaterThan(-1);
+    expect(strictIdx).toBeLessThan(buildIdx);
+    expect(helper.slice(strictIdx, buildIdx)).toMatch(
+      /pinnedTargets\.filter\(\(t\) => !overrides\.has\(t\)\)/
+    );
+  });
+});

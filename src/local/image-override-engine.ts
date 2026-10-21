@@ -456,6 +456,83 @@ export function parseImageOverrideFlags(input: {
 }
 
 /**
+ * Issue #659 — rewrite the `<service>` keys of the explicit
+ * `--image-override <service>=<dockerfile>` mappings and of the per-service
+ * build-input flags from a user-facing ALIAS to the pinned TARGET STRING the
+ * rest of the engine is keyed by.
+ *
+ * The pinned set holds the target string the boot resolved (the user's own
+ * positional argument for `start-service` / `run-task`, `Stack:LogicalId` for
+ * each service `start-alb` expands from the ALB), while the documented key is
+ * the short service name (`--image-override AppService=./Dockerfile`). Without
+ * this step such a mapping matched no pinned target and was dropped with a
+ * warning, so the deployed-registry image was pulled instead.
+ *
+ * `pinnedAliases` maps each pinned target to the other names it answers to.
+ * A key that IS a pinned target is kept as-is (exact match wins over any
+ * alias); a key matching exactly one target's alias is rewritten to it; a key
+ * matching NO alias is kept unchanged, so Stage 1's "not in the pinned-target
+ * set" warning and {@link enforceImageOverrideOrphans} still report it. Throws
+ * {@link ImageOverrideError} when a key matches the aliases of more than one
+ * pinned target, or when two keys resolve to the same target within one
+ * bucket — either would otherwise silently drop a mapping. Pure; returns a new
+ * {@link RawImageOverrideFlags} sharing the picker paths and globals.
+ */
+export function canonicalizeImageOverrideKeys(
+  rawFlags: RawImageOverrideFlags,
+  pinnedAliases: ReadonlyMap<string, ReadonlyArray<string>>
+): RawImageOverrideFlags {
+  const targetsByAlias = new Map<string, Set<string>>();
+  for (const [target, aliases] of pinnedAliases) {
+    for (const alias of aliases) {
+      let set = targetsByAlias.get(alias);
+      if (!set) {
+        set = new Set();
+        targetsByAlias.set(alias, set);
+      }
+      set.add(target);
+    }
+  }
+  const logger = getLogger();
+  const canonical = (key: string, flag: string): string => {
+    if (pinnedAliases.has(key)) return key;
+    const matches = targetsByAlias.get(key);
+    if (!matches) return key;
+    if (matches.size > 1) {
+      throw new ImageOverrideError(
+        `${flag} key '${key}' matches more than one pinned target ` +
+          `(${[...matches].join(', ')}). Name the target in full instead.`
+      );
+    }
+    const target = [...matches][0] as string;
+    logger.debug(`${flag} key '${key}' resolved to pinned target '${target}'.`);
+    return target;
+  };
+  const rekey = <V>(bucket: Map<string, V>, flag: string): Map<string, V> => {
+    const out = new Map<string, V>();
+    const rawKeyByTarget = new Map<string, string>();
+    for (const [key, value] of bucket) {
+      const target = canonical(key, flag);
+      const earlier = rawKeyByTarget.get(target);
+      if (earlier !== undefined) {
+        throw new ImageOverrideError(
+          `${flag} keys '${earlier}' and '${key}' both name the pinned target '${target}'. ` +
+            'Name each service target at most once.'
+        );
+      }
+      rawKeyByTarget.set(target, key);
+      out.set(target, value);
+    }
+    return out;
+  };
+  return {
+    ...rawFlags,
+    explicit: rekey(rawFlags.explicit, '--image-override'),
+    perService: rekey(rawFlags.perService, 'Per-service image-override flag'),
+  };
+}
+
+/**
  * Resolve `--image-override` flag inputs (raw) + a list of pinned
  * service targets into the final {@link ImageOverrideMap}. Walks four
  * stages:

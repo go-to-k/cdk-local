@@ -42,6 +42,7 @@ function task(containers: ResolvedEcsContainer[]): ResolvedEcsTask {
     stack: { stackName: 'MyStack' },
     taskDefinitionLogicalId: 'MyTaskDef',
     family: 'fam',
+    resource: { Type: 'AWS::ECS::TaskDefinition' },
     containers,
   } as unknown as ResolvedEcsTask;
 }
@@ -152,5 +153,55 @@ describe('resolveRunTaskImageOverride (issue #388)', () => {
         options: { imageBuildArg: ['MyStack/MyTaskDef:K=V'] },
       })
     ).rejects.toThrow(/orphaned/);
+  });
+
+  // Issue #659 — the explicit key need not be the exact target string typed on
+  // the command line: the task definition's logical id (bare or stack-qualified)
+  // and its construct id resolve to it, for the override AND the per-service
+  // build inputs. The real `canonicalizeImageOverrideKeys` runs here.
+  it.each([
+    ['the bare logical id', 'MyTaskDef'],
+    ['the stack-qualified logical id', 'MyStack:MyTaskDef'],
+    ['the construct id from aws:cdk:path', 'NginxTask'],
+  ])('resolves an explicit key naming %s to the target', async (_label, key) => {
+    hoisted.parseImageOverrideFlags.mockReturnValue(
+      rawFlags({
+        explicit: new Map([[key, './Dockerfile']]),
+        perService: new Map([[key, { buildArgs: new Map([['K', 'V']]), buildSecrets: new Map() }]]),
+      })
+    );
+    const t = task([container('app', 'ecr')]);
+    (t as unknown as { resource: unknown }).resource = {
+      Type: 'AWS::ECS::TaskDefinition',
+      Metadata: { 'aws:cdk:path': 'MyStack/NginxTask/Resource' },
+    };
+    await resolveRunTaskImageOverride({
+      task: t,
+      target: 'MyStack/NginxTask',
+      options: { interactiveOverrides: false },
+    });
+    const passed = hoisted.resolveImageOverrides.mock.calls[0]![0] as {
+      rawFlags: { explicit: Map<string, string>; perService: Map<string, unknown> };
+    };
+    expect([...passed.rawFlags.explicit.keys()]).toEqual(['MyStack/NginxTask']);
+    expect([...passed.rawFlags.perService.keys()]).toEqual(['MyStack/NginxTask']);
+    // The orphan check sees the SAME rewritten flags, so the per-service
+    // overlay is not reported as targeting an uncovered service.
+    expect(hoisted.enforceImageOverrideOrphans.mock.calls[0]![0]).toBe(passed.rawFlags);
+  });
+
+  it('leaves a key matching nothing unchanged (Stage 1 still warns about it)', async () => {
+    hoisted.parseImageOverrideFlags.mockReturnValue(
+      rawFlags({ explicit: new Map([['OtherTask', './Dockerfile']]) })
+    );
+    await resolveRunTaskImageOverride({
+      task: task([container('app', 'ecr')]),
+      target: 'MyStack/NginxTask',
+      options: { interactiveOverrides: false },
+    });
+    const passed = hoisted.resolveImageOverrides.mock.calls[0]![0] as {
+      rawFlags: { explicit: Map<string, string> };
+    };
+    expect([...passed.rawFlags.explicit.keys()]).toEqual(['OtherTask']);
   });
 });

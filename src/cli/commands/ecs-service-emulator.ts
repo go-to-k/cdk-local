@@ -128,6 +128,7 @@ import { formatAuthority } from '../../utils/url-authority.js';
 import {
   enforceImageOverrideOrphans,
   parseImageOverrideFlags,
+  canonicalizeImageOverrideKeys,
   resolveImageOverrides,
   runImageOverrideBuilds,
   type ImageOverrideMap,
@@ -2902,18 +2903,26 @@ async function resolveAndBuildImageOverrides(args: {
   const pinnedEntries = listPinnedTargets(resolvedForPeek);
   const pinnedTargets: string[] = pinnedEntries.map((e) => e.target);
   const pinnedLabels = new Map<string, string>();
+  const pinnedAliases = new Map<string, string[]>();
   for (const entry of pinnedEntries) {
     if (entry.label !== undefined) pinnedLabels.set(entry.target, entry.label);
+    pinnedAliases.set(entry.target, entry.aliases);
   }
 
   // Parse the raw flags. A parser error is reported as a clean
   // user-error (no override is possible if the flag is malformed).
-  const rawFlags = parseImageOverrideFlags({
-    ...(options.imageOverride && { imageOverride: options.imageOverride }),
-    ...(options.imageBuildArg && { imageBuildArg: options.imageBuildArg }),
-    ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
-    ...(options.imageTarget && { imageTarget: options.imageTarget }),
-  });
+  // Issue #659 — then rewrite a `<service>` key naming a pinned service by
+  // its logical id / display name to the target string the pinned set is
+  // keyed by, so the documented `AppService=<dockerfile>` form matches.
+  const rawFlags = canonicalizeImageOverrideKeys(
+    parseImageOverrideFlags({
+      ...(options.imageOverride && { imageOverride: options.imageOverride }),
+      ...(options.imageBuildArg && { imageBuildArg: options.imageBuildArg }),
+      ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
+      ...(options.imageTarget && { imageTarget: options.imageTarget }),
+    }),
+    pinnedAliases
+  );
 
   // Short-circuit: nothing to do when no override flag was passed AND
   // no pinned target exists to prompt about. Saves a no-op pass on the
@@ -2956,6 +2965,15 @@ async function resolveAndBuildImageOverrides(args: {
   // `LocalStartServiceError` inside the engine so the global error
   // handler renders it cleanly.
   enforceImageOverrideOrphans(rawFlags, overrides);
+
+  // `--strict-overrides` refuses BEFORE any replica boots: the post-boot
+  // check below the boot loop only runs once every replica is up, so an
+  // uncovered pin would first be pulled (or, under `--no-pull`, fail the boot
+  // with a cache-miss error that never names the strict guard).
+  enforceStrictOverrides(
+    options.strictOverrides === true,
+    pinnedTargets.filter((t) => !overrides.has(t))
+  );
 
   if (overrides.size === 0) return { tags: new Map(), overrides: new Map() };
 
