@@ -119,6 +119,10 @@ export interface PinnedTargetEntry {
  * aliases a documented mapping matched nothing and was dropped with a
  * "not in the pinned-target set" warning, so the deployed-registry image was
  * pulled instead of the local build.
+ *
+ * Host-side use case: {@link listPinnedTargets} attaches these as `aliases`;
+ * a host building its own pinned set calls this to hand
+ * `canonicalizeImageOverrideKeys` the same alias map.
  */
 export function imageOverrideKeyAliases(service: ResolvedEcsService): string[] {
   const out = new Set<string>([

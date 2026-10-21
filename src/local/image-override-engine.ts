@@ -477,6 +477,11 @@ export function parseImageOverrideFlags(input: {
  * pinned target, or when two keys resolve to the same target within one
  * bucket — either would otherwise silently drop a mapping. Pure; returns a new
  * {@link RawImageOverrideFlags} sharing the picker paths and globals.
+ *
+ * Host-side use case: a host CLI that calls {@link parseImageOverrideFlags} +
+ * {@link resolveImageOverrides} itself runs this between them (feeding
+ * `listPinnedTargets`' `aliases`) so its `--image-override` accepts the same
+ * service keys, and passes the RESULT to {@link enforceImageOverrideOrphans}.
  */
 export function canonicalizeImageOverrideKeys(
   rawFlags: RawImageOverrideFlags,
