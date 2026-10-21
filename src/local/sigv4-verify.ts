@@ -460,7 +460,7 @@ export async function verifySigV4(
     // whatever occupied the first '/'-separated segment of `Credential=`, so
     // a caller controls its content AND its length, up to Node's
     // `http.maxHeaderSize` (16384, read off `require('node:http')` on the
-    // Node 24.15 this repo pins). Storing it raw would make an entry-count
+    // Node 24.15). Storing it raw would make an entry-count
     // cap a weak bound — cap times sixteen kilobytes — while a fixed 64-hex
     // digest makes it a real one, and it collides no more often than the raw
     // value does. Truncating the id instead would be the wrong shape: two
