@@ -96,6 +96,9 @@ function isSpeakableProxyEnvValue(value: string): boolean {
   return !value.includes('://') || isSpeakableProxy(value.trim());
 }
 
+/** One AWS endpoint per scheme the SDK seam issues; see the build-time warn. */
+const AWS_ENDPOINT_PROBES = ['https://sts.amazonaws.com', 'http://sts.amazonaws.com'] as const;
+
 /**
  * Whether at least one proxy variable is SET and every one of them names a
  * scheme these agents cannot speak — the state in which every request,
@@ -111,9 +114,6 @@ function isSpeakableProxyEnvValue(value: string): boolean {
  * proxy a request actually needed. It also leaves the precedence rules where
  * they live, in `proxy-from-env`, rather than spelling them a second time.
  */
-/** One AWS endpoint per scheme the SDK seam issues; see the build-time warn. */
-const AWS_ENDPOINT_PROBES = ['https://sts.amazonaws.com', 'http://sts.amazonaws.com'] as const;
-
 function everySetProxyEnvValueIsUnspeakable(): boolean {
   const set = PROXY_ENV_VARIABLES.map((key) => process.env[key] ?? '').filter((v) => v !== '');
   return set.length > 0 && !set.some(isSpeakableProxyEnvValue);
