@@ -29,7 +29,9 @@
 #   6. Phase 2 (issue #805): a Dockerfile edit forces the REBUILD path while
 #      the new server.sh binds 4s late; a fresh probe must again see zero
 #      failures, proving each shadow stays unresolvable until it listens.
-#   7. SIGTERM tears down every cdkl-* container + network cleanly.
+#   7. Phase 3 (issue #812): `docker kill` one replica; while the restart
+#      boots the late-binding app, a peer probe must see zero failures.
+#   8. SIGTERM tears down every cdkl-* container + network cleanly.
 #
 # Run via `/run-integ local-start-service-watch-multi`. Requires Docker.
 
@@ -59,6 +61,7 @@ DOCKERFILE="webapp/Dockerfile"
 DOCKERFILE_BACKUP="$(mktemp)"
 cp "${DOCKERFILE}" "${DOCKERFILE_BACKUP}"
 PROBE2_CONTAINER="${PROBE_CONTAINER}-rebuild"
+PROBE3_CONTAINER="${PROBE_CONTAINER}-crash"
 
 LOG_FILE="$(mktemp)"
 PROBE_LOG="$(mktemp)"
@@ -84,6 +87,7 @@ stop_probe() {
     docker rm -f "${PROBE_CONTAINER}" >/dev/null 2>&1 || true
   fi
   docker rm -f "${PROBE2_CONTAINER}" >/dev/null 2>&1 || true
+  docker rm -f "${PROBE3_CONTAINER}" >/dev/null 2>&1 || true
 }
 
 restore_source() {
@@ -481,6 +485,78 @@ if [[ "${P2_TAIL_OLD}" -ne 0 ]]; then
   exit 1
 fi
 echo "    [zero connection refusals across the rebuild of a late-binding app] OK"
+
+# --- Phase 3: a replica CRASHES and is restarted (issue #812) ---------------
+# `docker kill` one replica's web container (exit 137, so the default
+# `--restart-policy on-failure` restarts it). The image from phase 2 binds 4s
+# late, so a restarted replica that joined the `srv` alias at `docker run`
+# (the pre-#812 behavior) is resolvable while nothing listens. The probe is
+# started only once the restart boot BEGINS: by then the dead container has
+# been cleaned up, so every failure it records is the restarted replica's
+# startup window, not the crash itself.
+booting_count() {
+  local n
+  n=$(grep -c "Booting replica" "${LOG_FILE}" 2>/dev/null) || n=0
+  echo "${n}"
+}
+VICTIM=$(docker ps --filter "name=cdkl-" --format '{{.Names}}' | grep -- '-web-' | head -1 || true)
+if [[ -z "${VICTIM}" ]]; then
+  echo "FAIL: no running replica web container to kill"
+  docker ps --filter "name=cdkl-" --format 'table {{.Names}}\t{{.Status}}'
+  exit 1
+fi
+BOOTS_BEFORE=$(booting_count)
+echo "==> Phase 3: killing replica container ${VICTIM}"
+docker kill "${VICTIM}" >/dev/null
+
+RESTART_BOOTED=0
+for _ in $(seq 1 300); do
+  if [[ "$(booting_count)" -gt "${BOOTS_BEFORE}" ]]; then
+    RESTART_BOOTED=1
+    break
+  fi
+  sleep 0.2
+done
+if [[ "${RESTART_BOOTED}" -eq 0 ]]; then
+  echo "FAIL: the killed replica was not restarted within 60s"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [killed replica is restarting] OK"
+
+docker run -d --rm --network "${SHARED_NET}" --name "${PROBE3_CONTAINER}" \
+  "${BUSYBOX_IMAGE}" \
+  sh -c 'while true; do out=$(wget -q -O - --timeout=2 http://srv:8080/ 2>&1); if [ -z "$out" ]; then echo FAIL; else echo "$out"; fi; sleep 0.05; done' \
+  >/dev/null
+# The restarted app binds after 4s; give the probe time to cover that window
+# and the replica's return to service.
+sleep 10
+
+PROBE3_OUT=$(docker logs "${PROBE3_CONTAINER}" 2>&1 || true)
+docker rm -f "${PROBE3_CONTAINER}" >/dev/null 2>&1 || true
+P3_TOTAL=$(printf '%s\n' "${PROBE3_OUT}" | grep -cE '^.+$' || true)
+P3_V3=$(printf '%s\n' "${PROBE3_OUT}" | grep -c '^v3$' || true)
+P3_FAIL=$(printf '%s\n' "${PROBE3_OUT}" | grep -cE '^(FAIL|wget: |.*[Cc]onnection refused|.*[Nn]etwork is unreachable|.*bad address)' || true)
+echo "    phase 3 probe transcript: total=${P3_TOTAL} v3=${P3_V3} FAIL=${P3_FAIL}"
+if [[ "${P3_FAIL}" -ne 0 ]]; then
+  echo "FAIL: probe observed ${P3_FAIL} connection failure(s) while a crashed replica restarted"
+  printf '%s\n' "${PROBE3_OUT}" | grep -E '^(FAIL|wget: |.*[Cc]onnection refused|.*[Nn]etwork is unreachable|.*bad address)' | head -20
+  echo "----- cdkl log -----"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if [[ "${P3_V3}" -lt 5 ]]; then
+  echo "FAIL: expected at least 5 v3 responses while the replica restarted, got ${P3_V3}"
+  exit 1
+fi
+# The restarted replica's readiness probe must have PASSED (a timed-out or
+# exited probe still publishes it, so the zero-FAIL count alone cannot tell).
+if grep -qE "Restarted replica .*(did not accept|exited before)" "${LOG_FILE}"; then
+  echo "FAIL: the restarted replica's readiness probe did not pass"
+  grep -E "Restarted replica" "${LOG_FILE}"
+  exit 1
+fi
+echo "    [zero connection refusals while a crashed replica restarted] OK"
 
 echo "==> Sending SIGTERM to cdk-local"
 kill -TERM "${CDKL_PID}"

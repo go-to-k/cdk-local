@@ -1485,6 +1485,7 @@ export async function rollServiceReplica(args: {
     await waitForReplicaTcpReady(newService, shadow, {
       timeoutMs: Math.max(1, deadline - Date.now()),
       intervalMs: shadowReadyIntervalMs,
+      isShuttingDown: () => shadow.shuttingDown || controller.runState.shuttingDown,
     });
     if (!teardownOldFirst) {
       await publishGatedReplica(
@@ -2461,7 +2462,13 @@ export function __setDockerNetworkDisconnectImpl(
 async function waitForReplicaTcpReady(
   service: ResolvedEcsService,
   replica: ServiceReplicaInstance,
-  opts: { timeoutMs: number; intervalMs: number; label?: string }
+  opts: {
+    timeoutMs: number;
+    intervalMs: number;
+    label?: string;
+    /** Issue #812 — stop waiting (returning false) once a shutdown starts. */
+    isShuttingDown?: () => boolean;
+  }
 ): Promise<boolean> {
   const logger = getLogger().child('ecs-service');
   // Phase 4 of issue #214 — `label` distinguishes the rolling pathway's
@@ -2492,6 +2499,7 @@ async function waitForReplicaTcpReady(
   let inContainer = true;
   let ip: string | undefined;
   while (Date.now() < deadline) {
+    if (opts.isShuttingDown?.()) return false;
     if (inContainer) {
       const result = await listenProbeImpl(started.id, port, deadline - Date.now());
       if (result.kind === 'listening') {
@@ -2511,6 +2519,13 @@ async function waitForReplicaTcpReady(
         );
         inContainer = false;
         continue;
+      }
+      if (result.kind === 'exited') {
+        // Issue #812 — the app died during startup; nothing will ever
+        // listen, and polling a stopped container would only stall the
+        // caller (a crash loop's restart) for the whole budget.
+        logger.warn(`${label}: the container exited before port ${port} listened. Proceeding.`);
+        return false;
       }
       lastErr = result.kind === 'not-listening' ? 'not listening yet' : result.detail;
     } else {
@@ -2558,7 +2573,9 @@ export type ListenProbeResult =
   /** The check cannot run in this image — switch to the host connect. */
   | { kind: 'unsupported'; detail: string }
   /** A transient failure (e.g. the container is not running yet) — poll again. */
-  | { kind: 'error'; detail: string };
+  | { kind: 'error'; detail: string }
+  /** Issue #812 — the container is not running (it exited during startup). */
+  | { kind: 'exited'; detail: string };
 
 /**
  * POSIX `sh` script behind {@link dockerExecListenProbe}; `$1` is the
@@ -2633,10 +2650,9 @@ export async function dockerExecListenProbe(
     if (e.code === 4) return { kind: 'unsupported', detail: 'no readable /proc/net/tcp' };
     // 126 also means "cannot exec in a stopped container" (an app that
     // crashed on start): only a MISSING `sh` is a property of the image.
-    if (
-      (e.code === 126 || e.code === 127) &&
-      /not found|no such file/i.test(typeof e.stderr === 'string' ? e.stderr : '')
-    ) {
+    const stderr = typeof e.stderr === 'string' ? e.stderr : '';
+    if (/is not running|stopped state/i.test(stderr)) return { kind: 'exited', detail };
+    if ((e.code === 126 || e.code === 127) && /not found|no such file/i.test(stderr)) {
       return { kind: 'unsupported', detail };
     }
     return { kind: 'error', detail };
@@ -2678,7 +2694,7 @@ async function waitForContainerListening(
   while (Date.now() < deadline) {
     const result = await listenProbeImpl(containerId, port, deadline - Date.now());
     if (result.kind === 'listening') return true;
-    if (result.kind === 'unsupported') return false;
+    if (result.kind === 'unsupported' || result.kind === 'exited') return false;
     await sleep(shadowReadyIntervalMs);
   }
   return false;
@@ -2872,7 +2888,24 @@ async function watchReplica(
     // replica's state for cleanup — otherwise the cleanup loop would
     // race the boot and orphan the freshly-created docker network +
     // sidecar.
-    const bootPromise = bootReplica(service, options, instance);
+    //
+    // Issue #812 — like a rolling rebuild's shadow (#805), the restarted
+    // replica boots UNPUBLISHED and is published only once its app
+    // listens: a real ALB routes to a replacement target only after its
+    // health checks pass, and a peer must not resolve the alias to an
+    // app that is still binding.
+    const isShuttingDown = (): boolean => instance.shuttingDown || runState.shuttingDown;
+    const bootPromise = (async (): Promise<void> => {
+      await bootReplica(service, options, instance, { deferPublish: true });
+      const deadline = Date.now() + shadowReadyTimeoutMs;
+      await waitForReplicaTcpReady(service, instance, {
+        timeoutMs: shadowReadyTimeoutMs,
+        intervalMs: shadowReadyIntervalMs,
+        label: `Restarted replica r${instance.index} (gen ${instance.generation})`,
+        isShuttingDown,
+      });
+      await publishGatedReplica(service, options, instance, deadline, isShuttingDown);
+    })();
     instance.inFlightBoot = bootPromise;
     try {
       await bootPromise;

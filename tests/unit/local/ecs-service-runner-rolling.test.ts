@@ -885,6 +885,138 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     });
   });
 
+  // Issue #812 — the watcher's crash-restart re-boot used to publish the
+  // replica (Cloud Map, front-door, Service Connect alias) at `docker run`,
+  // with no readiness probe at all.
+  describe('crash restart is published only once it listens (issue #812)', () => {
+    const sharedNetwork = { networkName: 'net-shared', ownedByCaller: true };
+    function crashOnce(): void {
+      let crashed = false;
+      __setWaitForExitImpl((id) => {
+        if (id === 'cid-1' && !crashed) {
+          crashed = true;
+          return Promise.resolve(137); // `docker kill`: on-failure restarts it
+        }
+        return new Promise<number>(() => {});
+      });
+    }
+
+    it('boots the restarted replica unpublished, attaches its aliases after LISTEN, then registers it', async () => {
+      crashOnce();
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      const ops: string[] = [];
+      __setDockerInspectPublishesHostPortsImpl(async () => false);
+      __setDockerNetworkConnectImpl(async (net, id, o) => {
+        ops.push(`connect ${net} ${id} ip=${o.ip} aliases=${o.aliases.join(',')}`);
+      });
+      __setListenProbeImpl(async (id) => {
+        const registered = (registry.lookup('cdkl.local', 'svc') ?? []).some(
+          (e) => e.ip === '172.20.0.13'
+        );
+        ops.push(`listen ${id} registered=${registered}`);
+        return { kind: 'listening' };
+      });
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      const isRegistered = (): boolean =>
+        (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13');
+      await waitFor(isRegistered);
+      expect(hoisted.taskOptions[0].networkAliasesByContainer?.get('web')).toEqual([
+        'svc',
+        'svc.cdkl.local',
+      ]);
+      // Boot #3 is the restart of r0: aliases withheld at `docker run`.
+      expect(hoisted.taskOptions[2].networkAliasesByContainer?.get('web')).toBeUndefined();
+      expect(ops).toEqual([
+        'listen cid-3 registered=false', // replica probe
+        'listen cid-3 registered=false', // its own port, gating its aliases
+        'connect net-3 cid-3 ip=172.20.0.13 aliases=web,svc,svc.cdkl.local',
+      ]);
+      expect(isRegistered()).toBe(true);
+      await controller.shutdown();
+    });
+
+    it('does not hold a shutdown for the readiness budget while a restarted replica is still binding', async () => {
+      crashOnce();
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      let listens = 0;
+      __setListenProbeImpl(async () => {
+        listens += 1;
+        // A real tick, as `docker exec` takes: the loop must yield to the
+        // event loop or shutdown() never gets to run.
+        await new Promise((r) => setTimeout(r, 2));
+        return { kind: 'not-listening' };
+      });
+      __setShadowReadyConfig({ timeoutMs: 60_000, intervalMs: 1 });
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      await waitFor(() => listens > 0);
+      // `shutdown()` awaits the in-flight restart boot; without the probe's
+      // shutdown check it would wait out the whole 60 s budget.
+      const done = await Promise.race([
+        controller.shutdown().then(() => 'shut down'),
+        new Promise((r) => setTimeout(() => r('still waiting'), 2_000)),
+      ]);
+      expect(done).toBe('shut down');
+      expect(
+        (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13')
+      ).toBe(false);
+    });
+
+    it('stops probing a restarted container that exited again, and still re-registers it (the next exit restarts it)', async () => {
+      crashOnce();
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      __setDockerInspectPublishesHostPortsImpl(async () => false);
+      __setDockerNetworkConnectImpl(async () => undefined);
+      let listens = 0;
+      __setListenProbeImpl(async () => {
+        listens += 1;
+        return { kind: 'exited', detail: 'Container cid-3 is not running' };
+      });
+      __setShadowReadyConfig({ timeoutMs: 60_000, intervalMs: 1 });
+      const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn').mockImplementation(() => {});
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      await waitFor(() =>
+        (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13')
+      );
+      // One LISTEN for the replica probe, one for the per-container gate:
+      // neither polls a stopped container for the 60 s budget.
+      expect(listens).toBe(2);
+      expect(
+        warnSpy.mock.calls.some((c) =>
+          String(c[0]).includes('Restarted replica r0 (gen 0): the container exited before port 80 listened.')
+        )
+      ).toBe(true);
+      warnSpy.mockRestore();
+      await controller.shutdown();
+    });
+  });
+
   describe('containerPublishesHostPorts (issue #805)', () => {
     const c = { portMappings: [{ containerPort: 80 }, { containerPort: 9000 }] };
     it('mirrors buildDockerRunArgs: every mapping unless skipped, plus front-door ephemeral ports', () => {

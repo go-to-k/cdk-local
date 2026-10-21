@@ -1583,7 +1583,11 @@ machinery once per `DesiredCount` replica (clamped by `--max-tasks`,
 default 3), and keeps every replica running until `^C`. Failed
 replicas restart per `--restart-policy on-failure | always | none`
 with exponential backoff (1s → 30s capped) so a crash-looping container
-does not hammer docker.
+does not hammer docker. Like a real ALB, which routes to a replacement
+target only after its health checks pass, a restarted replica is
+published — Cloud Map, the front-door pool, and its Service Connect
+aliases unless it publishes a host port — only once its app listens
+(the same readiness probe and budget as a `--watch` reload).
 
 Each replica gets its own per-task docker network on a UNIQUE
 `169.254.<N>.0/24` subnet (170, 171, 172, ...; see

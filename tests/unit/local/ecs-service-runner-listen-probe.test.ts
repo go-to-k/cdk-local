@@ -142,8 +142,9 @@ describe('dockerExecListenProbe exit-code mapping (issue #660)', () => {
     [126, NO_SH, 'unsupported'],
     [127, 'sh: no such file or directory', 'unsupported'],
     // 126 is also "cannot exec in a stopped container" -- an app that
-    // crashed on start, not an image without a shell: keep polling.
-    [126, 'cannot exec in a stopped state: unknown', 'error'],
+    // crashed on start, not an image without a shell (issue #812).
+    [126, 'cannot exec in a stopped state: unknown', 'exited'],
+    [1, 'Error response from daemon: Container cid-1 is not running', 'exited'],
     [1, 'boom\nline2', 'error'],
   ])('maps exit %i (stderr %j) to %s', async (code, stderr, kind) => {
     hoisted.outcome = Object.assign(new Error(`exit ${code}`), { code, stderr });
