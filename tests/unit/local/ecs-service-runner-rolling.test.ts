@@ -100,6 +100,7 @@ const {
   __setDockerNetworkConnectImpl,
   __setDockerInspectPublishesHostPortsImpl,
   __setListenProbeImpl,
+  __setReloadDrainMs,
   containerPublishesHostPorts,
 } = await import('../../../src/local/ecs-service-runner.js');
 
@@ -200,6 +201,7 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     __setDockerNetworkDisconnectImpl(undefined);
     __setDockerNetworkConnectImpl(undefined);
     __setDockerInspectPublishesHostPortsImpl(undefined);
+    __setReloadDrainMs(undefined);
   });
 
   it('rolls a single replica: shadow boots with bumped generation, swaps atomically, retires old', async () => {
@@ -270,10 +272,13 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       (c) => c.networkName === 'net-1'
     );
     expect(disconnectsForR0Net.length).toBeGreaterThan(0);
-    // Sidecar AND main container are both disconnected so the alias
-    // is stripped no matter which docker DNS lookup beat which.
+    // Only the replica's own container is disconnected. The metadata
+    // sidecar on the shared network is SHARED by every replica, and
+    // disconnecting it cut the survivors off from their task-role
+    // credentials (#815 review).
     const ids = disconnectsForR0Net.map((c) => c.containerId).sort();
-    expect(ids).toEqual(['cid-1', 'sc-1']);
+    expect(ids).toEqual(['cid-1']);
+    expect(hoisted.disconnectCalls.some((c) => c.containerId.startsWith('sc-'))).toBe(false);
 
     await controller.shutdown();
     expect(pool.size()).toBe(0);
@@ -820,7 +825,8 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       });
       expect(hoisted.taskOptions[0].containerNameAliasOmitted).toBeUndefined();
       expect([...(hoisted.taskOptions[2].containerNameAliasOmitted ?? [])]).toEqual(['web']);
-      expect(connects).toEqual(['net-3 cid-3 web,web.cdkl.local']);
+      // (the retired r0, cid-1, also gets its #813 IP-only drain re-attach)
+      expect(connects.filter((c) => c.includes('cid-3'))).toEqual(['net-3 cid-3 web,web.cdkl.local']);
       await controller.shutdown();
     });
 
@@ -894,7 +900,7 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
         newService: fakeServiceConnectService(),
         newOptions: opts as never,
       });
-      expect(connects).toEqual([]);
+      expect(connects.filter((id) => id === 'cid-3')).toEqual([]); // the shadow
       // The roll still completes (the watcher restarts a dead shadow).
       expect(
         (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13')
@@ -928,7 +934,7 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
         newService: fakeServiceConnectService(),
         newOptions: opts as never,
       });
-      expect(connects).toEqual([]);
+      expect(connects.filter((c) => c.includes('cid-3'))).toEqual([]); // the shadow
       // ...and stops LISTENING too: shutdown is not held for the rest of the budget.
       expect(calls).toBe(atCall);
       expect(
@@ -1085,6 +1091,41 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       warnSpy.mockRestore();
       await controller.shutdown();
     });
+  });
+
+  // Issue #813 — the retired replica keeps serving on its old IP for the
+  // drain window after its aliases are withdrawn, before it is torn down.
+  it('drains the retired replica: disconnect, IP-only re-attach, drain wait, THEN cleanup', async () => {
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = frontDoorOptions(pool, registry) as any;
+    const ops: string[] = [];
+    __setReloadDrainMs(4321);
+    __setDockerNetworkConnectImpl(async (net, id, o) => {
+      ops.push(`connect ${net} ${id} aliases=${o.aliases.join(',')} ip=${o.ip ? 'set' : 'none'}`);
+    });
+    __setDockerNetworkDisconnectImpl(async (net, id) => {
+      ops.push(`disconnect ${net} ${id}`);
+    });
+    __setSleepImpl(async (ms) => {
+      ops.push(`sleep ${ms} cleaned=${hoisted.cleanedStates.map((c) => c.networkName).join(',')}`);
+    });
+    const controller = await startEcsService(fakeServiceConnectService(), opts, createServiceRunState());
+    await rollServiceReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: fakeServiceConnectService(),
+      newOptions: opts,
+    });
+    const old = ops.filter((o) => o.includes('cid-1') || o.startsWith('sleep 4321'));
+    expect(old).toEqual([
+      'disconnect net-1 cid-1',
+      'connect net-1 cid-1 aliases= ip=set',
+      'sleep 4321 cleaned=', // the old replica is NOT torn down yet
+    ]);
+    expect(hoisted.cleanedStates.map((c) => c.networkName)).toContain('net-1');
+    await controller.shutdown();
   });
 
   describe('containerPublishesHostPorts (issue #805)', () => {

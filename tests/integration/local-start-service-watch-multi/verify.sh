@@ -453,6 +453,16 @@ if [[ "${REBUILD_SWAPS}" -ne 2 ]]; then
   exit 1
 fi
 echo "    [rebuild reload rolled 2 shadows] OK"
+# The rolling retire disconnects the OLD replica from the shared network; it
+# must never take the shared task-metadata sidecar with it, which every
+# replica (the new shadows included) reaches for task-role credentials.
+SIDECAR="${SHARED_NET}-metadata"
+if ! docker inspect -f '{{json .NetworkSettings.Networks}}' "${SIDECAR}" 2>/dev/null | grep -q "\"${SHARED_NET}\""; then
+  echo "FAIL: the shared metadata sidecar ${SIDECAR} is no longer on ${SHARED_NET} after the rebuild reload"
+  docker inspect -f '{{json .NetworkSettings.Networks}}' "${SIDECAR}" 2>&1 || true
+  exit 1
+fi
+echo "    [shared metadata sidecar still on the service network] OK"
 if p2_log | grep -q "did not accept within"; then
   echo "FAIL: a shadow's TCP-ready probe timed out during the rebuild reload"
   p2_log | grep "did not accept within"
