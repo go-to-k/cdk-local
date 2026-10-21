@@ -149,7 +149,7 @@ export interface ServiceRunnerOptions {
    * `startedContainers` populated) and is appended into
    * `state.logStoppers` so `cleanupEcsRun` drains + kills the streamer
    * process on shutdown / rebuild rolling reload. The soft-reload
-   * pathway (`docker restart` preserves the container ID) is handled
+   * pathway (stop + start preserves the container ID) is handled
    * inside {@link attachContainerLogStreamer} itself: the docker daemon
    * terminates `docker logs -f` on the container's PID-1 exit, so the
    * streamer auto-re-spawns `docker logs -f --since 0s` against the
@@ -267,12 +267,12 @@ export interface ServiceReplicaInstance {
   inFlightBoot: Promise<void> | undefined;
   /**
    * Phase 4 of issue #214 — set by {@link softReloadReplica} while a
-   * `docker cp` + `docker restart` cycle is mid-flight against this
-   * replica. The watcher loop's `await waitForExitImpl(id)` resolves
-   * when `docker restart`'s stop phase fires SIGTERM, and the post-
+   * `docker cp` + `docker stop` / `docker start` cycle is mid-flight
+   * against this replica. The watcher loop's `await waitForExitImpl(id)`
+   * resolves when `docker stop` fires SIGTERM, and the post-
    * exit branch would otherwise enter the restart-policy logic
    * (cleanup + bootReplica from scratch) and race the in-flight
-   * `docker restart`. Checking the flag right after `waitForExitImpl`
+   * stop + start. Checking the flag right after `waitForExitImpl`
    * returns + waiting until it clears keeps the watcher's
    * restart-on-exit semantics intact: a real crash still goes through
    * the restart branch, but a soft-reload-driven exit is treated as a
@@ -793,7 +793,7 @@ async function bootReplica(
   // returns so `state.startedContainers` is fully populated. Pushed into
   // `state.logStoppers` so `cleanupEcsRun` drains + kills the streamer
   // on shutdown / restart-on-exit / rebuild rolling reload. The
-  // soft-reload pathway preserves container IDs across `docker restart`,
+  // soft-reload pathway preserves container IDs across its stop + start,
   // so the same streamer keeps tailing the new PID-1 (no re-attach
   // needed).
   if (options.streamLogs !== false) {
@@ -1478,8 +1478,8 @@ export async function rollServiceReplica(args: {
  *      handle / owner-key snapshots are kept on `instance.*` so the
  *      symmetric re-register step can pick them up (Cloud Map handles
  *      are rebuilt fresh via `publishReplicaToCloudMap`; the docker
- *      network IP is preserved across `docker restart` so the new
- *      handles point at the SAME endpoint).
+ *      network IP is preserved — pinned on the shared-network
+ *      re-attach — so the new handles point at the SAME endpoint).
  *   3. Set {@link ServiceReplicaInstance.softReloadInProgress} = true
  *      so the watcher's `waitForExitImpl` post-exit branch defers to
  *      the in-flight restart instead of re-bootstrapping the replica
@@ -1618,7 +1618,9 @@ export async function softReloadReplica(args: {
   // container-name alias + every Service Connect alias), so the
   // shared-network re-attach below restores exactly the boot-time set.
   const networkAliasesByContainer = buildNetworkAliasesByContainer(newService);
-  const targets: Array<{ name: string; id: string; aliases: string[] }> = [];
+  // `port` is the container's first mapped port: an IP-only re-attached
+  // container gets its aliases back only once THAT port listens.
+  const targets: Array<{ name: string; id: string; aliases: string[]; port?: number }> = [];
   for (const container of containersToCycle) {
     const id = startedById.get(container.name);
     if (!id) {
@@ -1631,12 +1633,13 @@ export async function softReloadReplica(args: {
     for (const a of networkAliasesByContainer.get(container.name) ?? []) {
       if (!aliases.includes(a)) aliases.push(a);
     }
-    targets.push({ name: container.name, id, aliases });
+    const port = container.portMappings[0]?.containerPort;
+    targets.push({ name: container.name, id, aliases, ...(port !== undefined ? { port } : {}) });
   }
 
-  // Phase 4 zero-refusal guarantee — drain BEFORE the docker restart.
-  // The container's docker network IP and published host port are
-  // preserved across `docker restart`, so the registrations could in
+  // Phase 4 zero-refusal guarantee — drain BEFORE the stop + start.
+  // The container's docker network IP is preserved across the cycle,
+  // so the registrations could in
   // principle stay in place — BUT during the SIGTERM → restart window
   // (~1-2s on a typical interpreted handler), the container's app is
   // not accepting connections. Without a drain, the front-door pool's
@@ -1678,24 +1681,6 @@ export async function softReloadReplica(args: {
       `Soft-reloading replica r${instance.index} (gen ${instance.generation}): ` +
         `docker cp ${flattenToOneLine(sourceDirToCopy)} -> ${targets.length} essential container(s); restart.`
     );
-    // Issue #660 — the registry drain above does NOT reach Docker's
-    // embedded DNS: a Service Connect peer resolves the replica through
-    // its `--network-alias` on the shared network, and that alias keeps
-    // answering until the container's endpoint is torn down — AFTER its
-    // app has already exited, so a peer lands on a dead IP
-    // (`Connection refused`). Detach every target from the shared
-    // network BEFORE stopping it (the rolling path does the same via
-    // `disconnectOldFromSharedNetwork`); the surviving replicas carry the
-    // alias meanwhile.
-    const sharedNetworkName = instance.state.network?.ownedByCaller
-      ? instance.state.network.networkName
-      : undefined;
-    if (sharedNetworkName) {
-      for (const target of targets) {
-        const plan = await detachFromSharedNetwork(target, sharedNetworkName);
-        if (plan) attachPlans.set(target.id, plan);
-      }
-    }
     for (const target of targets) {
       // Resolve WORKDIR from the running container's image config.
       // Docker's runtime default when WORKDIR is unset is `/`, so an
@@ -1732,6 +1717,28 @@ export async function softReloadReplica(args: {
             'next save triggers another reload.'
         );
       }
+    }
+    // Issue #660 — the registry drain above does NOT reach Docker's
+    // embedded DNS: a Service Connect peer resolves the replica through
+    // its `--network-alias` on the shared network, and that alias keeps
+    // answering until the container's endpoint is torn down — AFTER its
+    // app has already exited, so a peer lands on a dead IP
+    // (`Connection refused`). Detach every target from the shared
+    // network BEFORE stopping it (the rolling path does the same via
+    // `disconnectOldFromSharedNetwork`); the surviving replicas carry the
+    // alias meanwhile. Only after every `docker cp` landed, so a cp
+    // failure never leaves a RUNNING container detached — re-attaching a
+    // running one would drop its published host ports.
+    const sharedNetworkName = instance.state.network?.ownedByCaller
+      ? instance.state.network.networkName
+      : undefined;
+    if (sharedNetworkName) {
+      for (const target of targets) {
+        const plan = await detachFromSharedNetwork(target, sharedNetworkName);
+        if (plan) attachPlans.set(target.id, plan);
+      }
+    }
+    for (const target of targets) {
       // `docker stop` + `docker start` rather than `docker restart`: the
       // shared-network re-attach has to land while the container is
       // STOPPED. Re-attaching a RUNNING container drops its published
@@ -1751,7 +1758,7 @@ export async function softReloadReplica(args: {
         await dockerStartImpl(target.id);
       } catch (err) {
         throw new EcsServiceRunnerError(
-          `softReloadReplica: docker restart of '${target.name}' (${target.id}) ` +
+          `softReloadReplica: docker stop / start of '${target.name}' (${target.id}) ` +
             `failed: ${err instanceof Error ? err.message : String(err)}. ` +
             'This replica is unregistered from Cloud Map + the front-door pool until the ' +
             'next save triggers another reload.'
@@ -1766,9 +1773,17 @@ export async function softReloadReplica(args: {
       intervalMs: shadowReadyIntervalMs,
       label: `Soft-reloaded replica r${instance.index} (gen ${instance.generation})`,
     });
+    const aliasDeadline = Date.now() + shadowReadyTimeoutMs;
     for (const target of targets) {
       const plan = attachPlans.get(target.id);
       if (!plan || plan.aliasesAttached) continue;
+      // The replica probe above reads the FIRST essential container only;
+      // every other IP-only target waits for its own port before its
+      // aliases return. Best-effort like that probe: a timeout or an
+      // image that cannot run the check restores the aliases anyway.
+      if (target.port !== undefined) {
+        await waitForContainerListening(target.id, target.port, aliasDeadline);
+      }
       try {
         await dockerNetworkDisconnectImpl(plan.networkName, target.id);
         plan.attached = false;
@@ -1838,7 +1853,15 @@ export async function softReloadReplica(args: {
           await dockerNetworkDisconnectImpl(plan.networkName, id);
           plan.attached = false;
         }
-        await attachToSharedNetwork(id, plan, true);
+        try {
+          await attachToSharedNetwork(id, plan, true);
+        } catch {
+          // The old IP may have been taken while the container was off
+          // the network: any IP beats none.
+          await dockerNetworkConnectImpl(plan.networkName, id, { aliases: plan.aliases });
+          plan.attached = true;
+          plan.aliasesAttached = true;
+        }
       } catch (restoreErr) {
         logger.debug(
           `Soft-reload of replica r${instance.index}: re-attaching container ${id} to ` +
@@ -2073,16 +2096,18 @@ async function attachToSharedNetwork(
 
 /**
  * Production `docker network connect [--ip <ip>] [--alias <a>]... <network> <id>`.
+ * `ip` is omitted only by the failure path's last resort.
  */
 const defaultDockerNetworkConnectImpl = async (
   networkName: string,
   containerId: string,
-  opts: { ip: string; aliases: ReadonlyArray<string> }
+  opts: { ip?: string; aliases: ReadonlyArray<string> }
 ): Promise<void> => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const { getDockerCmd } = await import('../utils/docker-cmd.js');
-  const args = ['network', 'connect', '--ip', opts.ip];
+  const args = ['network', 'connect'];
+  if (opts.ip) args.push('--ip', opts.ip);
   for (const a of opts.aliases) args.push('--alias', a);
   args.push(networkName, containerId);
   await promisify(execFile)(getDockerCmd(), args);
@@ -2091,7 +2116,7 @@ const defaultDockerNetworkConnectImpl = async (
 let dockerNetworkConnectImpl: (
   networkName: string,
   containerId: string,
-  opts: { ip: string; aliases: ReadonlyArray<string> }
+  opts: { ip?: string; aliases: ReadonlyArray<string> }
 ) => Promise<void> = defaultDockerNetworkConnectImpl;
 
 /**
@@ -2105,7 +2130,7 @@ export function __setDockerNetworkConnectImpl(
     | ((
         networkName: string,
         containerId: string,
-        opts: { ip: string; aliases: ReadonlyArray<string> }
+        opts: { ip?: string; aliases: ReadonlyArray<string> }
       ) => Promise<void>)
     | undefined
 ): void {
@@ -2307,7 +2332,7 @@ async function waitForReplicaTcpReady(
   let ip: string | undefined;
   while (Date.now() < deadline) {
     if (inContainer) {
-      const result = await listenProbeImpl(started.id, port);
+      const result = await listenProbeImpl(started.id, port, deadline - Date.now());
       if (result.kind === 'listening') {
         // Issue #265 — surface the elapsed-ms on success so users
         // tuning `--shadow-ready-timeout` (or
@@ -2338,7 +2363,13 @@ async function waitForReplicaTcpReady(
           );
           return false;
         }
-        if (!ip) return false;
+        if (!ip) {
+          logger.warn(
+            `${label}: TCP-ready probe found no docker IP for ${started.name} on ` +
+              `${networkName}. Proceeding.`
+          );
+          return false;
+        }
         target = formatAuthority(ip, port);
       }
       try {
@@ -2375,7 +2406,8 @@ export type ListenProbeResult =
  * is, 4 when neither `/proc/net/tcp` nor `/proc/net/tcp6` is readable.
  * A loopback-only bind is NOT ready: no peer can reach it. The kernel
  * prints the port as 4 upper-case hex digits and an IPv4 address in
- * host byte order, so 127.x.x.x ends in `7F`.
+ * host byte order, so 127.x.x.x ends in `7F` (also inside an IPv4-mapped
+ * `::ffff:127.x.x.x` in `tcp6`).
  *
  * Exported for the unit test that runs it against fixture `/proc` files.
  *
@@ -2390,7 +2422,8 @@ export const LISTEN_PROBE_SCRIPT = [
   '  while read -r _ l _ s _; do',
   '    [ "$s" = 0A ] || continue',
   '    case "$l" in *:"$p") ;; *) continue ;; esac',
-  '    case "$l" in ??????7F:*|00000000000000000000000001000000:*) continue ;; esac',
+  '    case "$l" in ??????7F:*|0000000000000000FFFF0000??????7F:*) continue ;; esac',
+  '    case "$l" in 00000000000000000000000001000000:*) continue ;; esac',
   '    exit 0',
   '  done < "$f"',
   'done',
@@ -2402,8 +2435,9 @@ export const LISTEN_PROBE_SCRIPT = [
  * Production in-container LISTEN check:
  * `docker exec <id> sh -c <LISTEN_PROBE_SCRIPT> sh <port>`. The port
  * rides as a positional argument, never interpolated into the script.
- * Exit 126 / 127 is docker's "could not exec `sh`" — the image has no
- * shell — and maps to `unsupported`, as does the script's own exit 4.
+ * Exit 126 / 127 with a "not found" stderr is docker's "could not exec
+ * `sh`" — the image has no shell — and maps to `unsupported`, as does the
+ * script's own exit 4; every other failure is transient (`error`).
  *
  * Exported for its exit-code mapping unit test.
  *
@@ -2411,7 +2445,8 @@ export const LISTEN_PROBE_SCRIPT = [
  */
 export async function dockerExecListenProbe(
   containerId: string,
-  port: number
+  port: number,
+  timeoutMs = 10_000
 ): Promise<ListenProbeResult> {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
@@ -2420,23 +2455,38 @@ export async function dockerExecListenProbe(
     await promisify(execFile)(
       getDockerCmd(),
       ['exec', containerId, 'sh', '-c', LISTEN_PROBE_SCRIPT, 'sh', String(port)],
-      { timeout: 10_000 }
+      { timeout: Math.max(1, Math.min(10_000, timeoutMs)) }
     );
     return { kind: 'listening' };
   } catch (err) {
-    const e = err as { code?: unknown; stderr?: unknown; message?: string };
+    const e = err as { code?: unknown; signal?: unknown; stderr?: unknown; message?: string };
+    // Never `e.message` for an exec that ran: it echoes the whole argv,
+    // script included. A killed exec (the 10 s timeout) has no stderr
+    // and a null code, so name the signal instead.
+    const ran = typeof e.code === 'number' || typeof e.signal === 'string';
     const detail = flattenToOneLine(
-      (typeof e.stderr === 'string' && e.stderr.trim()) || e.message || String(err)
+      (typeof e.stderr === 'string' && e.stderr.trim()) ||
+        (ran ? `exit ${String(e.code ?? e.signal)}` : e.message || String(err))
     ).slice(0, 200);
     if (e.code === 3) return { kind: 'not-listening' };
     if (e.code === 4) return { kind: 'unsupported', detail: 'no readable /proc/net/tcp' };
-    if (e.code === 126 || e.code === 127) return { kind: 'unsupported', detail };
+    // 126 also means "cannot exec in a stopped container" (an app that
+    // crashed on start): only a MISSING `sh` is a property of the image.
+    if (
+      (e.code === 126 || e.code === 127) &&
+      /not found|no such file/i.test(typeof e.stderr === 'string' ? e.stderr : '')
+    ) {
+      return { kind: 'unsupported', detail };
+    }
     return { kind: 'error', detail };
   }
 }
 
-let listenProbeImpl: (containerId: string, port: number) => Promise<ListenProbeResult> =
-  dockerExecListenProbe;
+let listenProbeImpl: (
+  containerId: string,
+  port: number,
+  timeoutMs?: number
+) => Promise<ListenProbeResult> = dockerExecListenProbe;
 
 /**
  * Test-only hook to substitute the in-container LISTEN check. Pass
@@ -2445,9 +2495,32 @@ let listenProbeImpl: (containerId: string, port: number) => Promise<ListenProbeR
  * @internal
  */
 export function __setListenProbeImpl(
-  impl: ((containerId: string, port: number) => Promise<ListenProbeResult>) | undefined
+  impl:
+    | ((containerId: string, port: number, timeoutMs?: number) => Promise<ListenProbeResult>)
+    | undefined
 ): void {
   listenProbeImpl = impl ?? dockerExecListenProbe;
+}
+
+/**
+ * Issue #660 — poll one container's in-container LISTEN check until
+ * `deadline`. Used for the soft-reload's IP-only re-attached targets
+ * other than the one {@link waitForReplicaTcpReady} already read.
+ * Returns false on a timeout or when the image cannot run the check; the
+ * caller proceeds either way.
+ */
+async function waitForContainerListening(
+  containerId: string,
+  port: number,
+  deadline: number
+): Promise<boolean> {
+  while (Date.now() < deadline) {
+    const result = await listenProbeImpl(containerId, port, deadline - Date.now());
+    if (result.kind === 'listening') return true;
+    if (result.kind === 'unsupported') return false;
+    await sleep(shadowReadyIntervalMs);
+  }
+  return false;
 }
 
 /**
@@ -2538,7 +2611,7 @@ async function watchReplica(
     }
     if (instance.shuttingDown || runState.shuttingDown) return;
 
-    // Phase 4 of issue #214 — soft-reload pathway: `docker restart`
+    // Phase 4 of issue #214 — soft-reload pathway: its `docker stop`
     // fires SIGTERM at PID 1, which resolves `waitForExitImpl` here
     // even though the container is being intentionally cycled.
     //

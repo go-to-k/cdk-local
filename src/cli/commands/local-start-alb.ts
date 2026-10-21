@@ -455,8 +455,8 @@ export function addAlbSpecificOptions(cmd: Command): Command {
           'node_modules, .git are always excluded). A per-firing classifier picks the ' +
           'per-replica primitive: source-only edits on interpreted-language handlers ' +
           '(Node/Python/Ruby/shell) take a bind-mount FAST PATH (`docker cp` the new source ' +
-          'into each replica + `docker restart`; no rebuild, front-door pool entry unchanged ' +
-          'since the IP/port are preserved). Dockerfile / dependency manifest / ' +
+          'into each replica + restart it; no rebuild, its front-door pool entry is drained ' +
+          'and re-published once it listens again). Dockerfile / dependency manifest / ' +
           'compiled-language source / ambiguous edits fall through to the rebuild rolling ' +
           'primitive — boot a shadow under a bumped generation suffix, wait for its ' +
           'container port to accept a TCP connection, atomically register it in the ' +

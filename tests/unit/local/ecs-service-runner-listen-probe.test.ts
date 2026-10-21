@@ -21,6 +21,7 @@ const { hoisted } = vi.hoisted(() => ({
     calls: [] as Array<{ cmd: string; args: string[] }>,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     outcome: null as any,
+    onCall: undefined as ((opts: unknown) => void) | undefined,
   },
 }));
 
@@ -28,8 +29,9 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
-    execFile: (cmd: string, args: string[], _opts: unknown, cb: (...a: unknown[]) => void) => {
+    execFile: (cmd: string, args: string[], opts: unknown, cb: (...a: unknown[]) => void) => {
       hoisted.calls.push({ cmd, args });
+      hoisted.onCall?.(opts);
       if (hoisted.outcome === null) cb(null, { stdout: '', stderr: '' });
       else cb(hoisted.outcome);
     },
@@ -89,6 +91,12 @@ describe('LISTEN_PROBE_SCRIPT (issue #660)', () => {
     ).toBe(3);
   });
 
+  it('exits 3 for an IPv4-mapped loopback bind (::ffff:127.0.0.1) in tcp6', () => {
+    expect(runScript(8080, [], [row('0000000000000000FFFF00000100007F:1F90', '0A')])).toBe(3);
+    // ...while an IPv4-mapped NON-loopback address is reachable.
+    expect(runScript(8080, [], [row('0000000000000000FFFF000003ABFEA9:1F90', '0A')])).toBe(0);
+  });
+
   it('exits 3 for a loopback-only bind (no peer can reach it), IPv4 and IPv6', () => {
     expect(runScript(8080, [row('0100007F:1F90', '0A'), row('0200007F:1F90', '0A')], undefined)).toBe(
       3
@@ -110,6 +118,7 @@ describe('dockerExecListenProbe exit-code mapping (issue #660)', () => {
   beforeEach(() => {
     hoisted.calls = [];
     hoisted.outcome = null;
+    hoisted.onCall = undefined;
   });
 
   it('runs the script via `docker exec`, passing the port as a positional argument', async () => {
@@ -126,16 +135,39 @@ describe('dockerExecListenProbe exit-code mapping (issue #660)', () => {
     ]);
   });
 
+  const NO_SH = 'OCI runtime exec failed: exec: "sh": executable file not found in $PATH';
   it.each([
-    [3, 'not-listening'],
-    [4, 'unsupported'],
-    [126, 'unsupported'],
-    [127, 'unsupported'],
-    [1, 'error'],
-  ])('maps exit %i to %s', async (code, kind) => {
-    hoisted.outcome = Object.assign(new Error(`exit ${code}`), { code, stderr: 'boom\nline2' });
+    [3, '', 'not-listening'],
+    [4, '', 'unsupported'],
+    [126, NO_SH, 'unsupported'],
+    [127, 'sh: no such file or directory', 'unsupported'],
+    // 126 is also "cannot exec in a stopped container" -- an app that
+    // crashed on start, not an image without a shell: keep polling.
+    [126, 'cannot exec in a stopped state: unknown', 'error'],
+    [1, 'boom\nline2', 'error'],
+  ])('maps exit %i (stderr %j) to %s', async (code, stderr, kind) => {
+    hoisted.outcome = Object.assign(new Error(`exit ${code}`), { code, stderr });
     const result = await dockerExecListenProbe('cid-1', 8080);
     expect(result.kind).toBe(kind);
-    if (result.kind === 'error') expect(result.detail).toBe('boom line2');
+    if (code === 1 && result.kind === 'error') expect(result.detail).toBe('boom line2');
+  });
+
+  it('names the signal, never the argv-echoing message, for a killed exec', async () => {
+    hoisted.outcome = Object.assign(
+      new Error(`Command failed: docker exec cid-1 sh -c ${LISTEN_PROBE_SCRIPT}`),
+      { code: null, signal: 'SIGTERM', killed: true, stderr: '' }
+    );
+    await expect(dockerExecListenProbe('cid-1', 8080)).resolves.toEqual({
+      kind: 'error',
+      detail: 'exit SIGTERM',
+    });
+  });
+
+  it('caps the exec timeout at the remaining probe budget', async () => {
+    const seen: unknown[] = [];
+    hoisted.onCall = (opts: unknown) => seen.push(opts);
+    await dockerExecListenProbe('cid-1', 8080, 250);
+    await dockerExecListenProbe('cid-1', 8080, 60_000);
+    expect(seen).toEqual([{ timeout: 250 }, { timeout: 10_000 }]);
   });
 });

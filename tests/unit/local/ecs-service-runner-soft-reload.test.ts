@@ -82,6 +82,8 @@ vi.mock('../../../src/local/docker-inspect.js', () => ({
   // had at initial boot — mirroring docker's preservation of the
   // container's network namespace across a restart.
   getContainerNetworkIp: async (containerId: string) => {
+    // Issue #660 rows: a `noip-` id models a container docker reports no IP for.
+    if (containerId.startsWith('noip-')) return undefined;
     const m = /^cid-(\d+)$/.exec(containerId);
     return m ? `172.20.0.${10 + parseInt(m[1]!, 10)}` : `172.20.0.99`;
   },
@@ -412,7 +414,7 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
         newService: fakeService(),
         sourceDirToCopy: '/tmp/cdk.out/asset.h',
       })
-    ).rejects.toThrow(/docker restart/);
+    ).rejects.toThrow(/docker stop \/ start/);
 
     // cp succeeded, restart failed — partial-success state.
     expect(hoisted.cpCalls.length).toBe(1);
@@ -849,7 +851,8 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
         `stop ${cid}`,
         `connect ${net} ${cid} ip=${ip} aliases=`,
         `start ${cid}`,
-        `listen ${cid}`,
+        `listen ${cid}`, // the replica probe
+        `listen ${cid}`, // this container's own port, gating its aliases
         `disconnect ${net} ${cid}`,
         // container-name alias + the Service Connect discoveryName + fqdn
         `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,
@@ -905,9 +908,9 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
       await controller.shutdown();
     });
 
-    it('re-attaches a detached container WITH its aliases when a later step throws', async () => {
+    it('never detaches a container whose docker cp failed (it keeps running, ports and aliases intact)', async () => {
       hoisted.failCpOnCount = 1;
-      const { cid, net, ip, controller } = await bootAndReload();
+      const { controller } = await bootAndReload();
       await expect(
         softReloadReplica({
           controller,
@@ -916,10 +919,132 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
           sourceDirToCopy: '/tmp/cdk.out/asset.h',
         })
       ).rejects.toThrow(/docker cp/);
+      expect(hoisted.ops).toEqual([]);
+      await controller.shutdown();
+    });
+
+    it('treats an unreadable port-publish state as a publisher (aliases while stopped, never a running re-attach)', async () => {
+      __setDockerInspectPublishesHostPortsImpl(async () => {
+        throw new Error('synthetic inspect failure');
+      });
+      const { cid, net, ip, controller } = await bootAndReload();
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
       expect(hoisted.ops).toEqual([
         `disconnect ${net} ${cid}`,
+        `stop ${cid}`,
         `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,
+        `start ${cid}`,
+        `listen ${cid}`,
       ]);
+      await controller.shutdown();
+    });
+
+    it('cycles in place when docker reports no IP for the container', async () => {
+      const { cid, controller } = await bootAndReload((r0) => {
+        r0.state.startedContainers[0].id = 'noip-1';
+      });
+      expect(cid).toBe('noip-1');
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      expect(hoisted.ops).toEqual([`stop ${cid}`, `start ${cid}`, `listen ${cid}`]);
+      await controller.shutdown();
+    });
+
+    it('throws when restoring the aliases fails after the probe, and retries the restore in the catch', async () => {
+      let disconnects = 0;
+      __setDockerNetworkDisconnectImpl(async (net, id) => {
+        hoisted.ops.push(`disconnect ${net} ${id}`);
+        disconnects += 1;
+        if (disconnects >= 2) throw new Error('synthetic disconnect failure');
+      });
+      const { cid, net, ip, controller } = await bootAndReload();
+      await expect(
+        softReloadReplica({
+          controller,
+          oldReplicaIndex: 0,
+          newService: fakeService(),
+          sourceDirToCopy: '/tmp/cdk.out/asset.h',
+        })
+      ).rejects.toThrow(/restoring the network aliases/);
+      expect(hoisted.ops).toEqual([
+        `disconnect ${net} ${cid}`,
+        `stop ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`,
+        `start ${cid}`,
+        `listen ${cid}`,
+        `listen ${cid}`,
+        `disconnect ${net} ${cid}`, // post-probe restore: fails
+        `disconnect ${net} ${cid}`, // catch: still attached IP-only, so detach again (fails, swallowed)
+      ]);
+      expect(controller.runState.replicas[0]!.softReloadInProgress).toBe(false);
+      await controller.shutdown();
+    });
+
+    it('falls back to a connect WITHOUT --ip when the old IP cannot be re-taken', async () => {
+      __setDockerNetworkConnectImpl(async (net, id, opts) => {
+        hoisted.ops.push(`connect ${net} ${id} ip=${opts.ip} aliases=${opts.aliases.join(',')}`);
+        if (opts.aliases.length > 0 && opts.ip !== undefined) {
+          throw new Error('Address already in use');
+        }
+      });
+      const { cid, net, ip, controller } = await bootAndReload();
+      await expect(
+        softReloadReplica({
+          controller,
+          oldReplicaIndex: 0,
+          newService: fakeService(),
+          sourceDirToCopy: '/tmp/cdk.out/asset.h',
+        })
+      ).rejects.toThrow(/restoring the network aliases/);
+      expect(hoisted.ops.slice(-2)).toEqual([
+        `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`, // catch: same IP fails again
+        `connect ${net} ${cid} ip=undefined aliases=web,svc,svc.cdkl.local`, // any IP beats none
+      ]);
+      await controller.shutdown();
+    });
+
+    it('waits for EACH IP-only container own port before giving its aliases back', async () => {
+      const listenAnswers = new Map<string, boolean[]>();
+      __setListenProbeImpl(async (id, port) => {
+        hoisted.ops.push(`listen ${id}:${port}`);
+        const queue = listenAnswers.get(id);
+        return queue && queue.length > 0 && !queue.shift()
+          ? { kind: 'not-listening' }
+          : { kind: 'listening' };
+      });
+      const { cid, net, controller } = await bootAndReload((r0) => {
+        r0.state.startedContainers.push({ name: 'sidecar', id: `${r0.state.startedContainers[0].id}-sidecar` });
+      });
+      const side = `${cid}-sidecar`;
+      listenAnswers.set(side, [false, false]); // two misses, then listening
+      const newSvc = fakeService();
+      newSvc.task.containers.push({
+        name: 'sidecar',
+        essential: true,
+        portMappings: [{ containerPort: 9000 }],
+      });
+      __setShadowReadyConfig({ timeoutMs: 5_000, intervalMs: 1 });
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: newSvc,
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      const sideRestore = hoisted.ops.findIndex((o) =>
+        o.startsWith(`connect ${net} ${side} `) && !o.endsWith('aliases=')
+      );
+      const lastSideListen = hoisted.ops.lastIndexOf(`listen ${side}:9000`);
+      expect(hoisted.ops.filter((o) => o === `listen ${side}:9000`)).toHaveLength(3);
+      expect(sideRestore).toBeGreaterThan(lastSideListen);
       await controller.shutdown();
     });
 
@@ -936,7 +1061,7 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
           newService: fakeService(),
           sourceDirToCopy: '/tmp/cdk.out/asset.h',
         })
-      ).rejects.toThrow(/docker restart/);
+      ).rejects.toThrow(/docker stop \/ start/);
       expect(hoisted.ops).toEqual([
         `disconnect ${net} ${cid}`,
         `stop ${cid}`,
