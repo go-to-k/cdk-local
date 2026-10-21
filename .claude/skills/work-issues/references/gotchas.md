@@ -85,8 +85,7 @@
   not (`Cannot find module .../vite-plus/dist/bin.js` read as a flake repro).
   Read the failure TEXT before counting exit codes — or calling it a flake or
   "environment": EVERY fixture failing at the SAME step is a defect
-  (go-to-k/cdk-local#808: `AssemblyVersionMismatch` at synth, an integ runner
-  called it environment) — and prefer measuring in a worktree that is set up
+  (go-to-k/cdk-local#808) — and prefer measuring in a worktree that is set up
   and whose diff cannot touch the subject.
 
 ## Important existing rules this skill leans on

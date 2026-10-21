@@ -67,7 +67,7 @@ correct behavior — but one cdk-local CLAIMS to support and runs wrong IS.
 Never work in the main checkout:
 `git worktree add .claude/worktrees/<name> -b <branch> origin/main` → inside it
 `mise trust && mise install` (a fresh worktree's `.mise.toml` is untrusted, so
-`vp` won't resolve) → `pnpm install` (worktrees have no `node_modules`) →
+`vp` won't resolve) → `corepack pnpm install` (worktrees have no `node_modules`) →
 `vp run build` (the CLI runs from `dist/`).
 
 **Unless this hunt was LAUNCHED from a linked worktree, in which case create no
