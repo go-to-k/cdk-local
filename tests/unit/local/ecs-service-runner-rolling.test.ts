@@ -36,6 +36,9 @@ const { hoisted } = vi.hoisted(() => ({
     // prove the new disconnect-first step actually fires (reviewer
     // flagged the previous mock took `!ownedByCaller` early-return).
     disconnectCalls: [] as Array<{ networkName: string; containerId: string }>,
+    // Issue #805 — the `runEcsTask` options of every boot, in order.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    taskOptions: [] as any[],
   },
 }));
 
@@ -52,8 +55,9 @@ vi.mock('../../../src/local/ecs-task-runner.js', () => ({
       networkName: (state['network'] as { networkName?: string } | undefined)?.networkName,
     });
   },
-  runEcsTask: async (_task: unknown, _options: unknown, state: Record<string, unknown>) => {
+  runEcsTask: async (_task: unknown, options: unknown, state: Record<string, unknown>) => {
     hoisted.bootCount += 1;
+    hoisted.taskOptions.push(options);
     if (hoisted.failBootOnCount === hoisted.bootCount) {
       throw new Error(`synthetic boot failure on boot #${hoisted.bootCount}`);
     }
@@ -93,7 +97,10 @@ const {
   __setTcpProbeImpl,
   __setShadowReadyConfig,
   __setDockerNetworkDisconnectImpl,
+  __setDockerNetworkConnectImpl,
+  __setDockerInspectPublishesHostPortsImpl,
   __setListenProbeImpl,
+  containerPublishesHostPorts,
 } = await import('../../../src/local/ecs-service-runner.js');
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -171,6 +178,7 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     hoisted.cleanedStates = [];
     hoisted.failBootOnCount = -1;
     hoisted.disconnectCalls = [];
+    hoisted.taskOptions = [];
     __setSleepImpl(() => Promise.resolve()); // skip restart backoff
     __setWaitForExitImpl(() => new Promise<number>(() => {})); // replicas never exit
     __setTcpProbeImpl(() => Promise.resolve()); // shadow is always TCP-ready
@@ -190,6 +198,8 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     __setListenProbeImpl(undefined);
     __setShadowReadyConfig(undefined);
     __setDockerNetworkDisconnectImpl(undefined);
+    __setDockerNetworkConnectImpl(undefined);
+    __setDockerInspectPublishesHostPortsImpl(undefined);
   });
 
   it('rolls a single replica: shadow boots with bumped generation, swaps atomically, retires old', async () => {
@@ -650,6 +660,152 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       const timeout = warns.filter((w) => w.includes('did not accept'));
       expect(timeout).toHaveLength(1);
       expect(timeout[0]).toContain('TCP probe web:80 did not accept within 50ms (last: not listening yet)');
+    });
+  });
+
+  // Issue #805 — the multi-replica shadow used to be published (Cloud Map,
+  // front-door pool) and resolvable by its Service Connect alias from the
+  // moment its container started, before its app listened: a peer or the
+  // front-door could reach it while it was still binding.
+  describe('shadow is published only once it listens (issue #805)', () => {
+    const sharedNetwork = { networkName: 'net-shared', ownedByCaller: true };
+
+    async function rollWithGate(
+      opts: Record<string, unknown>,
+      publishes: boolean
+    ): Promise<{ ops: string[]; shadowRegistered: boolean; poolSize: number | undefined }> {
+      const ops: string[] = [];
+      const registry = (opts['discovery'] as { registry: CloudMapRegistry }).registry;
+      const pool = (opts['frontDoor'] as { pools: Array<{ pool: FrontDoorEndpointPool }> } | undefined)
+        ?.pools[0]!.pool;
+      const shadowIp = '172.20.0.13'; // boot #3; the docker-inspect mock keys IPs off the boot count
+      __setDockerInspectPublishesHostPortsImpl(async () => publishes);
+      __setDockerNetworkDisconnectImpl(async (net, id) => {
+        ops.push(`disconnect ${net} ${id}`);
+      });
+      __setDockerNetworkConnectImpl(async (net, id, o) => {
+        ops.push(`connect ${net} ${id} ip=${o.ip} aliases=${o.aliases.join(',')}`);
+      });
+      __setListenProbeImpl(async (id) => {
+        const inRegistry = (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === shadowIp);
+        const inPool = pool ? pool.size() > 2 : false;
+        ops.push(`listen ${id} registry=${inRegistry} pool=${inPool}`);
+        return { kind: 'listening' };
+      });
+      const runState = createServiceRunState();
+      const controller = await startEcsService(fakeServiceConnectService(), opts as never, runState);
+      await rollServiceReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeServiceConnectService(),
+        newOptions: opts as never,
+      });
+      // Snapshot BEFORE shutdown, which unregisters everything.
+      const shadowRegistered = (registry.lookup('cdkl.local', 'svc') ?? []).some(
+        (e) => e.ip === shadowIp
+      );
+      const poolSize = pool?.size();
+      await controller.shutdown();
+      return { ops, shadowRegistered, poolSize };
+    }
+
+    it('withholds a non-publishing shadow\'s aliases at boot and attaches them after LISTEN, before any registration', async () => {
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      const { ops, shadowRegistered } = await rollWithGate(opts, false);
+      // Boots 1-2 (initial replicas) carry the Service Connect aliases;
+      // the shadow (boot 3) does not.
+      expect(hoisted.taskOptions[0].networkAliasesByContainer?.get('web')).toEqual([
+        'svc',
+        'svc.cdkl.local',
+      ]);
+      expect(hoisted.taskOptions[2].networkAliasesByContainer?.get('web')).toBeUndefined();
+      const shadowOps = ops.filter((o) => o.includes('cid-3'));
+      expect(shadowOps).toEqual([
+        'listen cid-3 registry=false pool=false', // replica probe: not yet registered
+        'listen cid-3 registry=false pool=false', // its own port, gating its aliases
+        'disconnect net-3 cid-3',
+        'connect net-3 cid-3 ip=172.20.0.13 aliases=web,svc,svc.cdkl.local',
+      ]);
+      expect(shadowRegistered).toBe(true);
+    });
+
+    it('keeps a host-port publisher\'s aliases from boot (no running re-attach) but still gates its front-door + Cloud Map entries', async () => {
+      const registry = new CloudMapRegistry();
+      const pool = new FrontDoorEndpointPool();
+      const opts = {
+        ...frontDoorOptions(pool, registry),
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      const { ops, shadowRegistered, poolSize } = await rollWithGate(opts, true);
+      // Front-door ephemeral publish on port 80 -> the shadow publishes.
+      expect(hoisted.taskOptions[2].networkAliasesByContainer?.get('web')).toEqual([
+        'svc',
+        'svc.cdkl.local',
+      ]);
+      const shadowOps = ops.filter((o) => o.includes('cid-3'));
+      expect(shadowOps).toEqual(['listen cid-3 registry=false pool=false']);
+      expect(poolSize).toBe(2); // shadow in, old r0 out
+      expect(shadowRegistered).toBe(true);
+    });
+
+    it('retires the shadow and keeps the old replica serving when the alias attach fails', async () => {
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      __setDockerInspectPublishesHostPortsImpl(async () => false);
+      __setDockerNetworkConnectImpl(async () => {
+        throw new Error('synthetic connect failure');
+      });
+      const runState = createServiceRunState();
+      const controller = await startEcsService(fakeServiceConnectService(), opts as never, runState);
+      await expect(
+        rollServiceReplica({
+          controller,
+          oldReplicaIndex: 0,
+          newService: fakeServiceConnectService(),
+          newOptions: opts as never,
+        })
+      ).rejects.toThrow(/synthetic connect failure/);
+      // Old r0 (gen 0) is still the slot's replica and still registered.
+      expect(controller.runState.replicas.map((r) => `${r.index}:${r.generation}`).sort()).toEqual([
+        '0:0',
+        '1:0',
+      ]);
+      const ips = (registry.lookup('cdkl.local', 'svc') ?? []).map((e) => e.ip).sort();
+      expect(ips).toEqual(['172.20.0.11', '172.20.0.12']);
+      await controller.shutdown();
+    });
+  });
+
+  describe('containerPublishesHostPorts (issue #805)', () => {
+    const c = { portMappings: [{ containerPort: 80 }, { containerPort: 9000 }] };
+    it('mirrors buildDockerRunArgs: every mapping unless skipped, plus front-door ephemeral ports', () => {
+      expect(
+        containerPublishesHostPorts(c, { skipHostPortPublish: false, ephemeralPublishContainerPorts: [] })
+      ).toBe(true);
+      expect(
+        containerPublishesHostPorts(c, { skipHostPortPublish: true, ephemeralPublishContainerPorts: [] })
+      ).toBe(false);
+      expect(
+        containerPublishesHostPorts(c, { skipHostPortPublish: true, ephemeralPublishContainerPorts: [9000] })
+      ).toBe(true);
+      expect(
+        containerPublishesHostPorts(c, { skipHostPortPublish: true, ephemeralPublishContainerPorts: [8080] })
+      ).toBe(false);
+      expect(
+        containerPublishesHostPorts(
+          { portMappings: [] },
+          { skipHostPortPublish: false, ephemeralPublishContainerPorts: [80] }
+        )
+      ).toBe(false);
     });
   });
 });

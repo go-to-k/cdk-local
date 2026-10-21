@@ -1690,10 +1690,14 @@ For each replica `i` in the old set:
    `CDKL_SHADOW_READY_TIMEOUT_MS` env var (flag wins over env, env
    wins over the 60s default) when the canonical "TCP probe did not
    accept within" warning surfaces.
-3. **Atomic registry swap.** The shadow is already registered in
-   Cloud Map / Service Connect under a fresh ownerKey (the runner's
-   normal publish path). The old replica's registrations are dropped
-   in one synchronous Map mutation — consumers rebuilding their
+3. **Atomic registry swap.** On a multi-replica service the shadow
+   boots UNPUBLISHED: no Cloud Map / front-door entry, and — unless
+   it publishes a host port, which re-attaching a running container
+   would drop — its Service Connect aliases are withheld from
+   `docker run`, so no peer resolves it while its app is still
+   binding. Once the probe passes, the aliases are attached and the
+   shadow is registered under a fresh ownerKey. The old replica's
+   registrations are then dropped in one synchronous Map mutation — consumers rebuilding their
    `--add-host` set during the swap window still see at least one
    live endpoint per fqdn.
 4. **Retire the old.** The old replica's docker container + network
