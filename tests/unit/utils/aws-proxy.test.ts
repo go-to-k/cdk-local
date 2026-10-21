@@ -721,17 +721,123 @@ describe('aws-proxy (issue #634)', () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
-    it('buildProxyClientConfig still returns a NON-empty fragment under a SOCKS-only environment', () => {
-      // Deliberate and worth pinning: `isProxyEnvConfigured` asks whether a
-      // variable is SET, not whether it is usable, so the fragment is built
-      // and every request through it then routes direct. Narrowing that
-      // predicate instead would change which credential chain resolves,
-      // which is a bigger behaviour change than this issue asked for.
-      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
-      expect(isProxyEnvConfigured()).toBe(true);
-      const config = buildProxyClientConfig();
-      expect(config.requestHandler).toBeDefined();
-      expect(typeof config.credentials).toBe('function');
+    /**
+     * Issue go-to-k/cdk-local#674. With every SET proxy variable naming a
+     * scheme these agents cannot speak, every request resolves DIRECT, so the
+     * fragment must be `{}` — the SAME unproxied path, credential chain
+     * included, an unset environment takes — and the warn that request-time
+     * routing would have printed is printed by the builder instead, since no
+     * request reaches `resolveProxyForTarget` through an empty fragment.
+     */
+    describe('buildProxyClientConfig under an unspeakable-only environment (issue go-to-k/cdk-local#674)', () => {
+      it('returns {} for a SOCKS-only ALL_PROXY, with or without a profile, and never builds the chain', () => {
+        process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+        // The narrower decision lives in the builder, not in the predicate:
+        // a variable IS set, and the fetch seam still keys off that.
+        expect(isProxyEnvConfigured()).toBe(true);
+        let plain: unknown;
+        let withProfile: unknown;
+        captureWarns(() => {
+          plain = buildProxyClientConfig();
+          withProfile = buildProxyClientConfig({ profile: 'corp' });
+        });
+        expect(plain).toEqual({});
+        expect(withProfile).toEqual({});
+        expect(defaultProviderMock).not.toHaveBeenCalled();
+      });
+
+      it('warns ONCE naming only the scheme, sharing the memo with request-time routing', () => {
+        process.env['ALL_PROXY'] = 'socks5://corp-user:s3cr3t@socks.internal:1080';
+        const agent = new EnvRoutingProxyAgent();
+        const lines = captureWarns(() => {
+          buildProxyClientConfig();
+          buildProxyClientConfig();
+          // A host CLI may still route through its own agent: the memo is
+          // the same one, so this adds no second line.
+          agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        });
+        agent.destroy();
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('"socks5"');
+        expect(lines[0]).not.toContain('corp-user');
+        expect(lines[0]).not.toContain('s3cr3t');
+        expect(lines[0]).not.toContain('socks.internal');
+      });
+
+      it('warns once PER unspeakable scheme when several are set', () => {
+        process.env['HTTPS_PROXY'] = 'socks5://127.0.0.1:1080';
+        process.env['ALL_PROXY'] = 'socks4://127.0.0.1:1081';
+        let config: unknown;
+        const lines = captureWarns(() => {
+          config = buildProxyClientConfig();
+        });
+        expect(config).toEqual({});
+        expect(lines).toHaveLength(2);
+        expect(lines.some((l) => l.includes('"socks5"'))).toBe(true);
+        expect(lines.some((l) => l.includes('"socks4"'))).toBe(true);
+      });
+
+      it('a value with :// NOT at the start is unspeakable and named "(unrecognized)", never by its username', () => {
+        process.env['HTTPS_PROXY'] = 'corp-user:s3cr3t@http://proxy.corp:3128';
+        let config: unknown;
+        const lines = captureWarns(() => {
+          config = buildProxyClientConfig();
+        });
+        expect(config).toEqual({});
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('(unrecognized)');
+        expect(lines[0]).not.toContain('corp-user');
+      });
+
+      it.each([
+        ['NO_PROXY=* (proxying disabled outright)', '*'],
+        ['a NO_PROXY suffix covering every AWS endpoint', '.amazonaws.com'],
+      ])('still returns {} but stays SILENT under %s, as request-time routing would', (_l, noProxy) => {
+        process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+        process.env['NO_PROXY'] = noProxy;
+        let config: unknown;
+        const lines = captureWarns(() => {
+          config = buildProxyClientConfig();
+        });
+        expect(config).toEqual({});
+        expect(lines).toEqual([]);
+      });
+
+      it('names only the value proxy-from-env would SELECT, not a shadowed uppercase twin', () => {
+        process.env['all_proxy'] = 'socks5://127.0.0.1:1080';
+        process.env['ALL_PROXY'] = 'socks4://127.0.0.1:1081';
+        let config: unknown;
+        const lines = captureWarns(() => {
+          config = buildProxyClientConfig();
+        });
+        expect(config).toEqual({});
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('"socks5"');
+      });
+
+      it.each([
+        [
+          'a speakable HTTP_PROXY beside a SOCKS HTTPS_PROXY',
+          { HTTPS_PROXY: 'socks5://127.0.0.1:1080', HTTP_PROXY: 'http://proxy.internal:3128' },
+        ],
+        [
+          'a scheme-less value (proxy-from-env prepends the request scheme)',
+          { ALL_PROXY: 'socks5://127.0.0.1:1080', HTTPS_PROXY: 'proxy.internal:3128' },
+        ],
+        ['a whitespace-padded http:// value', { HTTPS_PROXY: ' http://proxy.internal:3128' }],
+        ['an uppercase HTTPS:// scheme', { ALL_PROXY: 'HTTPS://proxy.internal:3128' }],
+      ])('keeps the FULL fragment when any set value is usable: %s', (_label, env) => {
+        Object.assign(process.env, env);
+        let config: { requestHandler?: unknown; credentials?: unknown } = {};
+        const lines = captureWarns(() => {
+          config = buildProxyClientConfig();
+        });
+        expect(config.requestHandler).toBeInstanceOf(NodeHttpHandler);
+        expect(typeof config.credentials).toBe('function');
+        // No build-time warn on this branch: request-time routing still
+        // decides (and warns) per target.
+        expect(lines).toEqual([]);
+      });
     });
 
     it.each([

@@ -935,8 +935,9 @@ export { resolveProfileCredentials, buildStsClientConfig } from './utils/profile
  * the same fragment so both honor the same proxy environment with the same
  * `NO_PROXY` semantics — including the SSO / SSOOIDC credential-chain hops,
  * which do not inherit a service client's `requestHandler` on their own.
- * The fragment is empty when no proxy variable is set, so spreading it is
- * always safe.
+ * The fragment is empty when no proxy variable is set, or when every set one
+ * names a scheme cdk-local cannot speak (a SOCKS-only `ALL_PROXY`, warned
+ * once), so spreading it is always safe.
  */
 export {
   buildProxyClientConfig,

@@ -3,6 +3,12 @@ import { connect as netConnect, type Socket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { StudioEventBus, type StudioTargetKind } from './studio-events.js';
 import { formatAuthority } from '../utils/url-authority.js';
+import { isLoopbackHostname, isWildcardHostname } from '../utils/loopback-host.js';
+
+// Re-exported so this module's existing importers keep their spelling; the
+// ONE implementation, shared with `utils/aws-proxy`, is `utils/loopback-host`
+// (issue go-to-k/cdk-local#666).
+export { isLoopbackHostname, isWildcardHostname };
 
 /** Config for {@link startStudioProxy}. */
 export interface StudioProxyConfig {
@@ -41,36 +47,6 @@ export interface RunningStudioProxy {
 let proxyIdCounter = 0;
 
 /**
- * True when `hostname` names this machine's loopback interface: `localhost`,
- * an IPv4 address in `127.0.0.0/8`, IPv6 `::1`, or an IPv4-mapped loopback
- * (`::ffff:127.0.0.1`, which `URL.hostname` renders in hex as
- * `[::ffff:7f00:1]`). Surrounding brackets, as `URL.hostname` keeps them for
- * an IPv6 literal, are tolerated. The match is EXACT — `localhost.example.com`
- * and `127.0.0.1.example.com` are ordinary DNS names that resolve wherever
- * their owner points them, and are NOT loopback.
- *
- * A `cdkl` serve child always listens on this machine, so this is the bound
- * studio puts on where it will ever forward a composer request (issue #578).
- * A destination that is not loopback did not come from a genuine serve, and
- * forwarding to it would carry the developer's request — headers and body —
- * off-box.
- */
-export function isLoopbackHostname(hostname: string): boolean {
-  const h = hostname.trim().replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
-  if (h === 'localhost') return true;
-  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true;
-  // IPv4-mapped IPv6 in hex form (`::ffff:7f00:1`): the high hextet's top
-  // byte is the first IPv4 octet.
-  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
-  if (mapped) return parseInt(mapped[1]!, 16) >> 8 === 127;
-  const dotted = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-  if (!dotted) return false;
-  const octets = dotted.slice(1).map(Number);
-  if (octets.some((o) => o > 255)) return false;
-  return octets[0] === 127;
-}
-
-/**
  * Drop the brackets `URL.hostname` keeps around an IPv6 literal (`[::1]`), so
  * the host can be handed to `node:http` / `node:net`.
  *
@@ -84,30 +60,6 @@ export function isLoopbackHostname(hostname: string): boolean {
  */
 function stripHostBrackets(hostname: string): string {
   return hostname.replace(/^\[/, '').replace(/\]$/, '');
-}
-
-/**
- * True when `hostname` is the UNSPECIFIED (wildcard) address: IPv4 `0.0.0.0`,
- * IPv6 `::` (`URL` normalises `0:0:0:0:0:0:0:0` to it), or the IPv4-mapped
- * `::ffff:0.0.0.0` (which `URL.hostname` renders as `[::ffff:0:0]`).
- *
- * A wildcard is a BIND address, not a destination — a server bound to it IS
- * reachable on loopback, and `--container-host 0.0.0.0` is an ordinary value
- * for `start-service` / `run-task` (default `127.0.0.1`) that `cdkl studio`
- * auto-renders in its "All options" section. So a wildcard is normalised to
- * loopback rather than refused; the security property is untouched, because a
- * line naming a real foreign host still names a real foreign host, and no
- * spelling of the wildcard reaches anywhere but this machine.
- */
-export function isWildcardHostname(hostname: string): boolean {
-  const h = hostname.trim().replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
-  return (
-    h === '0.0.0.0' ||
-    h === '::' ||
-    h === '0:0:0:0:0:0:0:0' ||
-    h === '::ffff:0.0.0.0' ||
-    h === '::ffff:0:0'
-  );
 }
 
 /**
