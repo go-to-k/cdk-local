@@ -421,6 +421,9 @@ describe('ecs-service-emulator --image-override key canonicalization (issue #659
     );
     // No second, un-canonicalized parse that a later call could pick up.
     expect(helper.match(/parseImageOverrideFlags\(/g)).toHaveLength(1);
+    // Every booted target is passed as a known exact key, so an alias never
+    // captures a sibling non-pinned target's name.
+    expect(helper).toMatch(/pinnedAliases,\s*perTarget\s*\)/);
     expect(helper).toMatch(/resolveImageOverrides\(\{\s*rawFlags,/);
     expect(helper).toMatch(/enforceImageOverrideOrphans\(rawFlags, overrides\)/);
   });

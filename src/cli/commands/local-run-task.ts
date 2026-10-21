@@ -967,7 +967,8 @@ export async function resolveRunTaskImageOverride(args: {
       ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
       ...(options.imageTarget && { imageTarget: options.imageTarget }),
     }),
-    pinnedAliases
+    pinnedAliases,
+    [target]
   );
 
   // Nothing pinned to prompt about AND no override flag => no-op. Per-service

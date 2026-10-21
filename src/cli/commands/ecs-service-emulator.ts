@@ -2921,7 +2921,8 @@ async function resolveAndBuildImageOverrides(args: {
       ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
       ...(options.imageTarget && { imageTarget: options.imageTarget }),
     }),
-    pinnedAliases
+    pinnedAliases,
+    perTarget
   );
 
   // Short-circuit: nothing to do when no override flag was passed AND
