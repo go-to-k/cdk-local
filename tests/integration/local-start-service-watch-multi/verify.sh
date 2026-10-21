@@ -26,7 +26,10 @@
 #      service stayed available end-to-end across the roll).
 #   5. After the roll completes, only v2 responses appear (proves the
 #      OLD replicas are fully retired — no stale image survived).
-#   6. SIGTERM tears down every cdkl-* container + network cleanly.
+#   6. Phase 2 (issue #805): a Dockerfile edit forces the REBUILD path while
+#      the new server.sh binds 4s late; a fresh probe must again see zero
+#      failures, proving each shadow stays unresolvable until it listens.
+#   7. SIGTERM tears down every cdkl-* container + network cleanly.
 #
 # Run via `/run-integ local-start-service-watch-multi`. Requires Docker.
 
@@ -52,6 +55,10 @@ PROBE_CONTAINER="cdkl-integ-svc-watch-multi-probe"
 SERVER_SH="webapp/server.sh"
 SERVER_SH_BACKUP="$(mktemp)"
 cp "${SERVER_SH}" "${SERVER_SH_BACKUP}"
+DOCKERFILE="webapp/Dockerfile"
+DOCKERFILE_BACKUP="$(mktemp)"
+cp "${DOCKERFILE}" "${DOCKERFILE_BACKUP}"
+PROBE2_CONTAINER="${PROBE_CONTAINER}-rebuild"
 
 LOG_FILE="$(mktemp)"
 PROBE_LOG="$(mktemp)"
@@ -76,12 +83,17 @@ stop_probe() {
   if docker ps -a --filter "name=${PROBE_CONTAINER}" --format '{{.Names}}' | grep -q .; then
     docker rm -f "${PROBE_CONTAINER}" >/dev/null 2>&1 || true
   fi
+  docker rm -f "${PROBE2_CONTAINER}" >/dev/null 2>&1 || true
 }
 
 restore_source() {
   if [[ -f "${SERVER_SH_BACKUP}" ]]; then
     cp "${SERVER_SH_BACKUP}" "${SERVER_SH}"
     rm -f "${SERVER_SH_BACKUP}"
+  fi
+  if [[ -f "${DOCKERFILE_BACKUP}" ]]; then
+    cp "${DOCKERFILE_BACKUP}" "${DOCKERFILE}"
+    rm -f "${DOCKERFILE_BACKUP}"
   fi
 }
 
@@ -378,6 +390,97 @@ if [[ "${TAIL_V1}" -ne 0 ]]; then
   exit 1
 fi
 echo "    [old replicas fully retired post-roll] OK"
+
+# --- Phase 2: REBUILD reload of an app that listens LATE (issue #805) -------
+# A Dockerfile edit forces the rebuild path: a shadow replica per slot boots
+# from the new image. The new server.sh sleeps before binding, so a shadow
+# that joined the `srv` alias at `docker run` (the pre-#805 behavior) is
+# resolvable for those seconds while nothing listens, and the peer probe
+# records `Connection refused`. The fix withholds the alias (and the Cloud
+# Map registration) until the shadow listens.
+echo "==> Phase 2: starting a fresh probe sidecar for the rebuild reload"
+docker run -d --rm --network "${SHARED_NET}" --name "${PROBE2_CONTAINER}" \
+  "${BUSYBOX_IMAGE}" \
+  sh -c 'while true; do out=$(wget -q -O - --timeout=2 http://srv:8080/ 2>&1); if [ -z "$out" ]; then echo FAIL; else echo "$out"; fi; sleep 0.05; done' \
+  >/dev/null
+sleep 2
+
+# Phase-2 assertions read only the log lines written from here on.
+P2_LOG_FROM=$(( $(wc -l <"${LOG_FILE}") + 1 ))
+p2_log() { tail -n +"${P2_LOG_FROM}" "${LOG_FILE}"; }
+
+echo "==> Phase 2: editing Dockerfile + server.sh (v2 -> v3, binds 4s late) to force a rebuild"
+cat >"${SERVER_SH}" <<'SERVER_V3'
+#!/bin/sh
+# server.sh — mutated to v3 by verify.sh: binds LATE (issue #805)
+set -eu
+VERSION=v3
+mkdir -p /www
+printf '%s' "${VERSION}" > /www/index.html
+sleep 4
+exec httpd -f -p 8080 -h /www
+SERVER_V3
+chmod +x "${SERVER_SH}"
+printf '\n# rebuild marker (verify.sh phase 2, issue #805)\n' >>"${DOCKERFILE}"
+
+echo "==> Phase 2: waiting for the second reload-complete marker"
+COMPLETED=0
+for _ in $(seq 1 360); do
+  if [[ "$(reload_complete_count)" -ge 2 ]]; then
+    COMPLETED=1
+    break
+  fi
+  sleep 1
+done
+if [[ "${COMPLETED}" -eq 0 ]]; then
+  echo "FAIL: the rebuild reload did not complete within 360s"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if ! p2_log | grep -q "verdict=rebuild"; then
+  echo "FAIL: the Dockerfile edit did not take the rebuild path"
+  p2_log | grep -E "verdict=" || true
+  exit 1
+fi
+REBUILD_SWAPS=$(p2_log | grep -cE "Rolling replica .*swap complete" || true)
+if [[ "${REBUILD_SWAPS}" -ne 2 ]]; then
+  echo "FAIL: expected 2 rebuild 'swap complete' lines, got ${REBUILD_SWAPS}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [rebuild reload rolled 2 shadows] OK"
+if p2_log | grep -q "did not accept within"; then
+  echo "FAIL: a shadow's TCP-ready probe timed out during the rebuild reload"
+  p2_log | grep "did not accept within"
+  exit 1
+fi
+
+sleep 2
+PROBE2_OUT=$(docker logs "${PROBE2_CONTAINER}" 2>&1 || true)
+docker rm -f "${PROBE2_CONTAINER}" >/dev/null 2>&1 || true
+P2_TOTAL=$(printf '%s\n' "${PROBE2_OUT}" | grep -cE '^.+$' || true)
+P2_V2=$(printf '%s\n' "${PROBE2_OUT}" | grep -c '^v2$' || true)
+P2_V3=$(printf '%s\n' "${PROBE2_OUT}" | grep -c '^v3$' || true)
+P2_FAIL=$(printf '%s\n' "${PROBE2_OUT}" | grep -cE '^(FAIL|wget: |.*[Cc]onnection refused|.*[Nn]etwork is unreachable|.*bad address)' || true)
+echo "    phase 2 probe transcript: total=${P2_TOTAL} v2=${P2_V2} v3=${P2_V3} FAIL=${P2_FAIL}"
+if [[ "${P2_FAIL}" -ne 0 ]]; then
+  echo "FAIL: probe observed ${P2_FAIL} connection failure(s) during the rebuild reload of a late-binding app"
+  printf '%s\n' "${PROBE2_OUT}" | grep -E '^(FAIL|wget: |.*[Cc]onnection refused|.*[Nn]etwork is unreachable|.*bad address)' | head -20
+  echo "----- cdkl log -----"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+if [[ "${P2_V3}" -lt 5 ]]; then
+  echo "FAIL: expected at least 5 v3 responses after the rebuild, got ${P2_V3}"
+  exit 1
+fi
+P2_TAIL_OLD=$(printf '%s\n' "${PROBE2_OUT}" | tail -20 | grep -vc '^v3$' || true)
+if [[ "${P2_TAIL_OLD}" -ne 0 ]]; then
+  echo "FAIL: ${P2_TAIL_OLD} of the last 20 phase-2 samples were not v3"
+  printf '%s\n' "${PROBE2_OUT}" | tail -20
+  exit 1
+fi
+echo "    [zero connection refusals across the rebuild of a late-binding app] OK"
 
 echo "==> Sending SIGTERM to cdk-local"
 kill -TERM "${CDKL_PID}"

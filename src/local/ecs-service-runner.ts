@@ -286,6 +286,12 @@ export interface ServiceReplicaInstance {
    */
   softReloadInProgress?: boolean;
   /**
+   * Issue #805 — names of the containers `bootReplica` started WITHOUT
+   * their Service Connect aliases (`deferPublish`). The single source
+   * {@link publishGatedReplica} restores from; cleared once restored.
+   */
+  withheldAliasContainers?: string[];
+  /**
    * Phase 4 follow-up (#218 code reviewer Nit #4) — monotonic
    * counter incremented at the START of each {@link softReloadReplica}
    * cycle. The watcher snapshots this BEFORE `waitForExitImpl` and
@@ -702,7 +708,18 @@ export function buildNetworkAliasesByContainer(
 async function bootReplica(
   service: ResolvedEcsService,
   options: ServiceRunnerOptions,
-  instance: ServiceReplicaInstance
+  instance: ServiceReplicaInstance,
+  bootOpts: {
+    /**
+     * Issue #805 — boot the replica UNPUBLISHED: no Cloud Map / front-door
+     * registration, and the Service Connect aliases of every container
+     * that will not publish a host port are withheld from `docker run`.
+     * The caller publishes via {@link publishGatedReplica} once the app
+     * listens. Used by the rolling rebuild's shadow, whose peers would
+     * otherwise resolve it before its app binds.
+     */
+    deferPublish?: boolean;
+  } = {}
 ): Promise<void> {
   const logger = getLogger().child('ecs-service');
   // Per-replica cluster suffix: docker uses the network name as a key,
@@ -766,6 +783,35 @@ async function bootReplica(
   const ephemeralPublishContainerPorts = options.frontDoor
     ? [...new Set(options.frontDoor.pools.map((p) => p.targetContainerPort))]
     : [];
+  // Issue #805 — a container's Service Connect aliases can only be added
+  // after `docker run` by re-attaching it to the network, and re-attaching
+  // a RUNNING container drops its published host ports. So only a
+  // container that publishes none has its aliases withheld here; one that
+  // does keeps them from the start (its front-door entry is still gated).
+  const withheldAliasContainers: string[] = [];
+  if (bootOpts.deferPublish && sharedNetwork) {
+    for (const container of service.task.containers) {
+      if (!networkAliasesByContainer.has(container.name)) continue;
+      if (
+        containerPublishesHostPorts(container, {
+          skipHostPortPublish,
+          ephemeralPublishContainerPorts,
+        })
+      ) {
+        continue;
+      }
+      networkAliasesByContainer.delete(container.name);
+      withheldAliasContainers.push(container.name);
+    }
+  }
+  // A container name that is ALSO one of its Service Connect names would
+  // still be resolvable through the always-on container-name alias.
+  const containerNameAliasOmitted = new Set(
+    withheldAliasContainers.filter((name) =>
+      (buildNetworkAliasesByContainer(service).get(name) ?? []).includes(name)
+    )
+  );
+  instance.withheldAliasContainers = withheldAliasContainers;
   const perReplicaTaskOptions: RunEcsTaskOptions = {
     ...options.taskOptions,
     cluster: perReplicaCluster,
@@ -782,6 +828,7 @@ async function bootReplica(
       : { subnetOctet: pickSubnetOctet(instance.index) }),
     ...(addHostFlags.length > 0 ? { addHostFlags } : {}),
     ...(networkAliasesByContainer.size > 0 ? { networkAliasesByContainer } : {}),
+    ...(containerNameAliasOmitted.size > 0 ? { containerNameAliasOmitted } : {}),
     ...(ephemeralPublishContainerPorts.length > 0 ? { ephemeralPublishContainerPorts } : {}),
   };
   logger.info(`Booting replica ${instance.index} (${perReplicaCluster})`);
@@ -820,7 +867,7 @@ async function bootReplica(
   // task boot so we know docker has assigned an IP. Best-effort: a
   // failed publish logs warn but does NOT abort the replica — the
   // replica is still alive, peer discovery just degrades.
-  if (options.discovery) {
+  if (options.discovery && !bootOpts.deferPublish) {
     await publishReplicaToCloudMap(service, instance, options.discovery, ownerKeyPrefix);
   }
 
@@ -828,7 +875,7 @@ async function bootReplica(
   // each target container port was published on and register it into the pool
   // so the host-side server can round-robin to this replica. Best-effort: a
   // failed lookup logs warn but does NOT abort the replica.
-  if (options.frontDoor) {
+  if (options.frontDoor && !bootOpts.deferPublish) {
     await publishReplicaToFrontDoor(
       service,
       instance,
@@ -846,6 +893,95 @@ async function bootReplica(
   // updates across rolling reloads). Undefined when the image isn't
   // a CDK asset — the classifier already routes those to rebuild.
   instance.lastDeployedAssetHash = pickEssentialAssetHash(service);
+}
+
+/**
+ * Issue #805 — whether `buildDockerRunArgs` (ecs-task-runner) will publish
+ * any host port for `container`, mirroring its two `-p` branches: every
+ * declared mapping unless `skipHostPortPublish`, plus an ephemeral publish
+ * for each mapped port the front-door targets. Kept here, not exported from
+ * the task runner, because suites that `vi.mock` that module would lose it.
+ *
+ * @internal exported for its unit test
+ */
+export function containerPublishesHostPorts(
+  container: { portMappings: ReadonlyArray<{ containerPort: number }> },
+  opts: { skipHostPortPublish: boolean; ephemeralPublishContainerPorts: ReadonlyArray<number> }
+): boolean {
+  if (container.portMappings.length === 0) return false;
+  if (!opts.skipHostPortPublish) return true;
+  return container.portMappings.some((pm) =>
+    opts.ephemeralPublishContainerPorts.includes(pm.containerPort)
+  );
+}
+
+/**
+ * Issue #805 — finish a replica booted with `deferPublish`: give each
+ * container `bootReplica` recorded in `withheldAliasContainers` its aliases back
+ * once its own first port listens (best-effort, sharing `deadline`), then
+ * publish the replica to Cloud Map + the front-door. The caller has
+ * already waited for the essential container ({@link waitForReplicaTcpReady}).
+ * Throws when an alias re-attach fails, so the caller can retire the
+ * shadow instead of swapping to a replica peers cannot resolve.
+ */
+async function publishGatedReplica(
+  service: ResolvedEcsService,
+  options: ServiceRunnerOptions,
+  instance: ServiceReplicaInstance,
+  deadline: number,
+  isShuttingDown: () => boolean
+): Promise<void> {
+  const network = instance.state.network;
+  const withheld = instance.withheldAliasContainers ?? [];
+  if (network && withheld.length > 0) {
+    const fullAliases = buildNetworkAliasesByContainer(service);
+    for (const name of withheld) {
+      // A SIGTERM mid-gate: stop here, publish nothing; the shutdown
+      // path tears the shadow down.
+      if (isShuttingDown()) return;
+      const container = service.task.containers.find((c) => c.name === name);
+      const started = instance.state.startedContainers.find((c) => c.name === name);
+      if (!container || !started) continue;
+      const port = container.portMappings[0]?.containerPort;
+      if (port !== undefined) await waitForContainerListening(started.id, port, deadline);
+      if (isShuttingDown()) return;
+      const ip = await getContainerNetworkIp(started.id, network.networkName);
+      if (!ip) {
+        throw new EcsServiceRunnerError(
+          `Shadow replica r${instance.index} (gen ${instance.generation}): no docker IP for ` +
+            `'${name}' on ${network.networkName}; cannot attach its Service Connect aliases.`
+        );
+      }
+      const aliases = [name];
+      for (const a of fullAliases.get(name) ?? []) if (!aliases.includes(a)) aliases.push(a);
+      await dockerNetworkDisconnectImpl(network.networkName, started.id);
+      await dockerNetworkConnectImpl(network.networkName, started.id, { ip, aliases });
+    }
+    instance.withheldAliasContainers = [];
+  }
+  if (isShuttingDown()) return;
+  const ownerKeyPrefix = replicaOwnerKeyPrefix(service, instance);
+  if (options.discovery) {
+    await publishReplicaToCloudMap(service, instance, options.discovery, ownerKeyPrefix);
+  }
+  if (options.frontDoor) {
+    await publishReplicaToFrontDoor(
+      service,
+      instance,
+      options.frontDoor,
+      options.taskOptions.containerHost,
+      ownerKeyPrefix
+    );
+  }
+}
+
+/** `<svc>:r<i>` (generation 0) or `<svc>:r<i>:g<gen>` — the owner-key prefix `bootReplica` uses. */
+function replicaOwnerKeyPrefix(
+  service: ResolvedEcsService,
+  instance: ServiceReplicaInstance
+): string {
+  const genSuffix = instance.generation > 0 ? `:g${instance.generation}` : '';
+  return `${service.serviceLogicalId}:r${instance.index}${genSuffix}`;
 }
 
 /**
@@ -1330,22 +1466,35 @@ export async function rollServiceReplica(args: {
   }
 
   const bootPromise = (async (): Promise<void> => {
-    await bootReplica(newService, newOptions, shadow);
+    // Issue #805 — on the multi-replica path the shadow boots UNPUBLISHED
+    // (no Cloud Map / front-door entry, Service Connect aliases withheld
+    // where they can be added later) and is published only once its app
+    // listens; otherwise peers and the front-door reach it while it is
+    // still binding. The single-replica path has no peer to protect.
+    await bootReplica(newService, newOptions, shadow, { deferPublish: !teardownOldFirst });
+    // One readiness budget, started once the container runs, shared by
+    // the replica probe and the per-container alias gating.
+    const deadline = Date.now() + shadowReadyTimeoutMs;
     // After bootReplica returns, the shadow's docker container is
-    // running and its Cloud Map / front-door registrations are
-    // published — but the app inside the container may still be in
-    // its startup window (TCP socket not yet bound). If we swapped
-    // immediately, peer requests routed to the shadow during that
-    // window would see ECONNREFUSED. Wait for the essential
-    // container's first port to accept a TCP connection before
-    // letting the swap proceed; failure is best-effort (warn + swap
-    // anyway — the shadow's new image is the user's intent, and the
-    // dying old replica's already-bound port is the WORSE
-    // alternative once we tear it down).
+    // running but the app inside it may still be in its startup window
+    // (TCP socket not yet bound). Wait for the essential container's
+    // first port to listen before publishing / swapping; failure is
+    // best-effort (warn + swap anyway — the shadow's new image is the
+    // user's intent, and the dying old replica's already-bound port is
+    // the WORSE alternative once we tear it down).
     await waitForReplicaTcpReady(newService, shadow, {
-      timeoutMs: shadowReadyTimeoutMs,
+      timeoutMs: Math.max(1, deadline - Date.now()),
       intervalMs: shadowReadyIntervalMs,
     });
+    if (!teardownOldFirst) {
+      await publishGatedReplica(
+        newService,
+        newOptions,
+        shadow,
+        deadline,
+        () => shadow.shuttingDown || controller.runState.shuttingDown
+      );
+    }
   })();
   shadow.inFlightBoot = bootPromise;
   try {
@@ -1357,6 +1506,11 @@ export async function rollServiceReplica(args: {
     // leak it.
     const shadowIdx = controller.runState.replicas.indexOf(shadow);
     if (shadowIdx !== -1) controller.runState.replicas.splice(shadowIdx, 1);
+    // Issue #805 — a gated shadow may already carry some aliases (one
+    // container re-attached before another's attach threw): take it off
+    // the shared network first, as the swap does for the old replica, so
+    // no peer resolves it while it stops.
+    await disconnectOldFromSharedNetwork(shadow).catch(() => undefined);
     try {
       await cleanupEcsRun(shadow.state, { keepRunning: false });
     } catch {
@@ -1817,8 +1971,7 @@ export async function softReloadReplica(args: {
     // docker IP, just not reachable via Cloud Map / front-door until
     // re-published. We re-publish AFTER the TCP-ready probe so peers
     // never resolve a non-listening endpoint.
-    const ownerKeyGenSuffix = instance.generation > 0 ? `:g${instance.generation}` : '';
-    const ownerKeyPrefix = `${newService.serviceLogicalId}:r${instance.index}${ownerKeyGenSuffix}`;
+    const ownerKeyPrefix = replicaOwnerKeyPrefix(newService, instance);
     if (controllerOptions.discovery) {
       await publishReplicaToCloudMap(
         newService,
