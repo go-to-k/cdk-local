@@ -849,6 +849,27 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       await controller.shutdown();
     });
 
+    it('still swaps in a shadow whose container exited during startup (the new image is the user intent)', async () => {
+      const { opts } = gatedOpts();
+      __setListenProbeImpl(async () => ({ kind: 'exited', detail: 'is not running' }));
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      await rollServiceReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeServiceConnectService(),
+        newOptions: opts as never,
+      });
+      // Documented contract (waitForReplicaTcpReady): a not-ready shadow is
+      // swapped in anyway; failing the roll would strand the user on stale
+      // code. The watcher's restart policy then owns the crash loop.
+      expect(controller.runState.replicas.find((r) => r.index === 0)?.generation).toBe(1);
+      await controller.shutdown();
+    });
+
     it('leaves the aliases of a withheld container that exited before listening withheld (no re-attach of a stopped container)', async () => {
       const { opts, registry } = gatedOpts();
       const connects: string[] = [];

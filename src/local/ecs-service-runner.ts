@@ -2463,9 +2463,15 @@ export function __setDockerNetworkDisconnectImpl(
  * roll here would leave the OLD replica running on stale code with no
  * recovery path other than `^C`.
  *
- * Returns `true` when the port was seen ready (or there is nothing to
- * probe), `false` when the probe timed out or could not run — the
- * soft-reload's completion line says which.
+ * A shadow that EXITED during startup is swapped in on the same
+ * reasoning (its new image is the user's intent; the watcher's restart
+ * policy then handles the crash loop) — only a crash RESTART skips
+ * publishing an exited container (issue #812).
+ *
+ * Returns a {@link ReadinessOutcome}: `ready` when the port was seen
+ * listening (or there is nothing to probe), `exited` when the container
+ * stopped first, `not-ready` otherwise — the soft-reload's completion
+ * line says which.
  *
  * Both probes are injectable ({@link __setListenProbeImpl},
  * {@link __setTcpProbeImpl}) so the unit tests never touch docker or a
