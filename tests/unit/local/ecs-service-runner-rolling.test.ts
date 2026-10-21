@@ -272,10 +272,13 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       (c) => c.networkName === 'net-1'
     );
     expect(disconnectsForR0Net.length).toBeGreaterThan(0);
-    // Sidecar AND main container are both disconnected so the alias
-    // is stripped no matter which docker DNS lookup beat which.
+    // Only the replica's own container is disconnected. The metadata
+    // sidecar on the shared network is SHARED by every replica, and
+    // disconnecting it cut the survivors off from their task-role
+    // credentials (#815 review).
     const ids = disconnectsForR0Net.map((c) => c.containerId).sort();
-    expect(ids).toEqual(['cid-1', 'sc-1']);
+    expect(ids).toEqual(['cid-1']);
+    expect(hoisted.disconnectCalls.some((c) => c.containerId.startsWith('sc-'))).toBe(false);
 
     await controller.shutdown();
     expect(pool.size()).toBe(0);

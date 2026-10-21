@@ -1583,6 +1583,9 @@ export async function rollServiceReplica(args: {
   // trivially picks one of them. This step is only meaningful for the
   // rolling pathway — SIGINT-driven cleanup tears down the whole
   // network anyway.
+  // Retire the old replica's watcher BEFORE the drain, so an exit during
+  // the drain window is not taken for a crash and restarted.
+  oldInstance.shuttingDown = true;
   await disconnectOldFromSharedNetwork(oldInstance, { drain: true }).catch((err) => {
     logger.debug(
       `Rolling replica ${oldInstance.index}: shared-network disconnect of old ` +
@@ -2442,13 +2445,15 @@ async function disconnectOldFromSharedNetwork(
       if (ip) drainIps.set(c.id, ip);
     }
   }
-  // Sidecar is owned by the run-state too but lives in its own
-  // network namespace inside the SAME shared net. Disconnect it AND
-  // every started container so wget's Docker DNS lookup misses the
-  // dying replica entirely after this point.
-  const targets: string[] = [];
-  if (network.sidecarContainerId) targets.push(network.sidecarContainerId);
-  for (const c of oldInstance.state.startedContainers) targets.push(c.id);
+  // Disconnect every started container so wget's Docker DNS lookup
+  // misses the dying replica entirely after this point. NOT the metadata
+  // sidecar: on the shared network (`ownedByCaller`, checked above)
+  // `state.network` is a copy of the ONE network every replica of every
+  // service joins, so its `sidecarContainerId` is the shared
+  // task-metadata / credentials endpoint — disconnecting it cut every
+  // surviving replica (and the new shadow) off from its task-role
+  // credentials after a single rolling reload.
+  const targets: string[] = oldInstance.state.startedContainers.map((c) => c.id);
   for (const id of targets) {
     try {
       // `--force` so a stop-then-disconnect race (rare; cleanupEcsRun
@@ -2467,8 +2472,7 @@ async function disconnectOldFromSharedNetwork(
   if (drainIps.size === 0) return;
   // Issue #813 — same drain as the soft reload: the aliases are gone, but a
   // request already aimed at the old IP must still reach the old app until
-  // it is stopped. The sidecar is not re-attached: nothing addresses it by
-  // the old replica's IP.
+  // it is stopped.
   let reattached = false;
   for (const [id, ip] of drainIps) {
     try {
