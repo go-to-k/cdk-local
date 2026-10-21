@@ -120,7 +120,10 @@ and write cross-references as `go-to-k/<repo>#N`.
 
 **`now` is the default; `next` needs one of the two reasons
 `.claude/rules/session-report.md` enumerates** (external input / COLD AND
-HEAVY). Once external input is excluded the CONTEXT TEST decides: list the
+HEAVY). A maintainer decision is external input only once ASKED via
+`AskUserQuestion` and unanswered; matching what the real service does is a
+routine fidelity call, yours (go-to-k/cdk-local#813, filed `next` on that
+ground, was fixed the same run). Once external input is excluded the CONTEXT TEST decides: list the
 files the fix touches or must read; if this session read, edited or reviewed
 ANY of them it is `now` — as is anything that compounds if left loose (an integ
 fixture the fix still needs is written HERE, while the subsystem is loaded).
@@ -158,7 +161,9 @@ Never edit in the main checkout. Per lane:
 git worktree add .claude/worktrees/<name> -b <branch> origin/main
 cd .claude/worktrees/<name>
 mise trust && mise install   # a fresh worktree's .mise.toml is untrusted: no vp
-pnpm install    # worktrees have no node_modules; nor may the MAIN checkout
+corepack pnpm install   # worktrees have no node_modules; nor may the MAIN
+                         # checkout. corepack honours packageManager; a bare
+                         # pnpm can be a mise shim with no version set
 vp run build    # ...and no dist/; see below
 ```
 

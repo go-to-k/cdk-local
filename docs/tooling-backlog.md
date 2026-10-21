@@ -77,6 +77,14 @@ hand at the time of removal, and none is rebuilt until it bites a second time.
 | A commit or push on `main` | `branch-gate.sh` | replaced server-side and STRICTLY stronger: the `main` ruleset requires a pull request for every change to `main` and allows only a squash merge, with zero bypass actors, so `git push origin main` is refused for any commit from any client — including ones no hook can see. One gap remains and it is not hook-shaped: a commit on a LOCAL `main` never reaches the server, so nothing refuses it; move it with `git branch <name> && git reset --hard origin/main`. The rules are enumerated in [.claude/rules/hooks.md](../.claude/rules/hooks.md) |
 | Non-English writing-system characters in a PR diff, refused BEFORE `gh pr create` | `non-english-text-gate.sh` | replaced, and strictly stronger: `scripts/check-pr-non-english-text.ts` in `pr-content-checks.yml` checks the ARTIFACT, so the web UI, a fork PR and every non-`gh` client are covered for the first time. `scripts/check-gh-body-english.ts` adds the title / body / comment surfaces the hook never saw. The one thing lost is TIMING on an issue or a comment, where the text is public before the check reports |
 
+## First occurrences
+
+One row per observed weakness; nothing is built until the same failure recurs.
+
+| Observed | Where it bit | Workaround that held |
+| --- | --- | --- |
+| An expired `public.ecr.aws` token in the Docker credential store fails every `public.ecr.aws/lambda/*` base-image pull, though the registry serves anonymous pulls; the lane shimmed `docker` in its scratchpad instead of surfacing the host fault | a `/work-issues` lane's integ, go-to-k/cdk-local#813 | `docker logout public.ecr.aws`, then pull anonymously |
+
 ## Open tooling items
 
 These are the issues currently on the tracker whose subject is the tooling
