@@ -507,7 +507,11 @@ if [[ -z "${VICTIM}" ]]; then
 fi
 BOOTS_BEFORE=$(booting_count)
 echo "==> Phase 3: killing replica container ${VICTIM}"
-docker kill "${VICTIM}" >/dev/null
+docker kill "${VICTIM}" >/dev/null || {
+  echo "FAIL: docker kill ${VICTIM} failed"
+  docker ps -a --filter "name=cdkl-" --format 'table {{.Names}}\t{{.Status}}'
+  exit 1
+}
 
 RESTART_BOOTED=0
 for _ in $(seq 1 300); do
@@ -557,6 +561,30 @@ if grep -qE "Restarted replica .*(did not accept|exited before)" "${LOG_FILE}"; 
   exit 1
 fi
 echo "    [zero connection refusals while a crashed replica restarted] OK"
+
+# The surviving replica alone satisfies FAIL=0, so prove the RESTARTED one is
+# back in service: no failed restart, and two running web replicas that each
+# carry the `srv` alias again.
+if grep -qE "Replica [0-9]+ restart failed" "${LOG_FILE}"; then
+  echo "FAIL: the killed replica's restart failed"
+  grep -E "Replica [0-9]+ restart failed" "${LOG_FILE}"
+  exit 1
+fi
+WEB_RUNNING=$(docker ps --filter "name=cdkl-" --format '{{.Names}}' | grep -- '-web-' || true)
+WEB_COUNT=$(printf '%s\n' "${WEB_RUNNING}" | grep -c . || true)
+if [[ "${WEB_COUNT}" -ne 2 ]]; then
+  echo "FAIL: expected 2 running web replicas after the restart, got ${WEB_COUNT}"
+  printf '%s\n' "${WEB_RUNNING}"
+  exit 1
+fi
+for c in ${WEB_RUNNING}; do
+  if ! docker inspect -f "{{json (index .NetworkSettings.Networks \"${SHARED_NET}\").Aliases}}" "${c}" | grep -q '"srv"'; then
+    echo "FAIL: replica container ${c} does not carry the srv alias after the restart"
+    docker inspect -f "{{json .NetworkSettings.Networks}}" "${c}"
+    exit 1
+  fi
+done
+echo "    [the restarted replica is back in service with its srv alias] OK"
 
 echo "==> Sending SIGTERM to cdk-local"
 kill -TERM "${CDKL_PID}"

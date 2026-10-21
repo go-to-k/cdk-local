@@ -849,6 +849,38 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       await controller.shutdown();
     });
 
+    it('leaves the aliases of a withheld container that exited before listening withheld (no re-attach of a stopped container)', async () => {
+      const { opts, registry } = gatedOpts();
+      const connects: string[] = [];
+      __setDockerNetworkConnectImpl(async (_net, id) => {
+        connects.push(id);
+      });
+      let calls = 0;
+      __setListenProbeImpl(async () => {
+        calls += 1;
+        // The replica probe sees it listen; it then dies before its own
+        // per-container check.
+        return calls === 1 ? { kind: 'listening' } : { kind: 'exited', detail: 'is not running' };
+      });
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      await rollServiceReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeServiceConnectService(),
+        newOptions: opts as never,
+      });
+      expect(connects).toEqual([]);
+      // The roll still completes (the watcher restarts a dead shadow).
+      expect(
+        (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13')
+      ).toBe(true);
+      await controller.shutdown();
+    });
+
     it.each([
       [1, 'during the replica probe'],
       [2, 'during the per-container wait'],
@@ -979,20 +1011,33 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       ).toBe(false);
     });
 
-    it('stops probing a restarted container that exited again, and still re-registers it (the next exit restarts it)', async () => {
-      crashOnce();
+    it('publishes nothing for a restart that crashes again during startup, and the restart policy re-boots it', async () => {
+      // cid-1 crashes; its restart (cid-3) exits during startup and its
+      // `docker wait` returns 137 too; the next restart (cid-4) comes up.
+      const crashed = new Set<string>();
+      __setWaitForExitImpl((id) => {
+        if ((id === 'cid-1' || id === 'cid-3') && !crashed.has(id)) {
+          crashed.add(id);
+          return Promise.resolve(137);
+        }
+        return new Promise<number>(() => {});
+      });
       const registry = new CloudMapRegistry();
       const opts = {
         ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
         frontDoor: undefined,
         discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
       };
-      __setDockerInspectPublishesHostPortsImpl(async () => false);
-      __setDockerNetworkConnectImpl(async () => undefined);
-      let listens = 0;
-      __setListenProbeImpl(async () => {
-        listens += 1;
-        return { kind: 'exited', detail: 'Container cid-3 is not running' };
+      const connects: string[] = [];
+      __setDockerNetworkConnectImpl(async (_net, id) => {
+        connects.push(id);
+      });
+      const listens: string[] = [];
+      __setListenProbeImpl(async (id) => {
+        listens.push(id);
+        return id === 'cid-3'
+          ? { kind: 'exited', detail: 'Container cid-3 is not running' }
+          : { kind: 'listening' };
       });
       __setShadowReadyConfig({ timeoutMs: 60_000, intervalMs: 1 });
       const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn').mockImplementation(() => {});
@@ -1001,12 +1046,16 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
         opts as never,
         createServiceRunState()
       );
-      await waitFor(() =>
-        (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13')
-      );
-      // One LISTEN for the replica probe, one for the per-container gate:
-      // neither polls a stopped container for the 60 s budget.
-      expect(listens).toBe(2);
+      const ips = (): string[] => (registry.lookup('cdkl.local', 'svc') ?? []).map((e) => e.ip);
+      await waitFor(() => ips().includes('172.20.0.14'));
+      // cid-3 was probed ONCE (no 60 s polling of a dead container), never
+      // re-attached, never registered; cid-4 went through the full gate.
+      expect(listens.filter((id) => id === 'cid-3')).toHaveLength(1);
+      expect(connects).toEqual(['cid-4']);
+      expect(ips()).not.toContain('172.20.0.13');
+      const r0 = controller.runState.replicas.find((r) => r.index === 0)!;
+      expect(r0.restartCount).toBe(2);
+      expect(r0.shuttingDown).toBe(false); // not left degraded
       expect(
         warnSpy.mock.calls.some((c) =>
           String(c[0]).includes('Restarted replica r0 (gen 0): the container exited before port 80 listened.')
