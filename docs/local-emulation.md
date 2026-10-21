@@ -1935,8 +1935,8 @@ Known fast-path limitations (Phase 4 trade-offs):
   asset source flip the asset hash to the same value across the
   synth. The classifier detects this and forces the rebuild path so
   the rolling primitive's fresh `docker create` picks up the new
-  spec — soft-reload would `docker cp` identical files and `docker
-  restart` with the OLD spec, silently dropping the user's intent.
+  spec — soft-reload would `docker cp` identical files and restart
+  the container with the OLD spec, silently dropping the user's intent.
 
 `cdkl start-alb --watch` (Phase 3 of issue #214) reuses this same
 per-replica rolling primitive — every ECS service behind the named
