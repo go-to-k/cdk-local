@@ -5,7 +5,8 @@
 // fail to pull anyway). `.cjs` extension keeps the file out of
 // tests/integration/.gitignore's `*.js` sweep.
 const http = require('http');
-const PAYLOAD = 'OVERRIDE_OK';
+// The Dockerfile bakes the `OVERRIDE_PAYLOAD` build arg into the env (#659).
+const PAYLOAD = process.env.OVERRIDE_PAYLOAD || 'OVERRIDE_OK';
 http
   .createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain' });

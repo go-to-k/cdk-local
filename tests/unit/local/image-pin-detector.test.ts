@@ -3,6 +3,7 @@ import {
   isLocalCdkAssetImage,
   describePinnedImageUri,
   listPinnedTargets,
+  imageOverrideKeyAliases,
 } from '../../../src/local/image-pin-detector.js';
 import type { ResolvedEcsService } from '../../../src/local/ecs-service-resolver.js';
 import type { ResolvedEcsContainer, ResolvedEcsImage } from '../../../src/local/ecs-task-resolver.js';
@@ -13,8 +14,21 @@ import type { ResolvedEcsContainer, ResolvedEcsImage } from '../../../src/local/
  * `task.containers[i].essential`. The actual `ResolvedEcsService`
  * interface is wide; we don't need 90% of it for this helper.
  */
-function fakeService(containers: Array<Partial<ResolvedEcsContainer>>): ResolvedEcsService {
+function fakeService(
+  containers: Array<Partial<ResolvedEcsContainer>>,
+  identity: {
+    stackName?: string;
+    serviceLogicalId?: string;
+    serviceDisplayName?: string;
+    serviceName?: string;
+  } = {}
+): ResolvedEcsService {
+  const serviceLogicalId = identity.serviceLogicalId ?? 'SvcLogicalId';
   return {
+    stack: { stackName: identity.stackName ?? 'StackA' },
+    serviceLogicalId,
+    serviceDisplayName: identity.serviceDisplayName ?? serviceLogicalId,
+    serviceName: identity.serviceName ?? serviceLogicalId,
     task: {
       containers: containers.map(
         (c, i) =>
@@ -162,8 +176,8 @@ describe('listPinnedTargets (issue #242 / N1 dedupe)', () => {
       { target: 'StackA/AuthService', service: ecrService('111.dkr.ecr.us-east-1.amazonaws.com/b:2') },
     ]);
     expect(out).toEqual([
-      { target: 'StackA/AppService', label: '111.dkr.ecr.us-east-1.amazonaws.com/a:1' },
-      { target: 'StackA/AuthService', label: '111.dkr.ecr.us-east-1.amazonaws.com/b:2' },
+      { target: 'StackA/AppService', label: '111.dkr.ecr.us-east-1.amazonaws.com/a:1', aliases: expect.any(Array) },
+      { target: 'StackA/AuthService', label: '111.dkr.ecr.us-east-1.amazonaws.com/b:2', aliases: expect.any(Array) },
     ]);
   });
 
@@ -183,8 +197,8 @@ describe('listPinnedTargets (issue #242 / N1 dedupe)', () => {
       { target: 'BgSvc', service: publicService('nginx:latest') },
     ]);
     expect(out).toEqual([
-      { target: 'AuthSvc', label: '111.dkr.ecr.us-east-1.amazonaws.com/auth:1' },
-      { target: 'BgSvc', label: 'nginx:latest' },
+      { target: 'AuthSvc', label: '111.dkr.ecr.us-east-1.amazonaws.com/auth:1', aliases: expect.any(Array) },
+      { target: 'BgSvc', label: 'nginx:latest', aliases: expect.any(Array) },
     ]);
   });
 
@@ -208,7 +222,49 @@ describe('listPinnedTargets (issue #242 / N1 dedupe)', () => {
     // back to "a deployed registry" prose when label is undefined.
     const empty = fakeService([]);
     expect(listPinnedTargets([{ target: 'Empty', service: empty }])).toEqual([
-      { target: 'Empty' },
+      { target: 'Empty', aliases: expect.any(Array) },
+    ]);
+  });
+});
+
+describe('imageOverrideKeyAliases (issue #659)', () => {
+  const ecr = { kind: 'ecr', uri: '1.dkr.ecr.us-east-1.amazonaws.com/a:1', account: '1', region: 'us-east-1' } as const;
+
+  it('names the service by logical id, Stack:LogicalId, display name and ServiceName', () => {
+    const service = fakeService([{ essential: true, image: ecr }], {
+      stackName: 'MyStack',
+      serviceLogicalId: 'AppServiceABC123',
+      serviceDisplayName: 'AppService',
+      serviceName: 'app-svc',
+    });
+    expect(imageOverrideKeyAliases(service)).toEqual([
+      'AppServiceABC123',
+      'MyStack:AppServiceABC123',
+      'AppService',
+      'app-svc',
+    ]);
+  });
+
+  it('dedupes when the display name and ServiceName fall back to the logical id', () => {
+    const service = fakeService([{ essential: true, image: ecr }], {
+      stackName: 'MyStack',
+      serviceLogicalId: 'AppService',
+    });
+    expect(imageOverrideKeyAliases(service)).toEqual(['AppService', 'MyStack:AppService']);
+  });
+
+  it('is what listPinnedTargets attaches to each pinned entry', () => {
+    const service = fakeService([{ essential: true, image: ecr }], {
+      stackName: 'MyStack',
+      serviceLogicalId: 'AppServiceABC123',
+      serviceDisplayName: 'AppService',
+    });
+    expect(listPinnedTargets([{ target: 'MyStack/AppService', service }])).toEqual([
+      {
+        target: 'MyStack/AppService',
+        label: ecr.uri,
+        aliases: ['AppServiceABC123', 'MyStack:AppServiceABC123', 'AppService'],
+      },
     ]);
   });
 });

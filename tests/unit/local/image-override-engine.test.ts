@@ -24,6 +24,7 @@ vi.mock('../../../src/utils/docker-cmd.js', async () => {
 
 const {
   buildImageOverrideTag,
+  canonicalizeImageOverrideKeys,
   discoverDockerfiles,
   enforceImageOverrideOrphans,
   expandTilde,
@@ -146,6 +147,131 @@ describe('parseImageOverrideFlags (issue #238)', () => {
 
   it('rejects an empty --image-target', () => {
     expect(() => parseImageOverrideFlags({ imageTarget: '' })).toThrow();
+  });
+});
+
+describe('canonicalizeImageOverrideKeys (issue #659)', () => {
+  // The pinned set is keyed by the TARGET STRING the boot resolved, never by
+  // the short service name the docs use as the key. These aliases are what
+  // `listPinnedTargets` attaches for a service whose target was typed
+  // stack-qualified.
+  const TARGET = 'MyStack:AppServiceABC123';
+  const aliases = new Map([[TARGET, ['AppServiceABC123', 'MyStack:AppServiceABC123', 'AppService']]]);
+
+  it('rewrites a short service key to its pinned target, in both buckets', () => {
+    const raw = parseImageOverrideFlags({
+      imageOverride: ['AppService=./Dockerfile'],
+      imageBuildArg: ['AppService:NODE_ENV=dev'],
+      imageTarget: ['AppService=builder'],
+    });
+    const out = canonicalizeImageOverrideKeys(raw, aliases);
+    expect([...out.explicit.entries()]).toEqual([[TARGET, './Dockerfile']]);
+    expect([...out.perService.keys()]).toEqual([TARGET]);
+    expect(out.perService.get(TARGET)?.buildArgs.get('NODE_ENV')).toBe('dev');
+    expect(out.perService.get(TARGET)?.targetStage).toBe('builder');
+    // Pure: the parser's own maps are untouched.
+    expect([...raw.explicit.keys()]).toEqual(['AppService']);
+  });
+
+  it('keeps an exact target key, even when it is also another target\'s alias', () => {
+    const map = new Map([
+      ['Api', ['ApiLogical']],
+      ['Other', ['Api']],
+    ]);
+    const out = canonicalizeImageOverrideKeys(
+      parseImageOverrideFlags({ imageOverride: ['Api=./Dockerfile'] }),
+      map
+    );
+    expect([...out.explicit.keys()]).toEqual(['Api']);
+  });
+
+  it('leaves a key that matches no pinned target unchanged', () => {
+    const out = canonicalizeImageOverrideKeys(
+      parseImageOverrideFlags({ imageOverride: ['BadService=./Dockerfile'] }),
+      aliases
+    );
+    expect([...out.explicit.keys()]).toEqual(['BadService']);
+  });
+
+  it('throws when a key matches the aliases of more than one pinned target', () => {
+    const map = new Map([
+      ['StackA:AppService', ['AppService']],
+      ['StackB:AppService', ['AppService']],
+    ]);
+    expect(() =>
+      canonicalizeImageOverrideKeys(
+        parseImageOverrideFlags({ imageOverride: ['AppService=./Dockerfile'] }),
+        map
+      )
+    ).toThrow(ImageOverrideError);
+    expect(() =>
+      canonicalizeImageOverrideKeys(
+        parseImageOverrideFlags({ imageOverride: ['AppService=./Dockerfile'] }),
+        map
+      )
+    ).toThrow(/matches more than one pinned target \(StackA:AppService, StackB:AppService\)/);
+  });
+
+  it('throws when two keys name the same pinned target', () => {
+    expect(() =>
+      canonicalizeImageOverrideKeys(
+        parseImageOverrideFlags({
+          imageOverride: ['AppService=./a/Dockerfile', `${TARGET}=./b/Dockerfile`],
+        }),
+        aliases
+      )
+    ).toThrow(/'AppService' and 'MyStack:AppServiceABC123' both name the pinned target/);
+  });
+
+  it('keeps a key naming a known NON-pinned target, even when it is a pinned alias', () => {
+    // Pinned `Stack:Api` has ServiceName `Web`; the run also boots a CDK-asset
+    // target literally named `Web`. The key stays `Web`, so Stage 1 warns that
+    // it is not pinned instead of silently binding the override to `Stack:Api`.
+    const map = new Map([['Stack:Api', ['Api', 'Web']]]);
+    const out = canonicalizeImageOverrideKeys(
+      parseImageOverrideFlags({ imageOverride: ['Web=./Dockerfile'] }),
+      map,
+      ['Stack:Api', 'Web']
+    );
+    expect([...out.explicit.keys()]).toEqual(['Web']);
+  });
+
+  it('merges per-service overlays spelled two ways for one target', () => {
+    const out = canonicalizeImageOverrideKeys(
+      parseImageOverrideFlags({
+        imageBuildArg: ['AppService:K=V'],
+        imageTarget: [`${TARGET}=builder`],
+      }),
+      aliases
+    );
+    expect([...out.perService.keys()]).toEqual([TARGET]);
+    const overlay = out.perService.get(TARGET);
+    expect(overlay?.buildArgs.get('K')).toBe('V');
+    expect(overlay?.targetStage).toBe('builder');
+  });
+
+  it('throws when merged per-service overlays disagree on a value', () => {
+    expect(() =>
+      canonicalizeImageOverrideKeys(
+        parseImageOverrideFlags({
+          // A per-service key splits on its FIRST ':', so the second spelling
+          // is the bare logical id, not the stack-qualified target.
+          imageBuildArg: ['AppService:K=one', 'AppServiceABC123:K=two'],
+        }),
+        aliases
+      )
+    ).toThrow(/build arg 'K' two different values/);
+  });
+
+  it('end-to-end with Stage 1: the short key binds the pinned target instead of being dropped', async () => {
+    const dockerfile = makeTmpDockerfile();
+    const rawFlags = canonicalizeImageOverrideKeys(
+      parseImageOverrideFlags({ imageOverride: [`AppService=${dockerfile}`] }),
+      aliases
+    );
+    const overrides = await resolveImageOverrides({ rawFlags, pinnedTargets: [TARGET] });
+    expect([...overrides.keys()]).toEqual([TARGET]);
+    expect(() => enforceImageOverrideOrphans(rawFlags, overrides)).not.toThrow();
   });
 });
 

@@ -97,6 +97,42 @@ export interface PinnedTargetEntry {
    * for targets whose representative image is NOT a local CDK asset).
    */
   label?: string;
+  /**
+   * Issue #659 — the shorter names a user may write as the `<service>` key of
+   * `--image-override <service>=<dockerfile>` (and the per-service build-input
+   * flags) instead of this full target string. See
+   * {@link imageOverrideKeyAliases}.
+   */
+  aliases: string[];
+}
+
+/**
+ * Issue #659 — the names `--image-override <service>=<dockerfile>` accepts
+ * for a service target besides the target string itself: the service's
+ * logical id, its stack-qualified `Stack:LogicalId`, its display name (the
+ * construct id, from the `aws:cdk:path` metadata) and its `ServiceName`.
+ *
+ * The pinned set is keyed by the TARGET STRING the boot resolved — the user's
+ * own positional argument for `start-service`, `Stack:LogicalId` for each
+ * service `start-alb` expands from the ALB — while the documented key is the
+ * SERVICE name (`--image-override AppService=./Dockerfile`). Without these
+ * aliases a documented mapping matched nothing and was dropped with a
+ * "not in the pinned-target set" warning, so the deployed-registry image was
+ * pulled instead of the local build.
+ *
+ * Host-side use case: {@link listPinnedTargets} attaches these as `aliases`;
+ * a host building its own pinned set calls this to hand
+ * `canonicalizeImageOverrideKeys` the same alias map.
+ */
+export function imageOverrideKeyAliases(service: ResolvedEcsService): string[] {
+  const out = new Set<string>([
+    service.serviceLogicalId,
+    `${service.stack.stackName}:${service.serviceLogicalId}`,
+    service.serviceDisplayName,
+    service.serviceName,
+  ]);
+  out.delete('');
+  return [...out];
 }
 /**
  * Issue #242 / N1 — dedupe pinned-target detection across the two
@@ -129,7 +165,11 @@ export function listPinnedTargets(
   for (const { target, service } of resolvedServices) {
     if (isLocalCdkAssetImage(service)) continue;
     const label = describePinnedImageUri(service);
-    out.push({ target, ...(label !== undefined && { label }) });
+    out.push({
+      target,
+      ...(label !== undefined && { label }),
+      aliases: imageOverrideKeyAliases(service),
+    });
   }
   return out;
 }

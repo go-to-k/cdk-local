@@ -456,6 +456,131 @@ export function parseImageOverrideFlags(input: {
 }
 
 /**
+ * Issue #659 — rewrite the `<service>` keys of the explicit
+ * `--image-override <service>=<dockerfile>` mappings and of the per-service
+ * build-input flags from a user-facing ALIAS to the pinned TARGET STRING the
+ * rest of the engine is keyed by.
+ *
+ * The pinned set holds the target string the boot resolved (the user's own
+ * positional argument for `start-service` / `run-task`, `Stack:LogicalId` for
+ * each service `start-alb` expands from the ALB), while the documented key is
+ * the short service name (`--image-override AppService=./Dockerfile`). Without
+ * this step such a mapping matched no pinned target and was dropped with a
+ * warning, so the deployed-registry image was pulled instead.
+ *
+ * `pinnedAliases` maps each pinned target to the other names it answers to.
+ * A key that IS a pinned target is kept as-is (exact match wins over any
+ * alias); a key matching exactly one target's alias is rewritten to it; a key
+ * matching NO alias is kept unchanged, so Stage 1's "not in the pinned-target
+ * set" warning and {@link enforceImageOverrideOrphans} still report it. Throws
+ * {@link ImageOverrideError} when a key matches the aliases of more than one
+ * pinned target, when two explicit keys resolve to the same target, or when
+ * two per-service overlays merged onto one target disagree on a value — each
+ * would otherwise silently drop a mapping. Pure; returns a new
+ * {@link RawImageOverrideFlags} sharing the picker paths and globals.
+ *
+ * Host-side use case: a host CLI that calls {@link parseImageOverrideFlags} +
+ * {@link resolveImageOverrides} itself runs this between them (feeding
+ * `listPinnedTargets`' `aliases`) so its `--image-override` accepts the same
+ * service keys, and passes the RESULT to {@link enforceImageOverrideOrphans}.
+ */
+export function canonicalizeImageOverrideKeys(
+  rawFlags: RawImageOverrideFlags,
+  pinnedAliases: ReadonlyMap<string, ReadonlyArray<string>>,
+  /**
+   * Every target string this run booted, pinned or not. A key equal to one
+   * of them is kept as-is, so a pinned target's alias never captures the
+   * exact name of a sibling CDK-asset target (which Stage 1 then warns about).
+   */
+  knownTargets: Iterable<string> = []
+): RawImageOverrideFlags {
+  const exact = new Set<string>([...pinnedAliases.keys(), ...knownTargets]);
+  const targetsByAlias = new Map<string, Set<string>>();
+  for (const [target, aliases] of pinnedAliases) {
+    for (const alias of aliases) {
+      let set = targetsByAlias.get(alias);
+      if (!set) {
+        set = new Set();
+        targetsByAlias.set(alias, set);
+      }
+      set.add(target);
+    }
+  }
+  const logger = getLogger();
+  const canonical = (key: string, flag: string): string => {
+    if (exact.has(key)) return key;
+    const matches = targetsByAlias.get(key);
+    if (!matches) return key;
+    if (matches.size > 1) {
+      throw new ImageOverrideError(
+        `${flag} key '${key}' matches more than one pinned target ` +
+          `(${[...matches].join(', ')}). Name the target in full instead.`
+      );
+    }
+    const target = [...matches][0] as string;
+    logger.debug(`${flag} key '${key}' resolved to pinned target '${target}'.`);
+    return target;
+  };
+
+  const explicit = new Map<string, string>();
+  const explicitKeyByTarget = new Map<string, string>();
+  for (const [key, dockerfile] of rawFlags.explicit) {
+    const target = canonical(key, '--image-override');
+    const earlier = explicitKeyByTarget.get(target);
+    if (earlier !== undefined) {
+      throw new ImageOverrideError(
+        `--image-override keys '${earlier}' and '${key}' both name the pinned target ` +
+          `'${target}'. Name each service target at most once.`
+      );
+    }
+    explicitKeyByTarget.set(target, key);
+    explicit.set(target, dockerfile);
+  }
+
+  // Per-service overlays spelled two ways for one target (e.g. a build-arg
+  // keyed `AppService` beside a target stage keyed `Stack:AppService`) are
+  // MERGED; only a genuine conflict — one key / id / stage given two
+  // different values — is refused.
+  const perService = new Map<string, PerServiceBuildInputs>();
+  for (const [key, overlay] of rawFlags.perService) {
+    const target = canonical(key, 'Per-service image-override flag');
+    const into = perService.get(target);
+    if (!into) {
+      perService.set(target, {
+        buildArgs: new Map(overlay.buildArgs),
+        buildSecrets: new Map(overlay.buildSecrets),
+        ...(overlay.targetStage !== undefined && { targetStage: overlay.targetStage }),
+      });
+      continue;
+    }
+    const conflict = (what: string): never => {
+      throw new ImageOverrideError(
+        `Per-service image-override flags give ${what} two different values for the pinned ` +
+          `target '${target}' (one of them keyed '${key}'). Pass it once.`
+      );
+    };
+    for (const [k, v] of overlay.buildArgs) {
+      if (into.buildArgs.has(k) && into.buildArgs.get(k) !== v) conflict(`build arg '${k}'`);
+      into.buildArgs.set(k, v);
+    }
+    for (const [id, src] of overlay.buildSecrets) {
+      if (into.buildSecrets.has(id) && into.buildSecrets.get(id) !== src) {
+        conflict(`build secret '${id}'`);
+      }
+      into.buildSecrets.set(id, src);
+    }
+    if (overlay.targetStage !== undefined) {
+      if (into.targetStage !== undefined && into.targetStage !== overlay.targetStage) {
+        conflict('the target stage');
+      }
+      into.targetStage = overlay.targetStage;
+    }
+  }
+
+  return { ...rawFlags, explicit, perService };
+}
+
+/**
  * Resolve `--image-override` flag inputs (raw) + a list of pinned
  * service targets into the final {@link ImageOverrideMap}. Walks four
  * stages:

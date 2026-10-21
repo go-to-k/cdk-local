@@ -53,6 +53,7 @@ import {
 } from './ecs-service-emulator.js';
 import {
   parseImageOverrideFlags,
+  canonicalizeImageOverrideKeys,
   resolveImageOverrides,
   enforceImageOverrideOrphans,
   runImageOverrideBuilds,
@@ -70,6 +71,7 @@ import {
 } from '../../local/embed-config.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import type { SubstitutionContext } from '../../local/state-resolver.js';
+import { deriveServiceDisplayName } from '../../local/ecs-service-resolver.js';
 
 interface LocalRunTaskOptions {
   app?: string;
@@ -891,6 +893,27 @@ export interface RunTaskImageOverrideResult {
 }
 
 /**
+ * Issue #659 — the names `cdkl run-task --image-override <key>=<dockerfile>`
+ * accepts for the task besides the target string itself: the task
+ * definition's logical id, its stack-qualified `Stack:LogicalId`, and its
+ * construct id (the last meaningful `aws:cdk:path` segment).
+ */
+function runTaskOverrideKeyAliases(task: ResolvedEcsTask): string[] {
+  const id = task.taskDefinitionLogicalId;
+  const out = new Set<string>([
+    id,
+    `${task.stack.stackName}:${id}`,
+    deriveServiceDisplayName(
+      undefined,
+      id,
+      task.resource.Metadata as Record<string, unknown> | undefined
+    ),
+  ]);
+  out.delete('');
+  return [...out];
+}
+
+/**
  * Resolve + build a `--image-override` for `cdkl run-task` (issue #388).
  *
  * A pinned (deployed-registry) task-def container image does not pick up local
@@ -932,12 +955,21 @@ export async function resolveRunTaskImageOverride(args: {
   const pinnedLabels = new Map<string, string>();
   if (pinned) pinnedLabels.set(target, `${task.stack.stackName}/${task.taskDefinitionLogicalId}`);
 
-  const rawFlags = parseImageOverrideFlags({
-    ...(options.imageOverride && { imageOverride: options.imageOverride }),
-    ...(options.imageBuildArg && { imageBuildArg: options.imageBuildArg }),
-    ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
-    ...(options.imageTarget && { imageTarget: options.imageTarget }),
-  });
+  // Issue #659 — the explicit `<key>=<dockerfile>` form also accepts the task
+  // definition's logical id (bare or stack-qualified) and its construct id, not
+  // only the exact target string typed on the command line.
+  const pinnedAliases = new Map<string, string[]>();
+  if (pinned) pinnedAliases.set(target, runTaskOverrideKeyAliases(task));
+  const rawFlags = canonicalizeImageOverrideKeys(
+    parseImageOverrideFlags({
+      ...(options.imageOverride && { imageOverride: options.imageOverride }),
+      ...(options.imageBuildArg && { imageBuildArg: options.imageBuildArg }),
+      ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
+      ...(options.imageTarget && { imageTarget: options.imageTarget }),
+    }),
+    pinnedAliases,
+    [target]
+  );
 
   // Nothing pinned to prompt about AND no override flag => no-op. Per-service
   // build-input flags are NOT eligible for short-circuit so the orphan

@@ -585,6 +585,7 @@ export {
   isLocalCdkAssetImage,
   describePinnedImageUri,
   listPinnedTargets,
+  imageOverrideKeyAliases,
   type PinnedTargetEntry,
 } from './local/image-pin-detector.js';
 export { resolveWatchConfig, type CdkWatchConfig } from './cli/config-loader.js';
@@ -677,6 +678,7 @@ export {
   runImageOverrideBuilds,
   buildImageOverrideTag,
   enforceImageOverrideOrphans,
+  canonicalizeImageOverrideKeys,
   mergeForService,
   ImageOverrideError,
   type ImageOverrideEntry,

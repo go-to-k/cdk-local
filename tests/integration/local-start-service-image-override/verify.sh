@@ -8,16 +8,19 @@
 # Without `--image-override`, the boot path detects the URI as
 # "pinned to a deployed registry" and would refuse / fail to pull it.
 # With `--image-override AppService=./webapp/Dockerfile`, the override
-# engine substitutes a local Node Alpine build that replies with
-# `OVERRIDE_OK`, proving the override path:
+# engine substitutes a local Node Alpine build that replies with the
+# per-service build arg `--image-build-arg AppService:OVERRIDE_PAYLOAD=...`
+# baked in, proving the override path:
 #
+#   0. Matched the bare `AppService` key to the stack-qualified target
+#      (issue #659) — for the override AND the per-service build arg.
 #   1. Detected the placeholder URI as pinned ("running image is
 #      pinned to a deployed registry" WARN does NOT fire for
 #      AppService because the override covered it).
 #   2. Logged `Building override image for 'AppService'...` ahead of
 #      `docker build`.
 #   3. Booted the replica from the OVERRIDE image (request returns
-#      `OVERRIDE_OK`, NOT a placeholder-image pull error).
+#      that payload, NOT a placeholder-image pull error).
 #   4. SIGTERM tears every cdkl-* container + network down with no
 #      orphans.
 #
@@ -54,6 +57,10 @@ CDKL="node ../../../dist/cli.js"
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 NODE_IMAGE="public.ecr.aws/docker/library/node:22-alpine"
 HOST_PORT=8190
+# Issue #659 — the payload the override webapp serves comes from the
+# PER-SERVICE build arg below, so a response equal to it proves the short
+# `AppService` key reached both the override AND the per-service overlay.
+EXPECTED_PAYLOAD="OVERRIDE_OK_PER_SERVICE_659"
 
 LOG_FILE="$(mktemp)"
 CDKL_PID=""
@@ -119,7 +126,7 @@ fi
 # -----------------------------------------------------------------------
 # PHASE 1 — `--image-override AppService=./webapp/Dockerfile` boots the
 # service from the local override; the placeholder ECR URI is never
-# pulled. Asserts the override build log, the OVERRIDE_OK response,
+# pulled. Asserts the override build log, the per-service payload response,
 # and clean teardown.
 # -----------------------------------------------------------------------
 
@@ -127,6 +134,7 @@ echo ""
 echo "==> Phase 1: boot with --image-override (host port ${HOST_PORT})"
 ${CDKL} start-service CdkLocalStartServiceImageOverrideFixture:AppService \
   --image-override AppService=./webapp/Dockerfile \
+  --image-build-arg "AppService:OVERRIDE_PAYLOAD=${EXPECTED_PAYLOAD}" \
   --no-interactive-overrides \
   --no-pull \
   --host-port "8080=${HOST_PORT}" \
@@ -158,13 +166,29 @@ if [[ "${BOOTED}" -ne 1 ]]; then
   exit 1
 fi
 
+echo "==> Asserting the short 'AppService' key matched the pinned target (issue #659)"
+# The target is passed stack-qualified while the override names the bare
+# service, which is the documented form. The pinned set is keyed by the target
+# string, so a key that is not resolved through the service's aliases is
+# dropped with this Stage 1 WARN and the placeholder image is pulled instead.
+if grep -q "is not in the pinned-target set" "${LOG_FILE}"; then
+  echo "FAIL: --image-override AppService=... was not matched to the pinned target"
+  echo "----- service output -----"
+  cat "${LOG_FILE}"
+  echo "--------------------------"
+  exit 1
+fi
+echo "    [short service key matched] OK"
+
 echo "==> Asserting the override-build log line surfaced"
 # The engine logs `Building override image for '<target>' from '<path>' (tag=...)...`
 # before kicking off `docker build`. Match on the prefix + the
 # AppService target name so we know the boot path picked the right
 # target.
-if ! grep -qE "Building override image for '[^']*AppService' from '\./webapp/Dockerfile'" "${LOG_FILE}"; then
-  echo "FAIL: 'Building override image for ... AppService ... from ./webapp/Dockerfile' line not found"
+# The engine logs the Dockerfile as the ABSOLUTE path it resolved the
+# relative `./webapp/Dockerfile` argument to.
+if ! grep -qE "Building override image for '[^']*AppService' from '/[^']*/local-start-service-image-override/webapp/Dockerfile'" "${LOG_FILE}"; then
+  echo "FAIL: 'Building override image for ... AppService ... from <abs>/webapp/Dockerfile' line not found"
   echo "----- service output -----"
   cat "${LOG_FILE}"
   echo "--------------------------"
@@ -193,7 +217,7 @@ PHASE1_OK=0
 PHASE1_RESP=""
 for _ in $(seq 1 90); do
   if PHASE1_RESP=$(curl -sf --max-time 3 "${URL}" 2>&1); then
-    if [[ "${PHASE1_RESP}" == "OVERRIDE_OK" ]]; then
+    if [[ "${PHASE1_RESP}" == "${EXPECTED_PAYLOAD}" ]]; then
       PHASE1_OK=1
       break
     fi
@@ -208,13 +232,13 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 if [[ "${PHASE1_OK}" -ne 1 ]]; then
-  echo "FAIL: override webapp never returned 'OVERRIDE_OK' within 90s (last response: '${PHASE1_RESP}')"
+  echo "FAIL: override webapp never returned '${EXPECTED_PAYLOAD}' within 90s (last response: '${PHASE1_RESP}')"
   echo "----- service output -----"
   cat "${LOG_FILE}"
   echo "--------------------------"
   exit 1
 fi
-echo "    [GET / -> OVERRIDE_OK] OK"
+echo "    [GET / -> ${EXPECTED_PAYLOAD}] OK"
 
 echo "==> SIGTERM cdk-local and assert clean teardown"
 term_server
@@ -282,6 +306,16 @@ if ! grep -qE "pinned target\(s\) remain uncovered" "${LOG_FILE_STRICT}"; then
   exit 1
 fi
 echo "    [strict-overrides error names the uncovered pinned target] OK"
+
+# The guard must refuse BEFORE any replica boots: under `--no-pull` a boot
+# attempt fails on the placeholder image instead of naming the strict guard.
+if grep -q "Booting replica" "${LOG_FILE_STRICT}"; then
+  echo "FAIL: --strict-overrides let a replica boot before refusing"
+  cat "${LOG_FILE_STRICT}"
+  rm -f "${LOG_FILE_STRICT}"
+  exit 1
+fi
+echo "    [strict-overrides refused before any replica booted] OK"
 rm -f "${LOG_FILE_STRICT}"
 
 # Defense-in-depth: a non-zero boot exit shouldn't leave orphans, but
