@@ -1583,7 +1583,7 @@ export async function rollServiceReplica(args: {
   // trivially picks one of them. This step is only meaningful for the
   // rolling pathway — SIGINT-driven cleanup tears down the whole
   // network anyway.
-  await disconnectOldFromSharedNetwork(oldInstance).catch((err) => {
+  await disconnectOldFromSharedNetwork(oldInstance, { drain: true }).catch((err) => {
     logger.debug(
       `Rolling replica ${oldInstance.index}: shared-network disconnect of old ` +
         `(gen ${oldInstance.generation}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
@@ -1909,6 +1909,14 @@ export async function softReloadReplica(args: {
         const plan = await detachFromSharedNetwork(target, sharedNetworkName);
         if (plan) attachPlans.set(target.id, plan);
       }
+      // Issue #813 — drain before the stop. The detach withdrew the
+      // aliases, but a peer that resolved one just before it, or has a
+      // request in flight, still targets the old IP; with the endpoint
+      // gone that request hangs until the client times out. Re-attach each
+      // detached target by IP only (no alias: nothing NEW resolves to it)
+      // so those requests reach the still-running old app, and give them
+      // a bounded window — the local stand-in for a deregistration delay.
+      if (await reattachForDrain(attachPlans)) await sleep(reloadDrainMs);
     }
     for (const target of targets) {
       // `docker stop` + `docker start` rather than `docker restart`: the
@@ -1919,12 +1927,17 @@ export async function softReloadReplica(args: {
       try {
         await dockerStopImpl(target.id);
         const plan = attachPlans.get(target.id);
-        if (plan) {
+        if (plan && (plan.publishesHostPorts || !plan.attached)) {
           // A container that publishes host ports gets its aliases back
           // NOW (it cannot be re-attached once running, see above); one
-          // that publishes none is attached by IP only, and its aliases
-          // follow once the TCP-ready probe passes, so a peer never
-          // resolves the alias to an app that is still binding.
+          // that publishes none stays attached by IP only (normally from
+          // the drain), and its aliases follow once the TCP-ready probe
+          // passes, so a peer never resolves the alias to an app that is
+          // still binding.
+          if (plan.attached) {
+            await dockerNetworkDisconnectImpl(plan.networkName, target.id);
+            plan.attached = false;
+          }
           await attachToSharedNetwork(target.id, plan, plan.publishesHostPorts);
         }
         await dockerStartImpl(target.id);
@@ -2254,6 +2267,54 @@ async function detachFromSharedNetwork(
   };
 }
 
+/**
+ * Issue #813 — how long a replica that has just been withdrawn from DNS
+ * keeps serving on its old IP before it is stopped. A real ALB / Service
+ * Connect drain lets in-flight requests finish (the deregistration delay);
+ * this bounded window covers a request that was already in flight, or a
+ * DNS answer handed out just before the withdrawal, on a dev loop that
+ * should stay fast. Measured: 30 cycles each with a 50 ms peer probe, a
+ * stop right after the disconnect timed 8 requests out; a 1 s IP-only drain
+ * timed none.
+ */
+const DEFAULT_RELOAD_DRAIN_MS = 1000;
+let reloadDrainMs = DEFAULT_RELOAD_DRAIN_MS;
+
+/**
+ * Test-only hook to shrink the drain window. Pass `undefined` to restore the
+ * production default.
+ *
+ * @internal
+ */
+export function __setReloadDrainMs(ms: number | undefined): void {
+  reloadDrainMs = ms ?? DEFAULT_RELOAD_DRAIN_MS;
+}
+
+/**
+ * Issue #813 — re-attach every detached (still RUNNING) soft-reload target
+ * by IP only, so requests already aimed at its old IP keep reaching the old
+ * app during the drain. Returns whether any target was re-attached (whether
+ * a drain wait is worth taking). Best-effort: a failed re-attach leaves the
+ * target detached, and the stop phase attaches it while stopped as before.
+ */
+async function reattachForDrain(plans: Map<string, SharedNetworkAttachPlan>): Promise<boolean> {
+  let any = false;
+  for (const [id, plan] of plans) {
+    try {
+      await attachToSharedNetwork(id, plan, false);
+      any = true;
+    } catch (err) {
+      getLogger()
+        .child('ecs-service')
+        .debug(
+          `Soft-reload: drain re-attach of ${id} to ${plan.networkName} failed: ` +
+            `${err instanceof Error ? err.message : String(err)}. Stopping it without a drain.`
+        );
+    }
+  }
+  return any;
+}
+
 /** Re-attach a detached target at its old IP, with or without its aliases. */
 async function attachToSharedNetwork(
   containerId: string,
@@ -2365,10 +2426,22 @@ export function __setDockerInspectPublishesHostPortsImpl(
  * "per-replica /24" fallback path); the per-replica network is
  * destroyed by `cleanupEcsRun` directly.
  */
-async function disconnectOldFromSharedNetwork(oldInstance: ServiceReplicaInstance): Promise<void> {
+async function disconnectOldFromSharedNetwork(
+  oldInstance: ServiceReplicaInstance,
+  opts: { drain?: boolean } = {}
+): Promise<void> {
   const network = oldInstance.state.network;
   if (!network || !network.ownedByCaller) return;
   const networkName = network.networkName;
+  // Issue #813 — read each app container's IP BEFORE the disconnect, so the
+  // drain below can put it back at the same address, IP only.
+  const drainIps = new Map<string, string>();
+  if (opts.drain) {
+    for (const c of oldInstance.state.startedContainers) {
+      const ip = await getContainerNetworkIp(c.id, networkName).catch(() => undefined);
+      if (ip) drainIps.set(c.id, ip);
+    }
+  }
   // Sidecar is owned by the run-state too but lives in its own
   // network namespace inside the SAME shared net. Disconnect it AND
   // every started container so wget's Docker DNS lookup misses the
@@ -2391,6 +2464,21 @@ async function disconnectOldFromSharedNetwork(oldInstance: ServiceReplicaInstanc
       void err;
     }
   }
+  if (drainIps.size === 0) return;
+  // Issue #813 — same drain as the soft reload: the aliases are gone, but a
+  // request already aimed at the old IP must still reach the old app until
+  // it is stopped. The sidecar is not re-attached: nothing addresses it by
+  // the old replica's IP.
+  let reattached = false;
+  for (const [id, ip] of drainIps) {
+    try {
+      await dockerNetworkConnectImpl(networkName, id, { ip, aliases: [] });
+      reattached = true;
+    } catch {
+      /* best-effort: cleanupEcsRun stops and removes it either way */
+    }
+  }
+  if (reattached) await sleep(reloadDrainMs);
 }
 
 /**

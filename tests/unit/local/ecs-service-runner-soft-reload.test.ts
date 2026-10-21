@@ -111,6 +111,7 @@ const {
   __setDockerNetworkConnectImpl,
   __setDockerInspectPublishesHostPortsImpl,
   __setListenProbeImpl,
+  __setReloadDrainMs,
   SOFT_RELOAD_COMPLETION_LOG_SUFFIX,
 } = await import('../../../src/local/ecs-service-runner.js');
 
@@ -233,6 +234,7 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     __setDockerNetworkConnectImpl(undefined);
     __setDockerInspectPublishesHostPortsImpl(undefined);
     __setListenProbeImpl(undefined);
+    __setReloadDrainMs(undefined);
   });
 
   it('inspects → cp → restart → TCP-probe; drains then re-publishes pool + Cloud Map under the same owner key', async () => {
@@ -848,14 +850,66 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
       });
       expect(hoisted.ops).toEqual([
         `disconnect ${net} ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`, // #813 drain: IP only, still running
         `stop ${cid}`,
-        `connect ${net} ${cid} ip=${ip} aliases=`,
         `start ${cid}`,
         `listen ${cid}`, // the replica probe
         `listen ${cid}`, // this container's own port, gating its aliases
         `disconnect ${net} ${cid}`,
         // container-name alias + the Service Connect discoveryName + fqdn
         `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,
+      ]);
+      await controller.shutdown();
+    });
+
+    // Issue #813 — between the alias withdrawal and the stop, the old app
+    // keeps serving on its IP for a bounded drain, so a request already
+    // aimed at that IP is answered instead of hanging until it times out.
+    it('drains: IP-only re-attach of the still-running old app, then the drain wait, then the stop', async () => {
+      __setReloadDrainMs(1234);
+      __setSleepImpl(async (ms) => {
+        hoisted.ops.push(`sleep ${ms}`);
+      });
+      const { cid, net, ip, controller } = await bootAndReload();
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      expect(hoisted.ops.slice(0, 4)).toEqual([
+        `disconnect ${net} ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`,
+        'sleep 1234',
+        `stop ${cid}`,
+      ]);
+      await controller.shutdown();
+    });
+
+    it('skips the drain wait and attaches while stopped when the drain re-attach fails', async () => {
+      __setReloadDrainMs(1234);
+      __setSleepImpl(async (ms) => {
+        hoisted.ops.push(`sleep ${ms}`);
+      });
+      let connects = 0;
+      __setDockerNetworkConnectImpl(async (net, id, opts) => {
+        connects += 1;
+        hoisted.ops.push(`connect ${net} ${id} ip=${opts.ip} aliases=${opts.aliases.join(',')}`);
+        if (connects === 1) throw new Error('synthetic drain re-attach failure');
+      });
+      const { cid, net, ip, controller } = await bootAndReload();
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      expect(hoisted.ops.slice(0, 5)).toEqual([
+        `disconnect ${net} ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`, // fails: no drain wait
+        `stop ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`, // attached while stopped, as before #813
+        `start ${cid}`,
       ]);
       await controller.shutdown();
     });
@@ -871,7 +925,9 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
       });
       expect(hoisted.ops).toEqual([
         `disconnect ${net} ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`, // #813 drain
         `stop ${cid}`,
+        `disconnect ${net} ${cid}`,
         `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,
         `start ${cid}`,
         `listen ${cid}`,
@@ -936,7 +992,9 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
       });
       expect(hoisted.ops).toEqual([
         `disconnect ${net} ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`, // #813 drain
         `stop ${cid}`,
+        `disconnect ${net} ${cid}`,
         `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,
         `start ${cid}`,
         `listen ${cid}`,
@@ -977,8 +1035,8 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
       ).rejects.toThrow(/restoring the network aliases/);
       expect(hoisted.ops).toEqual([
         `disconnect ${net} ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`, // #813 drain
         `stop ${cid}`,
-        `connect ${net} ${cid} ip=${ip} aliases=`,
         `start ${cid}`,
         `listen ${cid}`,
         `listen ${cid}`,
@@ -1064,8 +1122,8 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
       ).rejects.toThrow(/docker stop \/ start/);
       expect(hoisted.ops).toEqual([
         `disconnect ${net} ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`, // #813 drain
         `stop ${cid}`,
-        `connect ${net} ${cid} ip=${ip} aliases=`,
         `start ${cid}`,
         `disconnect ${net} ${cid}`,
         `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,

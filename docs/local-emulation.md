@@ -1704,8 +1704,11 @@ For each replica `i` in the old set:
    registrations are then dropped in one synchronous Map mutation — consumers rebuilding their
    `--add-host` set during the swap window still see at least one
    live endpoint per fqdn.
-4. **Retire the old.** The old replica's docker container + network
-   are torn down via the same `cleanupEcsRun` path SIGINT uses.
+4. **Retire the old.** The old replica is detached from the shared
+   network (its aliases leave Docker's DNS), re-attached by IP only for
+   a 1 s drain so requests already aimed at it are answered, and then
+   its docker container + network are torn down via the same
+   `cleanupEcsRun` path SIGINT uses.
 
 A continuous external probe (e.g. a sidecar curl loop against the
 Service Connect DNS alias) observes zero connection refusals across
@@ -1746,8 +1749,11 @@ and routes the firing through one of two per-replica primitives:
   re-published under the same owner key once the TCP-ready probe
   passes. On the shared service network the container is also
   detached before the stop, so Docker's DNS stops resolving its
-  Service Connect aliases to an app that is shutting down, and is
-  re-attached at the same IP; its aliases come back only after the
+  Service Connect aliases to an app that is shutting down. It is then
+  re-attached by IP only for a 1 s drain (the local stand-in for a
+  load balancer's deregistration delay), so a request already aimed
+  at its old IP is answered rather than left hanging, and it keeps
+  that IP across the restart; its aliases come back only after the
   probe passes (or while it is stopped, for a container publishing a
   host port, which a running re-attach would drop). Latency is
   dominated by the app's own stop and start time. The reload-log line surfaces the

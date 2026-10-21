@@ -36,16 +36,16 @@ A per-firing classifier picks the per-replica primitive:
 
 - **soft-reload** — source-only edit on an interpreted-language handler (Node /
   Python / Ruby / shell; no Dockerfile, no dependency manifest, no compiled
-  source): `docker cp` the synthed asset dir into each replica's WORKDIR, then
-  stop + start; registrations drained, re-published under the SAME owner key.
-  The drain misses Docker's DNS, so on the shared network the container is
-  DETACHED before the stop and re-attached at the SAME IP (`--add-host` peers)
-  while stopped (#660): WITH its aliases if it publishes host ports (a RUNNING
-  re-attach drops them), else IP-only, aliases following the passed probe.
+  source): `docker cp` the asset dir into each replica's WORKDIR, then stop +
+  start; registrations drained, re-published under the SAME owner key. On the
+  shared network the container is DETACHED (Docker DNS) before the stop, gets a
+  1s IP-only drain (#813), and is re-attached at the SAME IP while stopped
+  (#660): WITH its aliases if it publishes host ports (a RUNNING re-attach
+  drops them), else IP-only, aliases following the passed probe.
 - **rebuild** — Dockerfile / dependency-manifest / compiled-source / ambiguous
   edits: boot a shadow (bumped gen) UNPUBLISHED until it listens (no
   registrations; aliases withheld unless it publishes host ports; #805; a crash
-  restart too, #812), then swap registrations off the old one; retire it.
+  restart too, #812), then swap registrations off the old one; drain; retire.
 
 Invariants:
 
