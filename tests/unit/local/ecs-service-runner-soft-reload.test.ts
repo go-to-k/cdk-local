@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { FrontDoorEndpointPool } from '../../../src/local/front-door-pool.js';
 import { CloudMapRegistry } from '../../../src/local/cloud-map-registry.js';
+import { ConsoleLogger } from '../../../src/utils/logger.js';
 
 /**
  * Phase 4 of issue #214 — locks `softReloadReplica` semantics (the
@@ -40,6 +41,12 @@ const { hoisted } = vi.hoisted(() => ({
     inspectCalls: [] as string[],
     cpCalls: [] as Array<{ src: string; dst: string }>,
     restartCalls: [] as string[],
+    // Issue #660 — ordered log of every docker step the soft-reload
+    // takes (stop / start / network disconnect + connect / LISTEN
+    // probe), so the tests can lock the ORDER, not just the counts.
+    ops: [] as string[],
+    publishesHostPorts: false,
+    listening: true,
     workdir: '/app',
     failCpOnCount: -1, // -1 = never fail
   },
@@ -96,7 +103,12 @@ const {
   __setShadowReadyConfig,
   __setDockerInspectWorkdirImpl,
   __setDockerCpImpl,
-  __setDockerRestartImpl,
+  __setDockerStopImpl,
+  __setDockerStartImpl,
+  __setDockerNetworkDisconnectImpl,
+  __setDockerNetworkConnectImpl,
+  __setDockerInspectPublishesHostPortsImpl,
+  __setListenProbeImpl,
   SOFT_RELOAD_COMPLETION_LOG_SUFFIX,
 } = await import('../../../src/local/ecs-service-runner.js');
 
@@ -165,6 +177,9 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     hoisted.inspectCalls = [];
     hoisted.cpCalls = [];
     hoisted.restartCalls = [];
+    hoisted.ops = [];
+    hoisted.publishesHostPorts = false;
+    hoisted.listening = true;
     hoisted.workdir = '/app';
     hoisted.failCpOnCount = -1;
     __setSleepImpl(() => Promise.resolve());
@@ -181,8 +196,25 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
         throw new Error(`synthetic cp failure on call #${hoisted.cpCalls.length}`);
       }
     });
-    __setDockerRestartImpl(async (id) => {
+    // A "restart" is now `docker stop` + `docker start`; `restartCalls`
+    // records the START, i.e. a completed cycle.
+    __setDockerStopImpl(async (id) => {
+      hoisted.ops.push(`stop ${id}`);
+    });
+    __setDockerStartImpl(async (id) => {
+      hoisted.ops.push(`start ${id}`);
       hoisted.restartCalls.push(id);
+    });
+    __setDockerNetworkDisconnectImpl(async (net, id) => {
+      hoisted.ops.push(`disconnect ${net} ${id}`);
+    });
+    __setDockerNetworkConnectImpl(async (net, id, opts) => {
+      hoisted.ops.push(`connect ${net} ${id} ip=${opts.ip} aliases=${opts.aliases.join(',')}`);
+    });
+    __setDockerInspectPublishesHostPortsImpl(async () => hoisted.publishesHostPorts);
+    __setListenProbeImpl(async (id) => {
+      hoisted.ops.push(`listen ${id}`);
+      return hoisted.listening ? { kind: 'listening' } : { kind: 'not-listening' };
     });
   });
 
@@ -193,7 +225,12 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     __setShadowReadyConfig(undefined);
     __setDockerInspectWorkdirImpl(undefined);
     __setDockerCpImpl(undefined);
-    __setDockerRestartImpl(undefined);
+    __setDockerStopImpl(undefined);
+    __setDockerStartImpl(undefined);
+    __setDockerNetworkDisconnectImpl(undefined);
+    __setDockerNetworkConnectImpl(undefined);
+    __setDockerInspectPublishesHostPortsImpl(undefined);
+    __setListenProbeImpl(undefined);
   });
 
   it('inspects → cp → restart → TCP-probe; drains then re-publishes pool + Cloud Map under the same owner key', async () => {
@@ -357,7 +394,7 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
   });
 
   it('clears softReloadInProgress + leaves replica drained on docker restart failure (cp landed but restart did not)', async () => {
-    __setDockerRestartImpl(async () => {
+    __setDockerStartImpl(async () => {
       throw new Error('synthetic restart failure');
     });
     const pool = new FrontDoorEndpointPool();
@@ -744,7 +781,7 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     __setDockerCpImpl(async () => {
       observed.push({ step: 'cp', flag: !!r0.softReloadInProgress });
     });
-    __setDockerRestartImpl(async () => {
+    __setDockerStartImpl(async () => {
       observed.push({ step: 'restart', flag: !!r0.softReloadInProgress });
     });
 
@@ -771,5 +808,190 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     expect(r0.softReloadInProgress).toBe(false);
 
     await controller.shutdown();
+  });
+
+  // Issue #660 — the registry drain never reached Docker's embedded
+  // DNS, so a Service Connect peer kept resolving the replica's alias
+  // to an app that had already exited (`Connection refused`). These rows
+  // lock the shared-network detach / re-attach ORDER around the cycle.
+  describe('shared-network alias drain (issue #660)', () => {
+    async function bootAndReload(mutate?: (r0: any) => void): Promise<{
+      cid: string;
+      net: string;
+      ip: string;
+      controller: Awaited<ReturnType<typeof startEcsService>>;
+    }> {
+      const pool = new FrontDoorEndpointPool();
+      const registry = new CloudMapRegistry();
+      const runState = createServiceRunState();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const opts = fakeOptions(pool, registry) as any;
+      const controller = await startEcsService(fakeService(), opts, runState);
+      const r0 = controller.runState.replicas[0]!;
+      mutate?.(r0);
+      const cid = r0.state.startedContainers[0]!.id;
+      const net = r0.state.network!.networkName;
+      // Independent of the mock: the docker-inspect mock maps cid-<n> to 172.20.0.<10+n>.
+      const ip = `172.20.0.${10 + Number(cid.slice('cid-'.length))}`;
+      return { cid, net, ip, controller };
+    }
+
+    it('detaches BEFORE the stop, re-attaches by IP only while stopped, and restores the aliases only AFTER the LISTEN probe passes', async () => {
+      const { cid, net, ip, controller } = await bootAndReload();
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      expect(hoisted.ops).toEqual([
+        `disconnect ${net} ${cid}`,
+        `stop ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`,
+        `start ${cid}`,
+        `listen ${cid}`,
+        `disconnect ${net} ${cid}`,
+        // container-name alias + the Service Connect discoveryName + fqdn
+        `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,
+      ]);
+      await controller.shutdown();
+    });
+
+    it('re-attaches a host-port publisher WITH its aliases while stopped (a running re-attach drops its ports)', async () => {
+      hoisted.publishesHostPorts = true;
+      const { cid, net, ip, controller } = await bootAndReload();
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      expect(hoisted.ops).toEqual([
+        `disconnect ${net} ${cid}`,
+        `stop ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,
+        `start ${cid}`,
+        `listen ${cid}`,
+      ]);
+      await controller.shutdown();
+    });
+
+    it('leaves a container on a non-shared network in place (no disconnect / connect)', async () => {
+      const { cid, controller } = await bootAndReload((r0) => {
+        r0.state.network.ownedByCaller = false;
+      });
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      expect(hoisted.ops).toEqual([`stop ${cid}`, `start ${cid}`, `listen ${cid}`]);
+      await controller.shutdown();
+    });
+
+    it('cycles in place when the detach fails (never connects a container it did not detach)', async () => {
+      __setDockerNetworkDisconnectImpl(async () => {
+        throw new Error('synthetic disconnect failure');
+      });
+      const { cid, controller } = await bootAndReload();
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      expect(hoisted.ops).toEqual([`stop ${cid}`, `start ${cid}`, `listen ${cid}`]);
+      await controller.shutdown();
+    });
+
+    it('re-attaches a detached container WITH its aliases when a later step throws', async () => {
+      hoisted.failCpOnCount = 1;
+      const { cid, net, ip, controller } = await bootAndReload();
+      await expect(
+        softReloadReplica({
+          controller,
+          oldReplicaIndex: 0,
+          newService: fakeService(),
+          sourceDirToCopy: '/tmp/cdk.out/asset.h',
+        })
+      ).rejects.toThrow(/docker cp/);
+      expect(hoisted.ops).toEqual([
+        `disconnect ${net} ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,
+      ]);
+      await controller.shutdown();
+    });
+
+    it('re-attaches WITH aliases when the start fails after an IP-only re-attach', async () => {
+      __setDockerStartImpl(async (id) => {
+        hoisted.ops.push(`start ${id}`);
+        throw new Error('synthetic start failure');
+      });
+      const { cid, net, ip, controller } = await bootAndReload();
+      await expect(
+        softReloadReplica({
+          controller,
+          oldReplicaIndex: 0,
+          newService: fakeService(),
+          sourceDirToCopy: '/tmp/cdk.out/asset.h',
+        })
+      ).rejects.toThrow(/docker restart/);
+      expect(hoisted.ops).toEqual([
+        `disconnect ${net} ${cid}`,
+        `stop ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=`,
+        `start ${cid}`,
+        `disconnect ${net} ${cid}`,
+        `connect ${net} ${cid} ip=${ip} aliases=web,svc,svc.cdkl.local`,
+      ]);
+      await controller.shutdown();
+    });
+  });
+
+  // Issue #660 — the completion line used to claim
+  // "restart + TCP-ready probe complete" even after the probe timed out.
+  describe('completion line reflects the probe outcome (issue #660)', () => {
+    async function reloadAndCollectInfo(): Promise<string[]> {
+      const infoSpy = vi.spyOn(ConsoleLogger.prototype, 'info').mockImplementation(() => {});
+      try {
+        const pool = new FrontDoorEndpointPool();
+        const registry = new CloudMapRegistry();
+        const runState = createServiceRunState();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const opts = fakeOptions(pool, registry) as any;
+        const controller = await startEcsService(fakeService(), opts, runState);
+        await softReloadReplica({
+          controller,
+          oldReplicaIndex: 0,
+          newService: fakeService(),
+          sourceDirToCopy: '/tmp/cdk.out/asset.h',
+        });
+        await controller.shutdown();
+        return infoSpy.mock.calls.map((c) => String(c[0]));
+      } finally {
+        infoSpy.mockRestore();
+      }
+    }
+
+    it('names the passed probe only when the LISTEN check passed', async () => {
+      const lines = await reloadAndCollectInfo();
+      const done = lines.filter((l) => l.startsWith('Soft-reloaded replica r0'));
+      expect(done).toEqual([`Soft-reloaded replica r0 (gen 0): ${SOFT_RELOAD_COMPLETION_LOG_SUFFIX}`]);
+    });
+
+    it('says the probe timed out — never the success suffix — when it never passed', async () => {
+      hoisted.listening = false;
+      const lines = await reloadAndCollectInfo();
+      const done = lines.filter((l) => l.startsWith('Soft-reloaded replica r0'));
+      expect(done).toEqual([
+        'Soft-reloaded replica r0 (gen 0): restarted, but the TCP-ready probe timed out; ' +
+          'Cloud Map + front-door re-published anyway.',
+      ]);
+      // The integ fixtures grep this regex to count PASSED probes.
+      expect(done.some((l) => /Soft-reloaded replica .*restart \+ TCP-ready probe complete/.test(l))).toBe(
+        false
+      );
+    });
   });
 });

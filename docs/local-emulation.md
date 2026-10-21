@@ -1648,7 +1648,7 @@ error.
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region used to construct the CloudFormation client for `--from-cfn-stack`. |
 | `--watch` | off | Hot reload: re-synth + per-replica rolling deploy when the CDK app's source changes. Honors `cdk.json` `watch.include` / `watch.exclude` (mirrors `cdk watch`); `cdk.out/`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. Each replica is rolled one at a time — boot a shadow replica with the new image under a bumped generation suffix, wait for a TCP-ready probe on the container port (default 60s; tunable via `--shadow-ready-timeout`), atomically swap Service-Connect / Cloud Map registrations, then retire the old container — so peer services see zero connection refusals across the reload even on multi-replica services. Synth failures keep the previous replica(s) serving (warn-and-continue, never crashes the emulator). |
-| `--no-logs` | off | Disable foreground streaming of each replica container stdout/stderr. By default every booted replica streams its docker logs to the host terminal with a `[svc=<service> r=<replica-index> c=<container>]` prefix, matching `cdkl run-task`'s log surface so application `console.log` calls are visible without a side `docker logs -f`. The streamer follows replicas across `--watch` reloads (both the rebuild rolling primitive and the soft-reload `docker restart` path). Pass `--no-logs` for multi-replica / multi-service runs whose interleaved log volume is unreadable; `docker logs -f <id>` in a separate terminal stays available. |
+| `--no-logs` | off | Disable foreground streaming of each replica container stdout/stderr. By default every booted replica streams its docker logs to the host terminal with a `[svc=<service> r=<replica-index> c=<container>]` prefix, matching `cdkl run-task`'s log surface so application `console.log` calls are visible without a side `docker logs -f`. The streamer follows replicas across `--watch` reloads (both the rebuild rolling primitive and the soft-reload stop + start path). Pass `--no-logs` for multi-replica / multi-service runs whose interleaved log volume is unreadable; `docker logs -f <id>` in a separate terminal stays available. |
 | `--shadow-ready-timeout <ms>` | `60000` | Milliseconds the `--watch` rolling primitive waits for a shadow replica's first essential-container port to accept a TCP connection before swapping registrations off the old replica. Default 60s covers realistic prod-shaped Node app cold-starts (TS->JS compile, full `node_modules` graph, framework boot, DB pool init). Bump higher (e.g. `120000`) when the reload log surfaces `TCP probe <ip>:<port> did not accept within <N>ms` — typical for Java / heavy ORM init / `--inspect-brk` attach pauses. Env var: `CDKL_SHADOW_READY_TIMEOUT_MS` (flag wins over env, env wins over default). Issue #265. |
 
 ### `start-service --watch` (hot reload)
@@ -1674,7 +1674,10 @@ For each replica `i` in the old set:
    `<service>:r<i>:g<gen>` Cloud Map ownerKey), so the shadow's
    docker / registry names don't collide with the dying old replica's.
 2. **TCP-ready probe.** The shadow's first essential-container port
-   is probed via TCP-connect on the shadow's docker network IP, polled
+   is checked for a LISTEN socket from inside the container (a
+   `docker exec` read of its `/proc/net/tcp`; the host cannot route to
+   a container's docker network IP on Docker Desktop), falling back to
+   a host-side TCP connect for an image with no `sh`, polled
    every 100ms up to the shadow-ready timeout (default 60s; issue #265
    bumped from 10s after prod-shaped Node apps with non-trivial
    cold-start tripped the lower ceiling on every save). Without this
@@ -1729,16 +1732,21 @@ and routes the firing through one of two per-replica primitives:
   interpreted-language source file (no Dockerfile, no
   dependency-manifest, no compiled-language source), the runner
   `docker cp`s the freshly-synthed asset directory's contents into
-  each replica's WORKDIR and `docker restart`s the container. No
+  each replica's WORKDIR and stops + starts the container. No
   `docker build`, no shadow boot, no Cloud Map / front-door pool
-  swap — the container's docker network IP and host port are
-  preserved across the restart, so peer services and the front-door
-  pool keep their existing registrations. Typical end-to-end latency
-  is well under a second for an interpreted handler (Node / Python /
-  Ruby / shell). The reload-log line surfaces the verdict as
-  `verdict=soft-reload (...)` and per-replica completion as
+  swap: the replica's registrations are drained before the stop and
+  re-published under the same owner key once the TCP-ready probe
+  passes. On the shared service network the container is also
+  detached before the stop, so Docker's DNS stops resolving its
+  Service Connect aliases to an app that is shutting down, and is
+  re-attached at the same IP; its aliases come back only after the
+  probe passes (or while it is stopped, for a container publishing a
+  host port, which a running re-attach would drop). Latency is
+  dominated by the app's own stop and start time. The reload-log line surfaces the
+  verdict as `verdict=soft-reload (...)` and per-replica completion as
   `Soft-reloaded replica r<i> ... restart + TCP-ready probe complete;
-  registrations unchanged.`
+  Cloud Map + front-door re-published.` — or, when the probe timed
+  out, `... restarted, but the TCP-ready probe timed out; ...`.
 - **Rebuild (fallback).** When ANY changed path matches the asset's
   Dockerfile, a recognized dependency manifest
   (`package.json` / `pnpm-lock.yaml` / `requirements.txt` /
@@ -1944,8 +1952,9 @@ ALB are a no-op on `--watch` reload (the warm RIE container keeps
 its boot-time image; Lambda hot-reload is the `start-api` path's
 concern). The Phase 4 bind-mount fast path also applies under
 `start-alb --watch` for the ECS replicas; the front-door pool entries
-need no swap on the soft-reload path because the container's docker
-network IP and host port are preserved across `docker restart`.
+need no swap on the soft-reload path: they are drained before the
+container stops and re-published, with the host port read back, once
+the TCP-ready probe passes.
 
 ### `start-service` lifecycle
 

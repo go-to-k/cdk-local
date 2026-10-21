@@ -93,6 +93,7 @@ const {
   __setTcpProbeImpl,
   __setShadowReadyConfig,
   __setDockerNetworkDisconnectImpl,
+  __setListenProbeImpl,
 } = await import('../../../src/local/ecs-service-runner.js');
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -173,6 +174,10 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     __setSleepImpl(() => Promise.resolve()); // skip restart backoff
     __setWaitForExitImpl(() => new Promise<number>(() => {})); // replicas never exit
     __setTcpProbeImpl(() => Promise.resolve()); // shadow is always TCP-ready
+    // Issue #660 — the in-container LISTEN check runs first; report it
+    // unavailable so these rows keep exercising the host-side TCP
+    // connect. The in-container path has its own rows below.
+    __setListenProbeImpl(async () => ({ kind: 'unsupported', detail: 'test: no sh' }));
     __setShadowReadyConfig({ timeoutMs: 50, intervalMs: 5 }); // shrink probe budget for the timeout case
     __setDockerNetworkDisconnectImpl(async (networkName, containerId) => {
       hoisted.disconnectCalls.push({ networkName, containerId });
@@ -182,6 +187,7 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     __setWaitForExitImpl(undefined);
     __setSleepImpl(undefined);
     __setTcpProbeImpl(undefined);
+    __setListenProbeImpl(undefined);
     __setShadowReadyConfig(undefined);
     __setDockerNetworkDisconnectImpl(undefined);
   });
@@ -551,5 +557,99 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     expect(pool.size()).toBe(0);
 
     await controller.shutdown();
+  });
+
+  // Issue #660 — readiness is read INSIDE the container (a `docker exec`
+  // LISTEN check): on Docker Desktop the host cannot route to a
+  // container's docker-network IP, so the host-side connect timed out at
+  // the full budget on every reload there.
+  describe('in-container LISTEN check (issue #660)', () => {
+    async function rollWithProbes(): Promise<{ warns: string[]; debugs: string[] }> {
+      const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn').mockImplementation(() => {});
+      const debugSpy = vi.spyOn(ConsoleLogger.prototype, 'debug').mockImplementation(() => {});
+      try {
+        const pool = new FrontDoorEndpointPool();
+        const registry = new CloudMapRegistry();
+        const runState = createServiceRunState();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const opts = frontDoorOptions(pool, registry) as any;
+        const controller = await startEcsService(fakeServiceConnectService(), opts, runState);
+        await rollServiceReplica({
+          controller,
+          oldReplicaIndex: 0,
+          newService: fakeServiceConnectService(),
+          newOptions: opts,
+        });
+        await controller.shutdown();
+        return {
+          warns: warnSpy.mock.calls.map((c) => String(c[0])),
+          debugs: debugSpy.mock.calls.map((c) => String(c[0])),
+        };
+      } finally {
+        warnSpy.mockRestore();
+        debugSpy.mockRestore();
+      }
+    }
+
+    it('is ready on the first LISTEN hit and never touches the host connect', async () => {
+      const listenCalls: Array<{ id: string; port: number }> = [];
+      __setListenProbeImpl(async (id, port) => {
+        listenCalls.push({ id, port });
+        return { kind: 'listening' };
+      });
+      let tcpCalls = 0;
+      __setTcpProbeImpl(() => {
+        tcpCalls += 1;
+        return Promise.reject(new Error('host cannot route to the container IP'));
+      });
+      const { warns, debugs } = await rollWithProbes();
+      // The shadow (boot #3) is probed on the essential container's first port.
+      expect(listenCalls).toEqual([{ id: 'cid-3', port: 80 }]);
+      expect(tcpCalls).toBe(0);
+      expect(warns.filter((w) => w.includes('did not accept'))).toEqual([]);
+      expect(debugs.some((d) => /port 80 listening in \d+ms \(in-container check\)\.$/.test(d))).toBe(
+        true
+      );
+    });
+
+    it('keeps polling through not-listening and transient errors until LISTEN', async () => {
+      const answers = [
+        { kind: 'not-listening' as const },
+        { kind: 'error' as const, detail: 'Container cid-3 is not running' },
+        { kind: 'listening' as const },
+      ];
+      let calls = 0;
+      __setListenProbeImpl(async () => answers[Math.min(calls++, answers.length - 1)]!);
+      __setShadowReadyConfig({ timeoutMs: 5_000, intervalMs: 1 });
+      const { warns } = await rollWithProbes();
+      expect(calls).toBe(3);
+      expect(warns.filter((w) => w.includes('did not accept'))).toEqual([]);
+    });
+
+    it('falls back to the host-side TCP connect once the image cannot run the check', async () => {
+      let listenCalls = 0;
+      __setListenProbeImpl(async () => {
+        listenCalls += 1;
+        return { kind: 'unsupported', detail: 'exec: "sh": executable file not found' };
+      });
+      const tcpTargets: string[] = [];
+      __setTcpProbeImpl((host, port) => {
+        tcpTargets.push(`${host}:${port}`);
+        return Promise.resolve();
+      });
+      const { warns } = await rollWithProbes();
+      expect(listenCalls).toBe(1); // asked once, then never again for this probe
+      expect(tcpTargets.length).toBe(1);
+      expect(tcpTargets[0]).toMatch(/^172\.20\.0\.\d+:80$/);
+      expect(warns.filter((w) => w.includes('did not accept'))).toEqual([]);
+    });
+
+    it('warns with the container:port target when the port never starts listening', async () => {
+      __setListenProbeImpl(async () => ({ kind: 'not-listening' }));
+      const { warns } = await rollWithProbes();
+      const timeout = warns.filter((w) => w.includes('did not accept'));
+      expect(timeout).toHaveLength(1);
+      expect(timeout[0]).toContain('TCP probe web:80 did not accept within 50ms (last: not listening yet)');
+    });
   });
 });

@@ -36,11 +36,12 @@ A per-firing classifier picks the per-replica primitive:
 
 - **soft-reload** — source-only edit on an interpreted-language handler (Node /
   Python / Ruby / shell; no Dockerfile, no dependency manifest, no compiled
-  source): `docker cp` the synthed asset dir into each replica's WORKDIR +
-  `docker restart`. No build, no shadow boot; IP and host port are PRESERVED, so
-  draining the Cloud Map handles + front-door pool entry and re-publishing under
-  the SAME owner key is a no-op at the end-state level — but that round trip
-  holds the zero-connection-refusal guarantee while the container restarts.
+  source): `docker cp` the synthed asset dir into each replica's WORKDIR, then
+  stop + start; registrations drained, re-published under the SAME owner key.
+  The drain misses Docker's DNS, so on the shared network the container is
+  DETACHED before the stop and re-attached at the SAME IP (`--add-host` peers)
+  while stopped (#660): WITH its aliases if it publishes host ports (a RUNNING
+  re-attach drops them), else IP-only, aliases following the passed probe.
 - **rebuild** — Dockerfile / dependency-manifest / compiled-source / ambiguous
   edits: boot a shadow replica under a bumped generation suffix, atomically swap
   Cloud Map + front-door registrations off the dying replica (after a TCP-ready
