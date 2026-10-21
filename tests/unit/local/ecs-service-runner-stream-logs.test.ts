@@ -25,13 +25,18 @@ const { hoisted } = vi.hoisted(() => ({
       prefix: string;
       containerId: string;
       stopper: () => void;
+      expectRestart: (() => boolean) | undefined;
     }>,
     stopperCallCount: 0,
   },
 }));
 
 vi.mock('../../../src/local/container-log-streamer.js', () => ({
-  attachContainerLogStreamer: (prefix: string, containerId: string) => {
+  attachContainerLogStreamer: (
+    prefix: string,
+    containerId: string,
+    opts?: { expectRestart?: () => boolean }
+  ) => {
     // Return a unique stopper per attach so the
     // `logStoppers` drain test (Test G2) can assert the IDENTITY
     // pushed to `state.logStoppers` matches the stopper returned
@@ -39,7 +44,7 @@ vi.mock('../../../src/local/container-log-streamer.js', () => ({
     const stopper = (): void => {
       hoisted.stopperCallCount += 1;
     };
-    hoisted.attachCalls.push({ prefix, containerId, stopper });
+    hoisted.attachCalls.push({ prefix, containerId, stopper, expectRestart: opts?.expectRestart });
     return stopper;
   },
 }));
@@ -195,6 +200,24 @@ describe('startEcsService log streaming (Issue #227)', () => {
     expect(idsByPrefix['[svc=BackendApi r=0 c=sidecar] ']).toBe('cid-sidecar-1');
     expect(idsByPrefix['[svc=BackendApi r=1 c=web] ']).toBe('cid-web-2');
     expect(idsByPrefix['[svc=BackendApi r=1 c=sidecar] ']).toBe('cid-sidecar-2');
+  });
+
+  // Issue #660 — the soft reload's stop + start passes through `exited`;
+  // each streamer must read its OWN replica's in-flight flag, or it gives
+  // up on the first soft reload and the foreground logs go silent.
+  it('binds each streamer expectRestart to its own replica softReloadInProgress', async () => {
+    const runState = createServiceRunState();
+    const controller = await startEcsService(fakeService(), baseOpts(), runState);
+    const byPrefix = new Map(hoisted.attachCalls.map((c) => [c.prefix, c.expectRestart]));
+    const r0Web = byPrefix.get('[svc=BackendApi r=0 c=web] ');
+    const r1Web = byPrefix.get('[svc=BackendApi r=1 c=web] ');
+    expect(r0Web?.()).toBe(false);
+    controller.runState.replicas[0]!.softReloadInProgress = true;
+    expect(r0Web?.()).toBe(true);
+    expect(byPrefix.get('[svc=BackendApi r=0 c=sidecar] ')?.()).toBe(true);
+    expect(r1Web?.()).toBe(false);
+    controller.runState.replicas[0]!.softReloadInProgress = false;
+    expect(r0Web?.()).toBe(false);
   });
 
   it('attaches NO streamer when `streamLogs: false` (`--no-logs`)', async () => {

@@ -6,9 +6,9 @@ import path from 'node:path';
  * either {@link ReloadVerdict.kind} `'rebuild'` (the Phase 1-3 path —
  * `docker build` + shadow boot + atomic Cloud Map / front-door pool
  * swap) or `'soft-reload'` (`docker cp` the new source into the
- * existing replica's WORKDIR + `docker restart` it; no `docker build`,
- * no shadow boot, no registry swap because the container's docker
- * network IP and host port are unchanged across the restart).
+ * existing replica's WORKDIR + restart it; no `docker build`, no
+ * shadow boot, no registry swap — the replica keeps its container and
+ * docker network IP, its registrations drained and re-published).
  *
  * Verdict policy:
  *   - DEFAULT to `'rebuild'` whenever classification is ambiguous. A

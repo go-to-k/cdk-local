@@ -964,11 +964,10 @@ export async function runEcsServiceEmulator(
  * {@link classifySourceChange} (Phase 4) picks the per-replica action:
  *
  *   - `'soft-reload'` → {@link softReloadReplica} runs `docker cp`
- *     + `docker restart` against the live replica. No `docker build`,
- *     no shadow boot, no Cloud Map / front-door pool swap — the
- *     container's IP + host port are preserved across the restart, so
- *     existing registrations stay valid. Fast path (~sub-second per
- *     replica for typical interpreted-language handlers).
+ *     + `docker stop` / `docker start` against the live replica. No
+ *     `docker build`, no shadow boot, no Cloud Map / front-door pool
+ *     swap — the replica's registrations are drained and re-published
+ *     under the same owner key once its TCP-ready probe passes.
  *   - `'rebuild'` → {@link rollServiceReplica}, the Phase 1-3 path,
  *     replacing Phase 1's "tear single replica down, boot fresh"
  *     sequence with a per-replica rolling loop so the service stays
@@ -1479,8 +1478,8 @@ async function rollOneTarget(args: {
    * Phase 4 of issue #214 — per-target classifier verdict produced by
    * {@link classifySourceChange}. `'soft-reload'` skips the rebuild
    * primitive and invokes {@link softReloadReplica} for each replica
-   * (`docker cp` + `docker restart`, no shadow boot, no atomic Cloud
-   * Map / front-door swap because the registrations don't change).
+   * (`docker cp` + stop / start, no shadow boot, no atomic Cloud
+   * Map / front-door swap: the same registrations are re-published).
    * `'rebuild'` falls through to the Phase 2/3 rolling primitive.
    */
   verdict: ReloadVerdict;
@@ -1583,8 +1582,8 @@ async function rollOneTarget(args: {
 
     // Phase 4 of issue #214 — the verdict picks the per-replica
     // action. `'soft-reload'` uses {@link softReloadReplica} (`docker
-    // cp` + `docker restart`, no shadow boot, no atomic Cloud Map /
-    // front-door swap because the registrations don't change);
+    // cp` + stop / start, no shadow boot, no atomic Cloud Map /
+    // front-door swap: the same registrations are re-published);
     // `'rebuild'` uses {@link rollServiceReplica} verbatim — the
     // existing Phase 2/3 rolling primitive. The same per-replica
     // sequential loop wraps both: external traffic still sees a roll
@@ -1593,7 +1592,7 @@ async function rollOneTarget(args: {
     if (verdict.kind === 'soft-reload') {
       logger.info(
         `Reload of '${newBoot.target}': soft-reloading ${oldReplicas.length} replica(s) ` +
-          'one at a time (docker cp source → docker restart → TCP-ready probe; no rebuild).'
+          'one at a time (docker cp source → restart → TCP-ready probe; no rebuild).'
       );
     } else {
       logger.info(

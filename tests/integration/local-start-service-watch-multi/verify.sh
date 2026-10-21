@@ -302,6 +302,17 @@ if [[ "${SWAPS}" -ne 2 ]]; then
 fi
 echo "    [2 swaps observed] OK"
 
+# Issue #660 — the per-replica readiness probe must actually PASS. A probe
+# that times out still re-publishes the replica, so the swap count above
+# alone cannot tell a gated reload from an ungated one (on Docker Desktop
+# the old host-side probe timed out at the full budget on every reload).
+if grep -q "did not accept within" "${LOG_FILE}"; then
+  echo "FAIL: a replica's TCP-ready probe timed out during the reload"
+  grep "did not accept within" "${LOG_FILE}"
+  exit 1
+fi
+echo "    [every TCP-ready probe passed] OK"
+
 # Give the probe a final moment to capture post-roll v2 responses.
 sleep 2
 

@@ -124,16 +124,6 @@ const NON_AUTHORITY: readonly Allowed[] = [
     why: 'logger.info / warn prose, never parsed',
   },
   {
-    file: 'local/ecs-service-runner.ts',
-    contains: 'TCP probe ${ip}:${port} accepted',
-    why: 'logger.debug prose, never parsed',
-  },
-  {
-    file: 'local/ecs-service-runner.ts',
-    contains: 'TCP probe ${ip}:${port} did not accept',
-    why: 'logger.info / warn prose, never parsed',
-  },
-  {
     file: 'local/front-door-server.ts',
     contains: 'Replica ${endpoint.host}:${endpoint.port} behind',
     why: 'the 504 RESPONSE BODY (writeError) — prose for a human, never parsed; the values are the replica pool\'s own endpoint, not request-derived',

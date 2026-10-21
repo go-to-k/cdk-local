@@ -156,7 +156,7 @@ export function addStartServiceSpecificOptions(cmd: Command): Command {
           'cdk.json watch.include/exclude; cdk.out, node_modules, .git are always excluded). ' +
           'A per-firing classifier picks the per-replica primitive: source-only edits on ' +
           'interpreted-language handlers (Node/Python/Ruby/shell) take a bind-mount FAST PATH ' +
-          '(`docker cp` the new source into each replica + `docker restart`; no rebuild). ' +
+          '(`docker cp` the new source into each replica + restart it; no rebuild). ' +
           'Dockerfile / dependency manifest / compiled-language source / ambiguous edits fall ' +
           'through to the rebuild rolling primitive — boot a shadow under a bumped ' +
           'generation suffix, wait for its container port to accept a TCP connection, ' +

@@ -100,6 +100,10 @@ a log line, and a served HTTP response body.
 
 ## Reload classification
 
+- **ecs-service-runner readiness probe** (`waitForReplicaTcpReady`, both
+  reload primitives) — a LISTEN check INSIDE the container (`docker exec`),
+  never a host connect to the container IP, which Docker Desktop does not route
+  (#660); the host connect is only the no-`sh` fallback.
 - **source-change-classifier** — the per-firing `'rebuild'` vs `'soft-reload'`
   decision. Defaults to rebuild on ambiguity AND requires the asset hash to
   actually flip before returning soft-reload, or a construct edit that changed

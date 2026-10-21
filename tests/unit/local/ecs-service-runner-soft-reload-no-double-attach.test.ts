@@ -92,7 +92,12 @@ const {
   __setShadowReadyConfig,
   __setDockerInspectWorkdirImpl,
   __setDockerCpImpl,
-  __setDockerRestartImpl,
+  __setDockerStopImpl,
+  __setDockerStartImpl,
+  __setDockerNetworkDisconnectImpl,
+  __setDockerNetworkConnectImpl,
+  __setDockerInspectPublishesHostPortsImpl,
+  __setListenProbeImpl,
 } = await import('../../../src/local/ecs-service-runner.js');
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -151,7 +156,12 @@ describe('softReloadReplica preserves the existing streamer (no double attach)',
     __setShadowReadyConfig({ timeoutMs: 50, intervalMs: 5 });
     __setDockerInspectWorkdirImpl(async () => '/app');
     __setDockerCpImpl(async () => undefined);
-    __setDockerRestartImpl(async () => undefined);
+    __setDockerStopImpl(async () => undefined);
+    __setDockerStartImpl(async () => undefined);
+    __setDockerNetworkDisconnectImpl(async () => undefined);
+    __setDockerNetworkConnectImpl(async () => undefined);
+    __setDockerInspectPublishesHostPortsImpl(async () => true);
+    __setListenProbeImpl(async () => ({ kind: 'listening' }));
   });
 
   afterEach(() => {
@@ -161,7 +171,12 @@ describe('softReloadReplica preserves the existing streamer (no double attach)',
     __setShadowReadyConfig(undefined);
     __setDockerInspectWorkdirImpl(undefined);
     __setDockerCpImpl(undefined);
-    __setDockerRestartImpl(undefined);
+    __setDockerStopImpl(undefined);
+    __setDockerStartImpl(undefined);
+    __setDockerNetworkDisconnectImpl(undefined);
+    __setDockerNetworkConnectImpl(undefined);
+    __setDockerInspectPublishesHostPortsImpl(undefined);
+    __setListenProbeImpl(undefined);
   });
 
   it('does NOT re-attach a streamer during soft-reload (the boot-time streamer keeps tailing across docker restart)', async () => {
