@@ -113,7 +113,9 @@ stripped-ANSI pipe; `resolveConfiguredLogLevel` + `CdklIoHost` honor
 
 - `buildProxyClientConfig()` — EVERY AWS SDK client construction in `src/**`
   spreads this fragment, directly or via `buildStsClientConfig`. It is `{}` with
-  no proxy variable set; otherwise a routing `requestHandler` plus a
+  no proxy variable set, AND when every set one names an unspeakable scheme
+  (`ALL_PROXY=socks5://` alone) — warning once per scheme there, since no request
+  reaches `resolveProxyForTarget` to do it (#674); otherwise a routing `requestHandler` plus a
   default-chain `credentials` provider whose `clientConfig` threads the handler
   into the SSO / SSOOIDC hops the service client's own handler never reaches.
 - `proxyAwareFetch(url)` — the non-SDK seam (the presigned layer-ZIP download,
@@ -139,7 +141,8 @@ stripped-ANSI pipe; `resolveConfiguredLogLevel` + `CdklIoHost` honor
   names the USERNAME. Fall back rather than REFUSE, or a SOCKS user with working
   direct egress is broken with nothing left to configure. An UNPARSABLE proxy
   value still THROWS.
-- `isLoopbackHost` normalises first: `URL.hostname` KEEPS an IPv6 literal's
+- `isLoopbackHost` (in `loopback-host.ts`, the ONE module behind studio-proxy's
+  narrower `isLoopbackHostname` / `isWildcardHostname` too, #666) normalises first: `URL.hostname` KEEPS an IPv6 literal's
   brackets (`http://[::1]/` -> `"[::1]"`), so bare `'::1'` comparisons are dead
   code; it treats the wildcard address as this machine. A target the proxy
   environment does not cover — a `NO_PROXY` match or ANY loopback host — goes back
@@ -152,7 +155,7 @@ stripped-ANSI pipe; `resolveConfiguredLogLevel` + `CdklIoHost` honor
   `aws-proxy-fetch-audit.test.ts` (fetch seam, FAILS CLOSED on a bare `fetch(`
   call and a `globalThis.fetch` reference — each must be proxy-aware or carry
   `// proxy-audit: ignore: <reason>`), `loopback-predicate-agreement.test.ts`
-  (against `studio-proxy`'s predicate, which cannot share a module). Reasoned
+  (the shared table, plus re-export identity for both modules). Reasoned
   exemptions: the loopback container clients and the emulated data path
   (`rest-v1-integrations` forwarding to the user's own backend). Known bound: an
   ALIASED binding (`options.fetchImpl ?? fetch`) is NOT in the population.

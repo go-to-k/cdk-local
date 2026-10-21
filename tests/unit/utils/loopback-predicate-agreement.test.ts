@@ -1,33 +1,25 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { isLoopbackHost } from '../../../src/utils/aws-proxy.js';
 import { isLoopbackHostname, isWildcardHostname } from '../../../src/local/studio-proxy.js';
+import * as shared from '../../../src/utils/loopback-host.js';
 
 /**
- * cdk-local carries TWO loopback predicates, both on the `UP_PATHS` security
- * surface and both answering "is this host this machine?":
+ * "Is this host this machine?" backs two security bounds:
  *
  *   - `studio-proxy`'s `isLoopbackHostname` / `isWildcardHostname` bound where
  *     studio will forward a composer request (issue #578).
  *   - `aws-proxy`'s `isLoopbackHost` decides whether a JWKS / discovery /
  *     layer read may be sent to a forward proxy (issue #647).
  *
- * They exist separately because they answer for different LAYERS —
- * `src/utils/**` must not import from `src/local/**` — but a host is a host,
- * and the round-2 review found them already diverging: `aws-proxy`'s first
- * cut used a `7f…` PATTERN that admits a short hextet (`::ffff:7f:1` is
- * 0.127.0.1) where studio-proxy compares ARITHMETICALLY, and did not treat
- * the WILDCARD address as this machine at all, where studio-proxy does.
- *
- * The failure directions are opposite and both bad: studio-proxy forwarding
- * a request off-box, and aws-proxy proxying a local JWKS read — which does
- * not deny requests, it degrades the verifier to accept EVERY token.
- *
- * So the duplication is fenced rather than trusted. Consolidating the two
- * into one `src/utils/**` predicate is tracked in
- * https://github.com/go-to-k/cdk-local/issues/666; until then this test is
- * what stops them drifting again.
+ * They were two copies, kept apart by layering (`src/utils/**` must not
+ * import `src/local/**`), and diverged twice in opposite, equally bad
+ * directions: studio-proxy forwarding a request off-box, aws-proxy proxying a
+ * local JWKS read — which degrades the verifier to accept EVERY token. Issue
+ * go-to-k/cdk-local#666 moved both into `src/utils/loopback-host.ts`, which
+ * both modules import and re-export; the table below now pins that ONE
+ * implementation's answers, and the identity cases pin that the re-exports
+ * really are it.
  */
-
 /** Every spelling `URL.hostname` can produce for this machine, and near-misses. */
 const CASES: [host: string, isThisMachine: boolean][] = [
   ['127.0.0.1', true],
@@ -78,5 +70,11 @@ describe('loopback predicates agree across the two security surfaces (issue #647
   it.each(['sub.localhost', 'localhost.'])('%s is this machine for aws-proxy only', (host) => {
     expect(isLoopbackHost(host)).toBe(true);
     expect(isLoopbackHostname(host) || isWildcardHostname(host)).toBe(false);
+  });
+
+  it('both modules re-export the ONE shared implementation (issue go-to-k/cdk-local#666)', () => {
+    expect(isLoopbackHost).toBe(shared.isLoopbackHost);
+    expect(isLoopbackHostname).toBe(shared.isLoopbackHostname);
+    expect(isWildcardHostname).toBe(shared.isWildcardHostname);
   });
 });

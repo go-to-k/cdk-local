@@ -11,6 +11,11 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { getProxyForUrl } from 'proxy-from-env';
 import { getLogger } from './logger.js';
 import { formatAuthority } from './url-authority.js';
+import { isLoopbackHost } from './loopback-host.js';
+
+// Re-exported for this module's existing importers; the implementation is
+// shared with `local/studio-proxy` in `utils/loopback-host` (issue #666).
+export { isLoopbackHost };
 
 /**
  * Proxy-aware AWS SDK client plumbing (issue #634).
@@ -24,8 +29,8 @@ import { formatAuthority } from './url-authority.js';
  *
  * `buildProxyClientConfig()` is the single seam: it returns an EMPTY config
  * when no proxy environment variable is set (zero behavior change for
- * existing users), and a `{ requestHandler, credentials }` fragment when one
- * is. Every AWS SDK client construction in cdk-local spreads it (directly, or
+ * existing users) or none that is set names a usable scheme, and a
+ * `{ requestHandler, credentials }` fragment otherwise. Every AWS SDK client construction in cdk-local spreads it (directly, or
  * via `buildStsClientConfig` for the STS sites);
  * `tests/unit/utils/aws-proxy-client-audit.test.ts` fences the sweep so a new
  * construction site cannot silently skip it.
@@ -61,15 +66,54 @@ const AGENT_OPTS = { keepAlive: true, maxSockets: 50 };
  * programmatically before constructing clients is honored.
  */
 export function isProxyEnvConfigured(): boolean {
-  const env = process.env;
-  return Boolean(
-    env['https_proxy'] ||
-    env['HTTPS_PROXY'] ||
-    env['http_proxy'] ||
-    env['HTTP_PROXY'] ||
-    env['all_proxy'] ||
-    env['ALL_PROXY']
-  );
+  return PROXY_ENV_VARIABLES.some((key) => Boolean(process.env[key]));
+}
+
+/**
+ * Every variable `proxy-from-env` (v2) can take a proxy URL from:
+ * `getEnv(<scheme>_proxy) || getEnv('all_proxy')`, where `getEnv` reads the
+ * lowercase spelling before the uppercase one. No `npm_config_*` lookup.
+ */
+const PROXY_ENV_VARIABLES = [
+  'https_proxy',
+  'HTTPS_PROXY',
+  'http_proxy',
+  'HTTP_PROXY',
+  'all_proxy',
+  'ALL_PROXY',
+] as const;
+
+/**
+ * Whether `value`, as a raw proxy environment variable, would reach a
+ * {@link resolveProxyForTarget} caller as a proxy these agents can speak.
+ * `getProxyForUrl` prepends the REQUEST's scheme (`http` / `https`, the only
+ * two these seams issue) to a value with no `://`, so such a value is always
+ * speakable; one WITH `://` is returned verbatim and judged as
+ * `resolveProxyForTarget` judges it — trimmed, then {@link isSpeakableProxy}.
+ */
+function isSpeakableProxyEnvValue(value: string): boolean {
+  return !value.includes('://') || isSpeakableProxy(value.trim());
+}
+
+/**
+ * The proxy variables that are SET, when every one of them names a scheme
+ * these agents cannot speak — the state in which every request, whatever its
+ * target, resolves to a DIRECT connection (issue go-to-k/cdk-local#674).
+ * `undefined` otherwise: nothing set, or at least one usable value.
+ *
+ * Deliberately an OVER-approximation of "something may be proxied": it asks
+ * whether ANY set variable is usable, not which one wins for a given scheme,
+ * so `HTTPS_PROXY=socks5://...` beside `HTTP_PROXY=http://...` keeps the full
+ * fragment even though an `https:` request picks the SOCKS value and goes
+ * direct. That direction is safe — the fragment routes per request and
+ * reaches the same direct connection — while the opposite error would drop a
+ * proxy a request actually needed. It also leaves the precedence rules where
+ * they live, in `proxy-from-env`, rather than spelling them a second time.
+ */
+function unspeakableProxyEnvValues(): string[] | undefined {
+  const set = PROXY_ENV_VARIABLES.map((key) => process.env[key] ?? '').filter((v) => v !== '');
+  if (set.length === 0 || set.some(isSpeakableProxyEnvValue)) return undefined;
+  return set;
 }
 
 /**
@@ -182,7 +226,7 @@ function warnUnspeakableProxy(proxyUrl: string): void {
       .child('aws-proxy')
       .warn(
         `Unsupported proxy scheme "${scheme}" — cdk-local speaks HTTP CONNECT proxies ` +
-          'only, so this request went DIRECT instead of through the proxy. Set ' +
+          'only, so requests it would carry go DIRECT instead of through the proxy. Set ' +
           'HTTPS_PROXY / HTTP_PROXY / ALL_PROXY to an http:// or https:// proxy URL. ' +
           '(The proxy URL is withheld here: it can carry credentials.)'
       );
@@ -368,7 +412,14 @@ export function buildProxyRequestHandler(): NodeHttpHandler {
  * with `NO_PROXY` exemptions evaluated per request).
  *
  * Returns `{}` when no proxy variable is set, so the unproxied path keeps
- * the SDK's own defaults and the change is a no-op for existing users.
+ * the SDK's own defaults and the change is a no-op for existing users. It
+ * also returns `{}` — after warning once per scheme — when every variable
+ * that IS set names a scheme these agents cannot speak (`ALL_PROXY=socks5://`
+ * alone): every request would go direct anyway, so the client takes the SAME
+ * unproxied path, credential chain included, an unset environment gets,
+ * rather than an explicit `defaultProvider` and two handlers that only ever
+ * connect direct (issue go-to-k/cdk-local#674). The warn is emitted HERE
+ * because no request will reach {@link resolveProxyForTarget} to emit it.
  *
  * When one IS set, the fragment carries:
  *
@@ -397,6 +448,13 @@ export function buildProxyClientConfig(
   opts: { profile?: string | undefined } = {}
 ): AwsProxyClientConfig {
   if (!isProxyEnvConfigured()) return {};
+  const unspeakable = unspeakableProxyEnvValues();
+  if (unspeakable) {
+    // Trimmed like `resolveProxyForTarget`'s value, so both sites name the
+    // same scheme and share one warn-once memo entry.
+    for (const value of unspeakable) warnUnspeakableProxy(value.trim());
+    return {};
+  }
   const profile = opts.profile;
   // The PROMISE is memoized, not the resolved provider: two overlapping
   // `credentials()` calls both pass a `if (!chain)` guard before either
@@ -471,76 +529,6 @@ interface RawHttpResponse {
   statusText: string;
   headers: IncomingMessage['headers'];
   body: Buffer;
-}
-
-/**
- * Whether `hostname` names THIS machine. `proxy-from-env` implements the
- * standard `NO_PROXY` semantics faithfully, and the standard exempts nothing
- * by default — so with `HTTP_PROXY` exported and no matching `NO_PROXY`
- * entry, a request to `127.0.0.1` is sent to the corporate proxy, which
- * cannot reach the caller's own loopback and refuses it.
- *
- * For an AWS SDK client that is unreachable in practice (every endpoint is a
- * public AWS host), which is why {@link EnvRoutingProxyAgent} does not carry
- * this rule. For `proxyAwareFetch` it is not: a JWT authorizer's issuer is
- * routinely a loopback IdP in local dev — this repo's own
- * `local-start-api-cognito-jwt` fixture is exactly that shape — and an
- * unreachable JWKS does not fail the request, it degrades the verifier to
- * ACCEPT EVERY TOKEN with a warn. So proxying loopback here converts a
- * working local setup into a silent auth downgrade, and it cannot buy
- * anything in exchange: a forward proxy has no route to the client's
- * loopback. Every other loopback request in cdk-local (the RIE and AgentCore
- * container clients) is unproxied for the same reason.
- *
- * Deliberately NOT extended to RFC 1918 / private ranges: a corporate proxy
- * plausibly does reach those, so exempting them would be a guess rather
- * than an impossibility. `NO_PROXY` remains the control for that case.
- */
-export function isLoopbackHost(hostname: string): boolean {
-  // `URL.hostname` lowercases the host and strips the port, but it KEEPS an
-  // IPv6 literal's brackets and canonicalises the address inside them.
-  // Measured on Node 24:
-  //
-  //   http://[::1]/              -> "[::1]"
-  //   http://[0:0:0:0:0:0:0:1]/  -> "[::1]"
-  //   http://[::ffff:127.0.0.1]/ -> "[::ffff:7f00:1]"
-  //   http://localhost./         -> "localhost."
-  //
-  // An earlier revision compared against a bare `'::1'` and the expanded
-  // form, so BOTH arms were dead code and an IPv6-loopback issuer was
-  // PROXIED — precisely the silent accept-all downgrade this exists to
-  // prevent. Normalise first, then compare.
-  const host = hostname
-    .trim()
-    .replace(/^\[|\]$/g, '')
-    // A single trailing dot is the fully-qualified spelling of the same name.
-    .replace(/\.$/, '')
-    .toLowerCase();
-  if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true;
-  // The WILDCARD address is a bind address, not a destination: connecting to
-  // it reaches this machine, and `http://0.0.0.0:8080/realms/x` is an
-  // ordinary local-IdP issuer spelling. `studio-proxy`'s `isWildcardHostname`
-  // takes the same position for the same reason (issue #578).
-  if (
-    host === '0.0.0.0' ||
-    host === '::' ||
-    host === '0:0:0:0:0:0:0:0' ||
-    host === '::ffff:0.0.0.0' ||
-    host === '::ffff:0:0'
-  ) {
-    return true;
-  }
-  // IPv4-mapped IPv6 in hex form (`::ffff:7f00:1`): the high hextet's top
-  // byte is the first IPv4 octet. Arithmetic rather than a `7f…` pattern,
-  // which admits a SHORT hextet — `::ffff:7f:1` is 0.127.0.1, not loopback.
-  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
-  if (mapped) return parseInt(mapped[1]!, 16) >> 8 === 127;
-  const dotted = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-  if (!dotted) return false;
-  const octets = dotted.slice(1).map(Number);
-  if (octets.some((o) => o > 255)) return false;
-  return octets[0] === 127;
 }
 
 /**
