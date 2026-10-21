@@ -929,7 +929,8 @@ async function publishGatedReplica(
   options: ServiceRunnerOptions,
   instance: ServiceReplicaInstance,
   deadline: number,
-  isShuttingDown: () => boolean
+  isShuttingDown: () => boolean,
+  label = `Shadow replica r${instance.index} (gen ${instance.generation})`
 ): Promise<void> {
   const network = instance.state.network;
   const withheld = instance.withheldAliasContainers ?? [];
@@ -943,12 +944,22 @@ async function publishGatedReplica(
       const started = instance.state.startedContainers.find((c) => c.name === name);
       if (!container || !started) continue;
       const port = container.portMappings[0]?.containerPort;
-      if (port !== undefined) await waitForContainerListening(started.id, port, deadline);
+      if (port !== undefined) {
+        const outcome = await waitForContainerListening(started.id, port, deadline);
+        if (outcome === 'exited') {
+          // A stopped container has no IP to re-attach at; it gets its
+          // aliases back if and when it runs again (a restart re-boots it).
+          getLogger()
+            .child('ecs-service')
+            .debug(`${label}: '${name}' exited before listening; leaving its aliases withheld.`);
+          continue;
+        }
+      }
       if (isShuttingDown()) return;
       const ip = await getContainerNetworkIp(started.id, network.networkName);
       if (!ip) {
         throw new EcsServiceRunnerError(
-          `Shadow replica r${instance.index} (gen ${instance.generation}): no docker IP for ` +
+          `${label}: no docker IP for ` +
             `'${name}' on ${network.networkName}; cannot attach its Service Connect aliases.`
         );
       }
@@ -1485,6 +1496,7 @@ export async function rollServiceReplica(args: {
     await waitForReplicaTcpReady(newService, shadow, {
       timeoutMs: Math.max(1, deadline - Date.now()),
       intervalMs: shadowReadyIntervalMs,
+      isShuttingDown: () => shadow.shuttingDown || controller.runState.shuttingDown,
     });
     if (!teardownOldFirst) {
       await publishGatedReplica(
@@ -1931,11 +1943,12 @@ export async function softReloadReplica(args: {
     // One budget for the whole wait: the per-container alias gating below
     // shares the replica probe's deadline instead of starting its own.
     const aliasDeadline = Date.now() + shadowReadyTimeoutMs;
-    const ready = await waitForReplicaTcpReady(newService, instance, {
-      timeoutMs: shadowReadyTimeoutMs,
-      intervalMs: shadowReadyIntervalMs,
-      label: `Soft-reloaded replica r${instance.index} (gen ${instance.generation})`,
-    });
+    const ready =
+      (await waitForReplicaTcpReady(newService, instance, {
+        timeoutMs: shadowReadyTimeoutMs,
+        intervalMs: shadowReadyIntervalMs,
+        label: `Soft-reloaded replica r${instance.index} (gen ${instance.generation})`,
+      })) === 'ready';
     for (const target of targets) {
       const plan = attachPlans.get(target.id);
       if (!plan || plan.aliasesAttached) continue;
@@ -2450,9 +2463,15 @@ export function __setDockerNetworkDisconnectImpl(
  * roll here would leave the OLD replica running on stale code with no
  * recovery path other than `^C`.
  *
- * Returns `true` when the port was seen ready (or there is nothing to
- * probe), `false` when the probe timed out or could not run — the
- * soft-reload's completion line says which.
+ * A shadow that EXITED during startup is swapped in on the same
+ * reasoning (its new image is the user's intent; the watcher's restart
+ * policy then handles the crash loop) — only a crash RESTART skips
+ * publishing an exited container (issue #812).
+ *
+ * Returns a {@link ReadinessOutcome}: `ready` when the port was seen
+ * listening (or there is nothing to probe), `exited` when the container
+ * stopped first, `not-ready` otherwise — the soft-reload's completion
+ * line says which.
  *
  * Both probes are injectable ({@link __setListenProbeImpl},
  * {@link __setTcpProbeImpl}) so the unit tests never touch docker or a
@@ -2461,8 +2480,14 @@ export function __setDockerNetworkDisconnectImpl(
 async function waitForReplicaTcpReady(
   service: ResolvedEcsService,
   replica: ServiceReplicaInstance,
-  opts: { timeoutMs: number; intervalMs: number; label?: string }
-): Promise<boolean> {
+  opts: {
+    timeoutMs: number;
+    intervalMs: number;
+    label?: string;
+    /** Issue #812 — stop waiting (returning false) once a shutdown starts. */
+    isShuttingDown?: () => boolean;
+  }
+): Promise<ReadinessOutcome> {
   const logger = getLogger().child('ecs-service');
   // Phase 4 of issue #214 — `label` distinguishes the rolling pathway's
   // "shadow replica" prose from the soft-reload pathway's "replica" prose
@@ -2470,17 +2495,17 @@ async function waitForReplicaTcpReady(
   // existing callers (Phase 2 rolling primitive) are unchanged.
   const label = opts.label ?? `Shadow replica r${replica.index} (gen ${replica.generation})`;
   const networkName = replica.state.network?.networkName;
-  if (!networkName) return true; // boot didn't get far enough; the caller's catch handles it
+  if (!networkName) return 'ready'; // boot didn't get far enough; the caller's catch handles it
 
   const essential = service.task.containers.find((c) => c.essential) ?? service.task.containers[0];
   if (!essential || essential.portMappings.length === 0) {
     // No essential container or no port to probe — nothing to wait
     // on. Common for sidecar-only services or tasks that the user
     // expects to drive externally.
-    return true;
+    return 'ready';
   }
   const started = replica.state.startedContainers.find((c) => c.name === essential.name);
-  if (!started) return true;
+  if (!started) return 'ready';
 
   const port = essential.portMappings[0]!.containerPort;
   const startedAt = Date.now();
@@ -2492,6 +2517,7 @@ async function waitForReplicaTcpReady(
   let inContainer = true;
   let ip: string | undefined;
   while (Date.now() < deadline) {
+    if (opts.isShuttingDown?.()) return 'not-ready';
     if (inContainer) {
       const result = await listenProbeImpl(started.id, port, deadline - Date.now());
       if (result.kind === 'listening') {
@@ -2502,7 +2528,7 @@ async function waitForReplicaTcpReady(
         logger.debug(
           `${label}: port ${port} listening in ${Date.now() - startedAt}ms (in-container check).`
         );
-        return true;
+        return 'ready';
       }
       if (result.kind === 'unsupported') {
         logger.debug(
@@ -2511,6 +2537,13 @@ async function waitForReplicaTcpReady(
         );
         inContainer = false;
         continue;
+      }
+      if (result.kind === 'exited') {
+        // Issue #812 — the app died during startup; nothing will ever
+        // listen, and polling a stopped container would only stall the
+        // caller (a crash loop's restart) for the whole budget.
+        logger.warn(`${label}: the container exited before port ${port} listened. Proceeding.`);
+        return 'exited';
       }
       lastErr = result.kind === 'not-listening' ? 'not listening yet' : result.detail;
     } else {
@@ -2522,21 +2555,21 @@ async function waitForReplicaTcpReady(
             `${label}: TCP-ready probe could not resolve docker IP: ` +
               `${err instanceof Error ? err.message : String(err)}. Proceeding.`
           );
-          return false;
+          return 'not-ready';
         }
         if (!ip) {
           logger.warn(
             `${label}: TCP-ready probe found no docker IP for ${started.name} on ` +
               `${networkName}. Proceeding.`
           );
-          return false;
+          return 'not-ready';
         }
         target = formatAuthority(ip, port);
       }
       try {
         await tcpProbeImpl(ip, port);
         logger.debug(`${label}: TCP probe ${target} accepted in ${Date.now() - startedAt}ms.`);
-        return true;
+        return 'ready';
       } catch (err) {
         lastErr = err instanceof Error ? err.message : String(err);
       }
@@ -2548,8 +2581,16 @@ async function waitForReplicaTcpReady(
       `(last: ${lastErr ?? 'n/a'}). Proceeding anyway — the new source is the user ` +
       'intent. Initial requests may 502 until the app finishes binding.'
   );
-  return false;
+  return 'not-ready';
 }
+
+/**
+ * Issue #812 — how a readiness wait ended: the port listened (or there
+ * was nothing to probe), the budget ran out / the probe could not run,
+ * or the container EXITED (nothing will ever listen; a crash restart
+ * must not publish it).
+ */
+export type ReadinessOutcome = 'ready' | 'not-ready' | 'exited';
 
 /** Outcome of one in-container LISTEN check ({@link dockerExecListenProbe}). */
 export type ListenProbeResult =
@@ -2558,7 +2599,9 @@ export type ListenProbeResult =
   /** The check cannot run in this image — switch to the host connect. */
   | { kind: 'unsupported'; detail: string }
   /** A transient failure (e.g. the container is not running yet) — poll again. */
-  | { kind: 'error'; detail: string };
+  | { kind: 'error'; detail: string }
+  /** Issue #812 — the container is not running (it exited during startup). */
+  | { kind: 'exited'; detail: string };
 
 /**
  * POSIX `sh` script behind {@link dockerExecListenProbe}; `$1` is the
@@ -2633,10 +2676,9 @@ export async function dockerExecListenProbe(
     if (e.code === 4) return { kind: 'unsupported', detail: 'no readable /proc/net/tcp' };
     // 126 also means "cannot exec in a stopped container" (an app that
     // crashed on start): only a MISSING `sh` is a property of the image.
-    if (
-      (e.code === 126 || e.code === 127) &&
-      /not found|no such file/i.test(typeof e.stderr === 'string' ? e.stderr : '')
-    ) {
+    const stderr = typeof e.stderr === 'string' ? e.stderr : '';
+    if (/is not running|stopped state/i.test(stderr)) return { kind: 'exited', detail };
+    if ((e.code === 126 || e.code === 127) && /not found|no such file/i.test(stderr)) {
       return { kind: 'unsupported', detail };
     }
     return { kind: 'error', detail };
@@ -2674,14 +2716,15 @@ async function waitForContainerListening(
   containerId: string,
   port: number,
   deadline: number
-): Promise<boolean> {
+): Promise<ReadinessOutcome> {
   while (Date.now() < deadline) {
     const result = await listenProbeImpl(containerId, port, deadline - Date.now());
-    if (result.kind === 'listening') return true;
-    if (result.kind === 'unsupported') return false;
+    if (result.kind === 'listening') return 'ready';
+    if (result.kind === 'exited') return 'exited';
+    if (result.kind === 'unsupported') return 'not-ready';
     await sleep(shadowReadyIntervalMs);
   }
-  return false;
+  return 'not-ready';
 }
 
 /**
@@ -2872,7 +2915,29 @@ async function watchReplica(
     // replica's state for cleanup — otherwise the cleanup loop would
     // race the boot and orphan the freshly-created docker network +
     // sidecar.
-    const bootPromise = bootReplica(service, options, instance);
+    //
+    // Issue #812 — like a rolling rebuild's shadow (#805), the restarted
+    // replica boots UNPUBLISHED and is published only once its app
+    // listens: a real ALB routes to a replacement target only after its
+    // health checks pass, and a peer must not resolve the alias to an
+    // app that is still binding.
+    const isShuttingDown = (): boolean => instance.shuttingDown || runState.shuttingDown;
+    const bootPromise = (async (): Promise<void> => {
+      await bootReplica(service, options, instance, { deferPublish: true });
+      const deadline = Date.now() + shadowReadyTimeoutMs;
+      const label = `Restarted replica r${instance.index} (gen ${instance.generation})`;
+      const outcome = await waitForReplicaTcpReady(service, instance, {
+        timeoutMs: shadowReadyTimeoutMs,
+        intervalMs: shadowReadyIntervalMs,
+        label,
+        isShuttingDown,
+      });
+      // It crashed again during startup: publish nothing. The loop's next
+      // `docker wait` returns at once and the restart policy takes over,
+      // exactly as for any other exit.
+      if (outcome === 'exited') return;
+      await publishGatedReplica(service, options, instance, deadline, isShuttingDown, label);
+    })();
     instance.inFlightBoot = bootPromise;
     try {
       await bootPromise;

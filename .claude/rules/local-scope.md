@@ -43,9 +43,9 @@ A per-firing classifier picks the per-replica primitive:
   while stopped (#660): WITH its aliases if it publishes host ports (a RUNNING
   re-attach drops them), else IP-only, aliases following the passed probe.
 - **rebuild** — Dockerfile / dependency-manifest / compiled-source / ambiguous
-  edits: boot a shadow under a bumped generation, UNPUBLISHED until it
-  listens (#805: no registrations, aliases withheld unless it publishes host
-  ports), then swap Cloud Map + front-door off the old replica; retire it.
+  edits: boot a shadow (bumped gen) UNPUBLISHED until it listens (no
+  registrations; aliases withheld unless it publishes host ports; #805; a crash
+  restart too, #812), then swap registrations off the old one; retire it.
 
 Invariants:
 

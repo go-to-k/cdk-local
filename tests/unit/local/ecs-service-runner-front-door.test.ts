@@ -40,8 +40,13 @@ vi.mock('../../../src/local/docker-inspect.js', () => ({
   getPublishedHostPort: async () => hoisted.publishedPorts[hoisted.publishCount++] ?? 5999,
 }));
 
-const { startEcsService, createServiceRunState, __setWaitForExitImpl, __setSleepImpl } =
-  await import('../../../src/local/ecs-service-runner.js');
+const {
+  startEcsService,
+  createServiceRunState,
+  __setWaitForExitImpl,
+  __setSleepImpl,
+  __setListenProbeImpl,
+} = await import('../../../src/local/ecs-service-runner.js');
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function fakeService(): any {
@@ -101,10 +106,13 @@ describe('service runner front-door lifecycle', () => {
     hoisted.bootCount = 0;
     hoisted.publishCount = 0;
     __setSleepImpl(() => Promise.resolve()); // skip restart backoff
+    // Issue #812 — a restart now waits for the in-container LISTEN check.
+    __setListenProbeImpl(async () => ({ kind: 'listening' }));
   });
   afterEach(() => {
     __setWaitForExitImpl(undefined);
     __setSleepImpl(undefined);
+    __setListenProbeImpl(undefined);
   });
 
   it('registers the replica on boot and unregisters it on shutdown', async () => {

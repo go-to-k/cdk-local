@@ -849,6 +849,59 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       await controller.shutdown();
     });
 
+    it('still swaps in a shadow whose container exited during startup (the new image is the user intent)', async () => {
+      const { opts } = gatedOpts();
+      __setListenProbeImpl(async () => ({ kind: 'exited', detail: 'is not running' }));
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      await rollServiceReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeServiceConnectService(),
+        newOptions: opts as never,
+      });
+      // Documented contract (waitForReplicaTcpReady): a not-ready shadow is
+      // swapped in anyway; failing the roll would strand the user on stale
+      // code. The watcher's restart policy then owns the crash loop.
+      expect(controller.runState.replicas.find((r) => r.index === 0)?.generation).toBe(1);
+      await controller.shutdown();
+    });
+
+    it('leaves the aliases of a withheld container that exited before listening withheld (no re-attach of a stopped container)', async () => {
+      const { opts, registry } = gatedOpts();
+      const connects: string[] = [];
+      __setDockerNetworkConnectImpl(async (_net, id) => {
+        connects.push(id);
+      });
+      let calls = 0;
+      __setListenProbeImpl(async () => {
+        calls += 1;
+        // The replica probe sees it listen; it then dies before its own
+        // per-container check.
+        return calls === 1 ? { kind: 'listening' } : { kind: 'exited', detail: 'is not running' };
+      });
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      await rollServiceReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeServiceConnectService(),
+        newOptions: opts as never,
+      });
+      expect(connects).toEqual([]);
+      // The roll still completes (the watcher restarts a dead shadow).
+      expect(
+        (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13')
+      ).toBe(true);
+      await controller.shutdown();
+    });
+
     it.each([
       [1, 'during the replica probe'],
       [2, 'during the per-container wait'],
@@ -881,6 +934,155 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       expect(
         (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13')
       ).toBe(false);
+      await controller.shutdown();
+    });
+  });
+
+  // Issue #812 — the watcher's crash-restart re-boot used to publish the
+  // replica (Cloud Map, front-door, Service Connect alias) at `docker run`,
+  // with no readiness probe at all.
+  describe('crash restart is published only once it listens (issue #812)', () => {
+    const sharedNetwork = { networkName: 'net-shared', ownedByCaller: true };
+    function crashOnce(): void {
+      let crashed = false;
+      __setWaitForExitImpl((id) => {
+        if (id === 'cid-1' && !crashed) {
+          crashed = true;
+          return Promise.resolve(137); // `docker kill`: on-failure restarts it
+        }
+        return new Promise<number>(() => {});
+      });
+    }
+
+    it('boots the restarted replica unpublished, attaches its aliases after LISTEN, then registers it', async () => {
+      crashOnce();
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      const ops: string[] = [];
+      __setDockerInspectPublishesHostPortsImpl(async () => false);
+      __setDockerNetworkConnectImpl(async (net, id, o) => {
+        ops.push(`connect ${net} ${id} ip=${o.ip} aliases=${o.aliases.join(',')}`);
+      });
+      __setListenProbeImpl(async (id) => {
+        const registered = (registry.lookup('cdkl.local', 'svc') ?? []).some(
+          (e) => e.ip === '172.20.0.13'
+        );
+        ops.push(`listen ${id} registered=${registered}`);
+        return { kind: 'listening' };
+      });
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      const isRegistered = (): boolean =>
+        (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13');
+      await waitFor(isRegistered);
+      expect(hoisted.taskOptions[0].networkAliasesByContainer?.get('web')).toEqual([
+        'svc',
+        'svc.cdkl.local',
+      ]);
+      // Boot #3 is the restart of r0: aliases withheld at `docker run`.
+      expect(hoisted.taskOptions[2].networkAliasesByContainer?.get('web')).toBeUndefined();
+      expect(ops).toEqual([
+        'listen cid-3 registered=false', // replica probe
+        'listen cid-3 registered=false', // its own port, gating its aliases
+        'connect net-3 cid-3 ip=172.20.0.13 aliases=web,svc,svc.cdkl.local',
+      ]);
+      expect(isRegistered()).toBe(true);
+      await controller.shutdown();
+    });
+
+    it('does not hold a shutdown for the readiness budget while a restarted replica is still binding', async () => {
+      crashOnce();
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      let listens = 0;
+      __setListenProbeImpl(async () => {
+        listens += 1;
+        // A real tick, as `docker exec` takes: the loop must yield to the
+        // event loop or shutdown() never gets to run.
+        await new Promise((r) => setTimeout(r, 2));
+        return { kind: 'not-listening' };
+      });
+      __setShadowReadyConfig({ timeoutMs: 60_000, intervalMs: 1 });
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      await waitFor(() => listens > 0);
+      // `shutdown()` awaits the in-flight restart boot; without the probe's
+      // shutdown check it would wait out the whole 60 s budget.
+      const done = await Promise.race([
+        controller.shutdown().then(() => 'shut down'),
+        new Promise((r) => setTimeout(() => r('still waiting'), 2_000)),
+      ]);
+      expect(done).toBe('shut down');
+      expect(
+        (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13')
+      ).toBe(false);
+    });
+
+    it('publishes nothing for a restart that crashes again during startup, and the restart policy re-boots it', async () => {
+      // cid-1 crashes; its restart (cid-3) exits during startup and its
+      // `docker wait` returns 137 too; the next restart (cid-4) comes up.
+      const crashed = new Set<string>();
+      __setWaitForExitImpl((id) => {
+        if ((id === 'cid-1' || id === 'cid-3') && !crashed.has(id)) {
+          crashed.add(id);
+          return Promise.resolve(137);
+        }
+        return new Promise<number>(() => {});
+      });
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      const connects: string[] = [];
+      __setDockerNetworkConnectImpl(async (_net, id) => {
+        connects.push(id);
+      });
+      const listens: string[] = [];
+      __setListenProbeImpl(async (id) => {
+        listens.push(id);
+        return id === 'cid-3'
+          ? { kind: 'exited', detail: 'Container cid-3 is not running' }
+          : { kind: 'listening' };
+      });
+      __setShadowReadyConfig({ timeoutMs: 60_000, intervalMs: 1 });
+      const warnSpy = vi.spyOn(ConsoleLogger.prototype, 'warn').mockImplementation(() => {});
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      const ips = (): string[] => (registry.lookup('cdkl.local', 'svc') ?? []).map((e) => e.ip);
+      await waitFor(() => ips().includes('172.20.0.14'));
+      // cid-3 was probed ONCE (no 60 s polling of a dead container), never
+      // re-attached, never registered; cid-4 went through the full gate.
+      expect(listens.filter((id) => id === 'cid-3')).toHaveLength(1);
+      expect(connects).toEqual(['cid-4']);
+      expect(ips()).not.toContain('172.20.0.13');
+      const r0 = controller.runState.replicas.find((r) => r.index === 0)!;
+      expect(r0.restartCount).toBe(2);
+      expect(r0.shuttingDown).toBe(false); // not left degraded
+      expect(
+        warnSpy.mock.calls.some((c) =>
+          String(c[0]).includes('Restarted replica r0 (gen 0): the container exited before port 80 listened.')
+        )
+      ).toBe(true);
+      warnSpy.mockRestore();
       await controller.shutdown();
     });
   });
