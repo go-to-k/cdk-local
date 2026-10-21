@@ -397,6 +397,70 @@ describe('attachContainerLogStreamer', () => {
     vi.useRealTimers();
   });
 
+  // Issue #660 — the ECS soft reload is `docker stop` + `docker start`,
+  // so the streamer sees `exited` mid-cycle. With the owner's
+  // `expectRestart` flag up it keeps polling instead of giving up, and
+  // re-attaches once the container runs again.
+  it('keeps polling through `exited` while the owner expects a restart, then re-attaches', async () => {
+    vi.useFakeTimers();
+    let status = 'exited';
+    execFileMock.mockImplementation(
+      (
+        _cmd: string,
+        _args: readonly string[],
+        cb: (err: Error | null, stdout: string, stderr: string) => void
+      ) => cb(null, `${status}\n`, '')
+    );
+    const { proc: first } = makeFakeProc();
+    const { proc: second } = makeFakeProc();
+    spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    let cycling = true;
+    const stop = attachContainerLogStreamer('[p] ', 'cid', { expectRestart: () => cycling });
+
+    first.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(1_000); // still stopped: polls, never spawns
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(execFileMock.mock.calls.length).toBeGreaterThan(2);
+
+    status = 'running'; // the soft reload's `docker start` landed
+    await vi.advanceTimersByTimeAsync(500);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock.mock.calls[1]![1]).toEqual(['logs', '-f', '--since', '0s', 'cid']);
+
+    cycling = false;
+    stop();
+    restoreStdSpies();
+    vi.useRealTimers();
+  });
+
+  it('stops polling `exited` once the owner no longer expects a restart', async () => {
+    vi.useFakeTimers();
+    execFileMock.mockImplementation(
+      (
+        _cmd: string,
+        _args: readonly string[],
+        cb: (err: Error | null, stdout: string, stderr: string) => void
+      ) => cb(null, 'exited\n', '')
+    );
+    const { proc: first } = makeFakeProc();
+    spawnMock.mockReturnValueOnce(first);
+    let cycling = true;
+    const stop = attachContainerLogStreamer('[p] ', 'cid', { expectRestart: () => cycling });
+
+    first.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(500);
+    cycling = false; // the cycle failed: the container stays down
+    await vi.advanceTimersByTimeAsync(300);
+    const inspectsAtEnd = execFileMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(execFileMock.mock.calls.length).toBe(inspectsAtEnd); // no more polling
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+
+    stop();
+    restoreStdSpies();
+    vi.useRealTimers();
+  });
+
   /**
    * Issue #227 review fix — Code #4 (cont.): `dead` and `removing`
    * are also terminal states. Verify the gate covers both.

@@ -64,7 +64,7 @@ export class EcsServiceRunnerError extends Error {
 /**
  * Phase 4 (#214) — completion-log suffix the soft-reload primitive
  * emits AFTER `Soft-reloaded replica r<i> (gen <g>): ` to confirm
- * the docker restart + TCP-ready probe + Cloud Map / front-door
+ * the container restart + TCP-ready probe + Cloud Map / front-door
  * re-publish round trip is done.
  *
  * Exported so integ fixtures + unit tests can grep against the
@@ -321,7 +321,7 @@ export interface ServiceReplicaInstance {
    * rolling reload swapped the replica to a new image. The stale
    * baseline caused soft-reload to fire on reload #2-after-rebuild
    * even when the synth produced identical content — wasteful but
-   * correct (`docker cp` of identical bytes + `docker restart`). The
+   * correct (`docker cp` of identical bytes + a restart). The
    * per-replica field closes that gap.
    *
    * `undefined` when the image isn't a CDK asset (ECR / public pin)
@@ -806,7 +806,13 @@ async function bootReplica(
     // logical id (e.g. `BackendApi5F9D8C32`) in every foreground line.
     for (const started of instance.state.startedContainers) {
       const prefix = `[svc=${service.serviceDisplayName} r=${instance.index} c=${started.name}] `;
-      instance.state.logStoppers.push(attachContainerLogStreamer(prefix, started.id));
+      // Issue #660 — the soft reload stops and then starts the container;
+      // the streamer must not read that stop as a natural exit.
+      instance.state.logStoppers.push(
+        attachContainerLogStreamer(prefix, started.id, {
+          expectRestart: () => instance.softReloadInProgress === true,
+        })
+      );
     }
   }
 
@@ -1538,8 +1544,8 @@ export async function rollServiceReplica(args: {
  *     ~10ms; not worth the cache invalidation surface for a path
  *     fired ~once per save.
  *   - SIGHUP / `docker exec`-driven in-process reload. Image-specific
- *     (uvicorn / nodemon / etc.). `docker restart` is the universal
- *     primitive; signal-based reload is a future opt-in if the
+ *     (uvicorn / nodemon / etc.). A container stop + start is the
+ *     universal primitive; signal-based reload is a future opt-in if the
  *     per-restart latency proves prohibitive.
  *
  * @internal — wired only by the emulator's reload pathway.
@@ -1548,16 +1554,16 @@ export async function softReloadReplica(args: {
   /** Controller whose `runState.replicas[oldReplicaIndex]` is soft-reloaded. */
   controller: ServiceController;
   /**
-   * Index INTO `controller.runState.replicas`. The replica's
-   * docker network IP / Cloud Map / front-door pool registrations
-   * survive the soft-reload unchanged.
+   * Index INTO `controller.runState.replicas`. The replica keeps its
+   * container id and docker network IP; its Cloud Map / front-door pool
+   * registrations are drained and re-published under the same owner key.
    */
   oldReplicaIndex: number;
   /**
    * Resolved task descriptor for the post-reload generation. Used
    * only to identify essential containers + their TCP-ready port; the
    * image / env / mounts are NOT applied (those require a rebuild —
-   * `docker restart` cycles PID 1 but does not re-create the
+   * a stop + start cycles PID 1 but does not re-create the
    * container with new spec).
    */
   newService: ResolvedEcsService;
@@ -1768,12 +1774,14 @@ export async function softReloadReplica(args: {
     // The TCP-ready probe re-uses the rolling pathway's helper —
     // identical semantics (a LISTEN check on the essential container's
     // first port, run inside the container's own network namespace).
+    // One budget for the whole wait: the per-container alias gating below
+    // shares the replica probe's deadline instead of starting its own.
+    const aliasDeadline = Date.now() + shadowReadyTimeoutMs;
     const ready = await waitForReplicaTcpReady(newService, instance, {
       timeoutMs: shadowReadyTimeoutMs,
       intervalMs: shadowReadyIntervalMs,
       label: `Soft-reloaded replica r${instance.index} (gen ${instance.generation})`,
     });
-    const aliasDeadline = Date.now() + shadowReadyTimeoutMs;
     for (const target of targets) {
       const plan = attachPlans.get(target.id);
       if (!plan || plan.aliasesAttached) continue;

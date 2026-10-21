@@ -16,7 +16,7 @@ import { getDockerCmd } from '../utils/docker-cmd.js';
  * is the caller's concern: this helper only cares about line-buffered
  * pass-through.
  *
- * **Auto re-attach on `docker restart`** (Issue #227 + #214 soft-reload):
+ * **Auto re-attach on `docker restart`, or stop + start** (Issue #227 + #214 soft-reload):
  * the docker daemon terminates `docker logs -f` when the container's
  * PID 1 exits — so a `docker restart` (the soft-reload primitive) ends
  * the follow stream even though the container ID is preserved across the
@@ -40,9 +40,10 @@ import { getDockerCmd } from '../utils/docker-cmd.js';
  * the natural-exit path is the service-runner's `cleanupEcsRun(...)`
  * call (~1s after the wait resolves), and a respawn against a
  * dying container is just a wasted `docker logs -f` process + a
- * spurious cap-reached tick. A `docker restart` (the soft-reload
- * primitive) leaves the container in `restarting` / `running`, so
- * the soft-reload re-attach path is preserved. Falls open: an
+ * spurious cap-reached tick. A `docker restart` leaves the container in
+ * `restarting` / `running`; the ECS soft reload's `docker stop` +
+ * `docker start` passes through `exited`, which its owner flags via
+ * `expectRestart` so the re-attach path is preserved. Falls open: an
  * inspect error treats the container as still alive (best-effort —
  * the cap+stop() invariants stay correct either way).
  *
@@ -51,7 +52,21 @@ import { getDockerCmd } from '../utils/docker-cmd.js';
  * failure with full context); the loud surface stays on the runner's exit
  * path.
  */
-export function attachContainerLogStreamer(prefix: string, containerId: string): () => void {
+export function attachContainerLogStreamer(
+  prefix: string,
+  containerId: string,
+  opts: {
+    /**
+     * Issue #660 — true while the OWNER is deliberately cycling the
+     * container (the ECS soft reload's `docker stop` + `docker start`).
+     * A terminal status seen then is the stop half of that cycle, not a
+     * natural exit: the streamer re-checks every 200 ms, without spending
+     * the re-attach budget, until the container runs again or the cycle
+     * ends.
+     */
+    expectRestart?: () => boolean;
+  } = {}
+): () => void {
   let stopping = false;
   let current: ChildProcess | undefined;
   let stdoutBuf = '';
@@ -107,44 +122,57 @@ export function attachContainerLogStreamer(prefix: string, containerId: string):
         return;
       }
       reattachCount += 1;
-      // Issue #227 review fix (Code #4) — best-effort container
-      // status probe before respawning. When the container is in a
-      // terminal state (`exited` / `dead` / `removing`), the natural-
-      // exit path is the service-runner's `cleanupEcsRun(...)` call
-      // ~1s after `docker wait` resolves; respawning is wasted work
-      // + ticks `reattachCount` toward the cap. A `docker restart`
-      // (soft-reload primitive) leaves the container in `restarting`
-      // / `running`, so the soft-reload re-attach path stays
-      // intact. Inspect failure falls open (treats the container as
-      // still alive) so the cap-bounded existing behavior remains
-      // the worst case.
-      execFile(
-        getDockerCmd(),
-        ['inspect', '--format', '{{.State.Status}}', containerId],
-        (err, stdout) => {
-          if (stopping) return;
-          if (!err) {
-            const status = stdout.trim().toLowerCase();
-            if (status === 'exited' || status === 'dead' || status === 'removing') {
-              // Container is gone; let the runner's cleanup own it.
+      considerRespawn();
+    });
+  };
+
+  const considerRespawn = (): void => {
+    // Issue #227 review fix (Code #4) — best-effort container
+    // status probe before respawning. When the container is in a
+    // terminal state (`exited` / `dead` / `removing`), the natural-
+    // exit path is the service-runner's `cleanupEcsRun(...)` call
+    // ~1s after `docker wait` resolves; respawning is wasted work
+    // + ticks `reattachCount` toward the cap. A `docker restart`
+    // leaves the container in `restarting` / `running`; a stop + start
+    // cycle the owner flags via `expectRestart` is polled until it runs
+    // again, so either soft-reload re-attach path stays
+    // intact. Inspect failure falls open (treats the container as
+    // still alive) so the cap-bounded existing behavior remains
+    // the worst case.
+    execFile(
+      getDockerCmd(),
+      ['inspect', '--format', '{{.State.Status}}', containerId],
+      (err, stdout) => {
+        if (stopping) return;
+        if (!err) {
+          const status = stdout.trim().toLowerCase();
+          if (status === 'exited' || status === 'dead' || status === 'removing') {
+            if (opts.expectRestart?.()) {
+              // Mid-cycle: the owner is about to start it again.
+              pendingRespawn = setTimeout(() => {
+                pendingRespawn = undefined;
+                if (!stopping) considerRespawn();
+              }, 200);
               return;
             }
+            // Container is gone; let the runner's cleanup own it.
+            return;
           }
-          // Brief backoff so the docker daemon has a moment to re-establish
-          // the container's log writer post-restart. 200ms is well under
-          // the soft-reload's typical sub-second restart and well above the
-          // immediate-retry foot-gun.
-          pendingRespawn = setTimeout(() => {
-            pendingRespawn = undefined;
-            if (stopping) return;
-            // `--since 0s` requests only new log entries from this moment
-            // forward — avoids re-emitting the pre-restart history that
-            // the user already saw in the FIRST streamer's window.
-            spawnOnce('0s');
-          }, 200);
         }
-      );
-    });
+        // Brief backoff so the docker daemon has a moment to re-establish
+        // the container's log writer post-restart. 200ms is well under
+        // the soft-reload's typical sub-second restart and well above the
+        // immediate-retry foot-gun.
+        pendingRespawn = setTimeout(() => {
+          pendingRespawn = undefined;
+          if (stopping) return;
+          // `--since 0s` requests only new log entries from this moment
+          // forward — avoids re-emitting the pre-restart history that
+          // the user already saw in the FIRST streamer's window.
+          spawnOnce('0s');
+        }, 200);
+      }
+    );
   };
 
   spawnOnce(undefined);

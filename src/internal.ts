@@ -531,7 +531,7 @@ export {
  * context (post-synth asset hash + staged source directory + Dockerfile
  * basename) and returns a verdict the rolling-reload pathway dispatches
  * on: `'rebuild'` runs the Phase 2/3 shadow-boot rolling primitive,
- * `'soft-reload'` runs the Phase 4 `docker cp` + `docker restart`
+ * `'soft-reload'` runs the Phase 4 `docker cp` + container restart
  * bind-mount fast path. Defaults to `'rebuild'` on any ambiguity —
  * slow-but-correct is strictly better than fast-but-stale. Pure +
  * synchronous; exposed so a consuming host that wraps the engine can
