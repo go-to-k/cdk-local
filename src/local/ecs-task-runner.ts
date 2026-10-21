@@ -278,6 +278,15 @@ export interface RunEcsTaskOptions {
    */
   networkAliasesByContainer?: ReadonlyMap<string, ReadonlyArray<string>>;
   /**
+   * Issue #805 — containers booted WITHOUT their `--name`-derived
+   * `--network-alias <container.name>`. Set only by the service runner's
+   * rolling rebuild for a shadow container whose name doubles as one of
+   * its withheld Service Connect aliases (`addContainer('api')` +
+   * discoveryName `api`), so peers cannot resolve it before it listens;
+   * the runner attaches the alias once it does.
+   */
+  containerNameAliasOmitted?: ReadonlySet<string>;
+  /**
    * ECS analogue of the Lambda-container credential fix:
    * synthesized AWS shared credentials file (one INI section under
    * `[<profileName>]`) bind-mounted read-only into EVERY user
@@ -668,6 +677,9 @@ export async function runEcsTask(
       ...(mergedAddHostFlags.length > 0 ? { addHostFlags: mergedAddHostFlags } : {}),
       ...((options.networkAliasesByContainer?.get(container.name)?.length ?? 0) > 0
         ? { networkAliases: options.networkAliasesByContainer!.get(container.name)! }
+        : {}),
+      ...(options.containerNameAliasOmitted?.has(container.name)
+        ? { omitContainerNameAlias: true }
         : {}),
       ...(options.profileCredentialsFile && {
         profileCredentialsFile: options.profileCredentialsFile,
@@ -1249,6 +1261,11 @@ interface BuildDockerRunArgs {
    */
   networkAliases?: ReadonlyArray<string>;
   /**
+   * Issue #805 — skip the `--network-alias <container.name>` this
+   * builder otherwise always adds (see `containerNameAliasOmitted`).
+   */
+  omitContainerNameAlias?: boolean;
+  /**
    * ECS analogue of the Lambda-container credential fix — bind-mounts
    * a host-side AWS shared credentials file (one `[<profileName>]`
    * INI section) read-only into the container and sets
@@ -1382,7 +1399,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     `${getEmbedConfig().resourceNamePrefix}-${task.family}-${container.name}-${randHex(3)}`
   );
   args.push('--network', network);
-  args.push('--network-alias', container.name);
+  if (!opts.omitContainerNameAlias) args.push('--network-alias', container.name);
 
   // Issue #460 / design § 5 Option A — extra `--network-alias` for
   // every Service Connect discoveryName / ClientAlias short-form /

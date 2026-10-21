@@ -785,6 +785,106 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     });
   });
 
+  describe('gated shadow edge cases (issue #805)', () => {
+    const sharedNetwork = { networkName: 'net-shared', ownedByCaller: true };
+    function gatedOpts(): { opts: Record<string, unknown>; registry: CloudMapRegistry } {
+      const registry = new CloudMapRegistry();
+      return {
+        registry,
+        opts: {
+          ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+          frontDoor: undefined,
+          discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+        },
+      };
+    }
+
+    it('also withholds the container-name alias when it doubles as a Service Connect name', async () => {
+      const svc = (): ReturnType<typeof fakeServiceConnectService> => {
+        const s = fakeServiceConnectService();
+        s.serviceConnect.services[0].discoveryName = 'web'; // container is named `web` too
+        return s;
+      };
+      const { opts } = gatedOpts();
+      const connects: string[] = [];
+      __setDockerNetworkConnectImpl(async (net, id, o) => {
+        connects.push(`${net} ${id} ${o.aliases.join(',')}`);
+      });
+      __setListenProbeImpl(async () => ({ kind: 'listening' }));
+      const controller = await startEcsService(svc(), opts as never, createServiceRunState());
+      await rollServiceReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: svc(),
+        newOptions: opts as never,
+      });
+      expect(hoisted.taskOptions[0].containerNameAliasOmitted).toBeUndefined();
+      expect([...(hoisted.taskOptions[2].containerNameAliasOmitted ?? [])]).toEqual(['web']);
+      expect(connects).toEqual(['net-3 cid-3 web,web.cdkl.local']);
+      await controller.shutdown();
+    });
+
+    it('takes a failed gated shadow off the shared network before tearing it down', async () => {
+      const { opts } = gatedOpts();
+      __setDockerNetworkConnectImpl(async () => {
+        throw new Error('synthetic connect failure');
+      });
+      __setListenProbeImpl(async () => ({ kind: 'listening' }));
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      await expect(
+        rollServiceReplica({
+          controller,
+          oldReplicaIndex: 0,
+          newService: fakeServiceConnectService(),
+          newOptions: opts as never,
+        })
+      ).rejects.toThrow(/synthetic connect failure/);
+      const shadowDisconnects = hoisted.disconnectCalls.filter((c) => c.containerId === 'cid-3');
+      // once by the gate (before the failing connect), once by the teardown
+      expect(shadowDisconnects).toHaveLength(2);
+      await controller.shutdown();
+    });
+
+    it.each([
+      [1, 'during the replica probe'],
+      [2, 'during the per-container wait'],
+    ])('publishes nothing when shutdown starts on LISTEN call %i (%s)', async (atCall) => {
+      const { opts, registry } = gatedOpts();
+      const connects: string[] = [];
+      __setDockerNetworkConnectImpl(async (net, id) => {
+        connects.push(`${net} ${id}`);
+      });
+      const controller = await startEcsService(
+        fakeServiceConnectService(),
+        opts as never,
+        createServiceRunState()
+      );
+      let calls = 0;
+      __setListenProbeImpl(async () => {
+        calls += 1;
+        if (calls === atCall) controller.runState.shuttingDown = true; // SIGTERM lands mid-gate
+        return { kind: 'listening' };
+      });
+      await rollServiceReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeServiceConnectService(),
+        newOptions: opts as never,
+      });
+      expect(connects).toEqual([]);
+      // ...and stops LISTENING too: shutdown is not held for the rest of the budget.
+      expect(calls).toBe(atCall);
+      expect(
+        (registry.lookup('cdkl.local', 'svc') ?? []).some((e) => e.ip === '172.20.0.13')
+      ).toBe(false);
+      await controller.shutdown();
+    });
+  });
+
   describe('containerPublishesHostPorts (issue #805)', () => {
     const c = { portMappings: [{ containerPort: 80 }, { containerPort: 9000 }] };
     it('mirrors buildDockerRunArgs: every mapping unless skipped, plus front-door ephemeral ports', () => {

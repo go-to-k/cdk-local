@@ -458,7 +458,7 @@ fi
 sleep 2
 PROBE2_OUT=$(docker logs "${PROBE2_CONTAINER}" 2>&1 || true)
 docker rm -f "${PROBE2_CONTAINER}" >/dev/null 2>&1 || true
-P2_TOTAL=$(printf '%s\n' "${PROBE2_OUT}" | grep -cE '^.+$')
+P2_TOTAL=$(printf '%s\n' "${PROBE2_OUT}" | grep -cE '^.+$' || true)
 P2_V2=$(printf '%s\n' "${PROBE2_OUT}" | grep -c '^v2$' || true)
 P2_V3=$(printf '%s\n' "${PROBE2_OUT}" | grep -c '^v3$' || true)
 P2_FAIL=$(printf '%s\n' "${PROBE2_OUT}" | grep -cE '^(FAIL|wget: |.*[Cc]onnection refused|.*[Nn]etwork is unreachable|.*bad address)' || true)

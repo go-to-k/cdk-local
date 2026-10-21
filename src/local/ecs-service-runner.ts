@@ -286,6 +286,12 @@ export interface ServiceReplicaInstance {
    */
   softReloadInProgress?: boolean;
   /**
+   * Issue #805 — names of the containers `bootReplica` started WITHOUT
+   * their Service Connect aliases (`deferPublish`). The single source
+   * {@link publishGatedReplica} restores from; cleared once restored.
+   */
+  withheldAliasContainers?: string[];
+  /**
    * Phase 4 follow-up (#218 code reviewer Nit #4) — monotonic
    * counter incremented at the START of each {@link softReloadReplica}
    * cycle. The watcher snapshots this BEFORE `waitForExitImpl` and
@@ -782,6 +788,7 @@ async function bootReplica(
   // a RUNNING container drops its published host ports. So only a
   // container that publishes none has its aliases withheld here; one that
   // does keeps them from the start (its front-door entry is still gated).
+  const withheldAliasContainers: string[] = [];
   if (bootOpts.deferPublish && sharedNetwork) {
     for (const container of service.task.containers) {
       if (!networkAliasesByContainer.has(container.name)) continue;
@@ -794,8 +801,17 @@ async function bootReplica(
         continue;
       }
       networkAliasesByContainer.delete(container.name);
+      withheldAliasContainers.push(container.name);
     }
   }
+  // A container name that is ALSO one of its Service Connect names would
+  // still be resolvable through the always-on container-name alias.
+  const containerNameAliasOmitted = new Set(
+    withheldAliasContainers.filter((name) =>
+      (buildNetworkAliasesByContainer(service).get(name) ?? []).includes(name)
+    )
+  );
+  instance.withheldAliasContainers = withheldAliasContainers;
   const perReplicaTaskOptions: RunEcsTaskOptions = {
     ...options.taskOptions,
     cluster: perReplicaCluster,
@@ -812,6 +828,7 @@ async function bootReplica(
       : { subnetOctet: pickSubnetOctet(instance.index) }),
     ...(addHostFlags.length > 0 ? { addHostFlags } : {}),
     ...(networkAliasesByContainer.size > 0 ? { networkAliasesByContainer } : {}),
+    ...(containerNameAliasOmitted.size > 0 ? { containerNameAliasOmitted } : {}),
     ...(ephemeralPublishContainerPorts.length > 0 ? { ephemeralPublishContainerPorts } : {}),
   };
   logger.info(`Booting replica ${instance.index} (${perReplicaCluster})`);
@@ -900,7 +917,7 @@ export function containerPublishesHostPorts(
 
 /**
  * Issue #805 — finish a replica booted with `deferPublish`: give each
- * container whose Service Connect aliases were withheld its aliases back
+ * container `bootReplica` recorded in `withheldAliasContainers` its aliases back
  * once its own first port listens (best-effort, sharing `deadline`), then
  * publish the replica to Cloud Map + the front-door. The caller has
  * already waited for the essential container ({@link waitForReplicaTcpReady}).
@@ -911,34 +928,38 @@ async function publishGatedReplica(
   service: ResolvedEcsService,
   options: ServiceRunnerOptions,
   instance: ServiceReplicaInstance,
-  deadline: number
+  deadline: number,
+  isShuttingDown: () => boolean
 ): Promise<void> {
   const network = instance.state.network;
-  if (network?.ownedByCaller && options.discovery?.sharedNetwork) {
+  const withheld = instance.withheldAliasContainers ?? [];
+  if (network && withheld.length > 0) {
     const fullAliases = buildNetworkAliasesByContainer(service);
-    for (const container of service.task.containers) {
-      const scAliases = fullAliases.get(container.name);
-      if (!scAliases) continue;
-      const started = instance.state.startedContainers.find((c) => c.name === container.name);
-      if (!started) continue;
-      const published = await dockerInspectPublishesHostPortsImpl(started.id).catch(() => true);
-      // Booted WITH its aliases (it publishes host ports): nothing to add.
-      if (published) continue;
+    for (const name of withheld) {
+      // A SIGTERM mid-gate: stop here, publish nothing; the shutdown
+      // path tears the shadow down.
+      if (isShuttingDown()) return;
+      const container = service.task.containers.find((c) => c.name === name);
+      const started = instance.state.startedContainers.find((c) => c.name === name);
+      if (!container || !started) continue;
       const port = container.portMappings[0]?.containerPort;
       if (port !== undefined) await waitForContainerListening(started.id, port, deadline);
+      if (isShuttingDown()) return;
       const ip = await getContainerNetworkIp(started.id, network.networkName);
       if (!ip) {
         throw new EcsServiceRunnerError(
           `Shadow replica r${instance.index} (gen ${instance.generation}): no docker IP for ` +
-            `'${container.name}' on ${network.networkName}; cannot attach its Service Connect aliases.`
+            `'${name}' on ${network.networkName}; cannot attach its Service Connect aliases.`
         );
       }
-      const aliases = [container.name];
-      for (const a of scAliases) if (!aliases.includes(a)) aliases.push(a);
+      const aliases = [name];
+      for (const a of fullAliases.get(name) ?? []) if (!aliases.includes(a)) aliases.push(a);
       await dockerNetworkDisconnectImpl(network.networkName, started.id);
       await dockerNetworkConnectImpl(network.networkName, started.id, { ip, aliases });
     }
+    instance.withheldAliasContainers = [];
   }
+  if (isShuttingDown()) return;
   const ownerKeyPrefix = replicaOwnerKeyPrefix(service, instance);
   if (options.discovery) {
     await publishReplicaToCloudMap(service, instance, options.discovery, ownerKeyPrefix);
@@ -1466,7 +1487,13 @@ export async function rollServiceReplica(args: {
       intervalMs: shadowReadyIntervalMs,
     });
     if (!teardownOldFirst) {
-      await publishGatedReplica(newService, newOptions, shadow, deadline);
+      await publishGatedReplica(
+        newService,
+        newOptions,
+        shadow,
+        deadline,
+        () => shadow.shuttingDown || controller.runState.shuttingDown
+      );
     }
   })();
   shadow.inFlightBoot = bootPromise;
@@ -1479,6 +1506,11 @@ export async function rollServiceReplica(args: {
     // leak it.
     const shadowIdx = controller.runState.replicas.indexOf(shadow);
     if (shadowIdx !== -1) controller.runState.replicas.splice(shadowIdx, 1);
+    // Issue #805 — a gated shadow may already carry some aliases (one
+    // container re-attached before another's attach threw): take it off
+    // the shared network first, as the swap does for the old replica, so
+    // no peer resolves it while it stops.
+    await disconnectOldFromSharedNetwork(shadow).catch(() => undefined);
     try {
       await cleanupEcsRun(shadow.state, { keepRunning: false });
     } catch {
