@@ -103,7 +103,7 @@ B=chore/work-issues-retro-<lesson-slug>
 git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
 cd ".claude/worktrees/${B##*/}"
 mise trust && mise install    # untrusted .mise.toml: vp will not resolve
-pnpm install                  # worktrees have no node_modules
+corepack pnpm install         # worktrees have no node_modules (implement.md §5-d)
 ```
 
 IN-PLACE — run THIS block INSTEAD, never both: `git worktree add` from inside

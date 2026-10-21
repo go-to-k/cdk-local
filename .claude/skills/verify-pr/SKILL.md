@@ -12,7 +12,8 @@ mechanical merge conditions are CI green plus a fresh `integ` marker.
 
 Run each check and report pass/fail.
 
-0. **Worktree pre-flight** — `[ -d node_modules ] || pnpm install --frozen-lockfile`.
+0. **Worktree pre-flight** — `[ -d node_modules ] || corepack pnpm install --frozen-lockfile`
+   (corepack honours `packageManager`; a bare `pnpm` can be a version-less mise shim).
    `git worktree add` does NOT copy `node_modules`, so a fresh worktree's checks
    all fail with "command not found". **Do not start step 1 until this passes**,
    or every check below silently no-ops while looking green.
