@@ -413,7 +413,7 @@ describe('ecs-service-emulator --image-override key canonicalization (issue #659
   const start = source.indexOf('async function resolveAndBuildImageOverrides(');
   const helper = source.slice(start, source.indexOf('\n}\n', start));
 
-  it('canonicalizes the parsed flags against the pinned entries' aliases', () => {
+  it('canonicalizes the parsed flags against the aliases of the pinned entries', () => {
     expect(start, 'resolveAndBuildImageOverrides missing').toBeGreaterThan(-1);
     expect(helper).toMatch(/pinnedAliases\.set\(entry\.target, entry\.aliases\)/);
     expect(helper).toMatch(

@@ -1827,7 +1827,11 @@ UNCOVERED by the override map. Six flags compose:
 - `--image-override <svc>=<dockerfile>` (explicit) or
   `<dockerfile>` (picker-form) — repeatable. The picker-form opens
   a `@clack/prompts` multi-select against the still-uncovered
-  pinned targets; mix explicit + picker forms freely.
+  pinned targets; mix explicit + picker forms freely. `<svc>` (here
+  and in the per-service build-input forms below) is the service's
+  construct id (`AppService`), its logical id, `Stack:LogicalId`, its
+  `ServiceName`, or the full target string; a name shared by two
+  pinned targets is refused, so pass the full target there.
 - `--image-build-arg KEY=VAL` — global, repeatable. Forwarded to
   every overridden target's `docker build --build-arg`. An empty
   value (`--image-build-arg KEY=`) is accepted and forwarded
@@ -1844,9 +1848,9 @@ UNCOVERED by the override map. Six flags compose:
   picker-form multi-select. The override map is whatever the
   explicit `--image-override <svc>=<dockerfile>` flags resolved to.
   Useful for CI / scripted invocations.
-- `--strict-overrides` — fail fast at boot when any pinned target
-  remains uncovered after `--image-override` + the boot prompt
-  resolve. Off by default; the per-target WARN still fires
+- `--strict-overrides` — fail fast at boot, before any replica
+  starts, when any pinned target remains uncovered after
+  `--image-override` + the boot prompt resolve. Off by default; the per-target WARN still fires
   regardless.
 
 When `--no-interactive-overrides` is unset AND the session is a
