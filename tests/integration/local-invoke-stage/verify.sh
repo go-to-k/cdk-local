@@ -22,6 +22,9 @@
 #   4.   A bare target is refused as multi-stack: a Stage stack counts.
 #   5.   `cdkl start-api <Stage target>` with NO --stack infers the Stage stack
 #        from the target, serves exactly one API, and routes to `api`.
+#   5b.  A subset spanning a Stage stack AND the top-level stack synthesizes
+#        every stack, the unserved `ApiV2` clone included, yet boots: only the
+#        SERVED stacks are checked for colliding logical ids.
 #   6.   `cdkl start-api --all-stacks` is REFUSED: the clones share logical ids,
 #        which start-api cannot serve side by side (never first-match).
 #
@@ -175,6 +178,33 @@ echo "    ok: exactly one server"
 
 term_server "${SERVER_PID}"
 SERVER_PID=""
+
+echo "==> [5b/6] a subset spanning stacks ignores the unserved Stage clone"
+: >"${LOG_FILE}"
+${CLI} start-api CdklLocalInvokeStage/Inner/Api/HttpApi CdklLocalInvokeStageTop/HttpApi \
+  --port "${PORT}" \
+  --container-host 127.0.0.1 \
+  --no-pull \
+  >"${LOG_FILE}" 2>&1 &
+SERVER_PID=$!
+READY=0
+for _ in $(seq 1 120); do
+  SERVERS=$(grep -c "Server listening" "${LOG_FILE}" 2>/dev/null) || SERVERS=0
+  if [[ "${SERVERS}" -ge 2 ]]; then
+    READY=1
+    break
+  fi
+  kill -0 "${SERVER_PID}" 2>/dev/null || fail "start-api (subset) exited before it was ready"
+  sleep 0.5
+done
+[[ "${READY}" -eq 1 ]] || fail "start-api (subset) did not bring up 2 servers within 60s"
+grep -q "declared by" "${LOG_FILE}" && fail "start-api (subset) reported a logical-id collision"
+SERVERS=$(grep -c "Server listening" "${LOG_FILE}") || SERVERS=0
+[[ "${SERVERS}" -eq 2 ]] || fail "start-api (subset): expected exactly 2 servers, got ${SERVERS}"
+echo "    ok: 2 servers, no collision refusal"
+term_server "${SERVER_PID}"
+SERVER_PID=""
+: >"${LOG_FILE}"
 
 echo "==> [6/6] start-api --all-stacks is refused: the Stage clones share logical ids"
 # Backgrounded and BOUNDED: were the refusal to regress, the server would
