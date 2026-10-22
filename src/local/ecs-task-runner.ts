@@ -30,7 +30,7 @@ import { buildDockerImage } from '../assets/docker-build.js';
 import { assetPathDirs } from './lambda-resolver.js';
 import { isImageInLocalCache, pullEcrImage } from './ecr-puller.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
-import { displayIdent, displayToolOutput } from '../utils/ident-display.js';
+import { displayIdent, displayStackName, displayToolOutput } from '../utils/ident-display.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
 import {
@@ -1018,7 +1018,7 @@ async function prepareOneImage(
       const manifest = await loader.loadStackManifest(task.stack, cdkOutDir);
       if (!manifest) {
         throw new EcsTaskRunnerError(
-          `No asset manifest at ${cdkOutDir} for stack ${task.stack.stackName}.`
+          `No asset manifest at ${displayUntrustedValue(cdkOutDir)} for stack ${displayStackName(task.stack.stackName)}.`
         );
       }
       const dockerImages = manifest.dockerImages ?? {};
