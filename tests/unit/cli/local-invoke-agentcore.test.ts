@@ -1431,7 +1431,7 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
       stacks: [stack] as never,
       cdkOutDir: '/tmp/cdk.out',
       assetLoader: new (class {
-        loadManifest = loadManifestMock;
+        loadStackManifest = loadManifestMock;
       })() as never,
       oldAssetHash: 'old',
     });
@@ -1459,7 +1459,7 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
       stacks: [{ stackName: 'App', template: { Resources: {} } }] as never,
       cdkOutDir: '/tmp/cdk.out',
       assetLoader: {
-        loadManifest: vi.fn().mockResolvedValue({ files: {} }),
+        loadStackManifest: vi.fn().mockResolvedValue({ files: {} }),
         getFileAssets: () => new Map([['h1', { source: { path: 'asset.h1' } }]]),
         getAssetSourcePath,
       } as never,
@@ -1506,7 +1506,7 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
       stacks: [stack] as never,
       cdkOutDir: '/tmp/out',
       assetLoader: new (class {
-        loadManifest = loadManifestMock;
+        loadStackManifest = loadManifestMock;
       })() as never,
       oldAssetHash: 'old',
     });
@@ -1533,7 +1533,7 @@ describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', 
       stacks: [stack] as never,
       cdkOutDir: '/tmp/out',
       assetLoader: new (class {
-        loadManifest = loadManifestMock;
+        loadStackManifest = loadManifestMock;
         getFileAssets = getFileAssetsMock;
         getAssetSourcePath = getAssetSourcePathMock;
       })() as never,
