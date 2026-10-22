@@ -161,7 +161,7 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
   /**
    * An app carrying a `cdk.Stage`. The Stage's stack is NOT in `stacks` — a
    * Stage is a `NestedCloudAssemblyArtifact` — so only `stacksRecursively`
-   * reaches it, and its manifest sits one level below the app outdir while its
+   * reaches it (#746), and its manifest sits one level below the app outdir while its
    * asset is staged INTO that outdir.
    */
   function stageAssembly(): unknown {
@@ -171,6 +171,7 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
     const top = {
       stackName: 'TopStack',
       displayName: 'TopStack',
+      hierarchicalId: 'TopStack',
       id: 'TopStack',
       template: { Resources: {} },
       dependencies: [assetManifest],
@@ -187,7 +188,11 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
     };
     const staged = {
       stackName: 'MyStage-Stk',
-      displayName: 'MyStage/Stk',
+      // What real cx-api renders when the physical name differs from the
+      // artifact id — the value no pattern or target path ever equals, so the
+      // reader must take `hierarchicalId` instead.
+      displayName: 'MyStage/Stk (MyStage-Stk)',
+      hierarchicalId: 'MyStage/Stk',
       id: 'MyStageStk',
       template: { Resources: {} },
       dependencies: [assetManifest],
@@ -209,8 +214,8 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
 
     const stacks = await new AssemblyReader().read('node app.ts');
 
-    expect(stacks.map((s) => s.artifactId)).toEqual(['TopStack']);
-    expect(stacks[0]?.assetOutdir).toBe('/app/cdk.out');
+    expect(stacks.map((s) => s.artifactId)).toEqual(['TopStack', 'MyStageStk']);
+    expect(stacks.map((s) => s.assetOutdir)).toEqual(['/app/cdk.out', '/app/cdk.out']);
   });
 
   it('readFromDirectory() does the same', async () => {
@@ -251,14 +256,18 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
     expect(stacks[0]?.assetOutdir).toBe('/app/cdk.out');
   });
 
-  it('does NOT enumerate a Stage (nested assembly) — see #746', async () => {
-    // A deliberate omission rather than an oversight: `stacksRecursively`
-    // would close it and would change stack enumeration for every command,
-    // which `collectStacks` records. Pinned so the omission stays a decision.
+  it("enumerates a Stage's stacks, displayed by their hierarchical id (#746)", async () => {
+    // `stacks` alone lists only the app's own artifacts; a Stage's stacks are
+    // reachable through `stacksRecursively` only. `displayName` must be the
+    // construct path (`MyStage/Stk`) the matcher and the path-form target
+    // compare against, never cx-api's `MyStage/Stk (MyStage-Stk)` rendering.
     mockSynth.mockResolvedValueOnce(stageAssembly());
 
     const stacks = await new AssemblyReader().readFromDirectory('/app/cdk.out');
 
-    expect(stacks.map((s) => s.artifactId)).not.toContain('MyStageStk');
+    expect(stacks.map((s) => [s.artifactId, s.stackName, s.displayName])).toEqual([
+      ['TopStack', 'TopStack', 'TopStack'],
+      ['MyStageStk', 'MyStage-Stk', 'MyStage/Stk'],
+    ]);
   });
 });

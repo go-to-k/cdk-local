@@ -87,3 +87,68 @@ export function resolveCdkPathToLogicalIds(
   }
   return [...seen.entries()].map(([logicalId, cdkPath]) => ({ logicalId, cdkPath }));
 }
+
+/** The two names a stack can be addressed by at the head of a construct path. */
+export interface ConstructPathStack {
+  stackName: string;
+  displayName?: string;
+}
+
+/**
+ * The stack a construct path addresses: the one whose `displayName` (or
+ * `stackName`) followed by `/` is the LONGEST prefix of `path`.
+ *
+ * A path's FIRST segment is not its stack: a stack inside a `cdk.Stage` has a
+ * hierarchical display path (`MyStage/Api`, `Outer/Inner/Api`), so that
+ * segment is the Stage id (go-to-k/cdk-local#746). Longest wins because a
+ * Stage nests: `Outer/Inner/Api/Bucket` must pick `Outer/Inner/Api` even if a
+ * stack displayed `Outer` exists. The trailing `/` keeps `MyStage/Api` from
+ * claiming `MyStage/ApiV2/Bucket`. On a tie in length a `displayName` beats
+ * another stack's `stackName`.
+ *
+ * The same rule as cdkd's `stackForConstructPath` (go-to-k/cdkd#3953), so
+ * `cdkd local` and `cdkl` pick the same stack for the same target.
+ */
+export function stackForConstructPath<T extends ConstructPathStack>(
+  path: string,
+  stacks: readonly T[]
+): T | undefined {
+  let best: T | undefined;
+  let bestRank = -1;
+  for (const s of stacks) {
+    const names: Array<[string | undefined, number]> = [
+      [s.displayName, 1],
+      [s.stackName, 0],
+    ];
+    for (const [name, preference] of names) {
+      if (typeof name !== 'string' || name.length === 0) continue;
+      if (!path.startsWith(`${name}/`)) continue;
+      const rank = name.length * 2 + preference;
+      if (rank > bestRank) {
+        best = s;
+        bestRank = rank;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * The stack a PATH-form target (`<stack path>/<construct path>`) addresses, or
+ * `undefined` when the target is not in that form or no stack path prefixes
+ * it -- the caller then falls back to matching its first segment as a stack
+ * pattern (a wildcard head such as `My*`).
+ *
+ * Path form is recognised by `pathOrId === target`: the colon form
+ * (`Stack:LogicalId`) strips its stack head, so its `pathOrId` is always
+ * shorter, and the stack it NAMES must win even when its path part starts with
+ * another stack's path.
+ */
+export function stackForPathFormTarget<T extends ConstructPathStack>(
+  parsed: { isPath: boolean; pathOrId: string },
+  target: string,
+  stacks: readonly T[]
+): T | undefined {
+  if (!parsed.isPath || parsed.pathOrId !== target) return undefined;
+  return stackForConstructPath(parsed.pathOrId, stacks);
+}

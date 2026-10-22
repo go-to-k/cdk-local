@@ -61,7 +61,7 @@ import {
   resolveEcsTaskTarget,
   type EcsImageResolutionContext,
 } from '../../local/ecs-task-resolver.js';
-import { matchStacks } from '../stack-matcher.js';
+import { candidateTargetStack } from '../stack-matcher.js';
 import {
   createLocalStateProvider,
   resolveCfnFallbackRegion,
@@ -566,7 +566,8 @@ export function resolveBootAssemblyDir(appCmd: string, output: string): string |
  * accepts). We only need the owning stack so we can build that stack's
  * {@link EcsImageResolutionContext}. Returns `undefined` when the id has no
  * stack segment (single-stack app uses the lone stack) or the segment matches
- * no / multiple stacks — the caller then resolves without an image context,
+ * no / multiple stacks (the shared `candidateTargetStack` rule, so a Stage
+ * stack's display path resolves to it rather than to its Stage id) — the caller then resolves without an image context,
  * which is exactly the no-`--from-cfn-stack` behavior.
  *
  * Exported for unit testing.
@@ -575,12 +576,7 @@ export function resolveEcsServiceStack(
   targetId: string,
   stacks: StackInfo[]
 ): StackInfo | undefined {
-  const parsed = parseEcsTarget(targetId);
-  if (parsed.stackPattern === null) {
-    return stacks.length === 1 ? stacks[0] : undefined;
-  }
-  const matched = matchStacks(stacks, [parsed.stackPattern]);
-  return matched.length === 1 ? matched[0] : undefined;
+  return candidateTargetStack(parseEcsTarget(targetId), targetId, stacks);
 }
 
 /** The subset of studio options the pin classifier forwards to the state-source helpers. */
