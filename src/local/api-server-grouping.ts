@@ -1,4 +1,5 @@
 import type { RouteWithAuth } from './authorizer-resolver.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * One group of routes that share a single API surface — and therefore
@@ -112,18 +113,18 @@ export function groupRoutesByServer(routes: readonly RouteWithAuth[]): ApiServer
       identifier = r.lambdaLogicalId;
       serverKey = `function-url:${stackPrefix}${identifier}`;
       kind = 'function-url';
-      displayName = `${identifier} (Function URL)`;
+      displayName = `${displayIdent(identifier)} (Function URL)`;
     } else if (r.source === 'http-api') {
       identifier = r.apiLogicalId ?? '<unknown>';
       serverKey = `http-api:${stackPrefix}${identifier}`;
       kind = 'http-api';
-      displayName = `${identifier} (HTTP API v2)`;
+      displayName = `${displayIdent(identifier)} (HTTP API v2)`;
     } else {
       // rest-v1
       identifier = r.apiLogicalId ?? '<unknown>';
       serverKey = `rest-v1:${stackPrefix}${identifier}`;
       kind = 'rest-v1';
-      displayName = `${identifier} (REST API v1)`;
+      displayName = `${displayIdent(identifier)} (REST API v1)`;
     }
 
     const existing = byKey.get(serverKey);

@@ -115,7 +115,7 @@ describe('#607 — resolveExecutionRoleArnFromState shape check', () => {
       resolveExecutionRoleArnFromState(literalRoleState('MyRoleName'), 'Handler');
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain('not a well-formed IAM role ARN');
-      expect(warnings[0]).toContain("'Handler'");
+      expect(warnings[0]).toContain('Deployed state for Handler carries a');
       expect(warnings[0]).toContain('Role');
       expect(warnings[0]).toContain('"MyRoleName"');
       // NOT prefixed `--assume-role:`. `suggestAssumeRoleFromState` calls this
@@ -169,7 +169,7 @@ describe('#607 — resolveExecutionRoleArnFromState shape check', () => {
       resolveExecutionRoleArnFromState(referencedRoleState('role-name-only'), 'Handler');
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain('not a well-formed IAM role ARN');
-      expect(warnings[0]).toContain("'ExecRole'");
+      expect(warnings[0]).toContain('attribute of ExecRole is not');
       expect(warnings[0]).toContain('"role-name-only"');
     });
 

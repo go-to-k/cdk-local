@@ -38,8 +38,8 @@ describe('resolveEcsServiceTarget not-found message', () => {
 
   it('hints the colon form when a Stack/Path target is actually a logical ID', () => {
     const err = call('MyStack/BackendServiceABC123');
-    expect(err.message).toContain("'BackendServiceABC123' is a logical ID");
-    expect(err.message).toContain("use the colon form: 'MyStack:BackendServiceABC123'");
+    expect(err.message).toContain('BackendServiceABC123 is a logical ID');
+    expect(err.message).toContain("use the colon form: MyStack:BackendServiceABC123");
   });
 
   it('does NOT add the colon hint for a genuine path miss (tail is not a logical ID)', () => {

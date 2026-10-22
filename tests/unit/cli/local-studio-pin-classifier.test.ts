@@ -415,7 +415,23 @@ describe('makePinClassifier', () => {
 
     expect(classify('dev/Svc')).toBe(false);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cannot resolve image'));
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("'dev/Svc'"));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('service dev/Svc;'));
+  });
+
+  it('renders a forging service id as one JSON literal in the WARN (#761)', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsServiceTarget.mockImplementation(() => {
+      throw new Error('cannot resolve image');
+    });
+    const classify = makePinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map(),
+      logger,
+    });
+    expect(classify("dev/a' b")).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`service "dev/a' b";`)
+    );
   });
 
   it('appends the Session-bar --from-cfn-stack remedy when state is NOT bound', () => {

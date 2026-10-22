@@ -344,3 +344,19 @@ describe('availableApiIdentifiers', () => {
     expect(availableApiIdentifiers(routes)).toEqual(['PublicApi', 'AdminApi', 'GoHandler']);
   });
 });
+
+// go-to-k/cdk-local#761: `displayName` heads the `Server listening on <url>
+// (<displayName>)` ready banner and the route table, so a forging API logical
+// id renders as one JSON literal while `identifier` / `serverKey` stay raw.
+describe('groupRoutesByServer displayName renders the API id (#761)', () => {
+  it('keeps a plain id bare and quotes a forging one, leaving the keys raw', () => {
+    const groups = groupRoutesByServer([
+      makeRoute({ source: 'http-api', apiLogicalId: "Api') OK (x" }),
+      makeRoute({ source: 'rest-v1', apiVersion: 'v1', apiLogicalId: 'Plain' }),
+    ]);
+    expect(groups[0]!.displayName).toBe(`"Api') OK (x" (HTTP API v2)`);
+    expect(groups[0]!.identifier).toBe("Api') OK (x");
+    expect(groups[0]!.serverKey).toBe("http-api:Api') OK (x");
+    expect(groups[1]!.displayName).toBe('Plain (REST API v1)');
+  });
+});

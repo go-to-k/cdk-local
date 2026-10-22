@@ -28,6 +28,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { displayUntrustedValue } from '../../utils/assembly-path.js';
+import { displayIdent, displayStackName } from '../../utils/ident-display.js';
 import {
   applyRoleArnIfSet,
   assumeRoleCredentials,
@@ -623,7 +624,7 @@ async function localStartApiCommand(
       fromCfnTipEmitted,
       (routedStackName) => {
         logger.info(
-          `tip: --from-cfn-stack value matches the routed stack name (${routedStackName}); you can omit the value: \`${getEmbedConfig().cliName} start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`
+          `tip: --from-cfn-stack value matches the routed stack name (${displayStackName(routedStackName)}); you can omit the value: \`${getEmbedConfig().cliName} start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`
         );
       }
     );
@@ -731,7 +732,7 @@ async function localStartApiCommand(
       }
       for (const apiId of missingApis) {
         logger.warn(
-          `--stage '${options.stage}' did not match any Stage on API '${apiId}'; routes on that API will get stageVariables: null.`
+          `--stage '${options.stage}' did not match any Stage on API ${displayIdent(apiId)}; routes on that API will get stageVariables: null.`
         );
       }
     }
@@ -2186,7 +2187,7 @@ export function resolveStartApiAssumeRoleArn(args: {
     // Role that is not a literal ARN was always meant to be recoverable from
     // deployed state.
     getLogger().warn(
-      `--assume-role: the template Role for '${logicalId}' is not a well-formed IAM role ARN: ${describeRejectedRoleArn(roleProp)}. Ignoring it.`
+      `--assume-role: the template Role for ${displayIdent(logicalId)} is not a well-formed IAM role ARN: ${describeRejectedRoleArn(roleProp)}. Ignoring it.`
     );
   }
   if (stateBundle) {
@@ -2196,7 +2197,7 @@ export function resolveStartApiAssumeRoleArn(args: {
       // built from CloudFormation responses, so this ARN is wire-derived and
       // `info` is a default level studio mirrors into an HTTP-served ring.
       getLogger().info(
-        `--assume-role: auto-resolved execution role for '${logicalId}' from state: ${flattenToOneLine(
+        `--assume-role: auto-resolved execution role for ${displayIdent(logicalId)} from state: ${flattenToOneLine(
           fromState
         )}`
       );
@@ -2209,7 +2210,7 @@ export function resolveStartApiAssumeRoleArn(args: {
   // The same shape `cdkl invoke --assume-role` produces when state /
   // template ARN can't recover the role.
   getLogger().warn(
-    `--assume-role: could not auto-resolve the execution role ARN for '${logicalId}'. ` +
+    `--assume-role: could not auto-resolve the execution role ARN for ${displayIdent(logicalId)}. ` +
       `Pair --assume-role with --from-cfn-stack (or a host-provided state-source extension) ` +
       `so the deployed Role's ARN can be looked up, OR pin the ARN explicitly with ` +
       `--assume-role ${logicalId}=<arn>. ` +
@@ -2483,7 +2484,7 @@ export async function buildContainerSpec(args: {
     };
     for (const { key, reason } of unresolved) {
       getLogger().warn(
-        `Lambda ${logicalId}: state source could not substitute env var ${key} (${reason}). ` +
+        `Lambda ${displayIdent(logicalId)}: state source could not substitute env var ${displayIdent(key)} (${reason}). ` +
           `Override it via --env-vars or it will be dropped.`
       );
     }
@@ -2725,8 +2726,8 @@ export async function resolveContainerImageForStartApi(
   }
   if (!parseEcrUri(lambda.imageUri)) {
     throw new Error(
-      `Container Lambda '${lambda.logicalId}' has no matching asset in cdk.out, and Code.ImageUri ` +
-        `'${lambda.imageUri}' is not an ECR URI ${getEmbedConfig().binaryName} can authenticate against. ` +
+      `Container Lambda ${displayIdent(lambda.logicalId)} has no matching asset in cdk.out, and Code.ImageUri ` +
+        `${displayUntrustedValue(String(lambda.imageUri))} is not an ECR URI ${getEmbedConfig().binaryName} can authenticate against. ` +
         'Re-synthesize the CDK app (so cdk.out includes the build context) or deploy the image to ECR first.'
     );
   }
@@ -2978,12 +2979,12 @@ export function resolveLambdaByLogicalId(
     const handler = typeof props['Handler'] === 'string' ? props['Handler'] : '';
     if (!runtime) {
       throw new Error(
-        `Lambda '${logicalId}' has no Runtime property and no Code.ImageUri. ` +
+        `Lambda ${displayIdent(logicalId)} has no Runtime property and no Code.ImageUri. ` +
           `${getEmbedConfig().cliName} start-api cannot tell if this is a ZIP or a container Lambda.`
       );
     }
     if (!handler) {
-      throw new Error(`Lambda '${logicalId}' has no Handler property.`);
+      throw new Error(`Lambda ${displayIdent(logicalId)} has no Handler property.`);
     }
     const inlineCode = typeof code['ZipFile'] === 'string' ? code['ZipFile'] : undefined;
     let codePath: string | null = null;
@@ -3019,7 +3020,7 @@ export function resolveLambdaByLogicalId(
     };
   }
   throw new Error(
-    `No AWS::Lambda::Function resource named '${logicalId}' found in target stacks. This is likely a synthesis bug — the route-discovery phase resolved a route to this logical ID.`
+    `No AWS::Lambda::Function resource named ${displayIdent(logicalId)} found in target stacks. This is likely a synthesis bug — the route-discovery phase resolved a route to this logical ID.`
   );
 }
 
@@ -3080,14 +3081,14 @@ function extractImageUri(
       if (joinResolved.kind === 'resolved') return joinResolved.uri;
       if (joinResolved.kind === 'needs-state') {
         throw new Error(
-          `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
+          `Lambda ${displayIdent(logicalId)} in ${displayStackName(stackName)} references same-stack ECR repository ${displayIdent(joinResolved.repoLogicalId)} via Fn::Join. ` +
             `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
             'deploy the stack first, rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
         );
       }
       if (joinResolved.kind === 'unsupported-join') {
         throw new Error(
-          `Lambda '${logicalId}' in ${stackName} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
+          `Lambda ${displayIdent(logicalId)} in ${displayStackName(stackName)} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
             `${getEmbedConfig().cliName} recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ` +
             '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
         );
@@ -3103,7 +3104,7 @@ function extractImageUri(
         ? ` (likely \${AWS::AccountId}, which ${getEmbedConfig().binaryName} cannot derive without a state source or STS)`
         : ` (${getEmbedConfig().binaryName} could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new Error(
-        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} cannot resolve${accountIdHint}. ` +
+        `Lambda ${displayIdent(logicalId)} in ${displayStackName(stackName)} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} cannot resolve${accountIdHint}. ` +
           'Workarounds: deploy first and run with a state-source flag (e.g. --from-cfn-stack or a host-provided extension), or pin a fully-literal public image URI.'
       );
     }
@@ -3153,7 +3154,7 @@ function resolveImageLambda(args: {
     else if (first === 'x86_64') architecture = 'x86_64';
     else {
       throw new Error(
-        `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
+        `Lambda ${displayIdent(logicalId)} has unsupported Architectures value ${displayIdent(String(first))}. ` +
           `${getEmbedConfig().cliName} start-api supports x86_64 and arm64.`
       );
     }
@@ -3237,14 +3238,14 @@ function printRouteTable(routes: readonly RouteWithAuth[]): void {
       r.source === 'http-api'
         ? 'HTTP API'
         : r.source === 'rest-v1'
-          ? `REST v1, stage '${r.stage}'`
+          ? `REST v1, stage ${displayIdent(r.stage)}`
           : 'Function URL';
     const target = r.mockCors
       ? '[MOCK CORS preflight]'
       : r.unsupported
         ? '[501 Not Implemented]'
         : r.serviceIntegration
-          ? `[${r.serviceIntegration.subtype}]`
+          ? `[${displayIdent(r.serviceIntegration.subtype)}]`
           : r.restV1Integration
             ? formatRestV1IntegrationLabel(r.restV1Integration)
             : r.lambdaLogicalId;
@@ -3268,11 +3269,11 @@ function formatRestV1IntegrationLabel(
     case 'mock':
       return '[MOCK]';
     case 'http-proxy':
-      return `[HTTP_PROXY ${integration.uri}]`;
+      return `[HTTP_PROXY ${displayUntrustedValue(String(integration.uri))}]`;
     case 'http':
-      return `[HTTP ${integration.uri}]`;
+      return `[HTTP ${displayUntrustedValue(String(integration.uri))}]`;
     case 'aws-lambda':
-      return `${integration.lambdaLogicalId} [AWS]`;
+      return `${displayIdent(integration.lambdaLogicalId)} [AWS]`;
   }
 }
 
@@ -3293,7 +3294,9 @@ function materializeInlineCode(
 ): string {
   const lastDot = handler.lastIndexOf('.');
   if (lastDot <= 0) {
-    throw new Error(`Handler '${handler}' is malformed: expected '<modulePath>.<exportName>'.`);
+    throw new Error(
+      `Handler ${displayUntrustedValue(handler)} is malformed: expected '<modulePath>.<exportName>'.`
+    );
   }
   const modulePath = handler.substring(0, lastDot);
   const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-start-api-`));
@@ -3902,7 +3905,9 @@ export async function loadStateForRoutedStacks(
         }
       }
       out.set(stackName, bundle);
-      logger.debug(`${provider.label}: loaded state for ${stackName} (${loaded.region})`);
+      logger.debug(
+        `${provider.label}: loaded state for ${displayStackName(stackName)} (${loaded.region})`
+      );
     } finally {
       provider.dispose();
     }

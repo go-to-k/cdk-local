@@ -14,6 +14,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { displayUntrustedValue } from '../../utils/assembly-path.js';
+import { displayIdent, displayStackName } from '../../utils/ident-display.js';
 import {
   applyRoleArnIfSet,
   AssumeRoleFailure,
@@ -395,7 +396,9 @@ async function localInvokeAgentCoreCommand(
         : { context: undefined, loaded: undefined };
 
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
-    logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
+    logger.info(
+      `Target: ${displayStackName(`${resolved.stack.stackName}/${resolved.logicalId}`)} (${resolved.protocol})`
+    );
     const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
     const isA2a = resolved.protocol === AGENTCORE_A2A_PROTOCOL;
     const isAgui = resolved.protocol === AGENTCORE_AGUI_PROTOCOL;
@@ -744,7 +747,7 @@ export async function resolveInboundAuthorization(
 
   if (options.verifyAuth === false) {
     logger.warn(
-      `Runtime '${resolved.logicalId}' declares a customJwtAuthorizer, but --no-verify-auth was set — ` +
+      `Runtime ${displayIdent(resolved.logicalId)} declares a customJwtAuthorizer, but --no-verify-auth was set — ` +
         `skipping inbound JWT verification (local-dev escape hatch).`
     );
     return header;
@@ -752,7 +755,7 @@ export async function resolveInboundAuthorization(
 
   if (!header) {
     throw new CdkLocalError(
-      `Runtime '${resolved.logicalId}' requires an inbound JWT (customJwtAuthorizer). ` +
+      `Runtime ${displayIdent(resolved.logicalId)} requires an inbound JWT (customJwtAuthorizer). ` +
         `Pass --bearer-token <jwt>, or --no-verify-auth to skip verification for local dev.`,
       'LOCAL_INVOKE_AGENTCORE_AUTH_REQUIRED'
     );
@@ -809,7 +812,7 @@ export async function resolveAgentCoreSigV4Context(
   }
   if (resolved.jwtAuthorizer) {
     getLogger().warn(
-      `Runtime '${resolved.logicalId}' declares a customJwtAuthorizer; --sigv4 ignored (JWT path takes precedence).`
+      `Runtime ${displayIdent(resolved.logicalId)} declares a customJwtAuthorizer; --sigv4 ignored (JWT path takes precedence).`
     );
     return undefined;
   }
@@ -1000,7 +1003,7 @@ export async function resolveAgentCoreImage(
   const containerUri = resolved.containerUri;
   if (containerUri === undefined) {
     throw new CdkLocalError(
-      `AgentCore Runtime '${resolved.logicalId}' has neither a container image nor a code artifact to run.`,
+      `AgentCore Runtime ${displayIdent(resolved.logicalId)} has neither a container image nor a code artifact to run.`,
       'LOCAL_INVOKE_AGENTCORE_NO_ARTIFACT'
     );
   }
@@ -1070,7 +1073,7 @@ async function resolveAgentCoreCodeImage(
   const manifestPath = resolved.stack.assetManifestPath;
   if (!manifestPath) {
     throw new CdkLocalError(
-      `AgentCore Runtime '${resolved.logicalId}' uses a code artifact, but its stack has no asset ` +
+      `AgentCore Runtime ${displayIdent(resolved.logicalId)} uses a code artifact, but its stack has no asset ` +
         `manifest in cdk.out to read the bundle source from.`,
       'LOCAL_INVOKE_AGENTCORE_CODE_NO_MANIFEST'
     );
@@ -1089,7 +1092,7 @@ async function resolveAgentCoreCodeImage(
     : undefined;
   if (!asset) {
     throw new CdkLocalError(
-      `AgentCore Runtime '${resolved.logicalId}' code bundle (asset ${code.codeAssetHash}) was not found ` +
+      `AgentCore Runtime ${displayIdent(resolved.logicalId)} code bundle (asset ${displayIdent(code.codeAssetHash)}) was not found ` +
         `in the cdk.out asset manifest. ${getEmbedConfig().cliName} invoke-agentcore runs a local from-source ` +
         `build of a fromCodeAsset bundle — re-synthesize the app so the asset is staged in cdk.out and retry. ` +
         `(A fromS3 bundle is downloaded from S3 instead; this runtime has no literal Code.S3.Bucket.)`,
@@ -1149,7 +1152,7 @@ export async function resolveAgentCoreCodeImageFromS3(
   // `resolveFromS3BucketIntrinsic` in the outer command before we got here.
   if (typeof s3Source.bucket !== 'string' || s3Source.bucket.length === 0) {
     throw new CdkLocalError(
-      `AgentCore Runtime '${resolved.logicalId}' fromS3 bundle reached the image step with no literal bucket. ` +
+      `AgentCore Runtime ${displayIdent(resolved.logicalId)} fromS3 bundle reached the image step with no literal bucket. ` +
         `This is a cdk-local bug — please report it.`,
       'LOCAL_INVOKE_AGENTCORE_FROMS3_BUCKET_UNRESOLVED'
     );
@@ -1397,8 +1400,8 @@ export async function resolveFromS3BucketIntrinsic(
 
   if (!stateProvider || !loaded) {
     throw new CdkLocalError(
-      `AgentCore Runtime '${resolved.logicalId}' fromS3 bundle's Code.S3.Bucket is an unresolved intrinsic ` +
-        `(${describeIntrinsic(s3Source.bucketIntrinsic)}). ` +
+      `AgentCore Runtime ${displayIdent(resolved.logicalId)} fromS3 bundle's Code.S3.Bucket is an unresolved intrinsic ` +
+        `(${displayUntrustedValue(describeIntrinsic(s3Source.bucketIntrinsic))}). ` +
         `Pass --from-cfn-stack so its physical bucket name can be resolved against the deployed stack state.`,
       'LOCAL_INVOKE_AGENTCORE_FROMS3_BUCKET_INTRINSIC_NO_STATE'
     );
@@ -1416,17 +1419,17 @@ export async function resolveFromS3BucketIntrinsic(
   const result = await substituteAgainstStateAsync(s3Source.bucketIntrinsic, subContext);
   if (result.kind !== 'literal') {
     throw new CdkLocalError(
-      `Could not resolve AgentCore Runtime '${resolved.logicalId}' fromS3 Code.S3.Bucket intrinsic ` +
-        `(${describeIntrinsic(s3Source.bucketIntrinsic)}) against the --from-cfn-stack state: ${result.reason}. ` +
+      `Could not resolve AgentCore Runtime ${displayIdent(resolved.logicalId)} fromS3 Code.S3.Bucket intrinsic ` +
+        `(${displayUntrustedValue(describeIntrinsic(s3Source.bucketIntrinsic))}) against the --from-cfn-stack state: ${result.reason}. ` +
         `Confirm the referenced resource / export exists in the deployed stack.`,
       'LOCAL_INVOKE_AGENTCORE_FROMS3_BUCKET_INTRINSIC_UNRESOLVED'
     );
   }
   if (typeof result.value !== 'string' || result.value.length === 0) {
     throw new CdkLocalError(
-      `AgentCore Runtime '${resolved.logicalId}' fromS3 Code.S3.Bucket intrinsic resolved to a ` +
+      `AgentCore Runtime ${displayIdent(resolved.logicalId)} fromS3 Code.S3.Bucket intrinsic resolved to a ` +
         `${typeof result.value} value, not a bucket name string. ` +
-        `(${describeIntrinsic(s3Source.bucketIntrinsic)})`,
+        `(${displayUntrustedValue(describeIntrinsic(s3Source.bucketIntrinsic))})`,
       'LOCAL_INVOKE_AGENTCORE_FROMS3_BUCKET_INTRINSIC_NOT_STRING'
     );
   }
@@ -1637,7 +1640,7 @@ export async function resolveAssumeRoleArn(
   if (resolved.roleArn !== undefined) {
     if (isIamRoleArn(resolved.roleArn)) return resolved.roleArn;
     getLogger().warn(
-      `--assume-role: the template RoleArn for '${resolved.logicalId}' is not a well-formed IAM role ARN: ${describeRejectedRoleArn(resolved.roleArn)}. Ignoring it.`
+      `--assume-role: the template RoleArn for ${displayIdent(resolved.logicalId)} is not a well-formed IAM role ARN: ${describeRejectedRoleArn(resolved.roleArn)}. Ignoring it.`
     );
   }
   if (loaded) {
@@ -1660,7 +1663,7 @@ export async function resolveAssumeRoleArn(
       // implement. Same reasoning as the `local-invoke.ts` sibling.
       if (liveArn !== undefined && !isIamRoleArn(liveArn)) {
         getLogger().warn(
-          `--assume-role: GetAgentRuntime for '${resolved.logicalId}' produced a value that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(liveArn)}. Ignoring it.`
+          `--assume-role: GetAgentRuntime for ${displayIdent(resolved.logicalId)} produced a value that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(liveArn)}. Ignoring it.`
         );
       } else if (liveArn) {
         // Issue #570: FLATTENED. `liveArn` is the deployed `roleArn` off a

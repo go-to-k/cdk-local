@@ -10,6 +10,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { displayStackName } from '../../utils/ident-display.js';
 import { describeAwsFailureForWarn } from '../../local/credential-error.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -669,7 +670,7 @@ export async function prepareEcsImageContexts(args: {
       // reaches this `catch` alongside a modeled CloudFormation / SSM
       // exception whose message is the diagnosis.
       logger.warn(
-        `studio: could not build deployed-state image context for stack '${stack.stackName}'; ` +
+        `studio: could not build deployed-state image context for stack ${displayStackName(stack.stackName)}; ` +
           `ECS services in it resolve against the synthed template only. ${describeAwsFailureForWarn(
             err,
             'deployed-state image context (CloudFormation + SSM)'
@@ -741,7 +742,7 @@ export function makePinClassifier(args: {
       // cannot be pin-classified is surfaced, not invisibly left unmarked, so
       // a misconfigured / unresolvable image is visible at boot.
       logger.warn(
-        `studio: could not classify image-pin status for ECS service '${id}'; leaving it unmarked ` +
+        `studio: could not classify image-pin status for ECS service ${displayStackName(id)}; leaving it unmarked ` +
           `(the image-override picker will not be offered).${pinClassifyStateHint(stateBound)} ${
             err instanceof Error ? err.message : String(err)
           }`
@@ -803,7 +804,7 @@ export function makeTaskPinClassifier(args: {
       return representative !== undefined && representative.image.kind !== 'cdk-asset';
     } catch (err) {
       logger.warn(
-        `studio: could not classify image-pin status for ECS task definition '${id}'; leaving it ` +
+        `studio: could not classify image-pin status for ECS task definition ${displayStackName(id)}; leaving it ` +
           `unmarked (the image-override picker will not be offered).${pinClassifyStateHint(
             stateBound
           )} ${err instanceof Error ? err.message : String(err)}`
@@ -864,7 +865,7 @@ export function makeAlbBackingPinnedResolver(args: {
       return out;
     } catch (err) {
       logger.warn(
-        `studio: could not resolve ALB '${albEntry.id}' backing services for the image-override ` +
+        `studio: could not resolve ALB ${displayStackName(albEntry.id)} backing services for the image-override ` +
           `picker; the alb composer will not offer one. ${
             err instanceof Error ? err.message : String(err)
           }`

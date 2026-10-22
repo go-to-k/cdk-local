@@ -12,6 +12,7 @@ import {
 import { parseTarget, type ParsedTarget } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { getLogger } from '../utils/logger.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * CloudFormation resource type for a Bedrock AgentCore Runtime.
@@ -211,7 +212,7 @@ export function resolveAgentCoreTarget(
 
   if (resource.Type !== AGENTCORE_RUNTIME_TYPE) {
     throw new AgentCoreResolutionError(
-      `Resource '${logicalId}' in ${stack.stackName} is ${resource.Type}, not ${AGENTCORE_RUNTIME_TYPE}. ` +
+      `Resource ${displayIdent(logicalId)} in ${stack.stackName} is ${resource.Type}, not ${AGENTCORE_RUNTIME_TYPE}. ` +
         `${getEmbedConfig().cliName} invoke-agentcore only runs Bedrock AgentCore Runtime resources.`
     );
   }
@@ -382,7 +383,7 @@ function extractJwtAuthorizer(
   const discoveryUrl = cfg['DiscoveryUrl'];
   if (typeof discoveryUrl !== 'string' || discoveryUrl.length === 0) {
     getLogger().warn(
-      `AgentCore Runtime '${logicalId}' declares a CustomJWTAuthorizer whose DiscoveryUrl is not a literal string; ` +
+      `AgentCore Runtime ${displayIdent(logicalId)} declares a CustomJWTAuthorizer whose DiscoveryUrl is not a literal string; ` +
         `${getEmbedConfig().cliName} invoke-agentcore cannot verify inbound JWTs against it and will skip auth.`
     );
     return undefined;
@@ -437,8 +438,8 @@ function extractCustomClaims(raw: unknown, logicalId: string): AgentCoreCustomCl
     if (typeof name !== 'string' || name.length === 0) continue;
     if (valueType !== 'STRING' && valueType !== 'STRING_ARRAY') {
       getLogger().warn(
-        `AgentCore Runtime '${logicalId}' CustomClaims entry '${name}' has unsupported ` +
-          `InboundTokenClaimValueType '${String(valueType)}' (expected STRING / STRING_ARRAY); skipping.`
+        `AgentCore Runtime ${displayIdent(logicalId)} CustomClaims entry ${displayIdent(name)} has unsupported ` +
+          `InboundTokenClaimValueType ${displayIdent(String(valueType))} (expected STRING / STRING_ARRAY); skipping.`
       );
       continue;
     }
@@ -448,8 +449,8 @@ function extractCustomClaims(raw: unknown, logicalId: string): AgentCoreCustomCl
     const matchValue = m['ClaimMatchValue'];
     if (operator !== 'EQUALS' && operator !== 'CONTAINS' && operator !== 'CONTAINS_ANY') {
       getLogger().warn(
-        `AgentCore Runtime '${logicalId}' CustomClaims entry '${name}' has unsupported ` +
-          `ClaimMatchOperator '${String(operator)}' (expected EQUALS / CONTAINS / CONTAINS_ANY); skipping.`
+        `AgentCore Runtime ${displayIdent(logicalId)} CustomClaims entry ${displayIdent(name)} has unsupported ` +
+          `ClaimMatchOperator ${displayIdent(String(operator))} (expected EQUALS / CONTAINS / CONTAINS_ANY); skipping.`
       );
       continue;
     }
@@ -470,7 +471,7 @@ function extractCustomClaims(raw: unknown, logicalId: string): AgentCoreCustomCl
     }
     if (value === undefined) {
       getLogger().warn(
-        `AgentCore Runtime '${logicalId}' CustomClaims entry '${name}' has no usable ` +
+        `AgentCore Runtime ${displayIdent(logicalId)} CustomClaims entry ${displayIdent(name)} has no usable ` +
           `MatchValueString / MatchValueStringList for operator ${operator}; skipping.`
       );
       continue;
@@ -489,13 +490,13 @@ function extractProtocol(value: unknown, logicalId: string, stackName: string): 
   if (value === undefined || value === null) return AGENTCORE_HTTP_PROTOCOL;
   if (typeof value !== 'string') {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} has a non-string ProtocolConfiguration. ` +
+      `AgentCore Runtime ${displayIdent(logicalId)} in ${stackName} has a non-string ProtocolConfiguration. ` +
         `${getEmbedConfig().cliName} invoke-agentcore supports the ${SUPPORTED_AGENTCORE_PROTOCOLS.join(' / ')} protocols.`
     );
   }
   if (!(SUPPORTED_AGENTCORE_PROTOCOLS as readonly string[]).includes(value)) {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} uses the ${value} protocol. ` +
+      `AgentCore Runtime ${displayIdent(logicalId)} in ${stackName} uses the ${value} protocol. ` +
         `${getEmbedConfig().cliName} invoke-agentcore supports the ${SUPPORTED_AGENTCORE_PROTOCOLS.join(' / ')} protocols.`
     );
   }
@@ -522,7 +523,7 @@ function extractArtifact(
 ): ExtractedArtifact {
   if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} has no AgentRuntimeArtifact.`
+      `AgentCore Runtime ${displayIdent(logicalId)} in ${stackName} has no AgentRuntimeArtifact.`
     );
   }
   const art = artifact as Record<string, unknown>;
@@ -537,7 +538,7 @@ function extractArtifact(
   const container = art['ContainerConfiguration'];
   if (!container || typeof container !== 'object' || Array.isArray(container)) {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} has no ContainerConfiguration in its AgentRuntimeArtifact.`
+      `AgentCore Runtime ${displayIdent(logicalId)} in ${stackName} has no ContainerConfiguration in its AgentRuntimeArtifact.`
     );
   }
 
@@ -551,7 +552,7 @@ function extractArtifact(
   );
   if (uri === undefined) {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} has a ContainerConfiguration.ContainerUri that ${getEmbedConfig().cliName} invoke-agentcore cannot resolve. ` +
+      `AgentCore Runtime ${displayIdent(logicalId)} in ${stackName} has a ContainerConfiguration.ContainerUri that ${getEmbedConfig().cliName} invoke-agentcore cannot resolve. ` +
         `v1 resolves a literal image URI, an Fn::Sub asset URI (the fromAsset / Dockerfile path), an imported-ECR Fn::Join, ` +
         `and a same-stack AWS::ECR::Repository Fn::Join under --from-cfn-stack — build the agent as a fromAsset image, or pin a literal / imported ECR image URI.`
     );
@@ -589,7 +590,7 @@ function extractCodeArtifact(
   const runtime = cfg['Runtime'];
   if (typeof runtime !== 'string' || runtime.length === 0) {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} has a CodeConfiguration with no string Runtime.`
+      `AgentCore Runtime ${displayIdent(logicalId)} in ${stackName} has a CodeConfiguration with no string Runtime.`
     );
   }
 
@@ -599,7 +600,7 @@ function extractCodeArtifact(
     : [];
   if (entryPoint.length === 0) {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} has a CodeConfiguration with no EntryPoint.`
+      `AgentCore Runtime ${displayIdent(logicalId)} in ${stackName} has a CodeConfiguration with no EntryPoint.`
     );
   }
 
@@ -612,7 +613,7 @@ function extractCodeArtifact(
   const prefix = s3Obj['Prefix'];
   if (typeof prefix !== 'string' || prefix.length === 0) {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} has a CodeConfiguration whose Code.S3.Prefix is not a literal string. ` +
+      `AgentCore Runtime ${displayIdent(logicalId)} in ${stackName} has a CodeConfiguration whose Code.S3.Prefix is not a literal string. ` +
         `${getEmbedConfig().cliName} invoke-agentcore needs a literal object key — re-synthesize a fromCodeAsset bundle, ` +
         `or pass a literal bucket + key for a fromS3 bundle.`
     );
@@ -704,7 +705,7 @@ function resolveImageUri(
     // context carries a captured load-failure message.
     if (joinResolved.kind === 'needs-state') {
       throw new AgentCoreResolutionError(
-        `AgentCore Runtime '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
+        `AgentCore Runtime ${displayIdent(logicalId)} in ${stackName} references same-stack ECR repository ${displayIdent(joinResolved.repoLogicalId)} via Fn::Join. ` +
           `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
           formatStateRemedy(context) +
           ', build via Runtime.fromAsset, or pin a literal / imported ECR image URI.'

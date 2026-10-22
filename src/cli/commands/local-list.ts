@@ -7,6 +7,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { displayStackName } from '../../utils/ident-display.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
@@ -170,11 +171,12 @@ function formatSection(
     // Append the API surface kind (REST API v1 / HTTP API v2 / Function URL
     // / WebSocket) so the API group's otherwise-similar paths are
     // distinguishable; only `apis` entries carry a kind.
-    lines.push(entry.kind ? `  ${primary}  (${entry.kind})` : `  ${primary}`);
+    const shown = displayStackName(primary);
+    lines.push(entry.kind ? `  ${shown}  (${entry.kind})` : `  ${shown}`);
     // The qualified ID is only extra info when a display path was shown;
     // when it IS the primary, don't repeat it.
     if (long && entry.displayPath) {
-      lines.push(`      ${entry.qualifiedId}`);
+      lines.push(`      ${displayStackName(entry.qualifiedId)}`);
     }
   }
   return lines;

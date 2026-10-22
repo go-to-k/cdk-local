@@ -29,6 +29,7 @@ import {
 } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 
 /**
  * Result of resolving a `cdkl invoke <target>` argument back to a
@@ -248,7 +249,7 @@ export function resolveLambdaArchitecture(
     if (first === 'arm64') return 'arm64';
     if (first === 'x86_64') return 'x86_64';
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
+      `Lambda ${displayIdent(logicalId)} has unsupported Architectures value ${displayIdent(String(first))}. ` +
         `${getEmbedConfig().cliName} supports x86_64 and arm64.`
     );
   }
@@ -361,8 +362,8 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
     }
     if (lambdaMatches.length > 1) {
       throw new LocalInvokeResolutionError(
-        `Target '${target}' matches ${lambdaMatches.length} Lambda functions in ${stack.stackName}: ` +
-          lambdaMatches.map((m) => m.logicalId).join(', ') +
+        `Target '${target}' matches ${lambdaMatches.length} Lambda functions in ${displayStackName(stack.stackName)}: ` +
+          lambdaMatches.map((m) => displayIdent(m.logicalId)).join(', ') +
           '. Refine the path or use the stack:LogicalId form.'
       );
     }
@@ -381,13 +382,13 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
   if (resource.Type !== 'AWS::Lambda::Function') {
     if (resource.Type.startsWith('Custom::')) {
       throw new LocalInvokeResolutionError(
-        `Resource '${logicalId}' in ${stack.stackName} is a Custom Resource (${resource.Type}), not a Lambda function. ` +
+        `Resource ${displayIdent(logicalId)} in ${displayStackName(stack.stackName)} is a Custom Resource (${displayIdent(resource.Type)}), not a Lambda function. ` +
           `Custom Resources are invoked by the deploy framework, not by users. ` +
           `If you want to test the underlying handler, target the ServiceToken Lambda directly.`
       );
     }
     throw new LocalInvokeResolutionError(
-      `Resource '${logicalId}' in ${stack.stackName} is ${resource.Type}, not a Lambda function. ` +
+      `Resource ${displayIdent(logicalId)} in ${displayStackName(stack.stackName)} is ${displayIdent(resource.Type)}, not a Lambda function. ` +
         `${getEmbedConfig().cliName} only invokes AWS::Lambda::Function resources.`
     );
   }
@@ -479,12 +480,14 @@ function extractLambdaProperties(
 
   if (!runtime) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' has no Runtime property and no Code.ImageUri. ` +
+      `Lambda ${displayIdent(logicalId)} has no Runtime property and no Code.ImageUri. ` +
         `${getEmbedConfig().productName} cannot tell if this is a ZIP or a container Lambda.`
     );
   }
   if (!handler) {
-    throw new LocalInvokeResolutionError(`Lambda '${logicalId}' has no Handler property.`);
+    throw new LocalInvokeResolutionError(
+      `Lambda ${displayIdent(logicalId)} has no Handler property.`
+    );
   }
 
   const inlineCode = typeof code['ZipFile'] === 'string' ? code['ZipFile'] : undefined;
@@ -565,7 +568,7 @@ export function extractEphemeralStorageMb(
   if (!Number.isFinite(size) || size < 1) return undefined;
   if (size > 10240) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' has Properties.EphemeralStorage.Size = ${size} MiB, ` +
+      `Lambda ${displayIdent(logicalId)} has Properties.EphemeralStorage.Size = ${size} MiB, ` +
         'which exceeds the AWS limit of 10240 MiB. AWS would reject the function at deploy time; ' +
         'cap the value to <= 10240 (10 GiB) and retry.'
     );
@@ -641,7 +644,7 @@ function extractImageUri(
       if (joinResolved.kind === 'resolved') return joinResolved.uri;
       if (joinResolved.kind === 'needs-state') {
         throw new LocalInvokeResolutionError(
-          `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
+          `Lambda ${displayIdent(logicalId)} in ${displayStackName(stackName)} references same-stack ECR repository ${displayIdent(joinResolved.repoLogicalId)} via Fn::Join. ` +
             `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
             `deploy the stack first (so ${getEmbedConfig().productName} records the repository physical id), ` +
             'rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
@@ -649,7 +652,7 @@ function extractImageUri(
       }
       if (joinResolved.kind === 'unsupported-join') {
         throw new LocalInvokeResolutionError(
-          `Lambda '${logicalId}' in ${stackName} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
+          `Lambda ${displayIdent(logicalId)} in ${displayStackName(stackName)} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
             `${getEmbedConfig().cliName} recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ` +
             '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
         );
@@ -662,7 +665,7 @@ function extractImageUri(
         ? ` (likely \${AWS::AccountId}, which ${getEmbedConfig().productName} cannot derive without --from-state or STS)`
         : ` (${getEmbedConfig().productName} could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} cannot resolve${accountIdHint}. ` +
+        `Lambda ${displayIdent(logicalId)} in ${displayStackName(stackName)} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} cannot resolve${accountIdHint}. ` +
           'Workarounds: deploy first and run with --from-state, or pin a fully-literal public image URI.'
       );
     }
@@ -1440,7 +1443,7 @@ function resolveSafeZipEntryPath(root: string, entry: string): string {
   const rootWithSep = root.endsWith(sep) ? root : root + sep;
   if (dest !== root && !dest.startsWith(rootWithSep)) {
     throw new LocalInvokeResolutionError(
-      `Refusing to extract a Lambda ZIP asset entry that escapes the target dir: '${entry}'.`
+      `Refusing to extract a Lambda ZIP asset entry that escapes the target dir: ${displayUntrustedValue(entry)}.`
     );
   }
   return dest;
@@ -1494,7 +1497,7 @@ export function resolveLambdaLayers(
   if (layers === undefined) return [];
   if (!Array.isArray(layers)) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' has a non-array Layers property. Expected an array of LayerVersion references.`
+      `Lambda ${displayIdent(logicalId)} has a non-array Layers property. Expected an array of LayerVersion references.`
     );
   }
   if (layers.length === 0) return [];
@@ -1512,7 +1515,7 @@ export function resolveLambdaLayers(
       const parsed = parseLayerVersionArn(entry);
       if (!parsed) {
         throw new LocalInvokeResolutionError(
-          `Lambda '${logicalId}' has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: literal string '${entry}'. ` +
+          `Lambda ${displayIdent(logicalId)} has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: literal string ${displayUntrustedValue(entry)}. ` +
             'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
             'OR a literal layer-version ARN of the form ' +
             'arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>, ' +
@@ -1526,7 +1529,7 @@ export function resolveLambdaLayers(
     const layerLogicalId = pickLayerLogicalId(entry);
     if (!layerLogicalId) {
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: ${describeLayerEntry(entry)}. ` +
+        `Lambda ${displayIdent(logicalId)} has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: ${describeLayerEntry(entry)}. ` +
           'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
           'OR a literal layer-version ARN of the form ' +
           'arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>, ' +
@@ -1537,13 +1540,13 @@ export function resolveLambdaLayers(
     const layerResource = resources[layerLogicalId];
     if (!layerResource) {
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' Layers entry [${i}] references '${layerLogicalId}', ` +
-          `but no resource with that logical ID exists in stack '${stack.stackName}'.`
+        `Lambda ${displayIdent(logicalId)} Layers entry [${i}] references ${displayIdent(layerLogicalId)}, ` +
+          `but no resource with that logical ID exists in stack ${displayStackName(stack.stackName)}.`
       );
     }
     if (layerResource.Type !== 'AWS::Lambda::LayerVersion') {
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' Layers entry [${i}] references '${layerLogicalId}' (${layerResource.Type}), ` +
+        `Lambda ${displayIdent(logicalId)} Layers entry [${i}] references ${displayIdent(layerLogicalId)} (${displayIdent(layerResource.Type)}), ` +
           'which is not an AWS::Lambda::LayerVersion.'
       );
     }
@@ -1638,7 +1641,7 @@ function pickLayerLogicalId(entry: unknown): string | undefined {
  * literal ARNs to a short form so the message stays one-line.
  */
 function describeLayerEntry(entry: unknown): string {
-  if (typeof entry === 'string') return `literal ARN '${entry}'`;
+  if (typeof entry === 'string') return `literal ARN ${displayUntrustedValue(entry)}`;
   if (entry === null) return 'null';
   if (typeof entry !== 'object') return stringifyValue(entry);
   try {
@@ -1667,14 +1670,15 @@ function notFoundError(
     lambdas.push({ displayPath: cdkPath || logicalId, logicalId });
   }
 
-  let msg = `target '${target}' did not match any Lambda function in ${stack.stackName}.\n\n`;
+  let msg = `target '${target}' did not match any Lambda function in ${displayStackName(stack.stackName)}.\n\n`;
   if (lambdas.length === 0) {
-    msg += `Stack ${stack.stackName} has no Lambda functions.`;
+    msg += `Stack ${displayStackName(stack.stackName)} has no Lambda functions.`;
   } else {
-    const width = Math.max(...lambdas.map((l) => l.displayPath.length));
-    msg += `Available Lambda functions in ${stack.stackName}:\n`;
-    for (const l of lambdas) {
-      msg += `  ${l.displayPath.padEnd(width)}  (${l.logicalId})\n`;
+    const rendered = lambdas.map((l) => displayStackName(l.displayPath));
+    const width = Math.max(...rendered.map((p) => p.length));
+    msg += `Available Lambda functions in ${displayStackName(stack.stackName)}:\n`;
+    for (const [idx, l] of lambdas.entries()) {
+      msg += `  ${rendered[idx]!.padEnd(width)}  (${displayIdent(l.logicalId)})\n`;
     }
   }
   return new LocalInvokeResolutionError(msg.trimEnd());

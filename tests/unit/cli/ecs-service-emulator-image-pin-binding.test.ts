@@ -162,7 +162,7 @@ describe('ecs-service-emulator image-pin detector binding (issue #234)', () => {
     const body = reloadRegion![0];
     expect(body).toMatch(/target image is not a CDK docker-image asset/);
     expect(body).toMatch(/!isLocalCdkAssetImage\(controller\.service\)/);
-    expect(body).toMatch(/Reload skipped for '\$\{newBoot\.target\}'/);
+    expect(body).toMatch(/Reload skipped for \$\{displayStackName\(newBoot\.target\)\}/);
     // Ordering: the skip log + `continue` MUST appear before the
     // `rollOneTarget` call so the no-op pre-empts the rolling primitive.
     const skipIdx = body.indexOf('Reload skipped for ');

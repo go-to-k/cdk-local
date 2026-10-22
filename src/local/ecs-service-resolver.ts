@@ -11,6 +11,8 @@ import {
   type ResolvedEcsTask,
 } from './ecs-task-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 
 /**
  * Phase 2 of #262 — synthesized `AWS::ECS::Service` resolved against the
@@ -245,13 +247,13 @@ export function resolveEcsServiceTarget(
 
   if (serviceResource.Type === 'AWS::ECS::TaskDefinition') {
     throw new EcsTaskResolutionError(
-      `Resource '${serviceLogicalId}' in ${stack.stackName} is an ECS TaskDefinition, not a Service. ` +
+      `Resource ${displayIdent(serviceLogicalId)} in ${stack.stackName} is an ECS TaskDefinition, not a Service. ` +
         `Use \`${getEmbedConfig().cliName} run-task\` for one-shot tasks; \`${getEmbedConfig().cliName} start-service\` is Service-only.`
     );
   }
   if (serviceResource.Type !== 'AWS::ECS::Service') {
     throw new EcsTaskResolutionError(
-      `Resource '${serviceLogicalId}' in ${stack.stackName} is ${serviceResource.Type}, not an AWS::ECS::Service.`
+      `Resource ${displayIdent(serviceLogicalId)} in ${stack.stackName} is ${displayIdent(serviceResource.Type)}, not an AWS::ECS::Service.`
     );
   }
 
@@ -284,7 +286,7 @@ export function extractServiceProperties(
   const taskDefRef = props['TaskDefinition'];
   if (taskDefRef === undefined || taskDefRef === null) {
     throw new EcsTaskResolutionError(
-      `ECS Service '${serviceLogicalId}' in ${stack.stackName} has no TaskDefinition property.`
+      `ECS Service ${displayIdent(serviceLogicalId)} in ${stack.stackName} has no TaskDefinition property.`
     );
   }
   const taskDefLogicalId = resolveTaskDefinitionReference(taskDefRef, stack, serviceLogicalId);
@@ -317,7 +319,7 @@ export function extractServiceProperties(
   ) {
     const { cliName } = getEmbedConfig();
     warnings.push(
-      `ECS Service '${serviceLogicalId}' declares LoadBalancers, but \`${cliName} start-service\` ` +
+      `ECS Service ${displayIdent(serviceLogicalId)} declares LoadBalancers, but \`${cliName} start-service\` ` +
         'runs the replicas only; no local listener fronts them. Reach the containers via their ' +
         `published ports, or run \`${cliName} start-alb <Stack>/<Alb>\` to boot the same replicas ` +
         'behind a local front-door that round-robins the listener rules.'
@@ -428,7 +430,7 @@ function extractServiceConnect(
     if (containerPort === undefined) {
       const available = [...portByName.keys()].join(', ') || '(none)';
       throw new EcsTaskResolutionError(
-        `ServiceConnectConfiguration.Services[].PortName='${portName}' does not match any ` +
+        `ServiceConnectConfiguration.Services[].PortName=${displayIdent(portName)} does not match any ` +
           `PortMappings[].Name on the producer TaskDef (available: ${available}).`
       );
     }
@@ -486,8 +488,8 @@ function extractServiceRegistries(
       // bound to an existing Cloud Map service deployed out-of-band).
       // We can't resolve it via the in-process registry; warn + skip.
       warnings.push(
-        `ECS Service '${serviceLogicalId}' ServiceRegistries[] entry has a literal-string ` +
-          `RegistryArn ('${registryArn}'); ${getEmbedConfig().productName} cannot resolve external Cloud Map services ` +
+        `ECS Service ${displayIdent(serviceLogicalId)} ServiceRegistries[] entry has a literal-string ` +
+          `RegistryArn (${displayUntrustedValue(registryArn)}); ${getEmbedConfig().productName} cannot resolve external Cloud Map services ` +
           'locally. Skipping this registration; peer services will not discover this endpoint ' +
           'through the in-process registry. Use Fn::GetAtt: [<CloudMapServiceLogicalId>, "Arn"] ' +
           `instead so ${getEmbedConfig().productName} can resolve the namespace + service name from the synthesized template.`
@@ -547,21 +549,21 @@ function resolveTaskDefinitionReference(
       const target = resources[refValue];
       if (!target) {
         throw new EcsTaskResolutionError(
-          `ECS Service '${serviceLogicalId}' references TaskDefinition '${refValue}' but no ` +
+          `ECS Service ${displayIdent(serviceLogicalId)} references TaskDefinition ${displayIdent(refValue)} but no ` +
             `such resource exists in ${stack.stackName}.`
         );
       }
       if (target.Type !== 'AWS::ECS::TaskDefinition') {
         throw new EcsTaskResolutionError(
-          `ECS Service '${serviceLogicalId}' references '${refValue}' as TaskDefinition but it ` +
-            `is of type ${target.Type}, not AWS::ECS::TaskDefinition.`
+          `ECS Service ${displayIdent(serviceLogicalId)} references ${displayIdent(refValue)} as TaskDefinition but it ` +
+            `is of type ${displayIdent(target.Type)}, not AWS::ECS::TaskDefinition.`
         );
       }
       return refValue;
     }
   }
   throw new EcsTaskResolutionError(
-    `ECS Service '${serviceLogicalId}' has an unsupported TaskDefinition reference shape: ` +
+    `ECS Service ${displayIdent(serviceLogicalId)} has an unsupported TaskDefinition reference shape: ` +
       `${JSON.stringify(taskDefRef)}. ${getEmbedConfig().cliName} start-service v1 supports only Ref to a ` +
       'same-stack AWS::ECS::TaskDefinition; cross-stack TaskDefinitions are deferred.'
   );
@@ -576,7 +578,7 @@ function parseDesiredCount(raw: unknown, serviceLogicalId: string): number {
     return parseInt(raw, 10);
   }
   throw new EcsTaskResolutionError(
-    `ECS Service '${serviceLogicalId}' has an unsupported DesiredCount value: ` +
+    `ECS Service ${displayIdent(serviceLogicalId)} has an unsupported DesiredCount value: ` +
       `${JSON.stringify(raw)}. Must be a non-negative integer.`
   );
 }
@@ -711,7 +713,7 @@ function notFoundError(
   let msg = `Target '${target}' did not match any ECS Service in ${stack.stackName}.\n\n`;
   msg += `Available services in ${stack.stackName} (CDK path and logical ID):\n`;
   for (const s of services) {
-    msg += `  ${s.displayPath.padEnd(width)}  (${s.logicalId})\n`;
+    msg += `  ${s.displayPath.padEnd(width)}  (${displayIdent(s.logicalId)})\n`;
   }
   // When a 'Stack/Path'-form target's trailing segment is exactly a
   // service logical ID, the user almost certainly meant the colon form —
@@ -724,8 +726,8 @@ function notFoundError(
       : parsed.pathOrId;
     if (services.some((s) => s.logicalId === tail)) {
       msg +=
-        `\n'${tail}' is a logical ID, but the 'Stack/Path' form matches CDK construct paths. ` +
-        `To target it by logical ID, use the colon form: '${stack.stackName}:${tail}'.`;
+        `\n${displayIdent(tail)} is a logical ID, but the 'Stack/Path' form matches CDK construct paths. ` +
+        `To target it by logical ID, use the colon form: ${displayStackName(`${stack.stackName}:${tail}`)}.`;
     }
   }
   return new EcsTaskResolutionError(msg.trimEnd());

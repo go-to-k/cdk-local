@@ -52,7 +52,7 @@ describe('ecs-service-resolver LoadBalancers warning', () => {
     expect(w).not.toMatch(/deferred to a follow-up PR/);
     // It must mention the booted service name + the command surface that
     // would emulate the LB locally, so the user has an actionable next step.
-    expect(w).toContain("ECS Service 'WebService'");
+    expect(w).toContain('ECS Service WebService');
     expect(w).toMatch(/start-service/);
     expect(w).toMatch(/start-alb/);
   });

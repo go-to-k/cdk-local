@@ -11,6 +11,7 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { displayUntrustedValue } from '../../utils/assembly-path.js';
+import { displayIdent, displayStackName } from '../../utils/ident-display.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, LocalStartServiceError } from '../../utils/error-handler.js';
 import { resolveMultiTarget } from '../../local/target-picker.js';
@@ -830,7 +831,7 @@ export async function runEcsServiceEmulator(
       if (imageOverrideTags.has(entry.target)) continue;
       const uriDisplay = entry.label ? `\`${entry.label}\`` : 'a deployed registry';
       logger.warn(
-        `'${entry.target}': running image is pinned to a deployed registry ` +
+        `${displayStackName(entry.target)}: running image is pinned to a deployed registry ` +
           `(${uriDisplay}). To iterate on local source, either pass ` +
           '`--image-override <dockerfile>` (or `<service>=<dockerfile>`) to substitute ' +
           'a local build, or drop `--from-cfn-stack` and switch the CDK app to ' +
@@ -1121,7 +1122,7 @@ async function reloadAllServices(args: {
       // primitive's shadow-boot-then-swap order means the old
       // container only goes away after a healthy shadow comes up.
       logger.warn(
-        `Reload of '${target}': --image-override rebuild failed; keeping the previous local image. ` +
+        `Reload of ${displayStackName(target)}: --image-override rebuild failed; keeping the previous local image. ` +
           `(${err instanceof Error ? err.message : String(err)})`
       );
     }
@@ -1169,7 +1170,7 @@ async function reloadAllServices(args: {
     const newBoot = newBootByTarget.get(pt.boot.target);
     if (!newBoot) {
       logger.warn(
-        `Reload: target '${pt.boot.target}' no longer resolves to a service in the synthesized ` +
+        `Reload: target ${displayStackName(pt.boot.target)} no longer resolves to a service in the synthesized ` +
           'app; keeping the previous replica(s) serving.'
       );
       continue;
@@ -1177,7 +1178,7 @@ async function reloadAllServices(args: {
     const controller = pt.controller;
     if (!controller) {
       logger.warn(
-        `Reload: target '${pt.boot.target}' has no live controller (previous boot likely ` +
+        `Reload: target ${displayStackName(pt.boot.target)} has no live controller (previous boot likely ` +
           'failed); skipping roll. `^C` and re-run start-service to recover.'
       );
       continue;
@@ -1196,14 +1197,16 @@ async function reloadAllServices(args: {
         logger,
       });
       verdict = classifySourceChange(changedPaths, assetCtx);
-      logger.info(`Reload of '${newBoot.target}': verdict=${verdict.kind} (${verdict.reason}).`);
+      logger.info(
+        `Reload of ${displayStackName(newBoot.target)}: verdict=${verdict.kind} (${verdict.reason}).`
+      );
     } catch (err) {
       // A classifier-context build failure (e.g. asset manifest
       // malformed, asset hash mismatch) is non-fatal: fall back to
       // the Phase 1-3 rebuild path which carries no asset-context
       // dependency.
       logger.warn(
-        `Reload of '${newBoot.target}': classifier context unavailable ` +
+        `Reload of ${displayStackName(newBoot.target)}: classifier context unavailable ` +
           `(${err instanceof Error ? err.message : String(err)}); falling back to rebuild.`
       );
       verdict = {
@@ -1259,7 +1262,7 @@ async function reloadAllServices(args: {
       !imageOverrideTags.has(newBoot.target)
     ) {
       logger.info(
-        `Reload skipped for '${newBoot.target}' (no-op): image pinned to deployed ` +
+        `Reload skipped for ${displayStackName(newBoot.target)} (no-op): image pinned to deployed ` +
           'registry; no local rebuild possible.'
       );
       continue;
@@ -1329,7 +1332,7 @@ export async function loadAssetContextForTarget(args: {
   const candidate = pickCandidateStack(target, stacks);
   if (!candidate) {
     logger.debug(
-      `loadAssetContext: stack pattern '${parsed.stackPattern}' from target '${target}' ` +
+      `loadAssetContext: stack pattern '${parsed.stackPattern}' from target ${displayStackName(target)} ` +
         `not in the assembly. Classifier will see no asset context (rebuild).`
     );
     return undefined;
@@ -1341,7 +1344,7 @@ export async function loadAssetContextForTarget(args: {
     });
   } catch (err) {
     logger.debug(
-      `loadAssetContext: resolveEcsServiceTarget threw for target '${target}' against ` +
+      `loadAssetContext: resolveEcsServiceTarget threw for target ${displayStackName(target)} against ` +
         `the new stacks: ${err instanceof Error ? err.message : String(err)}. ` +
         'Classifier will see no asset context (rebuild).'
     );
@@ -1356,7 +1359,7 @@ export async function loadAssetContextForTarget(args: {
     newService.task.containers.find((c) => c.essential) ?? newService.task.containers[0];
   if (!essential) {
     logger.debug(
-      `loadAssetContext: task definition for target '${target}' has no containers. ` +
+      `loadAssetContext: task definition for target ${displayStackName(target)} has no containers. ` +
         'Classifier will see no asset context (rebuild).'
     );
     return undefined;
@@ -1365,7 +1368,7 @@ export async function loadAssetContextForTarget(args: {
     const assetHashStr =
       essential.image.kind === 'cdk-asset' ? (essential.image.assetHash ?? 'undefined') : 'n/a';
     logger.debug(
-      `loadAssetContext: target '${target}' essential image is not a CDK asset ` +
+      `loadAssetContext: target ${displayStackName(target)} essential image is not a CDK asset ` +
         `(kind='${essential.image.kind}', assetHash=${assetHashStr}). ` +
         'Classifier will see no asset context (rebuild).'
     );
@@ -1375,16 +1378,16 @@ export async function loadAssetContextForTarget(args: {
   const manifest = await assetLoader.loadStackManifest(candidate, cdkOutDir);
   if (!manifest) {
     logger.debug(
-      `loadAssetContext: asset manifest missing for stack '${candidate.stackName}' under ` +
-        `'${cdkOutDir}'. Classifier will see no asset context (rebuild).`
+      `loadAssetContext: asset manifest missing for stack ${displayStackName(candidate.stackName)} under ` +
+        `${displayUntrustedValue(cdkOutDir)}. Classifier will see no asset context (rebuild).`
     );
     return undefined;
   }
   const newDockerImage = manifest.dockerImages?.[newAssetHash];
   if (!newDockerImage) {
     logger.debug(
-      `loadAssetContext: asset hash '${newAssetHash}' not present in stack ` +
-        `'${candidate.stackName}' dockerImages. Classifier will see no asset context (rebuild).`
+      `loadAssetContext: asset hash ${displayIdent(newAssetHash)} not present in stack ` +
+        `${displayStackName(candidate.stackName)} dockerImages. Classifier will see no asset context (rebuild).`
     );
     return undefined;
   }
@@ -1392,7 +1395,7 @@ export async function loadAssetContextForTarget(args: {
     // `executable`-mode docker asset (custom build script). No staged
     // source directory to copy from.
     logger.debug(
-      `loadAssetContext: docker asset '${newAssetHash}' for stack '${candidate.stackName}' ` +
+      `loadAssetContext: docker asset ${displayIdent(newAssetHash)} for stack ${displayStackName(candidate.stackName)} ` +
         `is executable-mode (no source.directory). Classifier will see no asset context (rebuild).`
     );
     return undefined;
@@ -1540,7 +1543,7 @@ async function rollOneTarget(args: {
       // serving and tell the user what tripped.
       const reason = err instanceof Error ? err.message : String(err);
       logger.error(
-        `Reload of '${newBoot.target}' was rejected: ${reason}. Existing replica(s) keep serving.`
+        `Reload of ${displayStackName(newBoot.target)} was rejected: ${reason}. Existing replica(s) keep serving.`
       );
       return;
     }
@@ -1554,7 +1557,7 @@ async function rollOneTarget(args: {
     const oldReplicas = controller.runState.replicas.filter((r) => !r.shuttingDown);
     if (oldReplicas.length === 0) {
       logger.warn(
-        `Reload of '${newBoot.target}': no live replicas to roll (all shutting down). ` +
+        `Reload of ${displayStackName(newBoot.target)}: no live replicas to roll (all shutting down). ` +
           '`^C` and re-run start-service to recover.'
       );
       return;
@@ -1573,7 +1576,7 @@ async function rollOneTarget(args: {
     // see the warn twice.
     if (newService.desiredCount !== oldReplicas.length) {
       logger.warn(
-        `Reload of '${newBoot.target}': service DesiredCount=${newService.desiredCount} ` +
+        `Reload of ${displayStackName(newBoot.target)}: service DesiredCount=${newService.desiredCount} ` +
           `does not match the ${oldReplicas.length} live replica(s); rolling existing replicas ` +
           'only — scale changes during --watch are not yet supported. `^C` and re-run ' +
           'start-service to apply the new replica count.'
@@ -1591,12 +1594,12 @@ async function rollOneTarget(args: {
     // is logged + the loop continues.
     if (verdict.kind === 'soft-reload') {
       logger.info(
-        `Reload of '${newBoot.target}': soft-reloading ${oldReplicas.length} replica(s) ` +
+        `Reload of ${displayStackName(newBoot.target)}: soft-reloading ${oldReplicas.length} replica(s) ` +
           'one at a time (docker cp source → restart → TCP-ready probe; no rebuild).'
       );
     } else {
       logger.info(
-        `Reload of '${newBoot.target}': rolling ${oldReplicas.length} replica(s) ` +
+        `Reload of ${displayStackName(newBoot.target)}: rolling ${oldReplicas.length} replica(s) ` +
           'one at a time (start new shadow → swap registrations → stop old).'
       );
     }
@@ -1607,7 +1610,7 @@ async function rollOneTarget(args: {
         // The watcher tore this replica down between snapshot + roll.
         // Skip; the next save can pick up the gap.
         logger.warn(
-          `Reload of '${newBoot.target}': replica r${oldInstance.index} ` +
+          `Reload of ${displayStackName(newBoot.target)}: replica r${oldInstance.index} ` +
             `(gen ${oldInstance.generation}) vanished before its roll; skipping.`
         );
         continue;
@@ -1631,7 +1634,7 @@ async function rollOneTarget(args: {
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         logger.error(
-          `Reload of '${newBoot.target}' replica r${oldInstance.index}: ` +
+          `Reload of ${displayStackName(newBoot.target)} replica r${oldInstance.index}: ` +
             `${reason}. The old replica keeps serving; remaining replicas will still be rolled.`
         );
       }
@@ -1759,14 +1762,14 @@ async function resolveServiceAndRunnerOpts(
   });
   if (!quiet) {
     logger.info(
-      `Target: ${service.stack.stackName}/${service.serviceLogicalId} ` +
-        `(service=${service.serviceName}, desiredCount=${service.desiredCount}, ` +
-        `task=${service.task.taskDefinitionLogicalId})`
+      `Target: ${displayStackName(`${service.stack.stackName}/${service.serviceLogicalId}`)} ` +
+        `(service=${displayIdent(service.serviceName)}, desiredCount=${service.desiredCount}, ` +
+        `task=${displayIdent(service.task.taskDefinitionLogicalId)})`
     );
   }
   if (!quiet && service.serviceConnect) {
     logger.info(
-      `Service Connect: namespace='${service.serviceConnect.namespaceName}', ` +
+      `Service Connect: namespace=${displayIdent(service.serviceConnect.namespaceName)}, ` +
         `${service.serviceConnect.services.length} service(s) registered for peer discovery.`
     );
   }
@@ -1835,7 +1838,7 @@ async function resolveServiceAndRunnerOpts(
   if (effectiveAssumeRole === true) {
     if (!service.task.taskRoleArn) {
       throw new LocalStartServiceError(
-        `--assume-role passed without an ARN but service '${service.serviceLogicalId}' ` +
+        `--assume-role passed without an ARN but service ${displayIdent(service.serviceLogicalId)} ` +
           `has no resolvable TaskRoleArn. Pass the ARN explicitly: --assume-role <arn>`
       );
     }
@@ -2260,7 +2263,9 @@ export async function buildFrontDoor(
     // / secret-refusal failure at the wrong fix (issue #752).
     for (const runner of lambdaRegistry.values()) {
       bootingLambda = flattenToOneLine(runner.logicalId);
-      logger.info(`Booting Lambda target '${bootingLambda}' behind the ALB front-door...`);
+      logger.info(
+        `Booting Lambda target ${displayIdent(bootingLambda)} behind the ALB front-door...`
+      );
       await runner.start();
     }
     // Every target is up: anything added below must not be blamed on the
@@ -2271,7 +2276,7 @@ export async function buildFrontDoor(
     await Promise.allSettled([...lambdaRegistry.values()].map((r) => r.stop()));
     if (bootingLambda !== undefined) {
       throw new LocalStartServiceError(
-        `Failed to boot ALB Lambda target '${bootingLambda}': ${err instanceof Error ? err.message : String(err)}`
+        `Failed to boot ALB Lambda target ${displayIdent(bootingLambda)}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
     throw new LocalStartServiceError(
@@ -2341,14 +2346,14 @@ function describeAction(action: PlannedAction): string {
 /** One forward target, described in full (for a single-target forward banner). */
 function describeTarget(t: PlannedForwardTarget): string {
   if (t.kind === 'lambda') {
-    return `Lambda ${t.lambda.logicalId} (invoke)`;
+    return `Lambda ${displayIdent(t.lambda.logicalId)} (invoke)`;
   }
   return `${t.serviceTarget} (container ${t.targetContainerName}:${t.targetContainerPort}) (round-robin)`;
 }
 
 /** One forward target, described compactly (for a weighted-forward banner). */
 function describeTargetShort(t: PlannedForwardTarget): string {
-  return t.kind === 'lambda' ? `Lambda ${t.lambda.logicalId}` : t.serviceTarget;
+  return t.kind === 'lambda' ? `Lambda ${displayIdent(t.lambda.logicalId)}` : t.serviceTarget;
 }
 
 /**
@@ -2422,7 +2427,9 @@ function describeRuleActionForSummary(action: PlannedAction): string {
  * scannable.
  */
 function describeForwardTargetForSummary(t: PlannedForwardTarget): string {
-  return t.kind === 'lambda' ? `<Lambda: ${t.lambda.logicalId}>` : `<ECS: ${t.serviceTarget}>`;
+  return t.kind === 'lambda'
+    ? `<Lambda: ${displayIdent(t.lambda.logicalId)}>`
+    : `<ECS: ${t.serviceTarget}>`;
 }
 
 async function resolvePlaceholderAccount(
@@ -2885,7 +2892,7 @@ async function resolveAndBuildImageOverrides(args: {
       });
     } catch (err) {
       logger.debug(
-        `--image-override peek failed for '${target}': ${err instanceof Error ? err.message : String(err)}.`
+        `--image-override peek failed for ${displayStackName(target)}: ${err instanceof Error ? err.message : String(err)}.`
       );
       continue;
     } finally {

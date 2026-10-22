@@ -478,8 +478,22 @@ describe('loadAssetContextForTarget — distinct debug messages per branch (issu
     const msgs = debugMessages();
     expect(msgs.length).toBeGreaterThan(0);
     expect(msgs[0]).toContain('loadAssetContext');
-    expect(msgs[0]).toContain("'newhash'");
+    expect(msgs[0]).toContain('newhash');
     expect(msgs[0]).toContain('not present');
+  });
+
+  it('branch 6 renders the stack name bare when plain and as a JSON literal when forging (#761)', async () => {
+    hoisted.manifest = { version: '1.0.0', files: {}, dockerImages: {} };
+    await callWith({});
+    expect(debugMessages()[0]).toContain('asset hash newhash not present in stack AppStack dockerImages');
+    debugSpy.mockClear();
+    await callWith({
+      target: "a' b:WebService",
+      stacks: [{ ...fakeStack(), stackName: "a' b" }],
+    });
+    expect(debugMessages()[0]).toContain(
+      `asset hash newhash not present in stack "a' b" dockerImages`
+    );
   });
 
   it('branch 7: executable-mode docker asset (no source.directory) → distinct debug naming executable-mode', async () => {

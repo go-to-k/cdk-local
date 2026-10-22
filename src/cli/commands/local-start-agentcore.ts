@@ -7,6 +7,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { displayIdent, displayStackName } from '../../utils/ident-display.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -325,7 +326,9 @@ async function localStartAgentCoreCommand(
       : { context: undefined, loaded: undefined };
 
   const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
-  logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
+  logger.info(
+    `Target: ${displayStackName(`${resolved.stack.stackName}/${resolved.logicalId}`)} (${resolved.protocol})`
+  );
 
   // Protocol -> warm-serve plan (container port + routes + /ws-attach +
   // readiness). All four protocols are served (issue #454).
@@ -483,7 +486,7 @@ async function localStartAgentCoreCommand(
   // contract path instead.
   if (server.wsUrl) {
     logger.info(
-      `Server listening on ${server.wsUrl}  (${resolved.logicalId} (AgentCore WebSocket))`
+      `Server listening on ${server.wsUrl}  (${displayIdent(resolved.logicalId)} (AgentCore WebSocket))`
     );
     logger.info(
       `HTTP contract served on ${server.httpUrl} — POST ${server.httpUrl}/invocations, GET ${server.httpUrl}/ping`
@@ -491,7 +494,7 @@ async function localStartAgentCoreCommand(
   } else {
     const contractPath = plan.routes[0]?.path ?? '/';
     const contractUrl = `${server.httpUrl}${contractPath}`;
-    logger.info(`Server listening on ${server.httpUrl}  (${resolved.logicalId})`);
+    logger.info(`Server listening on ${server.httpUrl}  (${displayIdent(resolved.logicalId)})`);
     logger.info(`${resolved.protocol} contract served on ${contractUrl} — POST ${contractUrl}`);
   }
   logger.info('Press ^C to shut down.');

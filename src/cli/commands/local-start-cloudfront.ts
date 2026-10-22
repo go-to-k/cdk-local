@@ -63,6 +63,8 @@ import {
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getLogger } from '../../utils/logger.js';
+import { displayIdent, displayStackName } from '../../utils/ident-display.js';
+import { displayUntrustedValue } from '../../utils/assembly-path.js';
 import {
   Synthesizer,
   type CdkAppSynthesizer,
@@ -242,7 +244,9 @@ export function normalizeKvsFileKeys(
   const stores = collectKvsStoreIdentities(template);
   const candidates = (): string =>
     stores
-      .map((s) => (s.constructPath ? `${s.logicalId} (${s.constructPath})` : s.logicalId))
+      .map((s) =>
+        s.constructPath ? `${s.logicalId} (${displayStackName(s.constructPath)})` : s.logicalId
+      )
       .join(', ') || '(none in this distribution)';
 
   const out = new Map<string, string>();
@@ -479,7 +483,7 @@ export async function bootLambdaUrlOrigins(
       // Lambda cannot be booted, stop the runners already started and fail.
       await Promise.all(runners.map((r) => r.stop().catch(() => undefined)));
       throw new LocalStartCloudFrontError(
-        `Failed to boot the Lambda Function URL origin's backing function '${functionLogicalId}': ` +
+        `Failed to boot the Lambda Function URL origin's backing function ${displayIdent(functionLogicalId)}: ` +
           `${err instanceof Error ? err.message : String(err)}`,
         err instanceof Error ? err : undefined
       );
@@ -557,7 +561,7 @@ export async function bootLambdaEdgeFunctions(
     } catch (err) {
       // Non-fatal: the distribution can still serve without this edge stage.
       logger.warn(
-        `Could not boot Lambda@Edge function '${functionLogicalId}'; its stage will be skipped: ${
+        `Could not boot Lambda@Edge function ${displayIdent(functionLogicalId)}; its stage will be skipped: ${
           err instanceof Error ? err.message : String(err)
         }`
       );
@@ -623,12 +627,12 @@ export function warnUnsupported(
   for (const origin of distribution.origins.values()) {
     if (origin.kind === 'custom') {
       logger.warn(
-        `Origin '${origin.originId}' is a custom (non-S3, non-Lambda-Function-URL) origin (${origin.domainName}); ` +
+        `Origin ${displayIdent(origin.originId)} is a custom (non-S3, non-Lambda-Function-URL) origin (${displayUntrustedValue(String(origin.domainName))}); ` +
           `${getEmbedConfig().cliName} start-cloudfront serves S3 origins and Lambda Function URL origins only. Requests routed to it return 502.`
       );
     } else if (origin.kind === 's3-unresolved') {
       logger.warn(
-        `Origin '${origin.originId}' is an S3 origin with no resolvable local source (no BucketDeployment found, or its source could not be located in the cloud assembly). ` +
+        `Origin ${displayIdent(origin.originId)} is an S3 origin with no resolvable local source (no BucketDeployment found, or its source could not be located in the cloud assembly). ` +
           // Name the host's state flags too: under a host CLI, its own
           // `--from-state` is a remedy as well (go-to-k/cdkd#4967).
           `Pass ${stateSourceFlagNames(extraStateProviders).join(' or ')} to serve the deployed bucket from real S3 on demand, or point it at a local directory with --origin ${origin.originId}=<dir>. Requests routed to it return 502.`
@@ -758,7 +762,7 @@ export async function resolveDeployedS3Origins(
       bucketName,
     });
     logger.info(
-      `Origin '${origin.originId}': no local BucketDeployment source; serving from deployed S3 ` +
+      `Origin ${displayIdent(origin.originId)}: no local BucketDeployment source; serving from deployed S3 ` +
         `(bucket=${bucketName}, resolved via ${via}) on demand under ${stateFlag}.`
     );
   }
@@ -943,7 +947,7 @@ async function localStartCloudFrontCommand(
 
   // D8.4-style load-bearing banner: verify.sh greps for this exact prefix.
   process.stdout.write(
-    `CloudFront distribution serving on ${server.url}  (${initial.distribution.logicalId})\n`
+    `CloudFront distribution serving on ${server.url}  (${displayIdent(initial.distribution.logicalId)})\n`
   );
   process.stdout.write('^C to stop.\n');
 
