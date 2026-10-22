@@ -27,6 +27,11 @@ export interface MarkerStackProps extends cdk.StackProps {
    * — the read a Stage stack used to miss (#746).
    */
   withImage?: boolean;
+  /**
+   * Prefix for the construct ids, so a stack can carry logical ids NO other
+   * stack shares — which start-api needs to serve it beside another stack.
+   */
+  idPrefix?: string;
 }
 
 /**
@@ -39,7 +44,8 @@ export class MarkerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: MarkerStackProps) {
     super(scope, id, props);
 
-    const fn = new lambda.Function(this, 'Handler', {
+    const p = props.idPrefix ?? '';
+    const fn = new lambda.Function(this, `${p}Handler`, {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
@@ -55,11 +61,11 @@ export class MarkerStack extends cdk.Stack {
       });
     }
 
-    const api = new apigwv2.HttpApi(this, 'HttpApi');
+    const api = new apigwv2.HttpApi(this, `${p}HttpApi`);
     api.addRoutes({
       path: '/marker',
       methods: [apigwv2.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('Integration', fn),
+      integration: new integrations.HttpLambdaIntegration(`${p}Integration`, fn),
     });
   }
 }

@@ -7,8 +7,9 @@
 #   CdklLocalInvokeStageTop                  marker "top"
 #   CdklLocalInvokeStage/Inner/Api           marker "api"
 #   CdklLocalInvokeStage/Inner/ApiV2         marker "apiv2"
+#   CdklLocalInvokeStageOther                marker "other" (distinct ids)
 #
-# Every stack carries the SAME logical ids (one shared construct), and the
+# The first three carry the SAME logical ids (one shared construct), and the
 # Stage stacks reach their asset — staged ONCE into the app's outdir — as
 # `../../asset.<hash>`. Before #746 cdk-local enumerated only the top-level
 # stack, so no command could reach a Stage target at all. The arms:
@@ -22,9 +23,10 @@
 #   4.   A bare target is refused as multi-stack: a Stage stack counts.
 #   5.   `cdkl start-api <Stage target>` with NO --stack infers the Stage stack
 #        from the target, serves exactly one API, and routes to `api`.
-#   5b.  A subset spanning a Stage stack AND the top-level stack synthesizes
-#        every stack, the unserved `ApiV2` clone included, yet boots: only the
-#        SERVED stacks are checked for colliding logical ids.
+#   5b.  A subset spanning a Stage stack AND `CdklLocalInvokeStageOther` (whose
+#        logical ids no other stack shares) synthesizes every stack, the
+#        unserved `ApiV2` / top-level copies of the same ids included, yet
+#        boots: only the SERVED stacks are checked for colliding logical ids.
 #   6.   `cdkl start-api --all-stacks` is REFUSED: the clones share logical ids,
 #        which start-api cannot serve side by side (never first-match).
 #
@@ -181,7 +183,7 @@ SERVER_PID=""
 
 echo "==> [5b/6] a subset spanning stacks ignores the unserved Stage clone"
 : >"${LOG_FILE}"
-${CLI} start-api CdklLocalInvokeStage/Inner/Api/HttpApi CdklLocalInvokeStageTop/HttpApi \
+${CLI} start-api CdklLocalInvokeStage/Inner/Api/HttpApi CdklLocalInvokeStageOther/OtherHttpApi \
   --port "${PORT}" \
   --container-host 127.0.0.1 \
   --no-pull \
@@ -213,8 +215,8 @@ for p in "${PORT}" "$((PORT + 1))"; do
   MARKERS="${MARKERS} $(echo "${R}" | sed -n 's/.*"marker":"\([a-z-]*\)".*/\1/p')"
 done
 SORTED=$(echo ${MARKERS} | tr ' ' '\n' | sort | tr '\n' ' ')
-[[ "${SORTED}" == "api top " ]] || fail "start-api (subset): expected markers 'api top', got '${SORTED}'"
-echo "    ok: the two ports answer api + top"
+[[ "${SORTED}" == "api other " ]] || fail "start-api (subset): expected markers 'api other', got '${SORTED}'"
+echo "    ok: the two ports answer api + other"
 term_server "${SERVER_PID}"
 SERVER_PID=""
 : >"${LOG_FILE}"

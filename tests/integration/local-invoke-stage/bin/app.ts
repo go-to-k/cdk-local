@@ -12,4 +12,11 @@ new MarkerStack(app, 'CdklLocalInvokeStageTop', {
   description: 'Fixture top-level stack for the cdkl Stage-stack integ test',
 });
 
+// Distinct logical ids: the only stack start-api can serve beside a Stage stack.
+new MarkerStack(app, 'CdklLocalInvokeStageOther', {
+  marker: 'other',
+  idPrefix: 'Other',
+  description: 'Fixture stack with logical ids no other stack shares',
+});
+
 new OuterStage(app, 'CdklLocalInvokeStage');
