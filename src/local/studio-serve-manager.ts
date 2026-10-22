@@ -384,8 +384,10 @@ const VERBOSE_PREAMBLE_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+(DEBUG|INFO|WARN|ERRO
  * `info` / `warn` / `error` prefix only when `getLevel() === 'debug'`), which
  * is also the level that renders the `<timestamp> <LEVEL>` preamble, so a BARE
  * `[tag] ` at column 0 is never cdk-local's. It IS how relayed third-party
- * container output arrives — `[<container>] ` (`ecs-task-runner`) and
- * `[svc=... r=... c=...] ` (`ecs-service-runner`) — so stripping it
+ * container output arrives — `[<container>] ` (`ecs-task-runner`),
+ * `[svc=... r=... c=...] ` (`ecs-service-runner`) and `[<container id>] `
+ * (`docker-runner`'s `streamLogs`, for a Lambda / AgentCore container under a
+ * studio serve, issue go-to-k/cdk-local#598) — so stripping it
  * unconditionally re-anchored an application's own log line to `^` and let it
  * impersonate a ready banner (issue #578).
  */
@@ -685,9 +687,17 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       // patterns and error detection is via the child `error` / `close` events,
       // not stderr content. (NOT applied to single-shot invoke children, whose
       // agentcore path treats whole stdout as the response.)
+      //
+      // `CDKL_PREFIX_CONTAINER_OUTPUT=1` (issue go-to-k/cdk-local#598): the
+      // child tags every relayed Lambda / AgentCore container line with
+      // `[<container id>] ` (`docker-runner`'s `streamLogs`), the shape ECS
+      // output already arrives in, so a handler printing a ready banner at
+      // column 0 cannot match an anchored `readyRe` and name the endpoint
+      // the capture proxy forwards to. PINNED, not inherited: an exported
+      // value in the user's shell must not switch the tag off.
       child = spawnFn(nodeBin, [config.cliEntry, ...buildArgs(req, spec, envFile)], {
         cwd,
-        env: { ...process.env, CDKL_LOG_STREAM: 'stdout' },
+        env: { ...process.env, CDKL_LOG_STREAM: 'stdout', CDKL_PREFIX_CONTAINER_OUTPUT: '1' },
       });
     } catch (err) {
       // Spawn never happened — drop the env temp dir so it does not leak.
@@ -941,25 +951,22 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         if (!parsed.diagnostic) {
           // Issue #578 — stop reading `readyRe` once the serve has SETTLED,
           // for the kinds whose banner is a single event. The banner marks a
-          // serve coming up, so a line arriving after that is not one, and
-          // letting it through is how an ordinary relayed handler log —
-          // `Server listening on http://127.0.0.1:9999`, at column 0 with no
-          // prefix, since Lambda container output is piped through raw
-          // (`docker-runner`'s `streamLogs`) — can add an endpoint and point a
-          // capture proxy, carrying the developer's headers and body, at a
-          // port it named. It stays on-box (the loopback bound holds), and it
-          // is additive rather than a re-point (the first endpoint, the one
-          // the UI shows, is never overwritten), but it is still a
-          // destination the child chose after boot.
+          // serve coming up, so a line arriving after that is not one. This
+          // is defence in depth: every relayed container line now arrives
+          // tagged — ECS by `container-log-streamer`, Lambda / AgentCore by
+          // `docker-runner`'s `streamLogs` under the
+          // `CDKL_PREFIX_CONTAINER_OUTPUT` pin set at spawn above (issue
+          // go-to-k/cdk-local#598) — so an ordinary handler log such as
+          // `Server listening on http://127.0.0.1:9999` no longer reaches
+          // column 0 in either window, before settle or after.
           //
           // Where the line is drawn, and why it is not drawn wider: `api` and
           // `alb` legitimately print the banner MORE THAN ONCE (see
           // `ServeKindSpec.readyRepeats` — per API group / per WebSocket API,
           // and per ALB listener with an `await` between them), so applying
-          // the stop there would silently drop real endpoints. Their residual
-          // is what bound 2 and bound 3 cover; closing it properly means
-          // prefixing relayed CONTAINER output the way ECS already does, which
-          // is `docker-runner`'s to fix, not this matcher's.
+          // the stop there would silently drop real endpoints. For those two
+          // the container tag (bound 2) and the loopback bound (bound 3) are
+          // what hold.
           //
           // The stop is scoped to `readyRe` alone. Two reads are legitimately
           // post-settle and stay live: `extraEndpointRe` (agentcore's `http://`
