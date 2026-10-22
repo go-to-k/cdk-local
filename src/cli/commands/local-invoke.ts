@@ -359,7 +359,7 @@ async function localInvokeCommand(
     const lambda = resolveLambdaTarget(resolvedTarget, stacks);
     const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
     logger.info(
-      `Target: ${displayStackName(lambda.stack.stackName)}/${displayIdent(lambda.logicalId)} (${targetLabel})`
+      `Target: ${displayStackName(`${lambda.stack.stackName}/${lambda.logicalId}`)} (${targetLabel})`
     );
 
     imagePlan = await resolveImagePlan(lambda, options);

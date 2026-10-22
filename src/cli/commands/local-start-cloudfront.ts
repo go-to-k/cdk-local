@@ -245,7 +245,9 @@ export function normalizeKvsFileKeys(
   const candidates = (): string =>
     stores
       .map((s) =>
-        s.constructPath ? `${s.logicalId} (${displayStackName(s.constructPath)})` : s.logicalId
+        s.constructPath
+          ? `${displayIdent(s.logicalId, { listMember: true })} (${displayStackName(s.constructPath)})`
+          : displayIdent(s.logicalId, { listMember: true })
       )
       .join(', ') || '(none in this distribution)';
 
@@ -267,7 +269,7 @@ export function normalizeKvsFileKeys(
     if (matched.length > 1) {
       throw new LocalStartCloudFrontError(
         `--kvs-file key '${key}' is ambiguous — it matched ${matched.length} KeyValueStores ` +
-          `(${matched.map((s) => s.logicalId).join(', ')}). Use the logical id or full construct path.`
+          `(${matched.map((s) => displayIdent(s.logicalId, { listMember: true })).join(', ')}). Use the logical id or full construct path.`
       );
     }
     out.set(matched[0]!.logicalId, filePath);

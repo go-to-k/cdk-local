@@ -1634,7 +1634,7 @@ export async function applyCrossStackResolverToTask(
       });
       // Same filter at the task-level (the per-container warnings are
       // re-emitted onto `task.warnings` by `parseEcsTaskFromCdkResource`,
-      // prefixed with `Container '<name>': `).
+      // prefixed with `Container <displayIdent(name)>: `).
       task.warnings = task.warnings.filter((w) => {
         for (const k of resolvedEnvKeys) {
           if (

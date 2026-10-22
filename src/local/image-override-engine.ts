@@ -682,7 +682,7 @@ export async function resolveImageOverrides(args: {
         const options = uncovered.map((t) => ({
           value: t,
           label: t,
-          ...(labels.get(t) ? { hint: labels.get(t) as string } : {}),
+          ...(labels.get(t) ? { hint: displayUntrustedValue(labels.get(t) as string) } : {}),
         }));
         const picked = await multiselect({
           message:

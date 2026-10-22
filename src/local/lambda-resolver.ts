@@ -363,7 +363,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
     if (lambdaMatches.length > 1) {
       throw new LocalInvokeResolutionError(
         `Target '${target}' matches ${lambdaMatches.length} Lambda functions in ${displayStackName(stack.stackName)}: ` +
-          lambdaMatches.map((m) => displayIdent(m.logicalId)).join(', ') +
+          lambdaMatches.map((m) => displayIdent(m.logicalId, { listMember: true })).join(', ') +
           '. Refine the path or use the stack:LogicalId form.'
       );
     }

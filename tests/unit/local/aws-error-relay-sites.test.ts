@@ -1776,6 +1776,8 @@ describe('#579 round 3 — the wire-derived values on lines this round touched',
     const line = warnContaining('SSM GetParameters(');
     expect(line).toContain('/app/x WARN: signature verified');
     expect(line).not.toContain('\n');
+    // #761: each name renders as its own value, a forging one as ONE JSON literal.
+    expect(line).toContain('SSM GetParameters("/app/x WARN: signature verified") failed: ');
   });
 
   it('httpv2 keeps the message of a service-exception-SHAPED plain object', async () => {

@@ -11,7 +11,11 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { displayUntrustedValue } from '../../utils/assembly-path.js';
-import { displayIdent, displayStackName } from '../../utils/ident-display.js';
+import {
+  STACK_REF_MAX_CODE_POINTS,
+  displayIdent,
+  displayStackName,
+} from '../../utils/ident-display.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, LocalStartServiceError } from '../../utils/error-handler.js';
 import { resolveMultiTarget } from '../../local/target-picker.js';
@@ -829,7 +833,7 @@ export async function runEcsServiceEmulator(
     );
     for (const entry of pinnedEntries) {
       if (imageOverrideTags.has(entry.target)) continue;
-      const uriDisplay = entry.label ? `\`${entry.label}\`` : 'a deployed registry';
+      const uriDisplay = entry.label ? displayUntrustedValue(entry.label) : 'a deployed registry';
       logger.warn(
         `${displayStackName(entry.target)}: running image is pinned to a deployed registry ` +
           `(${uriDisplay}). To iterate on local source, either pass ` +
@@ -2348,12 +2352,14 @@ function describeTarget(t: PlannedForwardTarget): string {
   if (t.kind === 'lambda') {
     return `Lambda ${displayIdent(t.lambda.logicalId)} (invoke)`;
   }
-  return `${t.serviceTarget} (container ${t.targetContainerName}:${t.targetContainerPort}) (round-robin)`;
+  return `${displayStackName(t.serviceTarget)} (container ${displayIdent(t.targetContainerName)}:${t.targetContainerPort}) (round-robin)`;
 }
 
 /** One forward target, described compactly (for a weighted-forward banner). */
 function describeTargetShort(t: PlannedForwardTarget): string {
-  return t.kind === 'lambda' ? `Lambda ${displayIdent(t.lambda.logicalId)}` : t.serviceTarget;
+  return t.kind === 'lambda'
+    ? `Lambda ${displayIdent(t.lambda.logicalId, { listMember: true })}`
+    : displayIdent(t.serviceTarget, { listMember: true, maxCodePoints: STACK_REF_MAX_CODE_POINTS });
 }
 
 /**
@@ -2429,7 +2435,7 @@ function describeRuleActionForSummary(action: PlannedAction): string {
 function describeForwardTargetForSummary(t: PlannedForwardTarget): string {
   return t.kind === 'lambda'
     ? `<Lambda: ${displayIdent(t.lambda.logicalId)}>`
-    : `<ECS: ${t.serviceTarget}>`;
+    : `<ECS: ${displayStackName(t.serviceTarget)}>`;
 }
 
 async function resolvePlaceholderAccount(

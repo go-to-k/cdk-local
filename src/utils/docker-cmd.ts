@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { spinner as createSpinner } from '@clack/prompts';
 import { displayUntrustedValue } from './assembly-path.js';
 import { getLogger } from './logger.js';
@@ -229,6 +230,29 @@ export async function runDockerStreaming(
 }
 
 /**
+ * The refusal for a spawn that failed with `ENOENT`. Node reports a MISSING
+ * `cwd` with the same code as a missing binary, so "Install Docker" was the
+ * answer even for an asset executable whose working directory did not exist
+ * (go-to-k/cdk-local#761); the cwd is checked first. Both values may be
+ * assembly-chosen (`source.executable[0]`, the asset directory).
+ */
+export function describeSpawnEnoent(cmd: string, cwd: string | undefined): string {
+  if (cwd !== undefined && !existsSync(cwd)) {
+    return (
+      `Failed to execute ${displayUntrustedValue(cmd)}: its working directory ` +
+      `${displayUntrustedValue(cwd)} does not exist.`
+    );
+  }
+  const usingOverride = process.env['CDK_DOCKER'] === cmd && cmd !== 'docker';
+  const shownCmd = displayUntrustedValue(cmd);
+  return usingOverride
+    ? `Failed to find and execute ${shownCmd} (resolved via CDK_DOCKER). ` +
+        `Install ${shownCmd} or unset CDK_DOCKER to fall back to 'docker'.`
+    : `Failed to find and execute ${shownCmd}. Install Docker (or set the ` +
+        `'CDK_DOCKER' environment variable to a compatible binary such as podman / finch).`;
+}
+
+/**
  * Generic streaming spawn — used by `runDockerStreaming` AND by the
  * `executable` source mode in `docker-build.ts` (which runs an arbitrary
  * user-supplied build command, not docker).
@@ -282,17 +306,7 @@ export async function spawnStreaming(
     child.once('error', (err: NodeJS.ErrnoException) => {
       stopProgressSpinner(spin, options.progressLabel);
       if (err.code === 'ENOENT') {
-        const usingOverride = process.env['CDK_DOCKER'] === cmd && cmd !== 'docker';
-        const shownCmd = displayUntrustedValue(cmd);
-        reject(
-          new Error(
-            usingOverride
-              ? `Failed to find and execute ${shownCmd} (resolved via CDK_DOCKER). ` +
-                  `Install ${shownCmd} or unset CDK_DOCKER to fall back to 'docker'.`
-              : `Failed to find and execute ${shownCmd}. Install Docker (or set the ` +
-                  `'CDK_DOCKER' environment variable to a compatible binary such as podman / finch).`
-          )
-        );
+        reject(new Error(describeSpawnEnoent(cmd, options.cwd)));
       } else {
         // Node's own message is `spawn <cmd> <CODE>` with the command RAW, and
         // `cmd` is an asset's `source.executable[0]` when docker-build.ts runs
@@ -446,19 +460,10 @@ export async function spawnForeground(
     });
     child.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') {
-        const usingOverride = process.env['CDK_DOCKER'] === cmd && cmd !== 'docker';
-        const shownCmd = displayUntrustedValue(cmd);
-        reject(
-          new Error(
-            usingOverride
-              ? `Failed to find and execute ${shownCmd} (resolved via CDK_DOCKER). ` +
-                  `Install ${shownCmd} or unset CDK_DOCKER to fall back to 'docker'.`
-              : `Failed to find and execute ${shownCmd}. Install Docker (or set the ` +
-                  `'CDK_DOCKER' environment variable to a compatible binary such as podman / finch).`
-          )
-        );
+        reject(new Error(describeSpawnEnoent(cmd, options.cwd)));
       } else {
-        reject(new Error(`${cmd} failed: ${err.message}`));
+        // Node's message carries the command RAW (`spawn <cmd> <CODE>`).
+        reject(new Error(`${displayUntrustedValue(cmd)} failed: ${err.code ?? 'spawn error'}`));
       }
     });
     child.once('close', (code) => {
