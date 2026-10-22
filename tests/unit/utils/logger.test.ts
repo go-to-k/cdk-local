@@ -583,7 +583,7 @@ describe('ConsoleLogger control escape + continuation indent (go-to-k/cdk-local#
     }
   });
 
-  it('keeps a legitimate multi-line message, indenting each non-empty continuation line', () => {
+  it('keeps a legitimate multi-line message, indenting each column-0 continuation line', () => {
     const cap = captureAll();
     try {
       const logger = new ConsoleLogger('info', false);
@@ -592,7 +592,8 @@ describe('ConsoleLogger control escape + continuation indent (go-to-k/cdk-local#
       // `captureAll` groups by console method: info's line precedes error's.
       expect(cap.lines()).toEqual([
         'one\n  two',
-        'ERROR: Route discovery failed:\n    - first\n    - second\n\n  See the docs.',
+        // Already-indented lines (the bullets) and the empty line stay as-is.
+        'ERROR: Route discovery failed:\n  - first\n  - second\n\n  See the docs.',
       ]);
     } finally {
       cap.restore();
@@ -687,5 +688,41 @@ describe('ConsoleLogger control escape + continuation indent (go-to-k/cdk-local#
       resetEmbedConfig();
       setLogger(new ConsoleLogger('info', false));
     }
+  });
+
+  it('renders once when the host calls back into a cdk-local logger, or throws', async () => {
+    const { setEmbedConfig, resetEmbedConfig } =
+      await import('../../../src/local/embed-config.js');
+    const reentrant = new ConsoleLogger('info', false);
+    const host = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      // Re-enters cdk-local's logger with the text it was handed.
+      warn: vi.fn((m: string) => reentrant.warn(m)),
+      error: vi.fn(() => {
+        throw new Error('host down');
+      }),
+      setLevel: vi.fn(),
+      getLevel: vi.fn(() => 'info' as const),
+    };
+    setEmbedConfig({ logger: host });
+    const cap = captureAll();
+    try {
+      const logger = new ConsoleLogger('info', false);
+      logger.warn('a\nb\x1b');
+      logger.error('c\nd\x1b');
+      expect(cap.lines()).toEqual(['WARN: a\n  b\\u001b', 'ERROR: c\n  d\\u001b']);
+    } finally {
+      cap.restore();
+      resetEmbedConfig();
+      setLogger(new ConsoleLogger('info', false));
+    }
+  });
+
+  it('is idempotent and never indents an already-indented or empty line', async () => {
+    const { renderLogText } = await import('../../../src/utils/logger.js');
+    const once = renderLogText('a\nb\n\tc\n d\n\ne\x1b\r\nf');
+    expect(once).toBe('a\n  b\n\tc\n d\n\n  e\\u001b\n  f');
+    expect(renderLogText(once)).toBe(once);
   });
 });

@@ -30,9 +30,10 @@ export const LOG_CONTINUATION_INDENT = '  ';
  *    paragraph separators and the bidi controls become their `\uXXXX` escape
  *    ({@link displayToolOutput}), so nothing can move the cursor, erase a line
  *    or start a colour.
- * 3. Every non-empty continuation line is indented by
- *    {@link LOG_CONTINUATION_INDENT}. A message can still span lines, but none
- *    of its lines after the first starts at column 0 — where studio's
+ * 3. Every continuation line that would START at column 0 with content is
+ *    indented by {@link LOG_CONTINUATION_INDENT}; an empty line, and one that
+ *    already starts with a space or tab, is left as it is. A message can still
+ *    span lines, but none of its lines after the first starts at column 0 — where studio's
  *    `classifyChildLine` / ready patterns and its LOG panel's `WARN:` /
  *    `ERROR:` colouring anchor, and where a reader takes a line to be a fresh
  *    one. The FIRST line is never indented: its column-0 prefix is the logger's
@@ -40,14 +41,16 @@ export const LOG_CONTINUATION_INDENT = '  ';
  *
  * Applied BEFORE the logger's own colouring (whose escapes must survive) and
  * before the embedding host's logger is handed the message, so a host gets the
- * same text. Not idempotent (each pass indents again): render each text ONCE.
+ * same text. IDEMPOTENT — every step's output is a fixed point of it — so a
+ * host logger that calls back into cdk-local's logger with the text it was
+ * handed does not indent it twice.
  */
 export function renderLogText(text: string): string {
   // A caller typed `any` can hand a non-string; render it as the template
   // literal this replaced did, rather than throw out of a log call.
   const raw = typeof text === 'string' ? text : String(text);
   return displayToolOutput(raw.replace(/\r\n/g, '\n')).replace(
-    /\n(?=[^\n])/g,
+    /\n(?=[^ \t\n])/g,
     `\n${LOG_CONTINUATION_INDENT}`
   );
 }
