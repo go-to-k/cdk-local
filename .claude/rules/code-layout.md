@@ -117,6 +117,16 @@ Cross-cutting helpers. The logger prefixes warn / error lines with `WARN:` /
 stripped-ANSI pipe; `resolveConfiguredLogLevel` + `CdklIoHost` honor
 `CDKL_LOG_LEVEL`.
 
+**Untrusted values in cdk-local's own prose get a renderer, and the caller
+writes NO quotes.** An assembly-chosen IDENTIFIER (logical id, container /
+function name, stack name, construct path) goes through `displayIdent` /
+`displayStackName` (`ident-display.ts`, a port of the host's renderer, so both
+CLIs print one value alike); a path, URL or ARN through `displayUntrustedValue`
+(`assembly-path.ts`); a tool's multi-line output (docker stderr) through
+`displayToolOutput`. A plain value prints bare, anything else as one JSON
+literal — so a line another module PARSES (studio's ECS publish banner) must
+accept both forms (#761).
+
 **aws-proxy — two seams, both mandatory.** Neither the AWS SDK nor the global
 `fetch` reads `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`.
 
