@@ -899,8 +899,7 @@ describe('the dispatch child does not inherit CDKL_PREFIX_CONTAINER_OUTPUT (issu
       string[],
       { env: NodeJS.ProcessEnv },
     ];
-    // Absent as a KEY, not merely falsy: an `undefined` value would reach the
-    // child as the string "undefined".
+    // Absent as a key: the child must not see the variable at all.
     expect(Object.prototype.hasOwnProperty.call(opts.env, 'CDKL_PREFIX_CONTAINER_OUTPUT')).toBe(false);
     expect(opts.env['CDKL_LOG_STREAM']).toBe('stderr');
   });

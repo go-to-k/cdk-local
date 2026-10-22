@@ -392,6 +392,9 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
  */
 export const PREFIX_CONTAINER_OUTPUT_ENV = 'CDKL_PREFIX_CONTAINER_OUTPUT';
 
+/** The longest unterminated line {@link createPrefixedLineRelay} holds before breaking it. */
+export const MAX_HELD_LINE_CHARS = 64 * 1024;
+
 /**
  * A line-buffered relay that writes every line of a byte stream to `out` with
  * `prefix` in front of it (issue go-to-k/cdk-local#598).
@@ -405,9 +408,6 @@ export const PREFIX_CONTAINER_OUTPUT_ENV = 'CDKL_PREFIX_CONTAINER_OUTPUT';
  * keeps a multi-byte UTF-8 character that straddles two chunks intact.
  * Exported for unit testing.
  */
-/** The longest unterminated line {@link createPrefixedLineRelay} holds before breaking it. */
-export const MAX_HELD_LINE_CHARS = 64 * 1024;
-
 export function createPrefixedLineRelay(
   prefix: string,
   out: Pick<NodeJS.WritableStream, 'write'>
@@ -427,8 +427,11 @@ export function createPrefixedLineRelay(
     // A container that never ends a line (a `\r`-only progress bar) must not
     // grow the held tail without bound: break it, tag still in front.
     while (pending.length >= MAX_HELD_LINE_CHARS) {
-      out.write(`${prefix}${pending.slice(0, MAX_HELD_LINE_CHARS)}\n`);
-      pending = pending.slice(MAX_HELD_LINE_CHARS);
+      // Never cut between the halves of a surrogate pair.
+      const high = pending.charCodeAt(MAX_HELD_LINE_CHARS - 1);
+      const cut = high >= 0xd800 && high <= 0xdbff ? MAX_HELD_LINE_CHARS - 1 : MAX_HELD_LINE_CHARS;
+      out.write(`${prefix}${pending.slice(0, cut)}\n`);
+      pending = pending.slice(cut);
     }
   };
   return {

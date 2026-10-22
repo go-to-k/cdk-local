@@ -368,8 +368,7 @@ function runChild(
       // `CDKL_PREFIX_CONTAINER_OUTPUT` is REMOVED for the same reason (issue
       // go-to-k/cdk-local#598): it tags relayed container lines, which only a
       // serve child wants; here an AgentCore agent's stdout IS the response,
-      // so an exported value would corrupt it. Deleted rather than set to
-      // `undefined`, which a spawn env would pass as the string "undefined".
+      // so an exported value would corrupt it.
       const env: NodeJS.ProcessEnv = {
         ...process.env,
         CDKL_LOG_LEVEL: 'warn',

@@ -199,6 +199,14 @@ describe('createPrefixedLineRelay (issue go-to-k/cdk-local#598)', () => {
     expect(writes.at(-1)).toBe(`[c] ${'x'.repeat(10)}\n`);
   });
 
+  it('never splits a surrogate pair at the hold bound', () => {
+    const { relay, writes } = relayInto('[c] ');
+    // An astral character straddling the bound.
+    relay.push(Buffer.from(`${'x'.repeat(MAX_HELD_LINE_CHARS - 1)}\u{1F600}y`));
+    relay.flush();
+    expect(writes).toEqual([`[c] ${'x'.repeat(MAX_HELD_LINE_CHARS - 1)}\n`, '[c] \u{1F600}y\n']);
+  });
+
   it('writes nothing on flush when no tail is pending', () => {
     const { relay, writes } = relayInto('[c] ');
     relay.push(Buffer.from('one\n'));
