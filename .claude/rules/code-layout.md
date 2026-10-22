@@ -20,6 +20,13 @@ Commander command factories — `createLocalInvokeCommand`,
   `--from-cfn-stack`, `resolveDeployedS3Origins` promotes a source-less S3 origin
   to a deployed-S3 read-through origin at boot; `annotateDeployedS3Origins`
   re-annotates per `--watch` reload.
+- **A target's stack is chosen by ONE rule**, `selectTargetStack` /
+  `candidateTargetStack` (`stack-matcher.ts`) over `stackForConstructPath`
+  (`cdk-path.ts`): a path-form target's LONGEST display-path prefix, else
+  `matchStacks` (hierarchical-id path glob, then exact physical name, never
+  deduped by name). Every resolver and every state-source candidate picker
+  calls it; never split a target at its first `/` again — under a Stage that
+  segment is the Stage id. The rule is cdkd's, so both CLIs agree.
 - **`start-service` and `start-alb` share one orchestration** in
   `commands/ecs-service-emulator.ts` (synth + shared docker network + Cloud Map +
   restart watcher + optional front-door); each is a thin strategy over it. Do not
@@ -55,7 +62,9 @@ Commander command factories — `createLocalInvokeCommand`,
 ## `src/synthesis/`
 
 Thin wrapper over `@aws-cdk/toolkit-lib` (`Toolkit.fromCdkApp()` + context-store
-threading) returning `StackInfo[]`.
+threading) returning `StackInfo[]` for EVERY stack, a `cdk.Stage`'s included
+(`stacksRecursively`, #746), each with `displayName` = the hierarchical id
+(`MyStage/Api`) and `assetOutdir` = the app's outdir.
 
 ## `src/local/` — runtime layer
 

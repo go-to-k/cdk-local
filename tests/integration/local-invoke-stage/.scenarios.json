@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "local-lambda-rie-zip",
+    "local-apigateway-server"
+  ]
+}

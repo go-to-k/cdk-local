@@ -121,6 +121,7 @@ const HOST_ARCHITECTURE_STACKS = [
   'tests/integration/local-start-api/lib/local-start-api-stack.ts',
   'tests/integration/local-start-api-websocket/lib/stack.ts',
   'tests/integration/local-invoke/lib/local-invoke-stack.ts',
+  'tests/integration/local-invoke-stage/lib/local-invoke-stage-stack.ts',
   'tests/integration/local-invoke-assume-role/lib/local-invoke-assume-role-stack.ts',
   'tests/integration/local-invoke-layers/lib/local-invoke-layers-stack.ts',
   'tests/integration/local-invoke-python/lib/local-invoke-python-stack.ts',

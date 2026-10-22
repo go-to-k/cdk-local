@@ -187,7 +187,23 @@ The positional `<target>` accepts two forms:
   colon is unambiguous because logical IDs cannot contain `/` or `:`.
 
 Single-stack apps may omit the stack prefix entirely: `cdkl invoke
-MyHandler` is valid when the app contains exactly one stack.
+MyHandler` is valid when the app contains exactly one stack — counting the
+stacks inside a `cdk.Stage`, so one top-level stack plus a Stage is a
+multi-stack app.
+
+**Stacks under a `cdk.Stage`** are enumerated like top-level ones, at any
+nesting depth, and are addressed by their hierarchical display path:
+`MyStage/Api/Handler`, or `Outer/Inner/Api/Handler` for a Stage inside a
+Stage. A path-form target's stack is the stack whose display path (or physical
+name) followed by `/` is the LONGEST prefix of the target — never just its
+first segment, which is the Stage id — so `MyStage/Api` never claims
+`MyStage/ApiV2/...`. The colon form takes the physical name
+(`MyStage-Api:Handler1234ABCD`). A stack pattern (`--stack`, a target's head)
+matches the display path with `*` inside one segment and `**` across segments
+(`'MyStage/*'`), else a stack's exact physical name; when two stacks share a
+physical name (one Stage deployed to two accounts), that name is ambiguous and
+refused, and the display path picks one. This is the same rule cdkd applies, so
+`cdkd local` and `cdkl` resolve a target to the same stack.
 
 When the target does not match anything, the error lists every Lambda
 in the resolved stack so the user can copy/paste a valid one.
@@ -387,9 +403,9 @@ named, so the Stage's own assets, staged one level above by `cdk synth`,
 resolve. A directory merely *named* `assembly-*` is not treated that way: its
 parent has to be an assembly too.
 
-That route is currently the only one to a Stage Lambda, because cdk-local does
-not yet enumerate a Stage's stacks from the app output directory
-([#746](https://github.com/go-to-k/cdk-local/issues/746)).
+You rarely need that route: cdk-local enumerates a Stage's stacks from the
+app output directory, so `cdkl invoke MyStage/Api/Handler` against the app
+reaches the same Lambda.
 
 ### Lambda Layers
 
@@ -677,7 +693,7 @@ for the named API. The same target syntax `cdkl invoke` / `cdkl
 run-task` use applies here — the whole `cdkl *` family addresses
 resources consistently:
 
-1. **Bare logical id** — `MyHttpApi`. **Single-stack apps only**;
+1. **Bare logical id** — `MyHttpApi`. **Single-stack apps only** ([a `cdk.Stage` stack counts](#target-resolution));
    in multi-stack apps cdk-local rejects this form with a
    disambiguation hint. The id is the HTTP API / REST API logical id,
    or (for Function URLs) the backing Lambda's logical id.
@@ -782,8 +798,8 @@ the same tier; cdk-local uses literal-segment count as a heuristic).
 | --- | --- | --- |
 | `--port <port>` | auto-allocate | First API server's port (subsequent APIs get `port+1`, `port+2`, ...). Pass `0` (default) to auto-allocate each. The actual port assignment is printed at startup. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
-| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional target's stack-name prefix (e.g. `MyStack/MyApi` → `MyStack`), (4) `--all-stacks` (serve every stack). |
-| `--all-stacks` | off | Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out for an ambiguous selection. Mutually exclusive with a positional target, `--stack`, and an explicit `--from-cfn-stack <name>`; the bare `--from-cfn-stack` flag stays compatible (binds each routed stack to its own CFn stack). No-op in a single-stack app. |
+| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional target's stack — the one whose display path prefixes it (e.g. `MyStack/MyApi` → `MyStack`, `MyStage/Api/MyApi` → the Stage stack `MyStage/Api`), (4) `--all-stacks` (serve every stack). |
+| `--all-stacks` | off | Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out for an ambiguous selection. Refused when two served stacks declare the same logical id for a served Lambda or API — always the case for one `cdk.Stage` instantiated twice — since start-api cannot serve both under one id; serve one stack at a time with `--stack`. Mutually exclusive with a positional target, `--stack`, and an explicit `--from-cfn-stack <name>`; the bare `--from-cfn-stack` flag stays compatible (binds each routed stack to its own CFn stack). No-op in a single-stack app. |
 | `--warm` | off | Pre-start one container per discovered Lambda at server boot. Trades RAM for first-request latency. |
 | `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
 | `--no-pull` | off | Skip `docker pull`. |
@@ -1374,7 +1390,7 @@ Same target-syntax rules as `cdkl invoke`:
 
 - CDK display path (`MyStack/MyService/TaskDef`) — preferred
 - Stack-qualified logical id (`MyStack:MyServiceTaskDefXYZ1234`)
-- Single-stack apps may omit the stack prefix (`MyTaskDef`)
+- Single-stack apps may omit the stack prefix (`MyTaskDef`; [a `cdk.Stage` stack counts](#target-resolution))
 
 Path matching is prefix-based: an L2 path like `MyStack/MyService/TaskDef`
 resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
@@ -1625,7 +1641,7 @@ replica's sidecar.
 Same grammar as `run-task`:
 
 - `Stack/Service/...` (display path) or `Stack:LogicalId` (logical id).
-- Single-stack apps may omit the stack prefix.
+- Single-stack apps may omit the stack prefix ([a `cdk.Stage` stack counts](#target-resolution)).
 - The target MUST resolve to an `AWS::ECS::Service`; passing a bare
   TaskDefinition surfaces a clear "use cdkl run-task" hint.
 

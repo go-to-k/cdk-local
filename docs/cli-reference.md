@@ -232,7 +232,23 @@ The positional `<target>` accepts two forms:
   colon is unambiguous because logical IDs cannot contain `/` or `:`.
 
 Single-stack apps may omit the stack prefix entirely: `cdkl invoke
-MyHandler` is valid when the app contains exactly one stack.
+MyHandler` is valid when the app contains exactly one stack — counting the
+stacks inside a `cdk.Stage`, so one top-level stack plus a Stage is a
+multi-stack app.
+
+**Stacks under a `cdk.Stage`** are enumerated like top-level ones, at any
+nesting depth, and are addressed by their hierarchical display path:
+`MyStage/Api/Handler`, or `Outer/Inner/Api/Handler` for a Stage inside a
+Stage. A path-form target's stack is the stack whose display path (or physical
+name) followed by `/` is the LONGEST prefix of the target — never just its
+first segment, which is the Stage id — so `MyStage/Api` never claims
+`MyStage/ApiV2/...`. The colon form takes the physical name
+(`MyStage-Api:Handler1234ABCD`). A stack pattern (`--stack`, a target's head)
+matches the display path with `*` inside one segment and `**` across segments
+(`'MyStage/*'`), else a stack's exact physical name; when two stacks share a
+physical name (one Stage deployed to two accounts), that name is ambiguous and
+refused, and the display path picks one. This is the same rule cdkd applies, so
+`cdkd local` and `cdkl` resolve a target to the same stack.
 
 When the target does not match anything, the error lists every Lambda
 in the resolved stack so the user can copy/paste a valid one.
@@ -465,9 +481,9 @@ named, so the Stage's own assets, staged one level above by `cdk synth`,
 resolve. A directory merely *named* `assembly-*` is not treated that way: its
 parent has to be an assembly too.
 
-That route is currently the only one to a Stage Lambda, because cdk-local does
-not yet enumerate a Stage's stacks from the app output directory
-([#746](https://github.com/go-to-k/cdk-local/issues/746)).
+You rarely need that route: cdk-local enumerates a Stage's stacks from the
+app output directory, so `cdkl invoke MyStage/Api/Handler` against the app
+reaches the same Lambda.
 
 **Asset-manifest paths** (`<stack>.assets.json`) are held to the same bound
 wherever cdk-local reads one — a Docker build context, a `source.executable`
@@ -633,7 +649,7 @@ Both bundle shapes are supported:
 Same target syntax as every other command — a CDK display path
 (`MyStack/ChatAgent`) or a stack-qualified logical ID
 (`MyStack:ChatAgent1234ABCD`); single-stack apps may omit the stack
-prefix. Omit the target in a TTY to pick from a list.
+prefix ([a `cdk.Stage` stack counts](#target-resolution)). Omit the target in a TTY to pick from a list.
 
 ### Options
 
@@ -1063,7 +1079,7 @@ to serve every API (bare in a non-TTY) or to open the multi-select picker
 (bare in a TTY). The same target syntax `cdkl invoke` /
 `cdkl run-task` use applies to each identifier:
 
-1. **Bare logical id** — `MyHttpApi`. **Single-stack apps only**.
+1. **Bare logical id** — `MyHttpApi`. **Single-stack apps only** ([a `cdk.Stage` stack counts](#target-resolution)).
 2. **Stack-qualified logical id** — `MyStack:MyHttpApi`.
 3. **CDK Construct path / display path** — `MyStack/MyHttpApi/Resource`.
 4. **CDK Construct path prefix** — `MyStack/MyHttpApi`.
@@ -1102,8 +1118,8 @@ produces an error — they're mutually exclusive.
 | --- | --- | --- |
 | `--port <port>` | `0` (auto-allocate) | First API server's port (subsequent APIs get `port+1`, `port+2`, ...). Pass `0` (default) to auto-allocate each. The actual port assignment is printed at startup. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
-| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional targets' shared stack-name prefix (e.g. `MyStack/MyApi` → `MyStack`; skipped when the targets span different stacks, in which case every stack is synthesized and filtered to the union), (4) `--all-stacks` (serve every stack). |
-| `--all-stacks` | off | Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out for an ambiguous selection. Mutually exclusive with a positional target subset, `--stack`, and an explicit `--from-cfn-stack <name>` (those name a single stack); the bare `--from-cfn-stack` flag stays compatible — it binds each routed stack to its own CFn stack. No-op in a single-stack app (that one stack is already served). |
+| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional targets' shared stack — the one whose display path prefixes them (e.g. `MyStack/MyApi` → `MyStack`, `MyStage/Api/MyApi` → the Stage stack `MyStage/Api`; skipped when the targets span different stacks, in which case every stack is synthesized and filtered to the union), (4) `--all-stacks` (serve every stack). |
+| `--all-stacks` | off | Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out for an ambiguous selection. Refused when two served stacks declare the same logical id for a served Lambda or API — always the case for one `cdk.Stage` instantiated twice — since start-api cannot serve both under one id; serve one stack at a time with `--stack`. Mutually exclusive with a positional target subset, `--stack`, and an explicit `--from-cfn-stack <name>` (those name a single stack); the bare `--from-cfn-stack` flag stays compatible — it binds each routed stack to its own CFn stack. No-op in a single-stack app (that one stack is already served). |
 | `--warm` | off | Pre-start one container per discovered Lambda at server boot. Trades RAM for first-request latency. |
 | `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
 | `--no-pull` | off | Skip `docker pull` (use cached image). |
@@ -1176,7 +1192,7 @@ Same target-syntax rules as `cdkl invoke`:
 
 - CDK display path (`MyStack/MyService/TaskDef`) — preferred
 - Stack-qualified logical id (`MyStack:MyServiceTaskDefXYZ1234`)
-- Single-stack apps may omit the stack prefix (`MyTaskDef`)
+- Single-stack apps may omit the stack prefix (`MyTaskDef`; [a `cdk.Stage` stack counts](#target-resolution))
 
 Path matching is prefix-based: an L2 path like
 `MyStack/MyService/TaskDef` resolves to the synthesized L1 child
@@ -1422,7 +1438,7 @@ Same grammar as `cdkl run-task`:
 
 - `Stack/Service/...` (display path) or `Stack:LogicalId` (logical
   id).
-- Single-stack apps may omit the stack prefix.
+- Single-stack apps may omit the stack prefix ([a `cdk.Stage` stack counts](#target-resolution)).
 - The target MUST resolve to an `AWS::ECS::Service`; passing a bare
   TaskDefinition surfaces a clear "use cdkl run-task" hint.
 
@@ -1537,7 +1553,8 @@ docker-network IPs the host can't reach on macOS Docker Desktop.
 ### Target resolution
 
 - `Stack/Alb` (display path) or `Stack:LogicalId`; single-stack apps may
-  omit the stack prefix. Omit `<targets>` in a TTY to multi-select.
+  omit the stack prefix ([a `cdk.Stage` stack counts](#target-resolution)). Omit `<targets>` in a TTY to
+  multi-select.
 - The target MUST resolve to an application
   `AWS::ElasticLoadBalancingV2::LoadBalancer` (NLBs are skipped).
 
@@ -1879,8 +1896,8 @@ its `DistributionConfig`:
 ### Target resolution
 
 - `Stack/Dist` (display path), an ancestor prefix, or `Stack:LogicalId`;
-  single-stack apps may omit the stack prefix. Omit `<target>` in a TTY to
-  pick interactively.
+  single-stack apps may omit the stack prefix ([a `cdk.Stage` stack counts](#target-resolution)). Omit
+  `<target>` in a TTY to pick interactively.
 - The target MUST resolve to an `AWS::CloudFront::Distribution`. One
   distribution per invocation.
 

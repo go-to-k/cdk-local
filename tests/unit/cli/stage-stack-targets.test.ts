@@ -285,8 +285,12 @@ describe('start-api over a union of stacks sharing logical ids (Stage clones)', 
   const route = (apiLogicalId: string) =>
     ({ route: { source: 'http-api', apiLogicalId, lambdaLogicalId: FN } }) as never;
 
-  it('pickTargetStacks selects the stack object the target hint returned', () => {
-    expect(pickTargetStacks([beta, prod], undefined, undefined, prod)).toEqual([prod]);
+  it('pickTargetStacks selects the stack object the target hint returned, never by its name', () => {
+    // Two Stage stacks under one explicit physical name: re-matching the
+    // name would select both.
+    const b = stack('Api', 'Beta/Api', 'beta');
+    const p = stack('Api', 'Prod/Api', 'prod');
+    expect(pickTargetStacks([b, p], undefined, undefined, p)).toEqual([p]);
   });
 
   it('refuses a served union whose Lambda logical id two stacks declare, naming them', () => {
