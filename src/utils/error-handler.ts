@@ -1,4 +1,5 @@
 import { getLogger } from './logger.js';
+import { displayIdent } from './ident-display.js';
 
 /**
  * Base error class for cdk-local
@@ -202,11 +203,11 @@ export interface NormalizeAwsErrorContext {
  *   - Non-AWS-SDK errors (anything where `name` is not `Unknown` and
  *     `message` is not `UnknownError`) pass through unchanged.
  *   - AWS SDK Unknown errors are mapped by HTTP status:
- *     - 301 → `Bucket '<name>' is in a different region…` (auto-resolved
+ *     - 301 → `Bucket <name> is in a different region…` (auto-resolved
  *       elsewhere; if this surfaces, it's a bug worth reporting).
- *     - 403 → `Access denied to bucket '<name>'.`
- *     - 404 → `Bucket '<name>' does not exist.`
- *     - other / unknown → `S3 error during <operation> on '<bucket>' (HTTP
+ *     - 403 → `Access denied to bucket <name>.`
+ *     - 404 → `Bucket <name> does not exist.`
+ *     - other / unknown → `S3 error during <operation> on <bucket> (HTTP
  *       <status>).`
  */
 export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContext = {}): Error {
@@ -222,7 +223,8 @@ export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContex
 
   const meta = (err as { $metadata?: { httpStatusCode?: number } }).$metadata;
   const status = meta?.httpStatusCode;
-  const bucket = context.bucket ?? '<unknown bucket>';
+  // Rendered for display only (#761); the sentinel stays bare.
+  const bucket = context.bucket === undefined ? '<unknown bucket>' : displayIdent(context.bucket);
   const operation = context.operation ?? 'operation';
 
   switch (status) {
@@ -235,21 +237,18 @@ export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContex
         responseHeaders?.['x-amz-bucket-region'] ?? responseHeaders?.['X-Amz-Bucket-Region'];
       const where = region ? ` (in ${region})` : '';
       return new Error(
-        `Bucket '${bucket}'${where} is in a different region than the client. ` +
+        `Bucket ${bucket}${where} is in a different region than the client. ` +
           `cdk-local resolves this automatically; if you see this message, please report it.`
       );
     }
     case 403:
-      return new Error(
-        `Access denied to bucket '${bucket}'. Verify credentials and bucket policy.`
-      );
+      return new Error(`Access denied to bucket ${bucket}. Verify credentials and bucket policy.`);
     case 404:
-      return new Error(`Bucket '${bucket}' does not exist.`);
+      return new Error(`Bucket ${bucket} does not exist.`);
     default: {
       const statusStr = status !== undefined ? `HTTP ${status}` : 'unknown HTTP status';
       return new Error(
-        `S3 error during ${operation} on '${bucket}' (${statusStr}). ` +
-          `See CloudTrail for details.`
+        `S3 error during ${operation} on ${bucket} (${statusStr}). ` + `See CloudTrail for details.`
       );
     }
   }

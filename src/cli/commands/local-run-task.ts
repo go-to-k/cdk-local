@@ -72,6 +72,7 @@ import {
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import type { SubstitutionContext } from '../../local/state-resolver.js';
 import { deriveServiceDisplayName } from '../../local/ecs-service-resolver.js';
+import { displayIdent, displayStackName } from '../../utils/ident-display.js';
 
 interface LocalRunTaskOptions {
   app?: string;
@@ -288,7 +289,7 @@ async function localRunTaskCommand(
     const imageContext = await buildEcsImageResolutionContext(candidate, stateProvider, options);
     const task = resolveEcsTaskTarget(resolvedTarget, stacks, imageContext);
     logger.info(
-      `Target: ${task.stack.stackName}/${task.taskDefinitionLogicalId} (family=${task.family}, containers=${task.containers.length})`
+      `Target: ${displayStackName(`${task.stack.stackName}/${task.taskDefinitionLogicalId}`)} (family=${displayIdent(task.family)}, containers=${task.containers.length})`
     );
 
     // Cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` resolution in
@@ -503,7 +504,7 @@ async function localRunTaskCommand(
 
     if (result.essentialContainerName) {
       logger.info(
-        `Essential container '${result.essentialContainerName}' exited with code ${result.exitCode}.`
+        `Essential container ${displayIdent(result.essentialContainerName)} exited with code ${result.exitCode}.`
       );
     }
     if (result.exitCode !== 0) {

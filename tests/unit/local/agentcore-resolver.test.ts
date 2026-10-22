@@ -228,7 +228,7 @@ describe('resolveAgentCoreTarget — unresolvable container URI', () => {
     );
     expect(() => resolveAgentCoreTarget('ChatAgent', [stack])).toThrow(AgentCoreResolutionError);
     expect(() => resolveAgentCoreTarget('ChatAgent', [stack])).toThrow(
-      /references same-stack ECR repository 'MyRepo'/
+      /references same-stack ECR repository MyRepo/
     );
     expect(() => resolveAgentCoreTarget('ChatAgent', [stack])).toThrow(/--from-cfn-stack/);
   });
@@ -846,5 +846,34 @@ describe('pickAgentCoreCandidateStack', () => {
   it('returns undefined when the stack pattern matches nothing', () => {
     const stack = buildStack('App', { ChatAgent: containerRuntime() });
     expect(pickAgentCoreCandidateStack('Missing:ChatAgent', [stack])).toBeUndefined();
+  });
+});
+
+describe('resolveAgentCoreTarget — assembly-chosen identifiers render through displayIdent (#761)', () => {
+  it('renders a plain logical id bare', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({ ProtocolConfiguration: 'BOGUS' }),
+    });
+    expect(() => resolveAgentCoreTarget('ChatAgent', [stack])).toThrow(
+      'AgentCore Runtime ChatAgent in App uses the BOGUS protocol.'
+    );
+  });
+
+  it('renders a logical id that could forge a boundary as one JSON literal', () => {
+    const stack = buildStack('App', {
+      "a' b": containerRuntime({ ProtocolConfiguration: 'BOGUS' }),
+    });
+    expect(() => resolveAgentCoreTarget("App:a' b", [stack])).toThrow(
+      `AgentCore Runtime "a' b" in App uses the BOGUS protocol.`
+    );
+  });
+
+  it('renders a control character in a logical id as a space inside a JSON literal', () => {
+    const stack = buildStack('App', {
+      'x\u001b[2Kforged': containerRuntime({ ProtocolConfiguration: 'BOGUS' }),
+    });
+    expect(() => resolveAgentCoreTarget('App:x\u001b[2Kforged', [stack])).toThrow(
+      'AgentCore Runtime "x [2Kforged" in App uses the BOGUS protocol.'
+    );
   });
 });

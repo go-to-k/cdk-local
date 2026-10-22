@@ -99,7 +99,7 @@ describe('#607 — template-literal role-ARN resolution points', () => {
     it('WARNS on a present-but-rejected template Role, naming the Lambda', () => {
       drive('MyRoleName');
       expect(warnings[0]).toContain('template Role');
-      expect(warnings[0]).toContain("'Handler'");
+      expect(warnings[0]).toContain('Role for Handler is not');
       expect(warnings[0]).toContain('not a well-formed IAM role ARN');
       expect(warnings[0]).toContain('"MyRoleName"');
     });
@@ -148,7 +148,7 @@ describe('#607 — template-literal role-ARN resolution points', () => {
     it('WARNS on a present-but-rejected template RoleArn, naming the runtime', async () => {
       await drive('MyRoleName');
       expect(warnings[0]).toContain('template RoleArn');
-      expect(warnings[0]).toContain("'ChatAgent'");
+      expect(warnings[0]).toContain('for ChatAgent is not');
       expect(warnings[0]).toContain('"MyRoleName"');
     });
 

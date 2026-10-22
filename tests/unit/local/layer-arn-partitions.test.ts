@@ -401,7 +401,7 @@ describe('resolveLambdaLayers — literal layer ARNs resolve in every partition 
     // Distinguishable from the mismatch case above: this one quotes the
     // offending literal back, which the reviewer flagged as untestable
     // while both cases asserted only the shared prefix.
-    expect(() => resolveLambdaLayers(stack, 'Fn', props)).toThrow(/'not-an-arn'/);
+    expect(() => resolveLambdaLayers(stack, 'Fn', props)).toThrow(/literal string not-an-arn\./);
   });
 });
 

@@ -95,6 +95,8 @@ import {
   getDockerImageBySourceHash,
 } from '../../assets/asset-manifest-loader.js';
 import { singleFlight } from '../../utils/single-flight.js';
+import { displayIdent, displayStackName } from '../../utils/ident-display.js';
+import { displayUntrustedValue } from '../../utils/assembly-path.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -356,7 +358,9 @@ async function localInvokeCommand(
 
     const lambda = resolveLambdaTarget(resolvedTarget, stacks);
     const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
-    logger.info(`Target: ${lambda.stack.stackName}/${lambda.logicalId} (${targetLabel})`);
+    logger.info(
+      `Target: ${displayStackName(`${lambda.stack.stackName}/${lambda.logicalId}`)} (${targetLabel})`
+    );
 
     imagePlan = await resolveImagePlan(lambda, options);
 
@@ -693,8 +697,8 @@ export async function resolveContainerImagePlan(
   } else {
     if (!parseEcrUri(lambda.imageUri)) {
       throw new Error(
-        `Container Lambda '${lambda.logicalId}' has no matching asset in cdk.out, and Code.ImageUri ` +
-          `'${lambda.imageUri}' is not an ECR URI ${getEmbedConfig().binaryName} can authenticate against. ` +
+        `Container Lambda ${displayIdent(lambda.logicalId)} has no matching asset in cdk.out, and Code.ImageUri ` +
+          `${displayUntrustedValue(String(lambda.imageUri))} is not an ECR URI ${getEmbedConfig().binaryName} can authenticate against. ` +
           'Re-synthesize the CDK app (so cdk.out includes the build context) or deploy the image to ECR first.'
       );
     }
@@ -1172,7 +1176,7 @@ async function resolveLambdaContainerEnvWith(
       options.region,
       profileCredentials?.region
     ),
-    label: `Lambda ${lambda.logicalId}`,
+    label: `Lambda ${displayIdent(lambda.logicalId)}`,
     skipKeys: plaintextKeys,
     resolver: dynamicRefs,
   });
@@ -1270,7 +1274,9 @@ async function resolveLambdaContainerEnvWith(
 function materializeInlineCode(handler: string, source: string, fileExtension: string): string {
   const lastDot = handler.lastIndexOf('.');
   if (lastDot <= 0) {
-    throw new Error(`Handler '${handler}' is malformed: expected '<modulePath>.<exportName>'.`);
+    throw new Error(
+      `Handler ${displayUntrustedValue(handler)} is malformed: expected '<modulePath>.<exportName>'.`
+    );
   }
   const modulePath = handler.substring(0, lastDot);
   const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-invoke-`));
@@ -1368,7 +1374,7 @@ export async function resolveAssumeRoleArnForLambda(
     // names where it came from.
     if (liveArn !== undefined && !isIamRoleArn(liveArn)) {
       logger.warn(
-        `--assume-role: GetFunctionConfiguration for '${lambdaLogicalId}' produced a value that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(liveArn)}. Ignoring it.`
+        `--assume-role: GetFunctionConfiguration for ${displayIdent(lambdaLogicalId)} produced a value that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(liveArn)}. Ignoring it.`
       );
     } else if (liveArn) {
       // Issue #570: FLATTENED, and this site is the reason the failure warns
@@ -1393,7 +1399,7 @@ export async function resolveAssumeRoleArnForLambda(
     }
   }
   logger.warn(
-    `--assume-role: could not resolve the execution role ARN for '${lambdaLogicalId}'. ` +
+    `--assume-role: could not resolve the execution role ARN for ${displayIdent(lambdaLogicalId)}. ` +
       "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
   );
   return undefined;
@@ -1440,7 +1446,7 @@ export function resolveExecutionRoleArnFromState(
       return roleRef;
     }
     logger.warn(
-      `Deployed state for '${logicalId}' carries a ${roleProperty} that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(roleRef)}. Ignoring it.`
+      `Deployed state for ${displayIdent(logicalId)} carries a ${displayIdent(roleProperty)} that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(roleRef)}. Ignoring it.`
     );
     return undefined;
   }
@@ -1461,7 +1467,7 @@ export function resolveExecutionRoleArnFromState(
       // `''` passes it.
       if (typeof cached === 'string' && cached.length > 0) {
         logger.warn(
-          `The cached Arn attribute of '${refLogicalId}' is not a well-formed IAM role ARN: ${describeRejectedRoleArn(cached)}. Ignoring it.`
+          `The cached Arn attribute of ${displayIdent(refLogicalId)} is not a well-formed IAM role ARN: ${describeRejectedRoleArn(cached)}. Ignoring it.`
         );
       }
     }

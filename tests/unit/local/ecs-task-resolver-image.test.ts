@@ -79,7 +79,7 @@ describe('resolveEcsTaskTarget — same-stack ECR Fn::Join needs deployed state'
     const stack = buildStack('App', buildEcsResources('MyRepo'));
     expect(() => resolveEcsTaskTarget('App:Task', [stack])).toThrow(EcsTaskResolutionError);
     expect(() => resolveEcsTaskTarget('App:Task', [stack])).toThrow(
-      /references same-stack ECR repository 'MyRepo'/
+      /references same-stack ECR repository MyRepo/
     );
     expect(() => resolveEcsTaskTarget('App:Task', [stack])).toThrow(
       /pass --from-cfn-stack to load the deployed stack state/

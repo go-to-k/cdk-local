@@ -202,7 +202,7 @@ echo "==> Asserting the pinned-image WARN did NOT fire for AppService (override 
 # is covered, so the WARN must NOT name it. (We intentionally do not
 # scan for the WARN line in general — a future template tweak could
 # add a different pinned target — only for AppService specifically.)
-if grep -q "'.*AppService.*': running image is pinned to a deployed registry" "${LOG_FILE}"; then
+if grep -q ".*AppService.*: running image is pinned to a deployed registry" "${LOG_FILE}"; then
   echo "FAIL: pinned-image WARN fired for AppService despite --image-override coverage"
   echo "----- service output -----"
   cat "${LOG_FILE}"

@@ -156,10 +156,37 @@ describe('bootLambdaUrlOrigins', () => {
     // Wraps the underlying failure (the cause's message is surfaced) in a
     // LocalStartCloudFrontError naming the function that failed to boot.
     await expect(bootLambdaUrlOrigins(dist, stacks, bootOpts)).rejects.toThrow(
-      /Failed to boot the Lambda Function URL origin's backing function 'Second'.*docker daemon not running/
+      /Failed to boot the Lambda Function URL origin's backing function Second.*docker daemon not running/
     );
     // The first (successfully started) runner is torn down on the rollback.
     expect(runners[0]!.stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe('bootLambdaUrlOrigins failure names the function through displayIdent (#761)', () => {
+  async function failMessage(functionLogicalId: string): Promise<string> {
+    createRunnerMock.mockImplementation((lambda: { logicalId: string }) => ({
+      logicalId: lambda.logicalId,
+      start: vi.fn().mockRejectedValue(new Error('boom')),
+      stop: vi.fn().mockResolvedValue(undefined),
+      invoke: vi.fn(),
+    }));
+    const dist = distributionWith([
+      { kind: 'lambda-url', originId: 'a', functionLogicalId, functionUrlLogicalId: 'U1' },
+    ]);
+    const err = await bootLambdaUrlOrigins(dist, stacks, bootOpts).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    return (err as Error).message;
+  }
+
+  it('renders a plain id bare', async () => {
+    expect(await failMessage('Plain')).toContain("backing function Plain: boom");
+  });
+
+  it('renders a forging id as one JSON literal', async () => {
+    expect(await failMessage("a' b")).toContain(`backing function "a' b": boom`);
   });
 });
 

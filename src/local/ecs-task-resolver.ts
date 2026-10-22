@@ -20,6 +20,8 @@ import {
 import { getEmbedConfig } from './embed-config.js';
 import { parseEcrRegistryHost } from './ecr-uri.js';
 import { defineOwnKey } from '../utils/own-keys.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * Result of resolving a `cdkl run-task <target>` argument back to a
@@ -596,13 +598,13 @@ export function resolveEcsTaskTarget(
 
   if (resource.Type === 'AWS::Lambda::Function') {
     throw new EcsTaskResolutionError(
-      `Resource '${logicalId}' in ${stack.stackName} is a Lambda function, not an ECS task definition. ` +
+      `Resource ${displayIdent(logicalId)} in ${stack.stackName} is a Lambda function, not an ECS task definition. ` +
         `Use \`${getEmbedConfig().cliName} invoke\` for Lambda; \`${getEmbedConfig().cliName} run-task\` is ECS only.`
     );
   }
   if (resource.Type !== 'AWS::ECS::TaskDefinition') {
     throw new EcsTaskResolutionError(
-      `Resource '${logicalId}' in ${stack.stackName} is ${resource.Type}, not an AWS::ECS::TaskDefinition.`
+      `Resource ${displayIdent(logicalId)} in ${stack.stackName} is ${displayIdent(resource.Type)}, not an AWS::ECS::TaskDefinition.`
     );
   }
 
@@ -655,13 +657,13 @@ function extractTaskDefinitionProperties(
     networkMode = rawNetworkMode;
   } else {
     throw new EcsTaskResolutionError(
-      `Task definition '${logicalId}' has unsupported NetworkMode '${rawNetworkMode}'. ` +
+      `Task definition ${displayIdent(logicalId)} has unsupported NetworkMode ${displayIdent(rawNetworkMode)}. ` +
         'Supported values: bridge / awsvpc / host / none.'
     );
   }
   if (networkMode === 'awsvpc') {
     warnings.push(
-      `NetworkMode 'awsvpc' on '${logicalId}' is mapped to docker bridge locally — ` +
+      `NetworkMode 'awsvpc' on ${displayIdent(logicalId)} is mapped to docker bridge locally — ` +
         'docker cannot emulate ENI-per-task. AWS SDK calls still reach public endpoints via the developer network.'
     );
   }
@@ -673,7 +675,7 @@ function extractTaskDefinitionProperties(
   // a warn so users aren't surprised by the missing sidecar.
   if (props['ProxyConfiguration']) {
     warnings.push(
-      `Task definition '${logicalId}' declares 'ProxyConfiguration' (custom Envoy / App Mesh bootstrap), ` +
+      `Task definition ${displayIdent(logicalId)} declares 'ProxyConfiguration' (custom Envoy / App Mesh bootstrap), ` +
         `which is NOT honored by '${getEmbedConfig().cliName} start-service' / '${getEmbedConfig().cliName} run-task' in v1. ` +
         'Local execution will run without the configured proxy. See design doc § 2 for the rationale.'
     );
@@ -689,7 +691,9 @@ function extractTaskDefinitionProperties(
 
   const rawContainers = props['ContainerDefinitions'];
   if (!Array.isArray(rawContainers) || rawContainers.length === 0) {
-    throw new EcsTaskResolutionError(`Task definition '${logicalId}' has no ContainerDefinitions.`);
+    throw new EcsTaskResolutionError(
+      `Task definition ${displayIdent(logicalId)} has no ContainerDefinitions.`
+    );
   }
   const containers = rawContainers.map((c, idx) =>
     parseContainerDefinition(c, idx, logicalId, resources, stack, context)
@@ -699,7 +703,7 @@ function extractTaskDefinitionProperties(
   // secrets) on the task-level `warnings` array so the CLI prints them.
   for (const ctr of containers) {
     for (const w of ctr.warnings) {
-      warnings.push(`Container '${ctr.name}': ${w}`);
+      warnings.push(`Container ${displayIdent(ctr.name)}: ${w}`);
     }
   }
 
@@ -714,7 +718,7 @@ function extractTaskDefinitionProperties(
     for (const d of c.dependsOn) {
       if (!containerNames.has(d.containerName)) {
         throw new EcsTaskResolutionError(
-          `Container '${c.name}' depends on '${d.containerName}', which is not defined in task '${logicalId}'.`
+          `Container ${displayIdent(c.name)} depends on ${displayIdent(d.containerName)}, which is not defined in task ${displayIdent(logicalId)}.`
         );
       }
     }
@@ -757,14 +761,14 @@ function parseContainerDefinition(
 ): ResolvedEcsContainer {
   if (!raw || typeof raw !== 'object') {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' ContainerDefinitions[${idx}] is not an object.`
+      `Task ${displayIdent(taskLogicalId)} ContainerDefinitions[${idx}] is not an object.`
     );
   }
   const c = raw as Record<string, unknown>;
   const name = pickString(c['Name']);
   if (!name) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' ContainerDefinitions[${idx}] has no Name.`
+      `Task ${displayIdent(taskLogicalId)} ContainerDefinitions[${idx}] has no Name.`
     );
   }
 
@@ -898,7 +902,7 @@ function parseContainerDefinition(
         condition !== 'HEALTHY'
       ) {
         throw new EcsTaskResolutionError(
-          `Container '${name}' has invalid DependsOn condition '${condition}'. ` +
+          `Container ${displayIdent(name)} has invalid DependsOn condition ${displayIdent(condition)}. ` +
             'Accepted values: START / COMPLETE / SUCCESS / HEALTHY.'
         );
       }
@@ -941,10 +945,10 @@ function parseContainerDefinition(
 
   const warnings: string[] = [];
   for (const d of droppedEnvKeys) {
-    warnings.push(`Environment '${d.key}' dropped: ${d.reason}`);
+    warnings.push(`Environment ${displayIdent(d.key)} dropped: ${d.reason}`);
   }
   for (const d of droppedSecretKeys) {
-    warnings.push(`Secret '${d.key}' dropped: ${d.reason}`);
+    warnings.push(`Secret ${displayIdent(d.key)} dropped: ${d.reason}`);
   }
 
   const out: ResolvedEcsContainer = {
@@ -1057,7 +1061,7 @@ function parseContainerImage(
   }
   if (joinResolved.kind === 'needs-state') {
     throw new EcsTaskResolutionError(
-      `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
+      `Container ${displayIdent(containerName)} in task ${displayIdent(taskLogicalId)} references same-stack ECR repository ${displayIdent(joinResolved.repoLogicalId)} via Fn::Join. ` +
         `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
         formatStateRemedy(context) +
         ', build via ContainerImage.fromAsset, or pin a public image.'
@@ -1065,7 +1069,7 @@ function parseContainerImage(
   }
   if (joinResolved.kind === 'unsupported-join') {
     throw new EcsTaskResolutionError(
-      `Container '${containerName}' in task '${taskLogicalId}' has an unsupported Fn::Join Image shape: ${joinResolved.reason}. ` +
+      `Container ${displayIdent(containerName)} in task ${displayIdent(taskLogicalId)} has an unsupported Fn::Join Image shape: ${joinResolved.reason}. ` +
         `${getEmbedConfig().cliName} recognizes the canonical CDK 2.x ContainerImage.fromEcrRepository Fn::Join shape ` +
         '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
     );
@@ -1074,7 +1078,7 @@ function parseContainerImage(
   const flat = extractImageString(raw);
   if (!flat) {
     throw new EcsTaskResolutionError(
-      `Container '${containerName}' in task '${taskLogicalId}' has an unparseable Image property. ` +
+      `Container ${displayIdent(containerName)} in task ${displayIdent(taskLogicalId)} has an unparseable Image property. ` +
         `${getEmbedConfig().cliName} supports flat string images, single-key Fn::Sub bodies, and CDK-asset Image references.`
     );
   }
@@ -1103,7 +1107,7 @@ function parseContainerImage(
     const unresolvedRepoRef = findUnresolvedEcrRepositoryRef(substituted, resources);
     if (unresolvedRepoRef) {
       throw new EcsTaskResolutionError(
-        `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${unresolvedRepoRef}'. ` +
+        `Container ${displayIdent(containerName)} in task ${displayIdent(taskLogicalId)} references same-stack ECR repository ${displayIdent(unresolvedRepoRef)}. ` +
           `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
           formatStateRemedy(context) +
           ', build via ContainerImage.fromAsset, or pin a public image.'
@@ -1111,7 +1115,7 @@ function parseContainerImage(
     }
     if (substituted.includes('AWS::')) {
       throw new EcsTaskResolutionError(
-        `Container '${containerName}' in task '${taskLogicalId}' has an Image that references AWS pseudo parameters (${substituted}). ` +
+        `Container ${displayIdent(containerName)} in task ${displayIdent(taskLogicalId)} has an Image that references AWS pseudo parameters (${displayUntrustedValue(substituted)}). ` +
           `${getEmbedConfig().productName} could not resolve them: confirm AWS credentials are configured so STS GetCallerIdentity succeeds, ` +
           'and that --region / AWS_REGION names the target region. ' +
           'Workaround: build the image locally (ContainerImage.fromAsset) or pin a public image.'
@@ -1121,7 +1125,7 @@ function parseContainerImage(
     // a generic resolver failure rather than letting it slip through as
     // a "public" image.
     throw new EcsTaskResolutionError(
-      `Container '${containerName}' in task '${taskLogicalId}' has an Image with unresolved \${...} placeholders (${substituted}). ` +
+      `Container ${displayIdent(containerName)} in task ${displayIdent(taskLogicalId)} has an Image with unresolved \${...} placeholders (${displayUntrustedValue(substituted)}). ` +
         `${getEmbedConfig().cliName} only resolves AWS pseudo parameters and same-stack AWS::ECR::Repository refs.`
     );
   }
@@ -1256,23 +1260,27 @@ function parseVolume(
   subContext?: SubstitutionContext
 ): ResolvedEcsVolume {
   if (!raw || typeof raw !== 'object') {
-    throw new EcsTaskResolutionError(`Task '${taskLogicalId}' Volumes[${idx}] is not an object.`);
+    throw new EcsTaskResolutionError(
+      `Task ${displayIdent(taskLogicalId)} Volumes[${idx}] is not an object.`
+    );
   }
   const v = raw as Record<string, unknown>;
   const name = pickString(v['Name']);
   if (!name) {
-    throw new EcsTaskResolutionError(`Task '${taskLogicalId}' Volumes[${idx}] has no Name.`);
+    throw new EcsTaskResolutionError(
+      `Task ${displayIdent(taskLogicalId)} Volumes[${idx}] has no Name.`
+    );
   }
 
   if (v['EFSVolumeConfiguration']) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses EFSVolumeConfiguration, which ${getEmbedConfig().cliName} cannot proxy locally. ` +
+      `Task ${displayIdent(taskLogicalId)} Volumes[${idx}] ${displayIdent(name)} uses EFSVolumeConfiguration, which ${getEmbedConfig().cliName} cannot proxy locally. ` +
         `Workaround: bind-mount a local directory at the same containerPath via Host: { SourcePath: '<local-path>' }, or override at runtime via --env-vars semantics for a Phase 2 follow-up.`
     );
   }
   if (v['FSxWindowsFileServerVolumeConfiguration']) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses FSxWindowsFileServerVolumeConfiguration, which ${getEmbedConfig().cliName} cannot proxy locally.`
+      `Task ${displayIdent(taskLogicalId)} Volumes[${idx}] ${displayIdent(name)} uses FSxWindowsFileServerVolumeConfiguration, which ${getEmbedConfig().cliName} cannot proxy locally.`
     );
   }
 
@@ -1351,12 +1359,12 @@ function resolveVolumeSourcePath(
   if (typeof raw === 'string') return raw.length > 0 ? raw : undefined;
   if (typeof raw !== 'object') {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${volumeName}' Host.SourcePath must be a string or a CFn intrinsic, got ${typeof raw}.`
+      `Task ${displayIdent(taskLogicalId)} Volumes[${idx}] ${displayIdent(volumeName)} Host.SourcePath must be a string or a CFn intrinsic, got ${typeof raw}.`
     );
   }
   if (!subContext) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${volumeName}' Host.SourcePath is a CFn intrinsic (Ref/Fn::Sub/Fn::Join/Fn::GetAtt). ` +
+      `Task ${displayIdent(taskLogicalId)} Volumes[${idx}] ${displayIdent(volumeName)} Host.SourcePath is a CFn intrinsic (Ref/Fn::Sub/Fn::Join/Fn::GetAtt). ` +
         `Pass --from-state to substitute it against the deployed state + AWS pseudo parameters.`
     );
   }
@@ -1365,7 +1373,7 @@ function resolveVolumeSourcePath(
     return sub.value;
   }
   throw new EcsTaskResolutionError(
-    `Task '${taskLogicalId}' Volumes[${idx}] '${volumeName}' Host.SourcePath could not be resolved: ` +
+    `Task ${displayIdent(taskLogicalId)} Volumes[${idx}] ${displayIdent(volumeName)} Host.SourcePath could not be resolved: ` +
       (sub.kind === 'literal' ? 'resolved to non-string / empty value' : sub.reason)
   );
 }
@@ -1481,7 +1489,7 @@ function notFoundError(
     const width = Math.max(...tasks.map((t) => t.displayPath.length));
     msg += `Available task definitions in ${stack.stackName}:\n`;
     for (const t of tasks) {
-      msg += `  ${t.displayPath.padEnd(width)}  (${t.logicalId})\n`;
+      msg += `  ${t.displayPath.padEnd(width)}  (${displayIdent(t.logicalId)})\n`;
     }
   }
   return new EcsTaskResolutionError(msg.trimEnd());
@@ -1617,24 +1625,32 @@ export async function applyCrossStackResolverToTask(
     if (resolvedEnvKeys.size > 0 || resolvedSecretNames.size > 0) {
       container.warnings = container.warnings.filter((w) => {
         for (const k of resolvedEnvKeys) {
-          if (w.startsWith(`Environment '${k}' dropped:`)) return false;
+          if (w.startsWith(`Environment ${displayIdent(k)} dropped:`)) return false;
         }
         for (const k of resolvedSecretNames) {
-          if (w.startsWith(`Secret '${k}' dropped:`)) return false;
+          if (w.startsWith(`Secret ${displayIdent(k)} dropped:`)) return false;
         }
         return true;
       });
       // Same filter at the task-level (the per-container warnings are
       // re-emitted onto `task.warnings` by `parseEcsTaskFromCdkResource`,
-      // prefixed with `Container '<name>': `).
+      // prefixed with `Container <displayIdent(name)>: `).
       task.warnings = task.warnings.filter((w) => {
         for (const k of resolvedEnvKeys) {
-          if (w.startsWith(`Container '${containerName}': Environment '${k}' dropped:`)) {
+          if (
+            w.startsWith(
+              `Container ${displayIdent(containerName)}: Environment ${displayIdent(k)} dropped:`
+            )
+          ) {
             return false;
           }
         }
         for (const k of resolvedSecretNames) {
-          if (w.startsWith(`Container '${containerName}': Secret '${k}' dropped:`)) {
+          if (
+            w.startsWith(
+              `Container ${displayIdent(containerName)}: Secret ${displayIdent(k)} dropped:`
+            )
+          ) {
             return false;
           }
         }

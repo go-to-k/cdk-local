@@ -35,8 +35,9 @@
 
 import { SSMClient, GetParametersCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
-import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import { describeAwsFailureForWarn } from './credential-error.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /** SSM-backed CFn parameter types CDK synthesizes for SSM lookups. */
 const SSM_STRING_TYPE = 'AWS::SSM::Parameter::Value<String>';
@@ -188,8 +189,8 @@ export async function resolveSsmParameters(
       logger.warn(
         // The parameter NAMES come from the template's `Default` values, so
         // they land on this default-level warn the same way every other
-        // wire-adjacent value does; the flatten costs one call.
-        `${label}: SSM GetParameters(${flattenToOneLine(names.join(', '))}) failed: ${describeAwsFailureForWarn(
+        // wire-adjacent value does, so each renders through displayIdent (#761).
+        `${label}: SSM GetParameters(${names.map((n) => displayIdent(n, { listMember: true, maxCodePoints: 1011 })).join(', ')}) failed: ${describeAwsFailureForWarn(
           err,
           'SSM GetParameters'
         )}. ` +

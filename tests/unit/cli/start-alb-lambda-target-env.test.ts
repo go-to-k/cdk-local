@@ -288,7 +288,7 @@ describe('buildFrontDoor — failure phase attribution (issue #752)', () => {
     expect(err).toBeInstanceOf(Error);
     const message = (err as Error).message;
     expect(message).toBe(
-      "Failed to boot ALB Lambda target 'EchoFn': refusing to forward a secret under finch"
+      'Failed to boot ALB Lambda target EchoFn: refusing to forward a secret under finch'
     );
     expect(message).not.toContain('--lb-port');
     expect(message).not.toContain('privileged');
@@ -322,7 +322,7 @@ describe('buildFrontDoor — failure phase attribution (issue #752)', () => {
       () => undefined,
       (e: unknown) => e
     );
-    expect((err as Error).message).toBe("Failed to boot ALB Lambda target 'Echo Fn [31m': pull failed");
+    expect((err as Error).message).toBe('Failed to boot ALB Lambda target "Echo Fn [31m": pull failed');
   });
 
   it('keeps the --lb-port hint for a listener bind failure and never boots the Lambda target', async () => {
