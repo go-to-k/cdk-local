@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { DynamicReferenceResolver } from '../../local/dynamic-reference-resolver.js';
-import { Command, Option } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   appOptions,
   commonOptions,
@@ -2734,7 +2734,7 @@ function parsePositiveInt(raw: string, flagName: string): number {
   // Plus the leading-empty case: Number('') -> 0 which we reject below.
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new LocalStartServiceError(`${flagName} must be a positive integer (got '${raw}').`);
+    throw new InvalidArgumentError(`${flagName} must be a positive integer (got '${raw}').`);
   }
   return parsed;
 }
@@ -2748,7 +2748,7 @@ export const MAX_TASKS_SUBNET_RANGE_CAP = 83;
 export function parseMaxTasks(raw: string): number {
   const parsed = parsePositiveInt(raw, '--max-tasks');
   if (parsed > MAX_TASKS_SUBNET_RANGE_CAP) {
-    throw new LocalStartServiceError(
+    throw new InvalidArgumentError(
       `--max-tasks ${parsed} exceeds the per-replica link-local /24 subnet allocator's range ` +
         `(${MAX_TASKS_SUBNET_RANGE_CAP}). Lower --max-tasks to <= ${MAX_TASKS_SUBNET_RANGE_CAP}.`
     );
@@ -2758,7 +2758,7 @@ export function parseMaxTasks(raw: string): number {
 
 export function parseRestartPolicy(raw: string): 'on-failure' | 'always' | 'none' {
   if (raw === 'on-failure' || raw === 'always' || raw === 'none') return raw;
-  throw new LocalStartServiceError(
+  throw new InvalidArgumentError(
     `--restart-policy must be one of 'on-failure', 'always', or 'none' (got '${raw}').`
   );
 }

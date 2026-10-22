@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path, { dirname } from 'node:path';
 import { promisify } from 'node:util';
-import { Command, Option } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   appOptions,
   commonOptions,
@@ -246,9 +246,8 @@ export interface LocalInvokeAgentCoreOptions {
 export function parseTimeoutMs(raw: string): number {
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new CdkLocalError(
-      `--timeout must be a positive integer number of milliseconds (got '${raw}').`,
-      'LOCAL_INVOKE_AGENTCORE_TIMEOUT_INVALID'
+    throw new InvalidArgumentError(
+      `--timeout must be a positive integer number of milliseconds (got '${raw}').`
     );
   }
   return parsed;
