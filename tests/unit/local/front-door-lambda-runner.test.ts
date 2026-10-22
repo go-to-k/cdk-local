@@ -206,6 +206,17 @@ describe('createFrontDoorLambdaRunner', () => {
     expect(payload).toEqual({ statusCode: 201, body: 'hi' });
   });
 
+  it('renders the logical id bare when plain and as a JSON literal when forging (#761)', async () => {
+    const plain = createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' });
+    await expect(plain.invoke({})).rejects.toThrow(/FrontDoorLambdaRunner\(\S+\)\.invoke called/);
+    const forged = createFrontDoorLambdaRunner(zipLambda({ logicalId: "a' b" }), {
+      containerHost: '127.0.0.1',
+    });
+    await expect(forged.invoke({})).rejects.toThrow(
+      `FrontDoorLambdaRunner("a' b").invoke called before start() completed.`
+    );
+  });
+
   it('invoke() before start() throws (rather than hitting an undefined port)', async () => {
     const runner = createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' });
     await expect(runner.invoke({})).rejects.toThrow(/before start/);

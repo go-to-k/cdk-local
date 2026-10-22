@@ -185,7 +185,7 @@ describe('discoverWebSocketApis', () => {
       },
     });
     const { errors } = discoverWebSocketApis([stack]);
-    expect(errors[0]).toContain("RouteSelectionExpression '$request.header.X-Route'");
+    expect(errors[0]).toContain('RouteSelectionExpression "$request.header.X-Route"');
   });
 
   it('accepts nested-dot selection expressions', () => {
@@ -236,7 +236,7 @@ describe('discoverWebSocketApis', () => {
       },
     });
     const { errors } = discoverWebSocketApis([stack]);
-    expect(errors[0]).toContain("IntegrationType 'MOCK' is not supported");
+    expect(errors[0]).toContain("IntegrationType MOCK is not supported");
   });
 
   it('rejects duplicate RouteKey within the same API', () => {
@@ -265,7 +265,7 @@ describe('discoverWebSocketApis', () => {
       },
     });
     const { errors } = discoverWebSocketApis([stack]);
-    expect(errors[0]).toContain("duplicate RouteKey '$connect'");
+    expect(errors[0]).toContain('duplicate RouteKey "$connect"');
   });
 
   it('discovers two WebSocket APIs across two stacks', () => {
@@ -424,7 +424,7 @@ describe('selection expression validation rejection set (#531 m2)', () => {
   ])('rejects %j with an actionable error', (expr) => {
     const err = tryExpression(expr);
     expect(err).toBeDefined();
-    expect(err).toContain(expr);
+    expect(err).toContain(JSON.stringify(expr.trim()));
     expect(err).toContain('not supported');
   });
 });

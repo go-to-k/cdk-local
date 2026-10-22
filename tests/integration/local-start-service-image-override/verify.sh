@@ -17,7 +17,7 @@
 #   1. Detected the placeholder URI as pinned ("running image is
 #      pinned to a deployed registry" WARN does NOT fire for
 #      AppService because the override covered it).
-#   2. Logged `Building override image for 'AppService'...` ahead of
+#   2. Logged `Building override image for AppService ...` ahead of
 #      `docker build`.
 #   3. Booted the replica from the OVERRIDE image (request returns
 #      that payload, NOT a placeholder-image pull error).
@@ -181,13 +181,13 @@ fi
 echo "    [short service key matched] OK"
 
 echo "==> Asserting the override-build log line surfaced"
-# The engine logs `Building override image for '<target>' from '<path>' (tag=...)...`
+# The engine logs `Building override image for <target> from '<path>' (tag=...)...`
 # before kicking off `docker build`. Match on the prefix + the
 # AppService target name so we know the boot path picked the right
 # target.
 # The engine logs the Dockerfile as the ABSOLUTE path it resolved the
 # relative `./webapp/Dockerfile` argument to.
-if ! grep -qE "Building override image for '[^']*AppService' from '/[^']*/local-start-service-image-override/webapp/Dockerfile'" "${LOG_FILE}"; then
+if ! grep -qE "Building override image for [^ ]*AppService from '/[^']*/local-start-service-image-override/webapp/Dockerfile'" "${LOG_FILE}"; then
   echo "FAIL: 'Building override image for ... AppService ... from <abs>/webapp/Dockerfile' line not found"
   echo "----- service output -----"
   cat "${LOG_FILE}"

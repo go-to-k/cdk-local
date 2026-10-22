@@ -3,6 +3,7 @@ import * as nodeCrypto from 'node:crypto';
 import * as nodeQuerystring from 'node:querystring';
 import * as vm from 'node:vm';
 import { createUnboundCloudFrontModule, type CloudFrontModule } from './cloudfront-kvs.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * The CloudFront Functions JS 2.0 runtime exposes a set of globals + `require`
@@ -245,7 +246,7 @@ export function compileCloudFrontFunction(
     });
   } catch (err) {
     throw new Error(
-      `CloudFront Function '${logicalId}' failed to compile: ${err instanceof Error ? err.message : String(err)}`
+      `CloudFront Function ${displayIdent(logicalId)} failed to compile: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   // Probe once that a `handler` is actually defined, surfacing a
@@ -264,12 +265,12 @@ export function compileCloudFrontFunction(
     );
   } catch (err) {
     throw new Error(
-      `CloudFront Function '${logicalId}' failed to compile: ${err instanceof Error ? err.message : String(err)}`
+      `CloudFront Function ${displayIdent(logicalId)} failed to compile: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   if (hasHandler !== true) {
     throw new Error(
-      `CloudFront Function '${logicalId}' does not declare a 'handler' function. ` +
+      `CloudFront Function ${displayIdent(logicalId)} does not declare a 'handler' function. ` +
         'A CloudFront Function must export `function handler(event) { ... }`.'
     );
   }
@@ -311,14 +312,14 @@ export async function invokeCloudFrontFunction(
     result = fn.script.runInContext(context, { timeout: FUNCTION_TIMEOUT_MS });
   } catch (err) {
     throw new Error(
-      `CloudFront Function '${fn.logicalId}' threw at request time: ${err instanceof Error ? err.message : String(err)}`
+      `CloudFront Function ${displayIdent(fn.logicalId)} threw at request time: ${err instanceof Error ? err.message : String(err)}`
     );
   }
   try {
     return result instanceof Promise ? await result : result;
   } catch (err) {
     throw new Error(
-      `CloudFront Function '${fn.logicalId}' threw at request time: ${err instanceof Error ? err.message : String(err)}`
+      `CloudFront Function ${displayIdent(fn.logicalId)} threw at request time: ${err instanceof Error ? err.message : String(err)}`
     );
   }
 }

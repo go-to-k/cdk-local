@@ -30,6 +30,7 @@ import { buildDockerImage } from '../assets/docker-build.js';
 import { assetPathDirs } from './lambda-resolver.js';
 import { isImageInLocalCache, pullEcrImage } from './ecr-puller.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayIdent, displayToolOutput } from '../utils/ident-display.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
 import {
@@ -470,7 +471,7 @@ export async function runEcsTask(
 
   if (task.containers.length === 0) {
     throw new EcsTaskRunnerError(
-      `Task '${task.taskDefinitionLogicalId}' has no containers — nothing to run.`
+      `Task ${displayIdent(task.taskDefinitionLogicalId)} has no containers — nothing to run.`
     );
   }
 
@@ -643,7 +644,7 @@ export async function runEcsTask(
     const image = imagePlan.get(container.name);
     if (!image) {
       throw new EcsTaskRunnerError(
-        `Internal: no resolved image for container '${container.name}'.`
+        `Internal: no resolved image for container ${displayIdent(container.name)}.`
       );
     }
     const dynamic = dynamicEnvByContainer.get(container.name);
@@ -712,7 +713,9 @@ export async function runEcsTask(
     await awaitDependencies(container, startedByName);
 
     const { args, sensitiveEnv } = dockerCmds.get(container.name)!;
-    logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
+    logger.info(
+      `Starting container ${displayIdent(container.name)} (image=${displayIdent(imagePlan.get(container.name))})`
+    );
     let id: string;
     // Under finch's Lima VM these values reach the limactl argv (#749).
     warnFinchArgvExposure(Object.keys(sensitiveEnv));
@@ -725,14 +728,14 @@ export async function runEcsTask(
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       throw new DockerRunnerError(
-        `docker run failed for container '${container.name}': ${e.stderr?.trim() || describeExitWithoutArgv(err)}`
+        `docker run failed for container ${displayIdent(container.name)}: ${displayToolOutput(e.stderr?.trim() || describeExitWithoutArgv(err))}`
       );
     }
     state.startedContainers.push({ name: container.name, id });
     startedByName.set(container.name, { id, container });
 
     if (!options.detach) {
-      state.logStoppers.push(attachContainerLogStreamer(`[${container.name}] `, id));
+      state.logStoppers.push(attachContainerLogStreamer(`[${displayIdent(container.name)}] `, id));
     }
   }
 
@@ -753,7 +756,9 @@ export async function runEcsTask(
   const essential = task.containers.find((c) => c.essential) ?? task.containers[0]!;
   const essentialId = startedByName.get(essential.name)?.id;
   if (!essentialId) {
-    throw new EcsTaskRunnerError(`Essential container '${essential.name}' did not start.`);
+    throw new EcsTaskRunnerError(
+      `Essential container ${displayIdent(essential.name)} did not start.`
+    );
   }
   const exitCode = await waitForContainerExit(essentialId);
   return { exitCode, essentialContainerName: essential.name, state };
@@ -842,7 +847,7 @@ async function awaitDependencies(
     const entry = started.get(dep.containerName);
     if (!entry) {
       throw new EcsTaskRunnerError(
-        `Container '${container.name}' depends on '${dep.containerName}' but the latter never started.`
+        `Container ${displayIdent(container.name)} depends on ${displayIdent(dep.containerName)} but the latter never started.`
       );
     }
     switch (dep.condition) {
@@ -856,7 +861,7 @@ async function awaitDependencies(
         const code = await waitForContainerExit(entry.id);
         if (code !== 0) {
           throw new EcsTaskRunnerError(
-            `Container '${container.name}' requires dependency '${dep.containerName}' to exit 0, but it exited ${code}.`
+            `Container ${displayIdent(container.name)} requires dependency ${displayIdent(dep.containerName)} to exit 0, but it exited ${code}.`
           );
         }
         break;
@@ -889,26 +894,26 @@ async function waitForContainerHealthy(containerId: string, displayName: string)
       ]);
       const status = stdout.trim();
       if (status !== lastStatus) {
-        logger.debug(`Container '${displayName}' health status: ${status}`);
+        logger.debug(`Container ${displayIdent(displayName)} health status: ${status}`);
         lastStatus = status;
       }
       if (status === 'healthy') return;
       if (status === 'unhealthy') {
         throw new EcsTaskRunnerError(
-          `Container '${displayName}' health status is 'unhealthy'; aborting before dependents start.`
+          `Container ${displayIdent(displayName)} health status is 'unhealthy'; aborting before dependents start.`
         );
       }
     } catch (err) {
       if (err instanceof EcsTaskRunnerError) throw err;
       // `docker inspect` may transiently fail right after start; log and retry.
       logger.debug(
-        `docker inspect on '${displayName}' failed: ${err instanceof Error ? err.message : String(err)}`
+        `docker inspect on ${displayIdent(displayName)} failed: ${err instanceof Error ? err.message : String(err)}`
       );
     }
     await sleep(1000);
   }
   throw new EcsTaskRunnerError(
-    `Container '${displayName}' did not become healthy within 5 minutes.`
+    `Container ${displayIdent(displayName)} did not become healthy within 5 minutes.`
   );
 }
 
@@ -969,12 +974,14 @@ export async function prepareImages(
     const overrideTag = options.imageOverrideByContainer?.get(container.name);
     if (overrideTag !== undefined) {
       out.set(container.name, overrideTag);
-      logger.debug(`Container '${container.name}' image=${overrideTag} (--image-override)`);
+      logger.debug(
+        `Container ${displayIdent(container.name)} image=${displayIdent(overrideTag)} (--image-override)`
+      );
       continue;
     }
     const image = await prepareOneImage(task, container, options);
     out.set(container.name, image);
-    logger.debug(`Container '${container.name}' image=${image}`);
+    logger.debug(`Container ${displayIdent(container.name)} image=${displayIdent(image)}`);
   }
 }
 
@@ -1003,7 +1010,7 @@ async function prepareOneImage(
         : undefined;
       if (!cdkOutDir) {
         throw new EcsTaskRunnerError(
-          `Container '${container.name}' uses a CDK asset image but the stack has no asset manifest. ` +
+          `Container ${displayIdent(container.name)} uses a CDK asset image but the stack has no asset manifest. ` +
             'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
         );
       }
@@ -1024,7 +1031,7 @@ async function prepareOneImage(
       }
       if (!asset) {
         throw new EcsTaskRunnerError(
-          `Container '${container.name}' references a CDK asset image but no matching entry was found in cdk.out. ` +
+          `Container ${displayIdent(container.name)} references a CDK asset image but no matching entry was found in cdk.out. ` +
             'Re-synthesize the CDK app and retry.'
         );
       }
@@ -1046,23 +1053,23 @@ async function prepareOneImage(
         const logger = getLogger().child('ecs-runner');
         if (image.assetHash === undefined) {
           throw new LocalInvokeBuildError(
-            `Cannot honor --no-build for ECS container '${container.name}': ` +
-              `the asset has no stable assetHash (synthetic tag '${tag}' may collide ` +
+            `Cannot honor --no-build for ECS container ${displayIdent(container.name)}: ` +
+              `the asset has no stable assetHash (synthetic tag ${displayIdent(tag)} may collide ` +
               'with unrelated prior runs). Drop --no-build, or re-synthesize with an ' +
               'explicit assetHash on the ContainerImage.fromAsset call.'
           );
         }
         logger.info(
-          `Skipping docker build (--no-build) for container '${container.name}'; verifying ${tag} is in local registry...`
+          `Skipping docker build (--no-build) for container ${displayIdent(container.name)}; verifying ${displayIdent(tag)} is in local registry...`
         );
         if (!(await isImageInLocalCache(tag))) {
           throw new LocalInvokeBuildError(
-            `image '${tag}' not in local registry and --no-build is set ` +
-              `(ECS container '${container.name}'); remove --no-build or run \`docker build\` manually first.`
+            `image ${displayIdent(tag)} not in local registry and --no-build is set ` +
+              `(ECS container ${displayIdent(container.name)}); remove --no-build or run \`docker build\` manually first.`
           );
         }
         logger.debug(
-          `Local tag ${tag} is cached; skipping build for container '${container.name}'.`
+          `Local tag ${displayIdent(tag)} is cached; skipping build for container ${displayIdent(container.name)}.`
         );
         return tag;
       }
@@ -1074,10 +1081,10 @@ async function prepareOneImage(
         ...(options.platformOverride !== undefined && { platform: options.platformOverride }),
         wrapError: (stderr: string) =>
           new LocalInvokeBuildError(
-            `docker build failed for ECS container '${container.name}' ` +
+            `docker build failed for ECS container ${displayIdent(container.name)} ` +
               `(${displayUntrustedValue(asset.source.directory ?? asset.source.executable?.[0] ?? '')}): ${stderr}`
           ),
-        progressLabel: `Building container image for '${container.name}'`,
+        progressLabel: `Building container image for ${displayIdent(container.name)}`,
       });
       if (actualTag !== tag) {
         // `executable` source mode returns the script's own tag — re-tag
@@ -1090,7 +1097,7 @@ async function prepareOneImage(
         } catch (err) {
           const e = err as { stderr?: string; message?: string };
           throw new LocalInvokeBuildError(
-            `docker tag failed re-tagging '${actualTag}' → '${tag}' for ECS container '${container.name}': ${e.stderr?.trim() || e.message || String(err)}`
+            `docker tag failed re-tagging ${displayIdent(actualTag)} → ${displayIdent(tag)} for ECS container ${displayIdent(container.name)}: ${displayToolOutput(e.stderr?.trim() || e.message || String(err))}`
           );
         }
       }
@@ -1137,11 +1144,13 @@ export async function realizeDockerVolumes(
     try {
       await execFileAsync(getDockerCmd(), args);
       state.dockerVolumeNames.push(dockerVolumeName);
-      logger.debug(`Created docker volume ${dockerVolumeName} for task volume '${v.name}'`);
+      logger.debug(
+        `Created docker volume ${displayIdent(dockerVolumeName)} for task volume ${displayIdent(v.name)}`
+      );
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       throw new DockerRunnerError(
-        `docker volume create failed for '${v.name}': ${e.stderr?.trim() || describeExitWithoutArgv(err)}`
+        `docker volume create failed for ${displayIdent(v.name)}: ${displayToolOutput(e.stderr?.trim() || describeExitWithoutArgv(err))}`
       );
     }
     out.set(v.name, { ...v, dockerVolumeName });
@@ -1367,7 +1376,7 @@ export async function resolvePrivilegedHostPortRemaps(opts: {
       getLogger()
         .child('ecs')
         .warn(
-          `Container '${container.name}' container port ${cp} declares a privileged host port ` +
+          `Container ${displayIdent(container.name)} container port ${cp} declares a privileged host port ` +
             `${declaredHostPort}, which cannot be published locally (macOS Docker Desktop rejects ` +
             `privileged-port publishing; a host port < 1024 needs root). Auto-remapped to host port ` +
             `${freePort}. Pass --host-port ${cp}=<hostPort> to pin a specific host port.`
@@ -1471,7 +1480,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
       getLogger()
         .child('ecs')
         .info(
-          `Container '${container.name}' container port ${pm.containerPort} published on ` +
+          `Container ${displayIdent(container.name)} container port ${pm.containerPort} published on ` +
             `${formatAuthority(containerHost, hostPort)}${overrideNote}. ` +
             `Reach it at ${formatAuthority(containerHost, hostPort)}.`
         );

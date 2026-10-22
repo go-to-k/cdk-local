@@ -1312,7 +1312,7 @@ describe('createStudioServeManager', () => {
   // surfaces it as hostUrl so the request composer fires.
   const ECS_READY = 'Service(s) running: 1 replica.\n';
   const PUBLISH_LINE =
-    "Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.\n";
+    "Container web container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.\n";
 
   it('sets hostUrl from an auto-published port that arrives before the ready line (#392)', async () => {
     const bus = new StudioEventBus();
@@ -1388,7 +1388,7 @@ describe('parsePublishedHostEndpoint (issue #392)', () => {
   it('extracts http://<ip>:<port> from a publish line', () => {
     expect(
       parsePublishedHostEndpoint(
-        "Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321."
+        "Container web container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321."
       )
     ).toBe('http://127.0.0.1:54321');
   });
@@ -1405,7 +1405,7 @@ describe('parsePublishedHostEndpoint (issue #392)', () => {
     ).toBeUndefined();
     expect(
       parsePublishedHostEndpoint(
-        "  Container 'web' container port 80 published on 127.0.0.1:54321."
+        "  Container web container port 80 published on 127.0.0.1:54321."
       )
     ).toBeUndefined();
   });
@@ -1415,7 +1415,7 @@ describe('parsePublishedHostEndpoint (issue #392)', () => {
   it('parses a non-loopback container-host IP out of the banner (the caller refuses it)', () => {
     expect(
       parsePublishedHostEndpoint(
-        "Container 'web' container port 80 published on 192.168.0.5:8080. Reach it at 192.168.0.5:8080."
+        "Container web container port 80 published on 192.168.0.5:8080. Reach it at 192.168.0.5:8080."
       )
     ).toBe('http://192.168.0.5:8080');
   });
@@ -1701,7 +1701,7 @@ describe('serve readiness anchors its banners to the start of the line (issue #5
     const h = startPending('ecs', 'Stack/Svc');
     h.child.stdout.emit(
       'data',
-      "2026-08-27T12:00:00.000Z INFO  [ecs] Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.\n"
+      "2026-08-27T12:00:00.000Z INFO  [ecs] Container web container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.\n"
     );
     h.child.stdout.emit('data', 'Service(s) running: 1 replica.\n');
     await tick();
@@ -1799,7 +1799,7 @@ describe('serve readiness refuses a non-loopback endpoint (issue #578)', () => {
 describe('ecs hostUrl carries the same bounds (issue #578)', () => {
   const ECS_READY_LINE = 'Service(s) running: 1 replica.\n';
   const banner = (endpoint: string): string =>
-    `Container 'web' container port 80 published on ${endpoint}. Reach it at ${endpoint}.\n`;
+    `Container web container port 80 published on ${endpoint}. Reach it at ${endpoint}.\n`;
 
   it('ignores a publish banner relayed inside a WARN / ERROR line', async () => {
     for (const prefix of ['WARN: ', 'ERROR: ', '[ecs] WARN: ']) {
@@ -1932,7 +1932,7 @@ describe('a wildcard bind address is normalized to loopback, not refused (issue 
     const h = startPending('ecs', 'Stack/Svc');
     h.child.stdout.emit(
       'data',
-      "Container 'web' container port 80 published on 0.0.0.0:54321. Reach it at 0.0.0.0:54321.\n"
+      "Container web container port 80 published on 0.0.0.0:54321. Reach it at 0.0.0.0:54321.\n"
     );
     h.child.stdout.emit('data', 'Service(s) running: 1 replica.\n');
     await tick();
@@ -2027,7 +2027,7 @@ describe('a relayed container log cannot impersonate a ready banner (issue #578)
     expect(h.list()[0]?.status).toBe('running');
     h.child.stdout.emit(
       'data',
-      "Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.\n"
+      "Container web container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.\n"
     );
     await tick();
     expect(h.list()[0]?.hostUrl).toBe('http://127.0.0.1:54321');
@@ -2572,7 +2572,7 @@ describe('IPv6 banners studio has to read back (issue #599)', () => {
   it('parses a bracketed IPv6 replica publish banner', () => {
     expect(
       parsePublishedHostEndpoint(
-        "Container 'web' container port 80 published on [::1]:54321. Reach it at [::1]:54321."
+        "Container web container port 80 published on [::1]:54321. Reach it at [::1]:54321."
       )
     ).toBe('http://[::1]:54321');
   });
@@ -2580,7 +2580,7 @@ describe('IPv6 banners studio has to read back (issue #599)', () => {
   it('still parses the IPv4 replica publish banner byte-identically', () => {
     expect(
       parsePublishedHostEndpoint(
-        "Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321."
+        "Container web container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321."
       )
     ).toBe('http://127.0.0.1:54321');
   });
@@ -2589,14 +2589,14 @@ describe('IPv6 banners studio has to read back (issue #599)', () => {
     // `::1:54321` has no unambiguous split into host and port, so reading it
     // would be guessing at what the emitter meant.
     expect(
-      parsePublishedHostEndpoint("Container 'web' container port 80 published on ::1:54321.")
+      parsePublishedHostEndpoint("Container web container port 80 published on ::1:54321.")
     ).toBeUndefined();
   });
 
   it('keeps the publish banner anchored — a mid-message occurrence names nothing', () => {
     expect(
       parsePublishedHostEndpoint(
-        "relayed: Container 'web' container port 80 published on [::1]:54321."
+        "relayed: Container web container port 80 published on [::1]:54321."
       )
     ).toBeUndefined();
   });

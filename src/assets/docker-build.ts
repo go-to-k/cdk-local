@@ -3,6 +3,7 @@ import type { DockerImageAssetSource } from '../types/assets.js';
 import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../utils/docker-cmd.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayToolOutput } from '../utils/ident-display.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { resolveAssetSourcePath } from './asset-source-path.js';
@@ -58,7 +59,10 @@ export interface BuildDockerImageOptions {
   platform?: string;
   /**
    * Wrap the underlying docker / build-script failure in a typed error
-   * specific to the call site.
+   * specific to the call site. `stderr` arrives already through
+   * `displayToolOutput` (go-to-k/cdk-local#761): a `RUN` step of the
+   * assembly's Dockerfile writes into it, so its control characters are
+   * escaped while its line breaks stay.
    */
   wrapError: (stderr: string) => Error;
   /**
@@ -255,7 +259,7 @@ export async function buildDockerImage(
       result = await spawnStreaming(cmd, args, { cwd });
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
-      throw options.wrapError(e.stderr || e.message || String(err));
+      throw options.wrapError(displayToolOutput(e.stderr || e.message || String(err)));
     }
     const tag = result.stdout.trim();
     if (!tag) {
@@ -301,7 +305,9 @@ export async function buildDockerImage(
   // are masked: a build arg is where a CDK app passes an `NPM_TOKEN`, and
   // `--verbose` puts this line on the terminal.
   logger.debug(
-    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs).join(' ')} (cwd=${displayUntrustedValue(contextDir)})`
+    `${getDockerCmd()} ${redactDockerArgvValues(buildArgs)
+      .map((a) => displayUntrustedValue(a))
+      .join(' ')} (cwd=${displayUntrustedValue(contextDir)})`
   );
 
   try {
@@ -315,7 +321,7 @@ export async function buildDockerImage(
     });
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
-    throw options.wrapError(e.stderr || e.message || String(err));
+    throw options.wrapError(displayToolOutput(e.stderr || e.message || String(err)));
   }
 
   return options.tag;

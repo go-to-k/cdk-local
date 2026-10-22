@@ -35,6 +35,8 @@ import type { S3OriginReader } from './cloudfront-s3-origin.js';
 import type { FrontDoorTlsMaterials } from './front-door-tls.js';
 import { applyCorsResponseHeadersFromConfig, matchPreflight } from './cors-handler.js';
 import { formatAuthority } from '../utils/url-authority.js';
+import { displayIdent } from '../utils/ident-display.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 
 /**
  * Invoke a warm Lambda RIE container with a Function URL event, keyed by the
@@ -245,7 +247,7 @@ async function handleRequest(
     const invoke = edgeInvokers.get(assoc.functionLogicalId);
     if (!invoke) {
       logger.warn(
-        `Lambda@Edge ${eventType} function '${assoc.functionLogicalId}' was not booted (it failed to boot at start-up, see the boot warning, or was added after start-up); skipping. Restart start-cloudfront.`
+        `Lambda@Edge ${eventType} function ${displayIdent(assoc.functionLogicalId)} was not booted (it failed to boot at start-up, see the boot warning, or was added after start-up); skipping. Restart start-cloudfront.`
       );
       continue;
     }
@@ -397,7 +399,7 @@ async function runEdgeResponseStage(
   const invoke = edgeInvokers.get(assoc.functionLogicalId);
   if (!invoke) {
     logger.warn(
-      `Lambda@Edge ${eventType} function '${assoc.functionLogicalId}' was not booted (it failed to boot at start-up, see the boot warning, or was added after start-up); skipping. Restart start-cloudfront.`
+      `Lambda@Edge ${eventType} function ${displayIdent(assoc.functionLogicalId)} was not booted (it failed to boot at start-up, see the boot warning, or was added after start-up); skipping. Restart start-cloudfront.`
     );
     return undefined;
   }
@@ -598,27 +600,27 @@ function originUnavailableMessage(
   behavior: ResolvedBehavior
 ): string {
   if (!origin)
-    return `Behavior ${behavior.pathPattern ?? '(default)'} targets unknown origin '${behavior.targetOriginId}'.\n`;
+    return `Behavior ${behavior.pathPattern ?? '(default)'} targets unknown origin ${displayIdent(behavior.targetOriginId)}.\n`;
   if (origin.kind === 'lambda-url') {
     return (
-      `Origin '${origin.originId}' is a Lambda Function URL origin whose backing function ` +
-      `'${origin.functionLogicalId}' was not booted (it was added after start-up). Restart start-cloudfront.\n`
+      `Origin ${displayIdent(origin.originId)} is a Lambda Function URL origin whose backing function ` +
+      `${displayIdent(origin.functionLogicalId)} was not booted (it was added after start-up). Restart start-cloudfront.\n`
     );
   }
   if (origin.kind === 'custom') {
     return (
-      `Origin '${origin.originId}' is a custom (non-S3) origin (${origin.domainName}). ` +
+      `Origin ${displayIdent(origin.originId)} is a custom (non-S3) origin (${displayUntrustedValue(String(origin.domainName))}). ` +
       'cdkl start-cloudfront serves S3 origins and Lambda Function URL origins only.\n'
     );
   }
   if (origin.kind === 's3-deployed') {
     return (
-      `Origin '${origin.originId}' is a deployed-S3 origin (bucket '${origin.bucketName}') whose ` +
+      `Origin ${displayIdent(origin.originId)} is a deployed-S3 origin (bucket ${displayIdent(origin.bucketName)}) whose ` +
       'reader was not booted (it was promoted after start-up). Restart start-cloudfront.\n'
     );
   }
   return (
-    `Origin '${origin.originId}' is an S3 origin with no resolvable local source. ` +
+    `Origin ${displayIdent(origin.originId)} is an S3 origin with no resolvable local source. ` +
     `Point it at a directory with --origin ${origin.originId}=<dir>.\n`
   );
 }

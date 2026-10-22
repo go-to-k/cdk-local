@@ -18,6 +18,7 @@ import {
   stringifyThrown,
 } from './credential-error.js';
 import type { KvsDataSource } from './cloudfront-kvs.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * Static AWS credentials for the deployed `GetKey` client. A structural subset
@@ -144,7 +145,7 @@ export async function resolveDeployedKvsArnByName(
     // `warn`. RECONSTRUCTION does not arise: nothing is withheld, so there is
     // no population to split.
     getLogger().debug(
-      `ListKeyValueStores lookup for '${name}' failed: ${flattenToOneLine(stringifyThrown(err))}`
+      `ListKeyValueStores lookup for ${displayIdent(name)} failed: ${flattenToOneLine(stringifyThrown(err))}`
     );
   }
   return undefined;

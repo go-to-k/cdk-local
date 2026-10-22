@@ -14,6 +14,7 @@ import {
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayIdent } from '../utils/ident-display.js';
 import { getLogger } from '../utils/logger.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
@@ -184,7 +185,7 @@ export async function pullImage(
 ): Promise<void> {
   const logger = getLogger().child('docker');
   if (skipPull) {
-    logger.debug(`Skipping docker pull for ${image} (--no-pull)`);
+    logger.debug(`Skipping docker pull for ${displayIdent(image)} (--no-pull)`);
     return;
   }
   // Pull the variant matching the Lambda's declared `Architectures`. Without
@@ -193,16 +194,18 @@ export async function pullImage(
   // a compiled `provided.*` `bootstrap` fails to exec ("exec format error").
   const platformArgs = platform ? ['--platform', platform] : [];
   if (getLogger().getLevel() === 'debug') {
-    logger.info(`Pulling ${image}${platform ? ` (${platform})` : ''}...`);
+    logger.info(
+      `Pulling ${displayIdent(image)}${platform ? ` (${displayIdent(platform)})` : ''}...`
+    );
     try {
       await runDockerForeground(['pull', ...platformArgs, image]);
     } catch (err) {
       const e = err as Error;
-      throw new DockerRunnerError(`docker pull ${image} failed: ${e.message}`);
+      throw new DockerRunnerError(`docker pull ${displayIdent(image)} failed: ${e.message}`);
     }
     return;
   }
-  logger.debug(`Pulling ${image} (silent — pass --verbose to stream progress)`);
+  logger.debug(`Pulling ${displayIdent(image)} (silent — pass --verbose to stream progress)`);
   // Captured-mode pull: stdout/stderr collected, mirrored only when
   // --verbose is on (which the branch above already handles via
   // runDockerForeground), so streamLive: false keeps the silent
@@ -212,7 +215,7 @@ export async function pullImage(
   try {
     await runDockerStreaming(['pull', ...platformArgs, image], {
       streamLive: false,
-      progressLabel: `Pulling ${image}`,
+      progressLabel: `Pulling ${displayIdent(image)}`,
     });
   } catch (err) {
     const e = err as {
@@ -228,10 +231,14 @@ export async function pullImage(
     // a plain `Error` (no `exitCode` field); the non-zero-exit path
     // rejects with `SpawnError` (`exitCode` + `stderr` + `stdout`).
     if (e.exitCode === undefined || e.exitCode === null) {
-      throw new DockerRunnerError(`docker pull ${image} failed: ${e.message ?? String(err)}`);
+      throw new DockerRunnerError(
+        `docker pull ${displayIdent(image)} failed: ${e.message ?? String(err)}`
+      );
     }
     const detail = e.stderr?.trim() || e.stdout?.trim() || '(no output)';
-    throw new DockerRunnerError(`docker pull ${image} exited with code ${e.exitCode}: ${detail}`);
+    throw new DockerRunnerError(
+      `docker pull ${displayIdent(image)} exited with code ${e.exitCode}: ${detail}`
+    );
   }
 }
 
@@ -331,7 +338,11 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   // credential keys: a literal template env value or an `--env-vars` override
   // is where a local secret sits. Flattened so a control character in a value
   // cannot draw on the terminal.
-  logger.debug(flattenToOneLine(`${getDockerCmd()} ${redactDockerArgvValues(args).join(' ')}`));
+  logger.debug(
+    `${getDockerCmd()} ${redactDockerArgvValues(args)
+      .map((a) => displayUntrustedValue(a))
+      .join(' ')}`
+  );
   if (collisions.length > 0) {
     logger.warn(
       describeRefusedSensitiveEnvKeys(
@@ -634,7 +645,7 @@ export function appendEnvFlags(
  */
 export function describeRefusedSensitiveEnvKeys(subject: string, keys: readonly string[]): string {
   return (
-    `${subject}: sensitive env var(s) ${keys.map(displayUntrustedValue).join(', ')} ` +
+    `${subject}: sensitive env var(s) ${keys.map((a) => displayUntrustedValue(a)).join(', ')} ` +
     `share a name with a variable the container client reads (docker, or the CDK_DOCKER binary) ` +
     `or have a malformed name (empty, or containing '=' / NUL), and were NOT passed to the ` +
     `container at all (a colliding name would hijack that client; a malformed name cannot form ` +

@@ -76,6 +76,7 @@ import {
   VtlEvaluationError,
   type VtlContext,
 } from './vtl-engine.js';
+import { displayIdent } from '../utils/ident-display.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -940,7 +941,7 @@ function applyRequestParameters(
     const resolved = resolveRequestParameterValue(value, req);
     if (resolved === undefined) {
       logger.warn(
-        `RequestParameter '${key}' value '${value}' is not a recognized mapping; skipping.`
+        `RequestParameter ${displayIdent(key)} value ${displayIdent(value)} is not a recognized mapping; skipping.`
       );
       continue;
     }
@@ -953,17 +954,17 @@ function applyRequestParameters(
       // Querystring rewrites are recognized but cdk-local applies querystring
       // rewrites only via URI placeholder substitution; ignore.
       logger.warn(
-        `RequestParameter '${key}' (querystring rewrite) is recognized but ${getEmbedConfig().productName} applies querystring rewrites only via URI placeholder substitution; ignoring.`
+        `RequestParameter ${displayIdent(key)} (querystring rewrite) is recognized but ${getEmbedConfig().productName} applies querystring rewrites only via URI placeholder substitution; ignoring.`
       );
     } else if (pathMatch) {
       // Path rewrites apply at URI substitution time. Log + skip — the
       // pre-substituted URI already used the path parameters via
       // `{paramName}` placeholders, so a separate rewrite is rarely needed.
       logger.warn(
-        `RequestParameter '${key}' (path rewrite) is recognized but ${getEmbedConfig().productName} substitutes path placeholders via {param} in the URI; ignoring.`
+        `RequestParameter ${displayIdent(key)} (path rewrite) is recognized but ${getEmbedConfig().productName} substitutes path placeholders via {param} in the URI; ignoring.`
       );
     } else {
-      logger.warn(`Unsupported RequestParameter key '${key}'; skipping.`);
+      logger.warn(`Unsupported RequestParameter key ${displayIdent(key)}; skipping.`);
     }
   }
 }

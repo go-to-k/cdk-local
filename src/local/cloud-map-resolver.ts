@@ -1,6 +1,7 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import { EcsTaskResolutionError } from './ecs-task-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 
 /**
  * Phase 3 of #262 (Issue #460) — `AWS::ServiceDiscovery::*` template
@@ -98,14 +99,14 @@ export function buildCloudMapIndex(stack: StackInfo): CloudMapIndex {
   for (const [logicalId, resource] of Object.entries(resources)) {
     if (resource.Type === 'AWS::ServiceDiscovery::PublicDnsNamespace') {
       throw new EcsTaskResolutionError(
-        `Stack ${stack.stackName}: AWS::ServiceDiscovery::PublicDnsNamespace '${logicalId}' ` +
+        `Stack ${displayStackName(stack.stackName)}: AWS::ServiceDiscovery::PublicDnsNamespace ${displayIdent(logicalId)} ` +
           'is not supported by local emulation — public DNS defeats the "local" point. ' +
           `Use a PrivateDnsNamespace for ${getEmbedConfig().cliName} start-service.`
       );
     }
     if (resource.Type === 'AWS::ServiceDiscovery::HttpNamespace') {
       throw new EcsTaskResolutionError(
-        `Stack ${stack.stackName}: AWS::ServiceDiscovery::HttpNamespace '${logicalId}' is not ` +
+        `Stack ${displayStackName(stack.stackName)}: AWS::ServiceDiscovery::HttpNamespace ${displayIdent(logicalId)} is not ` +
           'supported by local emulation — HttpNamespace uses the AWS Cloud Map ' +
           'DiscoverInstances API directly (no DNS), which would require shimming the AWS SDK ' +
           'inside every container. Use a PrivateDnsNamespace + DnsConfig instead.'
@@ -117,7 +118,7 @@ export function buildCloudMapIndex(stack: StackInfo): CloudMapIndex {
     const name = typeof props['Name'] === 'string' ? props['Name'] : undefined;
     if (!name) {
       throw new EcsTaskResolutionError(
-        `Stack ${stack.stackName}: PrivateDnsNamespace '${logicalId}' has no literal Name ` +
+        `Stack ${displayStackName(stack.stackName)}: PrivateDnsNamespace ${displayIdent(logicalId)} has no literal Name ` +
           'property. Intrinsic-valued names are not supported (cross-stack / dynamic ' +
           'namespace names require deploy-state resolution which is out of scope for v1).'
       );
@@ -131,8 +132,8 @@ export function buildCloudMapIndex(stack: StackInfo): CloudMapIndex {
       // on the same name (verified via real synth). Keep the first;
       // surface a warn so users notice.
       warnings.push(
-        `Stack ${stack.stackName}: two PrivateDnsNamespace resources share Name='${name}' ` +
-          `('${namespacesByName.get(name)!.logicalId}' and '${logicalId}'). ` +
+        `Stack ${displayStackName(stack.stackName)}: two PrivateDnsNamespace resources share Name=${displayIdent(name)} ` +
+          `(${displayIdent(namespacesByName.get(name)!.logicalId)} and ${displayIdent(logicalId)}). ` +
           'Local emulation routes registrations to the first; the second will silently shadow.'
       );
     } else {
@@ -155,8 +156,8 @@ export function buildCloudMapIndex(stack: StackInfo): CloudMapIndex {
     const ns = namespacesByLogicalId.get(namespaceLogicalId);
     if (!ns) {
       throw new EcsTaskResolutionError(
-        `Stack ${stack.stackName}: AWS::ServiceDiscovery::Service '${logicalId}' references ` +
-          `NamespaceId '${namespaceLogicalId}' but no PrivateDnsNamespace with that logical id ` +
+        `Stack ${displayStackName(stack.stackName)}: AWS::ServiceDiscovery::Service ${displayIdent(logicalId)} references ` +
+          `NamespaceId ${displayIdent(namespaceLogicalId)} but no PrivateDnsNamespace with that logical id ` +
           'exists in this stack. Cross-stack Cloud Map namespaces are not supported in v1.'
       );
     }
@@ -164,7 +165,7 @@ export function buildCloudMapIndex(stack: StackInfo): CloudMapIndex {
     const name = typeof props['Name'] === 'string' ? props['Name'] : undefined;
     if (!name) {
       throw new EcsTaskResolutionError(
-        `Stack ${stack.stackName}: AWS::ServiceDiscovery::Service '${logicalId}' has no literal ` +
+        `Stack ${displayStackName(stack.stackName)}: AWS::ServiceDiscovery::Service ${displayIdent(logicalId)} has no literal ` +
           'Name property. Intrinsic-valued names are not supported in v1.'
       );
     }
@@ -214,7 +215,7 @@ function resolveNamespaceIdRef(raw: unknown, stackName: string, serviceLogicalId
     }
   }
   throw new EcsTaskResolutionError(
-    `Stack ${stackName}: AWS::ServiceDiscovery::Service '${serviceLogicalId}' has an ` +
+    `Stack ${displayStackName(stackName)}: AWS::ServiceDiscovery::Service ${displayIdent(serviceLogicalId)} has an ` +
       `unsupported NamespaceId reference shape: ${JSON.stringify(raw)}. Accepted shapes are ` +
       "{Fn::GetAtt: [<NsLogicalId>, 'Id']} or {Ref: <NsLogicalId>} pointing at a same-stack " +
       'PrivateDnsNamespace.'

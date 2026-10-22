@@ -17,6 +17,7 @@ import { getEmbedConfig } from './embed-config.js';
 import { flattenToOneLine } from './credential-error.js';
 import { attachContainerLogStreamer } from './container-log-streamer.js';
 import { formatAuthority } from '../utils/url-authority.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 
 /**
  * Phase 2 of #262 — long-running ECS Service emulator. Wraps the existing
@@ -458,13 +459,13 @@ export async function startEcsService(
   const replicaCount = computeReplicaCount(service.desiredCount, options.maxTasks);
   if (replicaCount < service.desiredCount) {
     logger.warn(
-      `Service '${service.serviceName}' template DesiredCount=${service.desiredCount} exceeds ` +
+      `Service ${displayIdent(service.serviceName)} template DesiredCount=${service.desiredCount} exceeds ` +
         `--max-tasks=${options.maxTasks}; running ${replicaCount} replica(s) locally. ` +
         'Raise --max-tasks to lift the cap, or accept the reduced concurrency for local dev.'
     );
   }
   logger.info(
-    `Starting ECS service '${service.serviceName}' with ${replicaCount} replica(s) ` +
+    `Starting ECS service ${displayIdent(service.serviceName)} with ${replicaCount} replica(s) ` +
       `(restartPolicy=${options.restartPolicy})`
   );
 
@@ -496,7 +497,7 @@ export async function startEcsService(
       // "every replica is running before startEcsService returns".
       instance.lastError = err instanceof Error ? err : new Error(String(err));
       throw new EcsServiceRunnerError(
-        `Failed to boot replica ${i} of service '${service.serviceName}': ` +
+        `Failed to boot replica ${i} of service ${displayIdent(service.serviceName)}: ` +
           `${instance.lastError.message}`
       );
     } finally {
@@ -586,7 +587,7 @@ export class ServiceController {
   private async doShutdown(): Promise<void> {
     this.runState.shuttingDown = true;
     const logger = getLogger().child('ecs-service');
-    logger.info(`Shutting down service '${this.service.serviceName}'...`);
+    logger.info(`Shutting down service ${displayIdent(this.service.serviceName)}...`);
 
     // Mark every replica as shutting-down BEFORE awaiting cleanup so
     // an in-flight watcher restart cannot resurrect it mid-cleanup.
@@ -831,7 +832,7 @@ async function bootReplica(
     ...(containerNameAliasOmitted.size > 0 ? { containerNameAliasOmitted } : {}),
     ...(ephemeralPublishContainerPorts.length > 0 ? { ephemeralPublishContainerPorts } : {}),
   };
-  logger.info(`Booting replica ${instance.index} (${perReplicaCluster})`);
+  logger.info(`Booting replica ${instance.index} (${displayIdent(perReplicaCluster)})`);
   await runEcsTask(service.task, perReplicaTaskOptions, instance.state);
 
   // Issue #227 — attach a per-container `docker logs -f` streamer so the
@@ -951,7 +952,9 @@ async function publishGatedReplica(
           // aliases back if and when it runs again (a restart re-boots it).
           getLogger()
             .child('ecs-service')
-            .debug(`${label}: '${name}' exited before listening; leaving its aliases withheld.`);
+            .debug(
+              `${label}: ${displayIdent(name)} exited before listening; leaving its aliases withheld.`
+            );
           continue;
         }
       }
@@ -960,7 +963,7 @@ async function publishGatedReplica(
       if (!ip) {
         throw new EcsServiceRunnerError(
           `${label}: no docker IP for ` +
-            `'${name}' on ${network.networkName}; cannot attach its Service Connect aliases.`
+            `${displayIdent(name)} on ${network.networkName}; cannot attach its Service Connect aliases.`
         );
       }
       const aliases = [name];
@@ -1080,9 +1083,9 @@ async function publishReplicaToCloudMap(
     const index = discovery.cloudMapIndexByStack.get(service.stack.stackName);
     if (index && !index.namespacesByName.has(ns)) {
       logger.warn(
-        `ECS Service '${service.serviceLogicalId}' ServiceConnectConfiguration.Namespace='${ns}' ` +
+        `ECS Service ${displayIdent(service.serviceLogicalId)} ServiceConnectConfiguration.Namespace=${displayIdent(ns)} ` +
           'does not match any AWS::ServiceDiscovery::PrivateDnsNamespace declared in stack ' +
-          `${service.stack.stackName}. Publishing under the literal name anyway; peer services ` +
+          `${displayStackName(service.stack.stackName)}. Publishing under the literal name anyway; peer services ` +
           'using the same literal will still discover this endpoint.'
       );
     }
@@ -1113,8 +1116,8 @@ async function publishReplicaToCloudMap(
     const index = discovery.cloudMapIndexByStack.get(service.stack.stackName);
     if (!index) {
       logger.warn(
-        `ECS Service '${service.serviceLogicalId}' declares ServiceRegistries[] but ${getEmbedConfig().productName} has ` +
-          `no Cloud Map index for stack ${service.stack.stackName}. Skipping registration.`
+        `ECS Service ${displayIdent(service.serviceLogicalId)} declares ServiceRegistries[] but ${getEmbedConfig().productName} has ` +
+          `no Cloud Map index for stack ${displayStackName(service.stack.stackName)}. Skipping registration.`
       );
       return;
     }
@@ -1123,9 +1126,9 @@ async function publishReplicaToCloudMap(
       const cm = index.servicesByLogicalId.get(reg.cloudMapServiceLogicalId);
       if (!cm) {
         logger.warn(
-          `ECS Service '${service.serviceLogicalId}' ServiceRegistries[].cloudMapServiceLogicalId=` +
-            `'${reg.cloudMapServiceLogicalId}' did not resolve to an AWS::ServiceDiscovery::Service ` +
-            `in stack ${service.stack.stackName}. Skipping this registration.`
+          `ECS Service ${displayIdent(service.serviceLogicalId)} ServiceRegistries[].cloudMapServiceLogicalId=` +
+            `${displayIdent(reg.cloudMapServiceLogicalId)} did not resolve to an AWS::ServiceDiscovery::Service ` +
+            `in stack ${displayStackName(service.stack.stackName)}. Skipping this registration.`
         );
         continue;
       }
@@ -1148,8 +1151,8 @@ async function publishReplicaToCloudMap(
       }
       if (port === undefined) {
         logger.warn(
-          `ECS Service '${service.serviceLogicalId}' ServiceRegistries[] entry for Cloud Map ` +
-            `service '${cm.logicalId}' has no resolvable container port; skipping.`
+          `ECS Service ${displayIdent(service.serviceLogicalId)} ServiceRegistries[] entry for Cloud Map ` +
+            `service ${displayIdent(cm.logicalId)} has no resolvable container port; skipping.`
         );
         continue;
       }
@@ -1193,8 +1196,8 @@ async function publishReplicaToFrontDoor(
     );
     if (!started) {
       logger.warn(
-        `ECS Service '${service.serviceLogicalId}' front-door: container ` +
-          `'${target.targetContainerName}' did not start for replica ${instance.index}; ` +
+        `ECS Service ${displayIdent(service.serviceLogicalId)} front-door: container ` +
+          `${displayIdent(target.targetContainerName)} did not start for replica ${instance.index}; ` +
           'the front-door cannot route to it.'
       );
       continue;
@@ -1212,7 +1215,7 @@ async function publishReplicaToFrontDoor(
     if (hostPort === undefined) {
       logger.warn(
         `Replica ${instance.index}: container port ${target.targetContainerPort} on ` +
-          `'${target.targetContainerName}' was not published on a host port; ` +
+          `${displayIdent(target.targetContainerName)} was not published on a host port; ` +
           'skipping front-door registration for this replica.'
       );
       continue;
@@ -1780,7 +1783,7 @@ export async function softReloadReplica(args: {
         : [];
   if (containersToCycle.length === 0) {
     throw new EcsServiceRunnerError(
-      `softReloadReplica: service '${newService.serviceLogicalId}' has no containers to cycle.`
+      `softReloadReplica: service ${displayIdent(newService.serviceLogicalId)} has no containers to cycle.`
     );
   }
 
@@ -1801,7 +1804,7 @@ export async function softReloadReplica(args: {
     if (!id) {
       throw new EcsServiceRunnerError(
         `softReloadReplica: replica r${instance.index} has no started container named ` +
-          `'${container.name}' (started: ${[...startedById.keys()].join(', ') || 'none'}).`
+          `${displayIdent(container.name)} (started: ${[...startedById.keys()].map((k) => displayIdent(k, { listMember: true })).join(', ') || 'none'}).`
       );
     }
     const aliases = [container.name];
@@ -1869,7 +1872,7 @@ export async function softReloadReplica(args: {
         workdir = (await dockerInspectWorkdirImpl(target.id)) || '/';
       } catch (err) {
         throw new EcsServiceRunnerError(
-          `softReloadReplica: docker inspect of container '${target.name}' (${target.id}) ` +
+          `softReloadReplica: docker inspect of container ${displayIdent(target.name)} (${target.id}) ` +
             `failed: ${err instanceof Error ? err.message : String(err)}. ` +
             'This replica is unregistered from Cloud Map + the front-door pool until the ' +
             'next save triggers another reload.'
@@ -1886,7 +1889,7 @@ export async function softReloadReplica(args: {
         await dockerCpImpl(`${sourceDirToCopy}/.`, `${target.id}:${workdirDest}`);
       } catch (err) {
         throw new EcsServiceRunnerError(
-          `softReloadReplica: docker cp into '${target.name}' (${target.id}:${workdir}) ` +
+          `softReloadReplica: docker cp into ${displayIdent(target.name)} (${target.id}:${workdir}) ` +
             `failed: ${err instanceof Error ? err.message : String(err)}. ` +
             'This replica is unregistered from Cloud Map + the front-door pool until the ' +
             'next save triggers another reload.'
@@ -1946,7 +1949,7 @@ export async function softReloadReplica(args: {
         await dockerStartImpl(target.id);
       } catch (err) {
         throw new EcsServiceRunnerError(
-          `softReloadReplica: docker stop / start of '${target.name}' (${target.id}) ` +
+          `softReloadReplica: docker stop / start of ${displayIdent(target.name)} (${target.id}) ` +
             `failed: ${err instanceof Error ? err.message : String(err)}. ` +
             'This replica is unregistered from Cloud Map + the front-door pool until the ' +
             'next save triggers another reload.'
@@ -1981,7 +1984,7 @@ export async function softReloadReplica(args: {
         await attachToSharedNetwork(target.id, plan, true);
       } catch (err) {
         throw new EcsServiceRunnerError(
-          `softReloadReplica: restoring the network aliases of '${target.name}' (${target.id}) ` +
+          `softReloadReplica: restoring the network aliases of ${displayIdent(target.name)} (${target.id}) ` +
             `failed: ${err instanceof Error ? err.message : String(err)}. ` +
             'This replica is unregistered from Cloud Map + the front-door pool until the ' +
             'next save triggers another reload.'
@@ -2238,7 +2241,7 @@ async function detachFromSharedNetwork(
   }
   if (!ip) {
     logger.debug(
-      `Soft-reload: no IP for '${target.name}' (${target.id}) on ${networkName}; ` +
+      `Soft-reload: no IP for ${displayIdent(target.name)} (${target.id}) on ${networkName}; ` +
         'restarting it in place without detaching its network aliases first.'
     );
     return undefined;
@@ -2255,7 +2258,7 @@ async function detachFromSharedNetwork(
     await dockerNetworkDisconnectImpl(networkName, target.id);
   } catch (err) {
     logger.debug(
-      `Soft-reload: detaching '${target.name}' (${target.id}) from ${networkName} failed: ` +
+      `Soft-reload: detaching ${displayIdent(target.name)} (${target.id}) from ${networkName} failed: ` +
         `${err instanceof Error ? err.message : String(err)}. Restarting it in place.`
     );
     return undefined;

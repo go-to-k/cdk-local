@@ -477,7 +477,7 @@ describe('docker-build failure messages (#764)', () => {
     mockRunDockerStreaming.mockRejectedValue({ stderr: 'boom' });
     const message = await ecsBuildFailure({ directory: PAREN_FORGE });
     expect(message).toBe(
-      `docker build failed for ECS container 'web' (${JSON.stringify(PAREN_FORGE)}): boom`
+      `docker build failed for ECS container web (${JSON.stringify(PAREN_FORGE)}): boom`
     );
     expectContained(message);
   });
@@ -486,7 +486,7 @@ describe('docker-build failure messages (#764)', () => {
     mockSpawnStreaming.mockRejectedValue({ stderr: 'boom' });
     const message = await ecsBuildFailure({ executable: [EXEC_FORGE, SECRET_ARG] });
     expect(message).toBe(
-      `docker build failed for ECS container 'web' (${JSON.stringify(EXEC_FORGE)}): boom`
+      `docker build failed for ECS container web (${JSON.stringify(EXEC_FORGE)}): boom`
     );
     expectContained(message);
     expect(message).not.toContain(SECRET_ARG);

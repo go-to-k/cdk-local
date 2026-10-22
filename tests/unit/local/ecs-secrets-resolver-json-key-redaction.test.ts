@@ -73,9 +73,9 @@ async function jsonKeyFailure(stored: string): Promise<string> {
 
 /** The discriminators that must survive the redaction, in every case. */
 function expectStillActionable(message: string): void {
-  expect(message).toContain("Container 'ApiContainer'");
-  expect(message).toContain("secret 'DB_PASSWORD'");
-  expect(message).toContain("json-key 'password'");
+  expect(message).toContain('Container ApiContainer');
+  expect(message).toContain('secret DB_PASSWORD');
+  expect(message).toContain('json-key password');
   expect(message).toContain('not valid JSON (SyntaxError)');
   expect(message).toContain('withheld');
 }
@@ -210,9 +210,9 @@ describe('the three VALUE-consuming sibling branches must stay value-free (issue
 
     // Positive first: this is the branch under test, not some earlier throw.
     expect(message).toContain(surviving);
-    expect(message).toContain("Container 'ApiContainer'");
-    expect(message).toContain("secret 'DB_PASSWORD'");
-    expect(message).toContain("json-key 'password'");
+    expect(message).toContain('Container ApiContainer');
+    expect(message).toContain('secret DB_PASSWORD');
+    expect(message).toContain('json-key password');
 
     expect(message).not.toContain(PLAINTEXT);
     // The secret's STRUCTURE is disclosure too, and listing the keys it does
@@ -260,5 +260,19 @@ describe('the three VALUE-consuming sibling branches must stay value-free (issue
     expect(message).not.toContain(indexKeyed);
     // Base64 -- the shape a `Buffer.from(...).toString('base64')` edit emits.
     expect(message).not.toContain(Buffer.from(bytes).toString('base64'));
+  });
+});
+
+// go-to-k/cdk-local#761: the container and env names come from the task
+// definition, so a forging one renders as ONE JSON literal.
+describe('json-key refusal renders template-chosen names (#761)', () => {
+  it("quotes a container and env name carrying cdk-local's own quote", async () => {
+    smSend.mockResolvedValue({ SecretString: 'not json' });
+    const err = await resolveEcsSecrets([
+      { containerName: "Api' ok", name: 'DB\u001bX', valueFrom: ARN_WITH_JSON_KEY },
+    ]).catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(
+      /^Container "Api' ok" secret "DB X" specified json-key password but the secret value is not valid JSON/
+    );
   });
 });

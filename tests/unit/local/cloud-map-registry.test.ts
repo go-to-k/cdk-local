@@ -204,7 +204,31 @@ describe('CloudMapRegistry', () => {
       const warnMessages = warnSpy.mock.calls.map((c) => String(c[0]));
       expect(
         warnMessages.some(
-          (m) => /ClientAlias DnsName collision/.test(m) && /'api'/.test(m) && /first-wins/.test(m)
+          (m) => /ClientAlias DnsName collision/.test(m) && /collision: api was/.test(m) && /first-wins/.test(m)
+        )
+      ).toBe(true);
+    });
+
+    it('renders the alias and targets bare when plain, as JSON literals when forging (#761)', () => {
+      const r = new CloudMapRegistry();
+      r.register('namespace.local', 'svcA', { ip: '1.1.1.1', port: 80, ownerKey: 'A:r0' });
+      r.registerAlias('api', 'svcA.namespace.local');
+      r.registerAlias('api', 'svcB.namespace.local');
+      r.registerAlias("a' b", 'svcA.namespace.local');
+      r.registerAlias("a' b", 'x\u001b[2Ky');
+      const warnMessages = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(
+        warnMessages.some((m) =>
+          m.includes(
+            'collision: api was already mapped to svcA.namespace.local; keeping first-wins binding and ignoring new mapping to svcB.namespace.local.'
+          )
+        )
+      ).toBe(true);
+      expect(
+        warnMessages.some((m) =>
+          m.includes(
+            `collision: "a' b" was already mapped to svcA.namespace.local; keeping first-wins binding and ignoring new mapping to "x [2Ky".`
+          )
         )
       ).toBe(true);
     });

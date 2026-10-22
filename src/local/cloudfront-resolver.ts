@@ -14,6 +14,7 @@ import {
 } from './cloudfront-function-runtime.js';
 import type { ResolvedCustomErrorResponse } from './cloudfront-static-origin.js';
 import { resolveResponseHeadersPolicyCors, type CorsConfig } from './cors-handler.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 
 /**
  * Resolve a synthesized `AWS::CloudFront::Distribution` into the in-memory
@@ -198,12 +199,12 @@ export function resolveCloudFrontDistribution(args: {
   const resource = (template.Resources ?? {})[logicalId];
   if (!resource || resource.Type !== CLOUDFRONT_DISTRIBUTION_TYPE) {
     throw new Error(
-      `Resource '${logicalId}' in stack ${stack.stackName} is not an ${CLOUDFRONT_DISTRIBUTION_TYPE}.`
+      `Resource ${displayIdent(logicalId)} in stack ${displayStackName(stack.stackName)} is not an ${CLOUDFRONT_DISTRIBUTION_TYPE}.`
     );
   }
   const distConfig = (resource.Properties ?? {})['DistributionConfig'];
   if (!distConfig || typeof distConfig !== 'object') {
-    throw new Error(`Distribution '${logicalId}' has no DistributionConfig.`);
+    throw new Error(`Distribution ${displayIdent(logicalId)} has no DistributionConfig.`);
   }
   const dc = distConfig as Record<string, unknown>;
 
@@ -236,7 +237,7 @@ function compileDistributionFunctions(
     const code = props['FunctionCode'];
     if (typeof code !== 'string') {
       getLogger().warn(
-        `CloudFront Function '${logicalId}' has a non-inline FunctionCode; cdk-local can only run inline function code. Skipping.`
+        `CloudFront Function ${displayIdent(logicalId)} has a non-inline FunctionCode; cdk-local can only run inline function code. Skipping.`
       );
       continue;
     }
@@ -325,7 +326,7 @@ function resolveBehaviors(
     // requests, so skip it with a WARN instead.
     if (typeof behavior['PathPattern'] !== 'string') {
       getLogger().warn(
-        `Distribution '${distLogicalId}': a cache behavior has no literal PathPattern; cdk-local cannot route it and is skipping it.`
+        `Distribution ${displayIdent(distLogicalId)}: a cache behavior has no literal PathPattern; cdk-local cannot route it and is skipping it.`
       );
       continue;
     }
@@ -368,7 +369,7 @@ function resolveBehavior(
     const fnLogicalId = pickFunctionLogicalIdFromArn(assoc['FunctionARN'] ?? assoc['FunctionArn']);
     if (!fnLogicalId) {
       getLogger().warn(
-        `Distribution '${distLogicalId}': a FunctionAssociation references a function ARN cdk-local could not resolve to a local AWS::CloudFront::Function; it will not run.`
+        `Distribution ${displayIdent(distLogicalId)}: a FunctionAssociation references a function ARN cdk-local could not resolve to a local AWS::CloudFront::Function; it will not run.`
       );
       continue;
     }
@@ -415,7 +416,7 @@ function resolveLambdaEdgeAssociations(
     const functionLogicalId = pickLambdaEdgeFunctionLogicalId(assoc['LambdaFunctionARN'], template);
     if (!functionLogicalId) {
       getLogger().warn(
-        `Distribution '${distLogicalId}': a Lambda@Edge association references a LambdaFunctionARN ` +
+        `Distribution ${displayIdent(distLogicalId)}: a Lambda@Edge association references a LambdaFunctionARN ` +
           'cdk-local could not resolve to a local AWS::Lambda::Function; it will not run.'
       );
       continue;

@@ -120,3 +120,46 @@ describe('resolveRestV1Authorizer — a malformed Cognito ARN renders display-sa
     expect(message.replace(JSON.stringify(arn), '<v>')).not.toContain('Pool verified');
   });
 });
+
+// go-to-k/cdk-local#761: the `<stack>/<logicalId>` location prefix and the
+// quoted template values are assembly-chosen, so each renders through
+// `displayStackName` / `displayIdent`: bare when plain, ONE JSON literal when
+// it could forge a clause or a line.
+describe('authorizer refusals render assembly-chosen identifiers (#761)', () => {
+  function refusal(authId: string, stackName: string, type: unknown): string {
+    const template = {
+      Resources: { [authId]: { Type: 'AWS::ApiGateway::Authorizer', Properties: { Type: type } } },
+    } as never;
+    try {
+      resolveRestV1Authorizer(authId, template, stackName, `${stackName}/Method`);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error('expected a refusal');
+  }
+
+  it('renders plain values bare', () => {
+    expect(refusal('Auth', 'MyStack', 'AWS_IAM')).toMatch(
+      /^MyStack\/Auth: AWS::ApiGateway::Authorizer\.Type AWS_IAM is not supported by /
+    );
+  });
+
+  it('quotes a forging stack name, logical id and type', () => {
+    expect(refusal("Auth' x", "My' Stack", 'a\u001b[2Kb')).toMatch(
+      /^"My' Stack"\/"Auth' x": AWS::ApiGateway::Authorizer\.Type "a \[2Kb" is not supported by /
+    );
+  });
+
+  it('renders the AuthorizerId-not-found location prefix through the same rule', () => {
+    const template = { Resources: {} } as never;
+    let message = '';
+    try {
+      resolveRestV1Authorizer("Gone' x", template, 'MyStack', 'MyStack/Method\nWARN: forged');
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toBe(
+      '"MyStack/Method WARN: forged": AuthorizerId "Gone\' x" does not point at an AWS::ApiGateway::Authorizer in stack MyStack.'
+    );
+  });
+});

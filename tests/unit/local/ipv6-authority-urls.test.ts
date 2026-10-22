@@ -14,6 +14,7 @@ import {
 } from '../../../src/local/agentcore-ws-client.js';
 import { invokeRie, waitForRieReady } from '../../../src/local/rie-client.js';
 import { buildMgmtEndpointEnvUrl } from '../../../src/local/websocket-mgmt-api.js';
+import { parsePublishedHostEndpoint } from '../../../src/local/studio-serve-manager.js';
 
 /**
  * Issue go-to-k/cdk-local#599 — the URLs these modules build from a host and a
@@ -155,9 +156,9 @@ describe('buildMgmtEndpointEnvUrl (issue #599)', () => {
 });
 
 describe('ecs-task-runner replica publish banner (issue #599)', () => {
-  function container(): ResolvedEcsContainer {
+  function container(name = 'web'): ResolvedEcsContainer {
     return {
-      name: 'web',
+      name,
       image: { kind: 'public', uri: 'public.ecr.aws/docker/library/busybox:latest' },
       environment: {},
       sensitiveEnvKeys: [],
@@ -172,14 +173,14 @@ describe('ecs-task-runner replica publish banner (issue #599)', () => {
     } as unknown as ResolvedEcsContainer;
   }
 
-  function bannerFor(containerHost: string): string {
+  function bannerFor(containerHost: string, name = 'web'): string {
     const lines: string[] = [];
     vi.spyOn(console, 'info').mockImplementation((msg?: unknown) => {
       lines.push(String(msg));
     });
     buildDockerRunArgs({
       task: { family: 'fam' } as unknown as ResolvedEcsTask,
-      container: container(),
+      container: container(name),
       image: 'public.ecr.aws/docker/library/busybox:latest',
       network: 'net',
       volumeByName: new Map(),
@@ -197,21 +198,64 @@ describe('ecs-task-runner replica publish banner (issue #599)', () => {
 
   it('brackets an IPv6 container host, so the endpoint studio reads is a URL', () => {
     const banner = bannerFor('::1');
-    expect(banner).toContain("Container 'web' container port 8080 published on [::1]:8080.");
+    expect(banner).toContain("Container web container port 8080 published on [::1]:8080.");
     expect(banner).toContain('Reach it at [::1]:8080.');
     expectAuthority('http://[::1]:8080', '[::1]', 8080);
   });
 
   it('leaves an IPv4 container host byte-identical — studio greps this line', () => {
     const banner = bannerFor('127.0.0.1');
-    expect(banner).toContain("Container 'web' container port 8080 published on 127.0.0.1:8080.");
+    expect(banner).toContain("Container web container port 8080 published on 127.0.0.1:8080.");
     expect(banner).toContain('Reach it at 127.0.0.1:8080.');
   });
 
   it('leaves a DNS container host unbracketed', () => {
     expect(bannerFor('localhost')).toContain(
-      "Container 'web' container port 8080 published on localhost:8080."
+      "Container web container port 8080 published on localhost:8080."
     );
+  });
+
+  // go-to-k/cdk-local#761: the container name is rendered by `displayIdent`,
+  // and studio's `parsePublishedHostEndpoint` reads this exact line, so the
+  // EMITTER and the PARSER are exercised together rather than each against a
+  // hand-written banner.
+  it('round-trips a plain name: rendered bare, parsed by studio', () => {
+    const banner = bannerFor('127.0.0.1', 'web');
+    expect(banner.startsWith('Container web container port 8080 published on 127.0.0.1:8080.')).toBe(
+      true
+    );
+    expect(parsePublishedHostEndpoint(banner)).toBe('http://127.0.0.1:8080');
+  });
+
+  it("round-trips a name carrying cdk-local's own quote as one JSON literal", () => {
+    const banner = bannerFor('127.0.0.1', "a' b");
+    expect(banner.startsWith(`Container "a' b" container port 8080 published on 127.0.0.1:8080.`)).toBe(
+      true
+    );
+    expect(parsePublishedHostEndpoint(banner)).toBe('http://127.0.0.1:8080');
+  });
+
+  it('a name forging a second banner cannot name the endpoint studio adopts', () => {
+    const forged = 'x" container port 1 published on 10.9.9.9:1. "';
+    const banner = bannerFor('127.0.0.1', forged);
+    expect(banner).toContain(
+      'Container "x\\" container port 1 published on 10.9.9.9:1. \\"" container port 8080 published on 127.0.0.1:8080.'
+    );
+    expect(parsePublishedHostEndpoint(banner)).toBe('http://127.0.0.1:8080');
+  });
+
+  it('a control character in the name is flattened, quoted, and still parsed', () => {
+    const banner = bannerFor('127.0.0.1', 'x\u001b[2K\rweb');
+    expect(banner.startsWith('Container "x [2K web" container port 8080')).toBe(true);
+    expect(parsePublishedHostEndpoint(banner)).toBe('http://127.0.0.1:8080');
+  });
+
+  it('an over-long name carries its cut marker, and the banner still parses', () => {
+    const banner = bannerFor('127.0.0.1', 'w'.repeat(300));
+    expect(banner).toMatch(
+      /^Container w{255} \[cut: 45 more characters withheld, tail sha256:[0-9a-f]{32}\] container port 8080 published on 127\.0\.0\.1:8080\./
+    );
+    expect(parsePublishedHostEndpoint(banner)).toBe('http://127.0.0.1:8080');
   });
 });
 

@@ -164,9 +164,9 @@ describe('resolveSsm — the failure shapes (issue #557)', () => {
   it('throws when the response carries a Parameter with no Value', async () => {
     ssmSend.mockResolvedValue({ Parameter: { Name: SSM_NAME } });
     const message = await ssmFailure();
-    expect(message).toContain(`SSM parameter '${SSM_NAME}' returned no Value`);
-    expect(message).toContain("container 'ApiContainer'");
-    expect(message).toContain("env 'DB_PASSWORD'");
+    expect(message).toContain(`SSM parameter ${SSM_NAME} returned no Value`);
+    expect(message).toContain('container ApiContainer');
+    expect(message).toContain('env DB_PASSWORD');
     // The `err instanceof EcsSecretsResolutionError` re-throw guard: this
     // throw is raised INSIDE the try, so without the guard the catch would
     // re-wrap it as a transport failure and report a resolvable parameter as
@@ -177,7 +177,7 @@ describe('resolveSsm — the failure shapes (issue #557)', () => {
   it('throws the same way when the response carries no Parameter at all', async () => {
     ssmSend.mockResolvedValue({});
     const message = await ssmFailure();
-    expect(message).toContain(`SSM parameter '${SSM_NAME}' returned no Value`);
+    expect(message).toContain(`SSM parameter ${SSM_NAME} returned no Value`);
     expect(message).not.toContain('Failed to resolve SSM parameter');
   });
 
@@ -202,7 +202,7 @@ describe('resolveSsm — the failure shapes (issue #557)', () => {
     );
     const message = await ssmFailure();
     expect(message).toContain(
-      "Failed to resolve SSM parameter for container 'ApiContainer' / env 'DB_PASSWORD'"
+      "Failed to resolve SSM parameter for container ApiContainer / env DB_PASSWORD"
     );
     expect(message).toContain(`(${SSM_NAME})`);
     expect(message).toContain('ParameterNotFound: Parameter /app/db/password not found.');

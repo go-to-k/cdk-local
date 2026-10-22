@@ -53,6 +53,7 @@ import type * as SfnNs from '@aws-sdk/client-sfn';
 import type * as SqsNs from '@aws-sdk/client-sqs';
 import { workloadClientConfig } from '../utils/workload-identity.js';
 import { stringifyValue } from '../utils/stringify.js';
+import { displayIdent } from '../utils/ident-display.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
 import {
@@ -689,7 +690,7 @@ export function applyResponseParameters(
     const headerMatch = /^(append|overwrite|remove):header\.(.+)$/i.exec(key);
     if (!headerMatch || !headerMatch[1] || !headerMatch[2]) {
       logger.warn(
-        `ResponseParameters: key '${key}' does not match the expected shape ` +
+        `ResponseParameters: key ${displayIdent(key)} does not match the expected shape ` +
           `'(append|overwrite|remove):header.<name>' or 'overwrite:statuscode'; ` +
           `the value was dropped. Check for typos (e.g. 'appen:' vs 'append:').`
       );
@@ -702,7 +703,7 @@ export function applyResponseParameters(
       // (not debug) so the user notices a reserved header silently
       // disappearing from the configured response mapping.
       logger.warn(
-        `ResponseParameters: header '${name}' is reserved by API Gateway and was skipped`
+        `ResponseParameters: header ${displayIdent(name)} is reserved by API Gateway and was skipped`
       );
       continue;
     }

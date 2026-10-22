@@ -115,7 +115,7 @@ describe('runViewerRequest', () => {
 
   it('wraps a handler that throws with the function logical id', async () => {
     const fn = compile("function handler(event){ throw new Error('boom'); }");
-    await expect(runViewerRequest(fn, reqEvent('/'))).rejects.toThrow(/CloudFront Function 'Fn'.*boom/);
+    await expect(runViewerRequest(fn, reqEvent('/'))).rejects.toThrow(/CloudFront Function Fn.*boom/);
   });
 
   it('tolerates a handler that writes a bare-string header value', async () => {
@@ -130,7 +130,7 @@ describe('runViewerRequest', () => {
   it('aborts a runaway synchronous handler via the vm timeout', async () => {
     const fn = compile('function handler(event){ while (true) {} }');
     await expect(runViewerRequest(fn, reqEvent('/'))).rejects.toThrow(
-      /CloudFront Function 'Fn'/
+      /CloudFront Function Fn/
     );
   }, 15000);
 });

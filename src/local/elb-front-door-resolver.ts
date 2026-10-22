@@ -1,6 +1,8 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import type { AlbHttpHeaderCondition, AlbQueryStringCondition } from './alb-path-matcher.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 
 /**
  * Resolve an `AWS::ElasticLoadBalancingV2::LoadBalancer` (an ALB) into the
@@ -294,7 +296,7 @@ export function resolveAlbFrontDoor(
     const protocol = typeof props['Protocol'] === 'string' ? props['Protocol'] : 'HTTP';
     if (protocol !== 'HTTP' && protocol !== 'HTTPS') {
       warnings.push(
-        `Listener '${listenerLogicalId}' on port ${port} uses protocol ${protocol}; the local ` +
+        `Listener ${displayIdent(listenerLogicalId)} on port ${port} uses protocol ${displayIdent(protocol)}; the local ` +
           'ALB front-door supports HTTP and HTTPS listeners only (TLS / NLB-style listeners are ' +
           'not served). Skipping it.'
       );
@@ -310,7 +312,7 @@ export function resolveAlbFrontDoor(
       // terminates TLS with a user-supplied or auto-generated self-signed
       // cert instead.
       warnings.push(
-        `Listener '${listenerLogicalId}' on port ${port} declares ACM Certificates which are not ` +
+        `Listener ${displayIdent(listenerLogicalId)} on port ${port} declares ACM Certificates which are not ` +
           'retrievable locally. The front-door terminates TLS with --tls-cert/--tls-key or an ' +
           'auto-generated self-signed cert.'
       );
@@ -321,14 +323,14 @@ export function resolveAlbFrontDoor(
       resources,
       tgToService,
       stackName,
-      `Listener '${listenerLogicalId}' (port ${port}) default action`,
+      `Listener ${displayIdent(listenerLogicalId)} (port ${port}) default action`,
       warnings
     );
 
     const rules: ResolvedListenerRule[] = [];
     for (const { ruleLogicalId, ruleProps } of rulesByListener.get(listenerLogicalId) ?? []) {
       const priority = parsePriority(ruleProps['Priority']);
-      const ruleLabel = `Listener rule '${ruleLogicalId}' (priority ${priority})`;
+      const ruleLabel = `Listener rule ${displayIdent(ruleLogicalId)} (priority ${priority})`;
       const parsed = parseRuleConditions(ruleProps['Conditions'], ruleLabel, warnings);
       if (!parsed) {
         // parseRuleConditions warned about an unsupported / malformed condition.
@@ -448,7 +450,7 @@ function resolveAction(
       terminal = resolveFixedResponseAction(a);
     } else if (typeof type === 'string') {
       warnings.push(
-        `${label} uses an unsupported action type '${type}'. The local ALB front-door supports ` +
+        `${label} uses an unsupported action type ${displayIdent(type)}. The local ALB front-door supports ` +
           'forward / redirect / fixed-response actions only. Skipping it.'
       );
     }
@@ -495,8 +497,8 @@ function resolveForwardAction(
     const tg = resources[tgRef];
     if (!tg || tg.Type !== TARGET_GROUP_TYPE) {
       warnings.push(
-        `${label} forwards to target group '${tgRef}', but no ${TARGET_GROUP_TYPE} with that ` +
-          `logical id exists in ${stackName}. Skipping that target group.`
+        `${label} forwards to target group ${displayIdent(tgRef)}, but no ${TARGET_GROUP_TYPE} with that ` +
+          `logical id exists in ${displayStackName(stackName)}. Skipping that target group.`
       );
       continue;
     }
@@ -518,8 +520,8 @@ function resolveForwardAction(
     const backing = tgToService.get(tgRef);
     if (!backing) {
       warnings.push(
-        `${label} forwards to target group '${tgRef}', which is not referenced by any ` +
-          `${SERVICE_TYPE}.LoadBalancers[] in ${stackName}; cdk-local has no ECS service to front ` +
+        `${label} forwards to target group ${displayIdent(tgRef)}, which is not referenced by any ` +
+          `${SERVICE_TYPE}.LoadBalancers[] in ${displayStackName(stackName)}; cdk-local has no ECS service to front ` +
           'behind it. Skipping that target group.'
       );
       continue;
@@ -554,7 +556,7 @@ function resolveLambdaForwardTarget(
   const lambdaLogicalId = resolveLambdaTargetLogicalId(tgProps['Targets']);
   if (!lambdaLogicalId) {
     warnings.push(
-      `${label} forwards to a Lambda target group '${tgRef}', but its Targets[].Id is not an ` +
+      `${label} forwards to a Lambda target group ${displayIdent(tgRef)}, but its Targets[].Id is not an ` +
         'in-stack { "Fn::GetAtt": [<FnLogicalId>, "Arn"] } reference; the local ALB front-door ' +
         'supports an in-stack Lambda target only (literal / imported ARNs deferred). Skipping that target group.'
     );
@@ -563,9 +565,9 @@ function resolveLambdaForwardTarget(
   const lambda = resources[lambdaLogicalId];
   if (!lambda || lambda.Type !== LAMBDA_FUNCTION_TYPE) {
     warnings.push(
-      `${label} forwards to Lambda target group '${tgRef}', whose target resolves to ` +
-        `'${lambdaLogicalId}', but no ${LAMBDA_FUNCTION_TYPE} with that logical id exists in ` +
-        `${stackName}. Skipping that target group.`
+      `${label} forwards to Lambda target group ${displayIdent(tgRef)}, whose target resolves to ` +
+        `${displayIdent(lambdaLogicalId)}, but no ${LAMBDA_FUNCTION_TYPE} with that logical id exists in ` +
+        `${displayStackName(stackName)}. Skipping that target group.`
     );
     return undefined;
   }
@@ -777,7 +779,9 @@ function parseRuleConditions(
       }
       out.sourceIpCidrs.push(...values);
     } else {
-      warnings.push(`${ruleLabel} uses unsupported condition field '${field}'. Skipping the rule.`);
+      warnings.push(
+        `${ruleLabel} uses unsupported condition field ${displayIdent(field)}. Skipping the rule.`
+      );
       return undefined;
     }
   }
@@ -1024,7 +1028,7 @@ function parseAuthenticateAction(
     const match = COGNITO_USERPOOL_ARN.exec(userPoolArn);
     if (!match) {
       warnings.push(
-        `${label}: authenticate-cognito UserPoolArn '${userPoolArn}' is not in the expected ` +
+        `${label}: authenticate-cognito UserPoolArn ${displayUntrustedValue(userPoolArn)} is not in the expected ` +
           'arn:...:cognito-idp:<region>:<account>:userpool/<pool-id> shape; skipping guard.'
       );
       return undefined;

@@ -533,7 +533,25 @@ describe('runImageOverrideBuilds argv shape (issue #238, T1)', () => {
     ]);
     await runImageOverrideBuilds(overrides);
     const [, opts] = runDockerStreamingMock.mock.calls[0]!;
-    expect(opts.progressLabel).toBe(`Building override image for 'AppService'`);
+    expect(opts.progressLabel).toBe(`Building override image for AppService`);
+  });
+
+  it('renders a forging target name as one JSON literal in the progressLabel (#761)', async () => {
+    const dockerfile = makeTmpDockerfile('Dockerfile.forged');
+    const overrides = new Map([
+      [
+        "a' b",
+        {
+          dockerfile,
+          contextDir: path.dirname(dockerfile),
+          buildArgs: new Map<string, string>(),
+          buildSecrets: new Map<string, string>(),
+        },
+      ],
+    ]);
+    await runImageOverrideBuilds(overrides);
+    const [, opts] = runDockerStreamingMock.mock.calls[0]!;
+    expect(opts.progressLabel).toBe(`Building override image for "a' b"`);
   });
 
   it('emits canonical `--secret id=<id>,src=<src>` for every build-secrets entry', async () => {

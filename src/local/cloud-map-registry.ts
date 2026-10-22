@@ -1,4 +1,5 @@
 import { getLogger } from '../utils/logger.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * Phase 3 of #262 (Issue #460) — in-process Cloud Map / Service Connect
@@ -178,8 +179,8 @@ export class CloudMapRegistry {
       getLogger()
         .child('cloud-map-registry')
         .warn(
-          `ClientAlias DnsName collision: '${alias}' was already mapped to '${existing}'; ` +
-            `keeping first-wins binding and ignoring new mapping to '${targetFqdn}'. ` +
+          `ClientAlias DnsName collision: ${displayIdent(alias)} was already mapped to ${displayIdent(existing)}; ` +
+            `keeping first-wins binding and ignoring new mapping to ${displayIdent(targetFqdn)}. ` +
             'Likely cause: two Service Connect services declared the same ClientAlias.DnsName.'
         );
       return;

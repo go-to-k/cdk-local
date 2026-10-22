@@ -24,6 +24,8 @@ import {
 import { assetPathDirs, materializeAssetCodeDir } from './lambda-resolver.js';
 import type { ResolvedImageLambda, ResolvedLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { displayIdent } from '../utils/ident-display.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import {
   applyWorkloadEnvCredentials,
   warnWorkloadCredentialsStripped,
@@ -132,7 +134,9 @@ function forwardAwsEnv(): Record<string, string> {
 function materializeInlineCode(handler: string, source: string, fileExtension: string): string {
   const lastDot = handler.lastIndexOf('.');
   if (lastDot <= 0) {
-    throw new Error(`Handler '${handler}' is malformed: expected '<modulePath>.<exportName>'.`);
+    throw new Error(
+      `Handler ${displayIdent(handler)} is malformed: expected '<modulePath>.<exportName>'.`
+    );
   }
   const modulePath = handler.substring(0, lastDot);
   const dir = mkdtempSync(
@@ -209,12 +213,14 @@ async function resolveContainerImagePlan(
   if (!localBuilt) {
     if (!parseEcrUri(lambda.imageUri)) {
       throw new Error(
-        `Container Lambda '${lambda.logicalId}' has no matching asset in cdk.out, and Code.ImageUri ` +
-          `'${lambda.imageUri}' is not an ECR URI ${getEmbedConfig().binaryName} can authenticate against. ` +
+        `Container Lambda ${displayIdent(lambda.logicalId)} has no matching asset in cdk.out, and Code.ImageUri ` +
+          `${displayUntrustedValue(lambda.imageUri)} is not an ECR URI ${getEmbedConfig().binaryName} can authenticate against. ` +
           'Re-synthesize the CDK app or deploy the image to ECR first.'
       );
     }
-    logger.info(`No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull...`);
+    logger.info(
+      `No matching cdk.out asset for ${displayUntrustedValue(lambda.imageUri)}; falling back to ECR pull...`
+    );
     imageRef = await pullEcrImage(lambda.imageUri, {
       skipPull: opts.skipPull === true,
       ...(opts.region !== undefined && { region: opts.region }),
@@ -343,7 +349,7 @@ export function createFrontDoorLambdaRunner(
     async invoke(event: unknown, timeoutMs?: number): Promise<unknown> {
       if (!containerId || hostPort === undefined) {
         throw new Error(
-          `FrontDoorLambdaRunner('${lambda.logicalId}').invoke called before start() completed.`
+          `FrontDoorLambdaRunner(${displayIdent(lambda.logicalId)}).invoke called before start() completed.`
         );
       }
       const result = await invokeRie(
@@ -361,7 +367,7 @@ export function createFrontDoorLambdaRunner(
         stopLogStream?.();
       } catch (err) {
         logger.debug(
-          `stopLogStream(${lambda.logicalId}) failed: ${err instanceof Error ? err.message : String(err)}`
+          `stopLogStream(${displayIdent(lambda.logicalId)}) failed: ${err instanceof Error ? err.message : String(err)}`
         );
       }
       if (containerId) {

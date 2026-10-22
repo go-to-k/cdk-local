@@ -104,6 +104,6 @@ describe('docker-image-builder: executable source re-tag', () => {
       buildContainerImage({ source: { executable: ['./build.sh'] } }, '/cdk.out', {
         architecture: 'x86_64',
       })
-    ).rejects.toThrow(/re-tagging 'user-script-image:v1' → 'cdkl-invoke-/);
+    ).rejects.toThrow(/re-tagging user-script-image:v1 → cdkl-invoke-/);
   });
 });

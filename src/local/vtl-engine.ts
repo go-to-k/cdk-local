@@ -78,6 +78,7 @@
  * acceptable and not in the contract.
  */
 
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { getEmbedConfig } from './embed-config.js';
 
 /**
@@ -376,12 +377,14 @@ class VtlEvaluator {
     const { args, end } = this.readParenArgs(block, after);
     const eq = args.indexOf('=');
     if (eq === -1) {
-      throw new VtlEvaluationError(`#set requires '=': got #set(${args})`);
+      throw new VtlEvaluationError(`#set requires '=': got #set(${displayUntrustedValue(args)})`);
     }
     const left = args.slice(0, eq).trim();
     const right = args.slice(eq + 1).trim();
     if (!left.startsWith('$')) {
-      throw new VtlEvaluationError(`#set left side must be a $var reference (got '${left}')`);
+      throw new VtlEvaluationError(
+        `#set left side must be a $var reference (got ${displayUntrustedValue(left)})`
+      );
     }
     const varName = left.slice(1).replace(/^\{/, '').replace(/\}$/, '');
     const value = this.evaluateExpression(right);
@@ -768,7 +771,9 @@ class VtlEvaluator {
         return this.callValueAsMethod(value, argsRaw, refPath);
       }
     }
-    throw new VtlEvaluationError(`Could not evaluate VTL sub-expression: '${trimmed}'`);
+    throw new VtlEvaluationError(
+      `Could not evaluate VTL sub-expression: ${displayUntrustedValue(trimmed)}`
+    );
   }
 
   private unescapeStringLiteral(s: string): string {
@@ -1126,7 +1131,9 @@ export function applyJsonPath(root: unknown, expr: string): unknown {
   const trimmed = expr.trim();
   if (trimmed === '$' || trimmed.length === 0) return root;
   if (!trimmed.startsWith('$')) {
-    throw new VtlEvaluationError(`JSONPath must start with '$': got '${trimmed}'`);
+    throw new VtlEvaluationError(
+      `JSONPath must start with '$': got ${displayUntrustedValue(trimmed)}`
+    );
   }
   let cursor: unknown = root;
   let i = 1;
@@ -1138,7 +1145,7 @@ export function applyJsonPath(root: unknown, expr: string): unknown {
       const m = /^[a-zA-Z_][a-zA-Z_0-9]*/.exec(trimmed.slice(i));
       if (!m) {
         throw new VtlEvaluationError(
-          `Unsupported JSONPath syntax at position ${i}: '${trimmed}' (${getEmbedConfig().productName} supports $, $.field, $.field.sub, $.array[index] only).`
+          `Unsupported JSONPath syntax at position ${i}: ${displayUntrustedValue(trimmed)} (${getEmbedConfig().productName} supports $, $.field, $.field.sub, $.array[index] only).`
         );
       }
       cursor = lookupField(cursor, m[0]);
@@ -1148,7 +1155,9 @@ export function applyJsonPath(root: unknown, expr: string): unknown {
     if (c === '[') {
       const close = trimmed.indexOf(']', i);
       if (close === -1) {
-        throw new VtlEvaluationError(`Unterminated [ in JSONPath: '${trimmed}'`);
+        throw new VtlEvaluationError(
+          `Unterminated [ in JSONPath: ${displayUntrustedValue(trimmed)}`
+        );
       }
       const inside = trimmed.slice(i + 1, close).trim();
       if (/^-?\d+$/.test(inside)) {
@@ -1165,13 +1174,15 @@ export function applyJsonPath(root: unknown, expr: string): unknown {
         cursor = lookupField(cursor, inside.slice(1, -1));
       } else {
         throw new VtlEvaluationError(
-          `Unsupported JSONPath bracket expression: '${inside}' (${getEmbedConfig().productName} supports integer indices and quoted string keys only).`
+          `Unsupported JSONPath bracket expression: ${displayUntrustedValue(inside)} (${getEmbedConfig().productName} supports integer indices and quoted string keys only).`
         );
       }
       i = close + 1;
       continue;
     }
-    throw new VtlEvaluationError(`Unexpected character in JSONPath at position ${i}: '${trimmed}'`);
+    throw new VtlEvaluationError(
+      `Unexpected character in JSONPath at position ${i}: ${displayUntrustedValue(trimmed)}`
+    );
   }
   return cursor;
 }

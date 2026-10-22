@@ -521,6 +521,28 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     await controller.shutdown();
   });
 
+  it('renders a forging container name as one JSON literal in the missing-container error (#761)', async () => {
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeService(), opts, runState);
+    const newService = fakeService();
+    newService.task.containers[0].name = "a' b";
+
+    await expect(
+      softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService,
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      })
+    ).rejects.toThrow(`has no started container named "a' b" (started:`);
+
+    await controller.shutdown();
+  });
+
   it('throws when the resolved service has a container name not present in the replica state', async () => {
     const pool = new FrontDoorEndpointPool();
     const registry = new CloudMapRegistry();
@@ -541,7 +563,7 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
         newService,
         sourceDirToCopy: '/tmp/cdk.out/asset.h',
       })
-    ).rejects.toThrow(/no started container named 'webv2'/);
+    ).rejects.toThrow(/no started container named webv2/);
 
     // No docker work ran — we failed before flipping the flag.
     expect(hoisted.inspectCalls).toEqual([]);

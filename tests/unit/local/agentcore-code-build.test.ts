@@ -103,7 +103,7 @@ describe('buildAgentCoreCodeImage', () => {
         entryPoint: ['app.rb'],
         architecture: 'arm64',
       })
-    ).rejects.toThrow(/runtime 'RUBY_3_3' is not supported/);
+    ).rejects.toThrow(/runtime RUBY_3_3 is not supported/);
     expect(runDockerStreamingMock).not.toHaveBeenCalled();
   });
 
@@ -297,4 +297,17 @@ describe('warnIfDependenciesNotVendored (via buildAgentCoreCodeImage)', () => {
       expect(msg.replace(JSON.stringify(dir), '<v>')).not.toContain('Contained and healthy');
     });
   }
+});
+
+describe('buildAgentCoreCodeImage identifier rendering (#761)', () => {
+  it('renders a forging runtime as one JSON literal', async () => {
+    await expect(
+      buildAgentCoreCodeImage({
+        sourceDir: '/src',
+        runtime: "a' b",
+        entryPoint: ['app.rb'],
+        architecture: 'arm64',
+      })
+    ).rejects.toThrow(`runtime "a' b" is not supported`);
+  });
 });

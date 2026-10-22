@@ -15,6 +15,7 @@ import {
   hostFromAuthority,
 } from '../utils/url-authority.js';
 import type { FrontDoorEndpointPool } from './front-door-pool.js';
+import { displayIdent } from '../utils/ident-display.js';
 import {
   buildAlbLambdaEvent,
   snapshotFromIncoming,
@@ -917,10 +918,14 @@ function handleLambdaRequest(
           done();
         } catch (err) {
           logger.debug(
-            `Lambda target '${lambda.label}' request failed: ${err instanceof Error ? err.message : String(err)}`
+            `Lambda target ${displayIdent(lambda.label)} request failed: ${err instanceof Error ? err.message : String(err)}`
           );
           if (!res.headersSent) {
-            writeError(res, 502, `Lambda target '${lambda.label}' behind ${opts.label} failed.`);
+            writeError(
+              res,
+              502,
+              `Lambda target ${displayIdent(lambda.label)} behind ${opts.label} failed.`
+            );
           } else if (!res.writableEnded) {
             res.destroy();
           }
@@ -1065,7 +1070,7 @@ function handleUpgrade(
       writeRawHttpError(
         clientSocket,
         502,
-        `WebSocket upgrade is not supported for Lambda target groups (${picked.lambda.label}).`
+        `WebSocket upgrade is not supported for Lambda target groups (${displayIdent(picked.lambda.label)}).`
       );
       return Promise.resolve();
     }

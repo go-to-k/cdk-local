@@ -8,6 +8,8 @@ import { getLogger } from '../utils/logger.js';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { getEmbedConfig } from './embed-config.js';
 import { isInteractive } from './target-picker.js';
+import { displayIdent, displayToolOutput } from '../utils/ident-display.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 
 /**
  * Issue #260 — expand a leading `~` / `~/` to the user's home directory
@@ -514,11 +516,11 @@ export function canonicalizeImageOverrideKeys(
     if (matches.size > 1) {
       throw new ImageOverrideError(
         `${flag} key '${key}' matches more than one pinned target ` +
-          `(${[...matches].join(', ')}). Name the target in full instead.`
+          `(${[...matches].map((m) => displayIdent(m, { listMember: true })).join(', ')}). Name the target in full instead.`
       );
     }
     const target = [...matches][0] as string;
-    logger.debug(`${flag} key '${key}' resolved to pinned target '${target}'.`);
+    logger.debug(`${flag} key '${key}' resolved to pinned target ${displayIdent(target)}.`);
     return target;
   };
 
@@ -530,7 +532,7 @@ export function canonicalizeImageOverrideKeys(
     if (earlier !== undefined) {
       throw new ImageOverrideError(
         `--image-override keys '${earlier}' and '${key}' both name the pinned target ` +
-          `'${target}'. Name each service target at most once.`
+          `${displayIdent(target)}. Name each service target at most once.`
       );
     }
     explicitKeyByTarget.set(target, key);
@@ -556,7 +558,7 @@ export function canonicalizeImageOverrideKeys(
     const conflict = (what: string): never => {
       throw new ImageOverrideError(
         `Per-service image-override flags give ${what} two different values for the pinned ` +
-          `target '${target}' (one of them keyed '${key}'). Pass it once.`
+          `target ${displayIdent(target)} (one of them keyed '${key}'). Pass it once.`
       );
     };
     for (const [k, v] of overlay.buildArgs) {
@@ -731,7 +733,10 @@ export async function resolveImageOverrides(args: {
         introShown = true;
       }
       const label = labels.get(target);
-      const headline = `Detected pinned image on '${target}'` + (label ? ` (${label})` : '') + '.';
+      const headline =
+        `Detected pinned image on ${displayIdent(target)}` +
+        (label ? ` (${displayUntrustedValue(String(label))})` : '') +
+        '.';
       const value = await promptForOverridePath({
         headline,
         discoveredDockerfiles,
@@ -1116,7 +1121,7 @@ export async function runImageOverrideBuilds(
     }
     args.push('.');
     logger.info(
-      `Building override image for '${target}' from '${entry.dockerfile}' (tag=${tag})...`
+      `Building override image for ${displayIdent(target)} from '${entry.dockerfile}' (tag=${tag})...`
     );
     try {
       await runDockerStreaming(args, {
@@ -1128,13 +1133,13 @@ export async function runImageOverrideBuilds(
         // doesn't look like cdk-local hung. The shorter label keeps the
         // spinner line readable on narrow terminals — the (tag=...) detail
         // already shipped via the info log line and is in the scrollback.
-        progressLabel: `Building override image for '${target}'`,
+        progressLabel: `Building override image for ${displayIdent(target)}`,
       });
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       const wrapped = new ImageOverrideError(
-        `docker build failed for --image-override '${target}' (Dockerfile=${entry.dockerfile}): ` +
-          (e.stderr?.trim() || e.message || String(err))
+        `docker build failed for --image-override ${displayIdent(target)} (Dockerfile=${entry.dockerfile}): ` +
+          displayToolOutput(e.stderr?.trim() || e.message || String(err))
       );
       // Best-effort rollback: remove every tag built earlier in this
       // run. Per-tag failures are logged at debug + swallowed so the

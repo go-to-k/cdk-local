@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * CloudFront KeyValueStore support for `cdkl start-cloudfront`'s CloudFront
@@ -96,7 +97,7 @@ export function createUnboundCloudFrontModule(functionLogicalId: string): CloudF
   const fail = (): Promise<never> =>
     Promise.reject(
       new Error(
-        `CloudFront Function '${functionLogicalId}' reads from a KeyValueStore (cf.kvs()), but no ` +
+        `CloudFront Function ${displayIdent(functionLogicalId)} reads from a KeyValueStore (cf.kvs()), but no ` +
           'KeyValueStore binding is available locally. Pass --from-cfn-stack to read the deployed ' +
           'store, or --kvs-file <id>=<file.json> to back it with a local JSON map.'
       )
