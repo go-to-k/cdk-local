@@ -117,6 +117,19 @@ Cross-cutting helpers. The logger prefixes warn / error lines with `WARN:` /
 stripped-ANSI pipe; `resolveConfiguredLogLevel` + `CdklIoHost` honor
 `CDKL_LOG_LEVEL`.
 
+**Every logged message goes through `renderLogText` ONCE** (#827), the second
+layer beside #761's `displayIdent` boundary: `\r\n` folds to `\n`, every other
+control character (C0 minus `\n` / `\t`, DEL, C1, U+2028 / U+2029, bidi) is
+`\uXXXX`-escaped via `displayToolOutput`, and every continuation line starting
+with content at column 0 is indented two spaces (idempotent), so NO line but the
+first reaches column 0 — where
+studio's `classifyChildLine`, its ready patterns and its `WARN:` / `ERROR:`
+colouring anchor. It runs BEFORE the logger's colours and BEFORE the embed host
+route (`setEmbedConfig({ logger })`, string args too). `CdklIoHost` does the same to
+toolkit messages after STRIPPING their SGR colour. Paths that bypass the logger
+(`process.stdout.write` banners, the container relay, HTTP bodies, commander
+stderr) still need `displayIdent`.
+
 **Untrusted values in cdk-local's own prose get a renderer, and the caller
 writes NO quotes.** An assembly-chosen IDENTIFIER (logical id, container /
 function name, stack name, construct path) goes through `displayIdent` /

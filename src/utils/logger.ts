@@ -9,8 +9,56 @@
  */
 
 import { getEmbedConfig, type EmbedHostLogger } from '../local/embed-config.js';
+import { displayToolOutput } from './ident-display.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/**
+ * What every continuation line of a multi-line message is indented by, so no
+ * content line a message carries reaches column 0 (go-to-k/cdk-local#827).
+ */
+export const LOG_CONTINUATION_INDENT = '  ';
+
+/**
+ * Render one message's TEXT for output: the logger's own second layer beside
+ * the `displayIdent` boundary of go-to-k/cdk-local#761, so an assembly-chosen
+ * value interpolated BARE into a message cannot forge or rewrite a line.
+ *
+ * 1. `\r\n` folds to `\n`, so a CRLF-terminated tool message stays readable.
+ * 2. Every remaining control character other than `\n` / `\t` (C0, DEL, C1 —
+ *    a lone `\r`, ESC and the 8-bit CSI `\x9b` included), the Unicode line /
+ *    paragraph separators and the bidi controls become their `\uXXXX` escape
+ *    ({@link displayToolOutput}), so nothing can move the cursor, erase a line
+ *    or start a colour.
+ * 3. Every continuation line that would START at column 0 with content is
+ *    indented by {@link LOG_CONTINUATION_INDENT}; an empty line, and one that
+ *    already starts with a space or tab, is left as it is. A message can still
+ *    span lines, but none of its lines after the first starts at column 0 — where studio's
+ *    `classifyChildLine` / ready patterns and its LOG panel's `WARN:` /
+ *    `ERROR:` colouring anchor, and where a reader takes a line to be a fresh
+ *    one. The FIRST line is never indented: its column-0 prefix is the logger's
+ *    own.
+ *
+ * Applied BEFORE the logger's own colouring (whose escapes must survive) and
+ * before the embedding host's logger is handed the message, so a host gets the
+ * same text. IDEMPOTENT — every step's output is a fixed point of it — so a
+ * host logger that calls back into cdk-local's logger with the text it was
+ * handed does not indent it twice.
+ */
+export function renderLogText(text: string): string {
+  // A caller typed `any` can hand a non-string; render it as the template
+  // literal this replaced did, rather than throw out of a log call.
+  const raw = typeof text === 'string' ? text : String(text);
+  return displayToolOutput(raw.replace(/\r\n/g, '\n')).replace(
+    /\n(?=[^ \t\n])/g,
+    `\n${LOG_CONTINUATION_INDENT}`
+  );
+}
+
+/** {@link renderLogText} over a host-bound argument, when it is text. */
+function renderLogArg(arg: unknown): unknown {
+  return typeof arg === 'string' ? renderLogText(arg) : arg;
+}
 
 /** True while a call is being handed to the host logger (re-entry guard). */
 let forwarding = false;
@@ -144,8 +192,15 @@ export class ConsoleLogger implements Logger {
     return messageLevelIndex >= currentLevelIndex;
   }
 
+  /**
+   * Format a message whose text was already put through {@link renderLogText}
+   * (each level method does that once, before the host route). The arguments'
+   * JSON is rendered here: `JSON.stringify` escapes C0 but not DEL, C1 or
+   * U+2028 / U+2029.
+   */
   private formatMessage(level: LogLevel, message: string, ...args: unknown[]): string {
-    const formattedArgs = args.length > 0 ? ' ' + args.map((a) => JSON.stringify(a)).join(' ') : '';
+    const formattedArgs =
+      args.length > 0 ? renderLogText(' ' + args.map((a) => JSON.stringify(a)).join(' ')) : '';
 
     if (this.level === 'debug') {
       const timestamp = formatTimestamp();
@@ -206,34 +261,38 @@ export class ConsoleLogger implements Logger {
   }
 
   debug(message: string, ...args: unknown[]): void {
+    const text = renderLogText(message);
     const host = hostLogger();
-    if (host && forward(() => host.debug(message, ...args))) return;
+    if (host && forward(() => host.debug(text, ...args.map(renderLogArg)))) return;
     if (this.shouldLog('debug')) {
-      this.emit('debug', this.formatMessage('debug', message, ...args));
+      this.emit('debug', this.formatMessage('debug', text, ...args));
     }
   }
 
   info(message: string, ...args: unknown[]): void {
+    const text = renderLogText(message);
     const host = hostLogger();
-    if (host && forward(() => host.info(message, ...args))) return;
+    if (host && forward(() => host.info(text, ...args.map(renderLogArg)))) return;
     if (this.shouldLog('info')) {
-      this.emit('info', this.formatMessage('info', message, ...args));
+      this.emit('info', this.formatMessage('info', text, ...args));
     }
   }
 
   warn(message: string, ...args: unknown[]): void {
+    const text = renderLogText(message);
     const host = hostLogger();
-    if (host && forward(() => host.warn(message, ...args))) return;
+    if (host && forward(() => host.warn(text, ...args.map(renderLogArg)))) return;
     if (this.shouldLog('warn')) {
-      this.emit('warn', this.formatMessage('warn', message, ...args));
+      this.emit('warn', this.formatMessage('warn', text, ...args));
     }
   }
 
   error(message: string, ...args: unknown[]): void {
+    const text = renderLogText(message);
     const host = hostLogger();
-    if (host && forward(() => host.error(message, ...args))) return;
+    if (host && forward(() => host.error(text, ...args.map(renderLogArg)))) return;
     if (this.shouldLog('error')) {
-      this.emit('error', this.formatMessage('error', message, ...args));
+      this.emit('error', this.formatMessage('error', text, ...args));
     }
   }
 
