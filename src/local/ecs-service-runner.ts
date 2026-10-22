@@ -853,7 +853,7 @@ async function bootReplica(
     // no explicit `serviceName` would surface the hash-suffixed
     // logical id (e.g. `BackendApi5F9D8C32`) in every foreground line.
     for (const started of instance.state.startedContainers) {
-      const prefix = `[svc=${displayIdent(service.serviceDisplayName)} r=${instance.index} c=${displayIdent(started.name)}] `;
+      const prefix = `[svc=${displayStackName(service.serviceDisplayName)} r=${instance.index} c=${displayIdent(started.name)}] `;
       // Issue #660 — the soft reload stops and then starts the container;
       // the streamer must not read that stop as a natural exit.
       instance.state.logStoppers.push(

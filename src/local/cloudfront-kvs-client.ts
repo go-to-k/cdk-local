@@ -98,7 +98,7 @@ export function createDeployedKvsDataSource(
           // validation, and this throw is relayed into a DEFAULT-level warn by
           // `cloudfront-server.ts`. Same class as the `PhysicalResourceId`
           // flatten (issue #579 review round 3).
-          `cf.kvs().get('${key}') against ${flattenToOneLine(options.kvsArn)} failed: ${describeAwsFailureForWarn(
+          `cf.kvs().get(${displayIdent(key)}) against ${flattenToOneLine(options.kvsArn)} failed: ${describeAwsFailureForWarn(
             err,
             'CloudFront KeyValueStore GetKey'
           )}`

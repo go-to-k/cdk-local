@@ -464,7 +464,7 @@ const sites: Site[] = [
   {
     name: 'cloudfront-kvs-client.ts / createDeployedKvsDataSource.getValue',
     operation: 'CloudFront KeyValueStore GetKey',
-    reached: "cf.kvs().get('theme') against arn:aws:cloudfront::1:key-value-store/s failed: ",
+    reached: "cf.kvs().get(theme) against arn:aws:cloudfront::1:key-value-store/s failed: ",
     namePrefix: true,
     drive: async (err) => {
       mocks.kvsSend.mockRejectedValue(err);
