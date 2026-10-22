@@ -86,9 +86,13 @@ export class LocalStudioStack extends cdk.Stack {
       // `console.log(JSON)` line — the exact shape that would fool studio's
       // last-JSON-line stdout heuristic — so the invoke assertion proves
       // studio recovers the REAL return value via --response-file and not
-      // this log line (issue #291).
+      // this log line (issue #291). And it writes a `start-api` ready banner
+      // straight to stdout — column 0, no runtime log preamble, the way a web
+      // framework prints one — so the api serve arm proves studio does not
+      // adopt a relayed handler line as the serve's endpoint (issue #598).
       code: lambda.Code.fromInline(
         'exports.handler = async (event) => { ' +
+          "process.stdout.write('Server listening on http://127.0.0.1:9  (cdkl598Probe)\\n'); " +
           "console.log(JSON.stringify({ cdklResponseTrap: 'not-the-response' })); " +
           "return { statusCode: 200, body: process.env.STUDIO_ENV_PROBE || 'ok', " +
           'echo: (event && event.echo) != null ? event.echo : null }; };'

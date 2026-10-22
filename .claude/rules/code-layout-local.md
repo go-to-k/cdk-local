@@ -226,7 +226,12 @@ a log line, and a served HTTP response body.
   teardown completes before any SIGKILL. Each serve child gets
   `CDKL_LOG_STREAM=stdout`, unifying warn / error onto ONE pipe (two OS pipes
   have no cross-pipe order guarantee); safe here — ready lines come from stdout,
-  errors from the child `error` / `close` events. An env-kv temp dir OUTLIVES the
+  errors from the child `error` / `close` events. It also PINS
+  `CDKL_PREFIX_CONTAINER_OUTPUT=1`, under which `docker-runner`'s `streamLogs`
+  tags every relayed Lambda / AgentCore container line `[<short id>] ` (ECS
+  output is tagged by `container-log-streamer`), so no container line reaches
+  column 0 where the anchored ready patterns read; a plain `cdkl invoke` stays a
+  byte-exact relay (#598). An env-kv temp dir OUTLIVES the
   child (a `--watch` serve re-reads it); `closeProxies` removes it.
 - **studio-proxy** — a capturing reverse proxy per HTTP serve endpoint, emitting
   `invocation` start/end events with bounded bodies; `Upgrade` requests are
