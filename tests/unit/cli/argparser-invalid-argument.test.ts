@@ -115,6 +115,22 @@ const cases: Array<{
     messageFragment: 'Invalid --assume-role value',
     valid: ['--assume-role', 'arn:aws:iam::123456789012:role/MyRole'],
   },
+  {
+    name: 'start-api --assume-role (bad logical ID)',
+    make: () => createLocalStartApiCommand(),
+    argv: ['--assume-role', 'my-fn=arn:aws:iam::123456789012:role/MyRole'],
+    usage: 'is invalid.',
+    messageFragment: 'must be a CloudFormation logical ID',
+    valid: ['--assume-role', 'MyFn=arn:aws:iam::123456789012:role/MyRole'],
+  },
+  {
+    name: 'start-api --assume-role (bad ARN in pair form)',
+    make: () => createLocalStartApiCommand(),
+    argv: ['--assume-role', 'MyFn=not-an-arn'],
+    usage: 'is invalid.',
+    messageFragment: 'must be an IAM role ARN',
+    valid: ['--assume-role', 'MyFn=arn:aws:iam::123456789012:role/MyRole'],
+  },
 ];
 
 describe('option argParsers surface commander usage errors (#819)', () => {
