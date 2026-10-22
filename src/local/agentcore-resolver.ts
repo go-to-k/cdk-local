@@ -1,7 +1,7 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
-import { matchStacks } from '../cli/stack-matcher.js';
+import { candidateTargetStack, describeStacks, selectTargetStack } from '../cli/stack-matcher.js';
 import {
   derivePseudoParametersFromRegion,
   formatStateRemedy,
@@ -204,7 +204,7 @@ export function resolveAgentCoreTarget(
   }
 
   const parsed = parseTarget(target);
-  const stack = pickStack(parsed, stacks);
+  const stack = pickStack(parsed, stacks, target);
   const resources = stack.template.Resources ?? {};
 
   const { logicalId, resource } = matchRuntime(parsed, target, stack, resources);
@@ -233,44 +233,36 @@ export function pickAgentCoreCandidateStack(
   target: string,
   stacks: StackInfo[]
 ): StackInfo | undefined {
-  const parsed = parseTarget(target);
-  if (parsed.stackPattern === null) {
-    return stacks.length === 1 ? stacks[0] : undefined;
-  }
-  const matched = matchStacks(stacks, [parsed.stackPattern]);
-  return matched.length === 1 ? matched[0] : undefined;
+  return candidateTargetStack(parseTarget(target), target, stacks);
 }
 
 /**
  * Single-stack auto-detect: if the app has exactly one stack the user may
- * omit the stack prefix; otherwise an explicit stack pattern is required.
- * Mirrors the Lambda / ECS resolvers' behavior via the shared
- * stack-matcher.
+ * omit the stack prefix; otherwise an explicit stack is required. The same
+ * rule as the Lambda / ECS resolvers, through `selectTargetStack`.
  */
-function pickStack(parsed: ParsedTarget, stacks: StackInfo[]): StackInfo {
-  if (parsed.stackPattern === null) {
-    if (stacks.length === 1) return stacks[0]!;
-    throw new AgentCoreResolutionError(
-      `Multiple stacks in app, target '${parsed.pathOrId}' is missing a stack prefix. ` +
-        `Use 'StackName:${parsed.pathOrId}' or 'StackName/...' (path form). ` +
-        `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
-    );
+function pickStack(parsed: ParsedTarget, stacks: StackInfo[], target: string): StackInfo {
+  const selection = selectTargetStack(parsed, target, stacks);
+  switch (selection.kind) {
+    case 'found':
+      return selection.stack;
+    case 'no-prefix':
+      throw new AgentCoreResolutionError(
+        `Multiple stacks in app, target '${parsed.pathOrId}' is missing a stack prefix. ` +
+          `Use 'StackName:${parsed.pathOrId}' or 'StackName/...' (path form). ` +
+          `Available stacks: ${describeStacks(stacks)}.`
+      );
+    case 'not-found':
+      throw new AgentCoreResolutionError(
+        `Stack '${selection.pattern}' not found. Available stacks: ${describeStacks(stacks)}.`
+      );
+    case 'ambiguous':
+      throw new AgentCoreResolutionError(
+        `Stack pattern '${selection.pattern}' matched ${selection.matched.length} stacks: ` +
+          describeStacks(selection.matched) +
+          ". Use a more specific pattern, or the stack's display path (path form)."
+      );
   }
-  const matched = matchStacks(stacks, [parsed.stackPattern]);
-  if (matched.length === 0) {
-    throw new AgentCoreResolutionError(
-      `Stack '${parsed.stackPattern}' not found. ` +
-        `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
-    );
-  }
-  if (matched.length > 1) {
-    throw new AgentCoreResolutionError(
-      `Stack pattern '${parsed.stackPattern}' matched ${matched.length} stacks: ` +
-        matched.map((s) => s.stackName).join(', ') +
-        '. Use a more specific pattern.'
-    );
-  }
-  return matched[0]!;
 }
 
 /** Resolve a parsed target to a single (logicalId, resource) pair. */

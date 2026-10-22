@@ -241,37 +241,34 @@ export class AssemblyReader {
 }
 
 /**
- * Every stack this assembly enumerates, each bounded by the assembly ROOT.
+ * Every stack the assembly holds — a `cdk.Stage`'s included, at any depth —
+ * each bounded by the assembly ROOT.
  *
- * NOT `stacksRecursively`, and the omission is a decision rather than an
- * oversight. `CloudAssembly.stacks` lists only this assembly's own artifacts,
- * and a `cdk.Stage` is a `NestedCloudAssemblyArtifact`, so a Stage's stacks are
- * not enumerated at all — a pre-existing gap tracked as
- * [#746](https://github.com/go-to-k/cdk-local/issues/746). Recursing here would
- * close it and is tempting because it also makes `assetOutdir` differ from the
- * manifest directory, which is the shape this module's bound exists for. It is
- * NOT done here because the recursion changes STACK ENUMERATION for every
- * command: eleven call sites read `stacks.length === 1` to offer the
- * "single-stack apps may omit the stack prefix" convenience, `matchStacks`
- * dedupes by `stackName`, and a Stage's clones carry identical logical IDs. That
- * is a feature with its own design and its own tests, not a side effect of a
- * containment fix.
+ * `stacksRecursively`, never `stacks`: `CloudAssembly.stacks` lists only the
+ * assembly's OWN artifacts, and a `cdk.Stage` is a `NestedCloudAssemblyArtifact`,
+ * so a Stage's stacks were not enumerated at all and no command could reach a
+ * Lambda or task under one (go-to-k/cdk-local#746). cdkd's assembly reader
+ * recurses the same way, so `cdkd local` and `cdkl` see the same stacks.
  *
- * The consequence to know: a Stage's stacks are reachable only by pointing
- * `--app` at `cdk.out/assembly-<Stage>/`, which makes that directory the
- * assembly root, so the Stage's own assets — staged into the APP's outdir by
- * `cdk synth` — fall outside it and are refused. `resolveAssetCodeDirectory`'s
- * refusal says so in as many words rather than leaving the user with the
- * generic hand-modified-assembly diagnosis.
+ * The consequences the rest of the tree is built for:
+ *
+ * - "Single-stack apps may omit the stack prefix" counts EVERY stack here: an
+ *   app with one top-level stack plus a Stage is multi-stack, as in cdkd.
+ * - A path-form target's stack is its LONGEST display-path prefix
+ *   (`stackForConstructPath`), since a Stage stack's path starts with the
+ *   Stage id; `matchStacks` matches the hierarchical `displayName`.
+ * - A Stage's assets are staged into the APP's outdir, so `assetOutdir` is the
+ *   root directory for every stack, never the Stage's own
+ *   `cdk.out/assembly-<Stage>/` (see `StackInfo.assetOutdir`).
  */
 function collectStacks(
   assembly: {
     directory: string;
-    stacks: CloudFormationStackArtifact[];
+    stacksRecursively: CloudFormationStackArtifact[];
   },
   assetManifestClass: typeof AssetManifestArtifact
 ): StackInfo[] {
-  return assembly.stacks.map((stack) =>
+  return assembly.stacksRecursively.map((stack) =>
     mapStackArtifact(stack, assembly.directory, assetManifestClass)
   );
 }
@@ -290,7 +287,12 @@ function mapStackArtifact(
 ): StackInfo {
   const info: StackInfo = {
     stackName: stack.stackName,
-    displayName: stack.displayName ?? stack.id,
+    // `hierarchicalId`, never `displayName`: cx-api renders the latter as
+    // `MyStage/MyStack (MyStage-MyStack)` whenever the physical name differs
+    // from the artifact id, which no pattern or target path ever equals.
+    // `hierarchicalId` is the manifest's own `displayName` (the construct
+    // path), the value cdkd reads.
+    displayName: stack.hierarchicalId,
     artifactId: stack.id,
     template: stack.template as CloudFormationTemplate,
     dependencyNames: stack.dependencies.map((d) => d.id),

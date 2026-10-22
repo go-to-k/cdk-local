@@ -7,7 +7,7 @@ const { hoisted } = vi.hoisted(() => ({
     /** Loaded asset manifest. `null` simulates the "manifest missing" branch. */
     manifest: null as Record<string, unknown> | null,
     /** Tracks the manifest loader's hash arg so we can assert it. */
-    loadManifestCalls: [] as Array<{ cdkOutDir: string; stackName: string }>,
+    loadManifestCalls: [] as Array<{ cdkOutDir: string; stackName: string; via: 'stack' | 'name' }>,
     /** The new image's asset hash the happy-path resolver returns. */
     assetHash: 'newhash',
   },
@@ -93,8 +93,15 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', async (importActual) => 
   return {
     ...actual,
     AssetManifestLoader: class {
+      // `via` tells the two entry points apart: rebuilding the file name from
+      // `stackName` (`loadManifest`) misses a Stage stack's manifest, which
+      // CDK names after the artifact id (#746).
       async loadManifest(cdkOutDir: string, stackName: string): Promise<unknown> {
-        hoisted.loadManifestCalls.push({ cdkOutDir, stackName });
+        hoisted.loadManifestCalls.push({ cdkOutDir, stackName, via: 'name' });
+        return hoisted.manifest;
+      }
+      async loadStackManifest(stack: { stackName: string }, cdkOutDir: string): Promise<unknown> {
+        hoisted.loadManifestCalls.push({ cdkOutDir, stackName: stack.stackName, via: 'stack' });
         return hoisted.manifest;
       }
     },
@@ -255,6 +262,7 @@ describe('loadAssetContextForTarget (Phase 4 follow-up of #214, #218)', () => {
     // Loader WAS consulted — confirms we reached the manifest step.
     expect(hoisted.loadManifestCalls.length).toBe(1);
     expect(hoisted.loadManifestCalls[0]?.stackName).toBe('AppStack');
+    expect(hoisted.loadManifestCalls[0]?.via).toBe('stack');
   });
 
   it('returns undefined when the asset hash is not in manifest.dockerImages', async () => {

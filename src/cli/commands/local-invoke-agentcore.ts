@@ -1010,7 +1010,7 @@ export async function resolveAgentCoreImage(
   if (manifestPath) {
     const cdkOutDir = dirname(manifestPath);
     const loader = new AssetManifestLoader();
-    const manifest = await loader.loadManifest(cdkOutDir, resolved.stack.stackName);
+    const manifest = await loader.loadStackManifest(resolved.stack, cdkOutDir);
     if (manifest) {
       const entry = getDockerImageBySourceHash(manifest, containerUri);
       if (entry) {
@@ -1078,7 +1078,7 @@ async function resolveAgentCoreCodeImage(
   }
   const cdkOutDir = dirname(manifestPath);
   const loader = new AssetManifestLoader();
-  const manifest = await loader.loadManifest(cdkOutDir, resolved.stack.stackName);
+  const manifest = await loader.loadStackManifest(resolved.stack, cdkOutDir);
   const fileAssets = manifest ? loader.getFileAssets(manifest) : undefined;
   // The manifest's `files` are keyed by SOURCE hash; for the default
   // synthesizer that equals the destination objectKey hash (`<hash>.zip`), so a
@@ -2442,7 +2442,7 @@ export async function loadAgentCoreAssetContext(args: {
   // — bail out + rebuild.
   if (resolved.codeArtifact) {
     if (resolved.codeArtifact.s3Source) return undefined;
-    const manifest = await assetLoader.loadManifest(cdkOutDir, newCandidate.stackName);
+    const manifest = await assetLoader.loadStackManifest(newCandidate, cdkOutDir);
     if (!manifest) return undefined;
     const fileAssets = assetLoader.getFileAssets(manifest);
     const asset = fileAssets.get(resolved.codeArtifact.codeAssetHash);
@@ -2477,7 +2477,7 @@ export async function loadAgentCoreAssetContext(args: {
   // docker-image asset entry; otherwise the image is a deployed-registry
   // pin and the classifier rebuild-default is the right answer.
   if (resolved.containerUri === undefined) return undefined;
-  const manifest = await assetLoader.loadManifest(cdkOutDir, newCandidate.stackName);
+  const manifest = await assetLoader.loadStackManifest(newCandidate, cdkOutDir);
   if (!manifest) return undefined;
   const dockerImageEntry = getDockerImageBySourceHash(manifest, resolved.containerUri);
   if (!dockerImageEntry) return undefined;
@@ -2549,7 +2549,7 @@ export async function deriveOldAssetHash(args: {
   if (resolved.containerUri === undefined) return undefined;
   const candidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
   if (!candidate) return undefined;
-  const manifest = await assetLoader.loadManifest(cdkOutDir, candidate.stackName);
+  const manifest = await assetLoader.loadStackManifest(candidate, cdkOutDir);
   if (!manifest) return undefined;
   const entry = getDockerImageBySourceHash(manifest, resolved.containerUri);
   return entry?.hash;

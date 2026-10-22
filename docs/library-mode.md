@@ -58,7 +58,11 @@ on boot and on every `--watch` reload, instead of the built-in
 `@aws-cdk/toolkit-lib` synthesizer. A host that has its own synthesis (its own
 context-provider lookups, Stage enumeration) keeps every command on that one
 path. Any object with a `synthesize(opts)` method that returns `{ stacks }`
-fits `CdkAppSynthesizer`:
+fits `CdkAppSynthesizer`. Return every stack, a `cdk.Stage`'s included, with
+`displayName` set to its hierarchical construct path (`MyStage/Api`): target
+resolution picks a path-form target's stack by that path.
+
+For example:
 
 ```typescript
 import { createLocalStartServiceCommand, type CdkAppSynthesizer } from 'cdk-local';

@@ -64,7 +64,7 @@ Run every `cdkl` command from your CDK project root (the directory containing `c
 Every command takes its target two ways:
 
 - **Leave it off** and cdk-local lists every matching target for you to pick with the arrow keys — no need to know or type the CDK path (`invoke` / `invoke-agentcore` / `start-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select).
-- **Or name it** — pass the CDK display path (e.g. `cdkl invoke MyStack/Fn`) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
+- **Or name it** — pass the CDK display path (e.g. `cdkl invoke MyStack/Fn`) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix. A stack inside a `cdk.Stage` is named by its display path (`cdkl invoke MyStage/Api/Fn`) and counts toward the stack total, so one top-level stack plus a Stage is multi-stack.
 
 ![cdkl invoke against a local sample CDK app — standalone, no deploy](assets/cdkl-invoke.gif)
 

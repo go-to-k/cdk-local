@@ -3,7 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
-import { matchStacks } from '../cli/stack-matcher.js';
+import { describeStacks, selectTargetStack } from '../cli/stack-matcher.js';
 import {
   formatStateRemedy,
   substituteImagePlaceholders,
@@ -562,7 +562,7 @@ export function resolveEcsTaskTarget(
     throw new EcsTaskResolutionError('No stacks found in the synthesized assembly.');
   }
   const parsed = parseEcsTarget(target);
-  const stack = pickStack(parsed, stacks);
+  const stack = pickStack(parsed, stacks, target);
   const resources = stack.template.Resources ?? {};
 
   let logicalId: string | undefined;
@@ -609,30 +609,28 @@ export function resolveEcsTaskTarget(
   return extractTaskDefinitionProperties(stack, logicalId, resource, context);
 }
 
-function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[]): StackInfo {
-  if (parsed.stackPattern === null) {
-    if (stacks.length === 1) return stacks[0]!;
-    throw new EcsTaskResolutionError(
-      `Multiple stacks in app, target '${parsed.pathOrId}' is missing a stack prefix. ` +
-        `Use 'StackName:${parsed.pathOrId}' or 'StackName/...' (path form). ` +
-        `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
-    );
+function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[], target: string): StackInfo {
+  const selection = selectTargetStack(parsed, target, stacks);
+  switch (selection.kind) {
+    case 'found':
+      return selection.stack;
+    case 'no-prefix':
+      throw new EcsTaskResolutionError(
+        `Multiple stacks in app, target '${parsed.pathOrId}' is missing a stack prefix. ` +
+          `Use 'StackName:${parsed.pathOrId}' or 'StackName/...' (path form). ` +
+          `Available stacks: ${describeStacks(stacks)}.`
+      );
+    case 'not-found':
+      throw new EcsTaskResolutionError(
+        `Stack '${selection.pattern}' not found. Available stacks: ${describeStacks(stacks)}.`
+      );
+    case 'ambiguous':
+      throw new EcsTaskResolutionError(
+        `Stack pattern '${selection.pattern}' matched ${selection.matched.length} stacks: ` +
+          describeStacks(selection.matched) +
+          ". Use a more specific pattern, or the stack's display path (path form)."
+      );
   }
-  const matched = matchStacks(stacks, [parsed.stackPattern]);
-  if (matched.length === 0) {
-    throw new EcsTaskResolutionError(
-      `Stack '${parsed.stackPattern}' not found. ` +
-        `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
-    );
-  }
-  if (matched.length > 1) {
-    throw new EcsTaskResolutionError(
-      `Stack pattern '${parsed.stackPattern}' matched ${matched.length} stacks: ` +
-        matched.map((s) => s.stackName).join(', ') +
-        '. Use a more specific pattern.'
-    );
-  }
-  return matched[0]!;
 }
 
 function extractTaskDefinitionProperties(

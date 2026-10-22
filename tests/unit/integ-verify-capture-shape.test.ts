@@ -122,6 +122,7 @@ const CAPTURE_FIXTURES = [
   'local-invoke-provided',
   'local-invoke-python',
   'local-invoke-ruby',
+  'local-invoke-stage',
 ].sort();
 
 interface FlaggedCapture {

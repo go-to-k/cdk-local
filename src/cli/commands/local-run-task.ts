@@ -44,7 +44,7 @@ import {
   type EcsRunState,
   type RunEcsTaskOptions,
 } from '../../local/ecs-task-runner.js';
-import { matchStacks } from '../stack-matcher.js';
+import { candidateTargetStack } from '../stack-matcher.js';
 import {
   addEcsAssumeRoleOptions,
   addImageOverrideOptions,
@@ -271,8 +271,7 @@ async function localRunTaskCommand(
     // (--from-cfn-stack OR a host-injected extra). Constructed BEFORE the
     // candidate-stack picker so the same provider drives both the
     // image-context state-load AND the post-pass cross-stack resolver.
-    const parsed = parseEcsTarget(resolvedTarget);
-    const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+    const candidate = pickCandidateStack(resolvedTarget, stacks);
     stateProvider = createLocalStateProvider(
       options,
       candidate?.stackName ?? '',
@@ -733,17 +732,16 @@ export async function buildEcsImageResolutionContext(
   return ctx;
 }
 
-function pickCandidateStack(
-  stackPattern: string | null,
-  stacks: StackInfo[]
-): StackInfo | undefined {
-  if (stackPattern === null) {
-    if (stacks.length === 1) return stacks[0];
-    return undefined;
-  }
-  const matched = matchStacks(stacks, [stackPattern]);
-  if (matched.length === 1) return matched[0];
-  return undefined;
+/**
+ * The stack whose state feeds the state source, chosen by the SAME rule
+ * `resolveEcsTaskTarget` resolves the task with (`candidateTargetStack`), so a
+ * Stage stack's target never names the Stage id here while the resolver finds
+ * the task — that ran the task with no state source, silently.
+ */
+function pickCandidateStack(target: string, stacks: StackInfo[]): StackInfo | undefined {
+  // Parsed HERE, from the one target string: a `parsed` that disagreed with
+  // `target` would silently drop to the first-segment match.
+  return candidateTargetStack(parseEcsTarget(target), target, stacks);
 }
 
 async function resolveCallerAccountId(

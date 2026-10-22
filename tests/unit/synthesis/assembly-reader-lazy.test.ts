@@ -16,7 +16,7 @@ vi.mock('@aws-cdk/toolkit-lib', () => {
     }
     async synth(): Promise<object> {
       return {
-        cloudAssembly: { directory: '/tmp/cdk.out', stacks: [] },
+        cloudAssembly: { directory: '/tmp/cdk.out', stacks: [], stacksRecursively: [] },
         dispose: async () => {},
       };
     }

@@ -40,7 +40,7 @@ import { isInteractive, pickManyTargets } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp, resolveWatchConfig, type CdkWatchConfig } from '../config-loader.js';
 import { createGlobMatcher } from '../../utils/glob-match.js';
-import { readCdkPathOrUndefined } from '../cdk-path.js';
+import { readCdkPathOrUndefined, stackForConstructPath } from '../cdk-path.js';
 import { resolveExecutionRoleArnFromState } from './local-invoke.js';
 import {
   createLocalStateProvider,
@@ -123,7 +123,7 @@ import {
 } from '../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
 import { copyLayerTreeLastWins } from '../../local/layer-tree-copy.js';
-import { matchStacks } from '../stack-matcher.js';
+import { describeStacks, matchStacks } from '../stack-matcher.js';
 import {
   buildCorsConfigByApiId,
   buildCorsConfigFromCloudFrontChain,
@@ -581,14 +581,15 @@ async function localStartApiCommand(
       typeof options.fromCfnStack === 'string' ? options.fromCfnStack : undefined;
     // Improvement B (extended to subsets): synth stack-prefix inference.
     // `cdkl start-api MyStack/MyApi` (no `--stack`, no `--from-cfn-stack`)
-    // extracts `MyStack` from the target's `<StackName>/<construct>` shape
-    // and uses it as a third fallback for stack selection. With MULTIPLE
+    // picks the stack whose display path prefixes the target (`MyStack`, or
+    // `MyStage/Api` for a Stage stack, #746) as a third fallback for stack
+    // selection. With MULTIPLE
     // targets we only keep the optimization when they all share ONE stack
     // prefix; targets spanning different stacks (or any bare-logical-id
     // target without a `/` separator) leave this undefined so the synth
     // scope falls back to ALL stacks (item 5) and the union is filtered
     // down afterwards by `apiFilters`.
-    const targetStackPrefix = deriveSynthStackPrefix(effectiveTargets);
+    const targetStackPrefix = deriveSynthStackPrefix(effectiveTargets, stacks);
     const targetStacks = pickTargetStacks(
       stacks,
       options.stack,
@@ -596,7 +597,8 @@ async function localStartApiCommand(
       targetStackPrefix,
       // Fall back to synthesizing ALL stacks when an explicit subset spans
       // (or might span) multiple stacks and no other selector pins one.
-      options.allStacks || shouldSynthAllStacks(effectiveTargets, options.stack, cfnStackFallback)
+      options.allStacks ||
+        shouldSynthAllStacks(effectiveTargets, options.stack, cfnStackFallback, stacks)
     );
     if (targetStacks.length === 0) {
       throw new Error(
@@ -648,34 +650,6 @@ async function localStartApiCommand(
       );
     }
 
-    // PR 8c: stage selection + variable injection. Build the per-API
-    // Stage map for every target stack and attach it to the routes.
-    // Stage selection is `--stage <name>` global override, otherwise
-    // first-attached default. The CLI surfaces a warn line when
-    // `--stage` was passed and at least one API doesn't have a Stage
-    // with that name.
-    const stageMap = new Map<string, ResolvedStage>();
-    for (const stack of targetStacks) {
-      const m = buildStageMap(stack.template, options.stage);
-      for (const [k, v] of m) stageMap.set(k, v);
-    }
-    if (options.stage) {
-      // Walk the routes looking for HTTP API v2 / REST v1 routes whose
-      // API isn't in `stageMap` (i.e. the API had no Stage with the
-      // override name). One warn per such API, deduplicated.
-      const missingApis = new Set<string>();
-      for (const r of routes) {
-        if (!r.apiLogicalId) continue;
-        if (!stageMap.has(r.apiLogicalId)) missingApis.add(r.apiLogicalId);
-      }
-      for (const apiId of missingApis) {
-        logger.warn(
-          `--stage '${options.stage}' did not match any Stage on API '${apiId}'; routes on that API will get stageVariables: null.`
-        );
-      }
-    }
-    attachStageContext(routes, stageMap);
-
     // PR 8b: attach authorizer info to every route. Routes without an
     // authorizer pass through as `{route, authorizer: undefined}`.
     // Routes referencing an unsupported authorizer kind hard-fail here.
@@ -723,6 +697,46 @@ async function localStartApiCommand(
       webSocketApis = filteredWebSocketApis;
     }
 
+    // The stacks the (possibly narrowed) surface actually serves. A subset
+    // spanning stacks synthesizes EVERY stack (`shouldSynthAllStacks`), so
+    // `targetStacks` can hold stacks no served route belongs to — an
+    // unserved `cdk.Stage` clone among them. Everything keyed by bare
+    // logical id below (stage / CORS maps, container specs, the state load)
+    // reads only these, so such a clone can neither collide nor overwrite
+    // (#746). A route always names its stack (`apiStackName`); one that did
+    // not would keep the whole set, the safe direction.
+    const servedRoutes = routesWithAuth.map((r) => r.route);
+    const servedStacks = stacksServing(targetStacks, servedRoutes, webSocketApis);
+
+    // PR 8c: stage selection + variable injection. Build the per-API
+    // Stage map for every SERVED stack (after the target-subset filter, so an
+    // unserved stack sharing an API logical id cannot overwrite an entry) and attach it to the routes.
+    // Stage selection is `--stage <name>` global override, otherwise
+    // first-attached default. The CLI surfaces a warn line when
+    // `--stage` was passed and at least one API doesn't have a Stage
+    // with that name.
+    const stageMap = new Map<string, ResolvedStage>();
+    for (const stack of servedStacks) {
+      const m = buildStageMap(stack.template, options.stage);
+      for (const [k, v] of m) stageMap.set(k, v);
+    }
+    if (options.stage) {
+      // Walk the routes looking for HTTP API v2 / REST v1 routes whose
+      // API isn't in `stageMap` (i.e. the API had no Stage with the
+      // override name). One warn per such API, deduplicated.
+      const missingApis = new Set<string>();
+      for (const r of servedRoutes) {
+        if (!r.apiLogicalId) continue;
+        if (!stageMap.has(r.apiLogicalId)) missingApis.add(r.apiLogicalId);
+      }
+      for (const apiId of missingApis) {
+        logger.warn(
+          `--stage '${options.stage}' did not match any Stage on API '${apiId}'; routes on that API will get stageVariables: null.`
+        );
+      }
+    }
+    attachStageContext(servedRoutes, stageMap);
+
     // PR 8c: per-API CORS config. HTTP API v2's `CorsConfiguration` +
     // Function URL's own `Cors` (issue #644) + CORS borrowed from
     // CloudFront ResponseHeadersPolicy when a CloudFront Distribution
@@ -736,7 +750,7 @@ async function localStartApiCommand(
     // boundary; we only have one slot locally, so closer-to-Lambda
     // wins). The two rarely coexist in practice.
     const corsConfigByApiId = new Map<string, CorsConfig>();
-    for (const stack of targetStacks) {
+    for (const stack of servedStacks) {
       const fromCloudFront = buildCorsConfigFromCloudFrontChain(stack.template);
       for (const [k, v] of fromCloudFront) corsConfigByApiId.set(k, v);
       const direct = buildCorsConfigByApiId(stack.template);
@@ -753,12 +767,19 @@ async function localStartApiCommand(
     // differ if stacks span partitions. Per-stack failures degrade to
     // warn-and-fall-back (the PR 1 behavior is preserved) so a missing
     // or unreadable state file never aborts the server boot.
+    // A union of stacks (`--all-stacks`, or targets spanning stacks) is
+    // served through maps keyed by BARE logical id — the per-Lambda container
+    // specs, the per-API stage / CORS maps — so two served stacks sharing one
+    // (a `cdk.Stage`'s Beta / Prod clones always do) would serve one stack's
+    // Lambda for the other's route. Refuse, naming the stacks (#746).
+    assertServedLogicalIdsUnambiguous(servedStacks, servedRoutes, routesWithAuth, webSocketApis);
+
     const stateSourceActive =
       isCfnFlagPresent(options) || hasExtraStateProviderActive(options, extraStateProviders);
     const stateByStack = stateSourceActive
       ? await loadStateForRoutedStacks(
-          targetStacks,
-          routes,
+          servedStacks,
+          servedRoutes,
           routesWithAuth,
           options,
           extraStateProviders
@@ -809,13 +830,13 @@ async function localStartApiCommand(
     // pool then knows everything it needs to lazy-start a fresh one.
     // Authorizer Lambdas are also pooled — they're invoked just like
     // route handlers (PR 8b).
-    const lambdaIds = uniqueLambdaIds(routes, routesWithAuth, webSocketApis);
+    const lambdaIds = uniqueLambdaIds(servedRoutes, routesWithAuth, webSocketApis);
     const specs = new Map<string, ContainerSpec>();
     for (let i = 0; i < lambdaIds.length; i++) {
       const logicalId = lambdaIds[i]!;
       const spec = await buildContainerSpec({
         logicalId,
-        stacks: targetStacks,
+        stacks: servedStacks,
         overrides,
         assumeRole: normalizedAssumeRole,
         containerHost: options.containerHost,
@@ -860,7 +881,7 @@ async function localStartApiCommand(
       specs,
       corsConfigByApiId,
       webSocketApis,
-      stacks: targetStacks,
+      stacks: servedStacks,
     };
   };
 
@@ -1492,7 +1513,7 @@ export function pickTargetStacks(
   stacks: StackInfo[],
   pattern: string | undefined,
   cfnStackFallback?: string,
-  targetFallback?: string,
+  targetFallback?: StackInfo | string,
   allStacks?: boolean
 ): StackInfo[] {
   // Issue #55: `--all-stacks` serves the union of every stack's APIs.
@@ -1506,12 +1527,16 @@ export function pickTargetStacks(
   //   1. `--stack <pattern>`                            (explicit)
   //   2. `--from-cfn-stack <explicit-name>`             (PR #44)
   //   3. positional target's stack-name prefix          (PR #45)
-  //      e.g. `cdkl start-api MyStack/MyApi` infers `MyStack`.
+  //      e.g. `cdkl start-api MyStack/MyApi` infers `MyStack`;
+  //      `targetStackHint` passes the prefix-matched stack ITSELF, never its
+  //      name — re-matching a physical name could select a second stack
+  //      sharing it (one Stage deployed to two accounts).
   //
   // CDK apps typically deploy each synth stack under its own stack-name,
   // so any of the three values identifies the synth target unambiguously
   // without the user having to repeat themselves via `--stack`.
   const effective = pattern ?? cfnStackFallback ?? targetFallback;
+  if (effective !== undefined && typeof effective !== 'string') return [effective];
   if (effective) {
     return matchStacks(stacks, [effective]);
   }
@@ -1522,7 +1547,7 @@ export function pickTargetStacks(
   // selection so users don't accidentally serve (and boot Docker
   // containers for) a side-stack's API.
   throw new Error(
-    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, a stack-qualified target like "<StackName>/<construct>", or --all-stacks to serve every stack. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
+    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, a stack-qualified target like "<StackName>/<construct>", or --all-stacks to serve every stack. Available stacks: ${describeStacks(stacks)}.`
   );
 }
 
@@ -1660,32 +1685,58 @@ export function resolveApiTargetSubset(
 }
 
 /**
- * Derive the single synth stack prefix shared by every supplied target,
- * for the synth-scope optimization (item 5 of the start-api subset UX).
+ * The stack a positional start-api target implies, or `undefined` when the
+ * target has no `/` (a bare logical id leaves the single-stack auto-pick
+ * untouched).
  *
- * Each target's stack prefix is the segment before its first `/` (the
- * `<StackName>/<construct>` Construct-path form). Returns:
+ * It is the STACK whose display path is the LONGEST prefix of the target
+ * (`stackForConstructPath`): a stack under a `cdk.Stage` displays as
+ * `MyStage/Api`, so the target's first segment is the Stage id and never names
+ * a stack (#746). The stack itself is returned, not its name, so
+ * `pickTargetStacks` selects exactly it. A head no stack path prefixes — a
+ * wildcard — is returned as a pattern for `matchStacks`. The same rule as
+ * cdkd's `targetStackHint` (go-to-k/cdkd#3953).
+ *
+ * @internal exported for unit tests.
+ */
+export function targetStackHint(
+  target: string,
+  stacks: readonly StackInfo[]
+): StackInfo | string | undefined {
+  const slash = target.indexOf('/');
+  if (slash === -1) return undefined;
+  return stackForConstructPath(target, stacks) ?? target.slice(0, slash);
+}
+
+/**
+ * Derive the single synth stack shared by every supplied target, for the
+ * synth-scope optimization (item 5 of the start-api subset UX).
+ *
+ * Each target's stack is its {@link targetStackHint}. Returns:
  *  - `undefined` when `targets` is empty (serve-all path — no prefix).
  *  - `undefined` when ANY target lacks a `/` (bare logical id — the synth
  *    target can't be inferred from it, so fall back to the existing
  *    single-stack auto-pick / multi-stack rejection path).
- *  - `undefined` when targets span MORE THAN ONE distinct prefix (the
+ *  - `undefined` when targets imply MORE THAN ONE distinct stack (the
  *    subset crosses stacks, so synth must cover all of them — see
  *    {@link shouldSynthAllStacks}).
- *  - the shared prefix when every target carries the SAME `<StackName>/`
- *    prefix — keeping the single-stack synth optimization.
+ *  - the shared stack (or wildcard pattern) when every target implies the
+ *    SAME one — keeping the single-stack synth optimization.
  *
  * @internal exported for unit tests.
  */
-export function deriveSynthStackPrefix(targets: readonly string[]): string | undefined {
+export function deriveSynthStackPrefix(
+  targets: readonly string[],
+  stacks: readonly StackInfo[]
+): StackInfo | string | undefined {
   if (targets.length === 0) return undefined;
-  const prefixes = new Set<string>();
+  const hints = new Set<StackInfo | string>();
   for (const t of targets) {
-    const slash = t.indexOf('/');
-    if (slash === -1) return undefined; // bare logical id — can't infer a stack
-    prefixes.add(t.slice(0, slash));
+    const hint = targetStackHint(t, stacks);
+    if (hint === undefined) return undefined; // bare logical id — can't infer a stack
+    hints.add(hint);
   }
-  return prefixes.size === 1 ? [...prefixes][0] : undefined;
+  return hints.size === 1 ? [...hints][0] : undefined;
 }
 
 /**
@@ -1707,11 +1758,12 @@ export function deriveSynthStackPrefix(targets: readonly string[]): string | und
 export function shouldSynthAllStacks(
   targets: readonly string[],
   stackPattern: string | undefined,
-  cfnStackFallback: string | undefined
+  cfnStackFallback: string | undefined,
+  stacks: readonly StackInfo[]
 ): boolean {
   if (targets.length === 0) return false;
   if (stackPattern !== undefined || cfnStackFallback !== undefined) return false;
-  return deriveSynthStackPrefix(targets) === undefined;
+  return deriveSynthStackPrefix(targets, stacks) === undefined;
 }
 
 /**
@@ -1793,6 +1845,85 @@ export function tryEmitFromCfnRedundancyTipOnce(
   if (routedStackName === undefined) return;
   emit(routedStackName);
   emittedRef.value = true;
+}
+
+/**
+ * The stacks owning at least one served route or WebSocket API, in input
+ * order. Every route carries its stack's physical name; should one not, the
+ * whole input is kept rather than a stack silently dropped.
+ *
+ * @internal exported for unit tests.
+ */
+export function stacksServing(
+  stacks: readonly StackInfo[],
+  routes: readonly DiscoveredRoute[],
+  webSocketApis: readonly DiscoveredWebSocketApi[]
+): StackInfo[] {
+  const names = new Set<string>();
+  for (const r of routes) {
+    if (r.apiStackName === undefined) return [...stacks];
+    names.add(r.apiStackName);
+  }
+  for (const api of webSocketApis) names.add(api.apiStackName);
+  return stacks.filter((s) => names.has(s.stackName));
+}
+
+/**
+ * The served stacks whose template declares `logicalId` (optionally of one
+ * resource type). One predicate for the union-collision refusal below and for
+ * {@link resolveLambdaByLogicalId}, so the two cannot disagree.
+ */
+function stacksDeclaring(
+  logicalId: string,
+  stacks: readonly StackInfo[],
+  type?: string
+): StackInfo[] {
+  return stacks.filter((stack) => {
+    const resource = stack.template.Resources?.[logicalId];
+    return resource !== undefined && (type === undefined || resource.Type === type);
+  });
+}
+
+/**
+ * Refuse a served union in which a reachable Lambda's, or a served API's,
+ * logical id is declared by more than one served stack. start-api keys its
+ * container specs and its stage / CORS maps by the bare logical id, so the
+ * first stack would silently win for both — never order-dependent first-match;
+ * an explicit error naming the candidate stacks instead (#746). A `cdk.Stage`
+ * deployed twice (Beta / Prod) always collides: its clones carry identical
+ * logical ids.
+ *
+ * @internal exported for unit tests.
+ */
+export function assertServedLogicalIdsUnambiguous(
+  stacks: readonly StackInfo[],
+  routes: readonly DiscoveredRoute[],
+  routesWithAuth: readonly RouteWithAuth[],
+  webSocketApis: readonly DiscoveredWebSocketApi[] = []
+): void {
+  if (stacks.length < 2) return;
+  const checks: Array<[string, string | undefined]> = [];
+  for (const id of uniqueLambdaIds(routes, routesWithAuth, webSocketApis)) {
+    checks.push([id, 'AWS::Lambda::Function']);
+  }
+  const apiIds = new Set<string>();
+  for (const { route } of routesWithAuth) {
+    if (route.source !== 'function-url' && route.apiLogicalId) apiIds.add(route.apiLogicalId);
+  }
+  for (const api of webSocketApis) apiIds.add(api.apiLogicalId);
+  for (const id of apiIds) checks.push([id, undefined]);
+
+  for (const [logicalId, type] of checks) {
+    const owners = stacksDeclaring(logicalId, stacks, type);
+    if (owners.length > 1) {
+      throw new Error(
+        `Logical ID ${displayUntrustedValue(logicalId)} is declared by ${owners.length} of the served stacks ` +
+          `(${describeStacks(owners)}), and ${getEmbedConfig().cliName} start-api cannot serve two resources ` +
+          `under one logical ID. Serve one stack at a time: pass --stack '<stack display path>' ` +
+          `or a stack-qualified target.`
+      );
+    }
+  }
 }
 
 /**
@@ -2630,7 +2761,7 @@ async function resolveLocalBuildPlan(lambda: ResolvedStartApiImageLambda): Promi
   if (!manifestPath) return undefined;
   const cdkOutDir = path.dirname(manifestPath);
   const loader = new AssetManifestLoader();
-  const manifest = await loader.loadManifest(cdkOutDir, lambda.stack.stackName);
+  const manifest = await loader.loadStackManifest(lambda.stack, cdkOutDir);
   if (!manifest) return undefined;
   const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
   if (!entry) return undefined;
@@ -2806,9 +2937,18 @@ export function resolveLambdaByLogicalId(
   logicalId: string,
   stacks: StackInfo[]
 ): ResolvedStartApiLambda {
-  for (const stack of stacks) {
-    const resource = stack.template.Resources?.[logicalId];
-    if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
+  // Never the first stack that declares it: a union of stacks sharing the id
+  // is refused up front (`assertServedLogicalIdsUnambiguous`), and this keeps
+  // a direct caller from resolving one stack's Lambda for another's route.
+  const owners = stacksDeclaring(logicalId, stacks, 'AWS::Lambda::Function');
+  if (owners.length > 1) {
+    throw new Error(
+      `Lambda ${displayUntrustedValue(logicalId)} is declared by ${owners.length} stacks ` +
+        `(${describeStacks(owners)}); pass --stack '<stack display path>' to pick one.`
+    );
+  }
+  for (const stack of owners) {
+    const resource = stack.template.Resources![logicalId]!;
     const props = resource.Properties ?? {};
     const memoryMb = typeof props['MemorySize'] === 'number' ? props['MemorySize'] : 128;
     const timeoutSec = typeof props['Timeout'] === 'number' ? props['Timeout'] : 3;

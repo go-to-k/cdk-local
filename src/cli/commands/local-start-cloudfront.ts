@@ -47,11 +47,11 @@ import {
   resolveFrontDoorTlsMaterials,
   type FrontDoorTlsMaterials,
 } from '../../local/front-door-tls.js';
-import { parseEcsTarget } from '../../local/ecs-task-resolver.js';
+import { parseEcsTarget, type ParsedEcsTarget } from '../../local/ecs-task-resolver.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import { buildCdkPathIndex, readCdkPath, resolveCdkPathToLogicalIds } from '../cdk-path.js';
-import { matchStacks } from '../stack-matcher.js';
+import { describeStacks, selectTargetStack } from '../stack-matcher.js';
 import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import {
   appOptions,
@@ -348,7 +348,7 @@ export function resolveCloudFrontTarget(
     throw new LocalStartCloudFrontError('No stacks found in the synthesized assembly.');
   }
   const parsed = parseEcsTarget(target);
-  const stack = pickStack(parsed.stackPattern, stacks, target);
+  const stack = pickStack(parsed, stacks, target);
   const resources = stack.template.Resources ?? {};
 
   if (parsed.isPath) {
@@ -373,26 +373,26 @@ export function resolveCloudFrontTarget(
   return { stack, logicalId: parsed.pathOrId };
 }
 
-function pickStack(stackPattern: string | null, stacks: StackInfo[], target: string): StackInfo {
-  if (stackPattern === null) {
-    if (stacks.length === 1) return stacks[0]!;
-    throw new LocalStartCloudFrontError(
-      `Target '${target}' has no stack prefix, and the assembly contains ${stacks.length} stacks: ` +
-        `${stacks.map((s) => s.stackName).join(', ')}. Pass it as 'Stack/Path' or 'Stack:LogicalId'.`
-    );
+function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[], target: string): StackInfo {
+  const selection = selectTargetStack(parsed, target, stacks);
+  switch (selection.kind) {
+    case 'found':
+      return selection.stack;
+    case 'no-prefix':
+      throw new LocalStartCloudFrontError(
+        `Target '${target}' has no stack prefix, and the assembly contains ${stacks.length} stacks: ` +
+          `${describeStacks(stacks)}. Pass it as 'Stack/Path' or 'Stack:LogicalId'.`
+      );
+    case 'not-found':
+      throw new LocalStartCloudFrontError(
+        `No stack matches '${selection.pattern}'. Available stacks: ${describeStacks(stacks)}.`
+      );
+    case 'ambiguous':
+      throw new LocalStartCloudFrontError(
+        `Multiple stacks match '${selection.pattern}': ${describeStacks(selection.matched)}. ` +
+          "Refine the pattern, or use the stack's display path (path form)."
+      );
   }
-  const matched = matchStacks(stacks, [stackPattern]);
-  if (matched.length === 0) {
-    throw new LocalStartCloudFrontError(
-      `No stack matches '${stackPattern}'. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
-    );
-  }
-  if (matched.length > 1) {
-    throw new LocalStartCloudFrontError(
-      `Multiple stacks match '${stackPattern}': ${matched.map((s) => s.stackName).join(', ')}. Refine the pattern.`
-    );
-  }
-  return matched[0]!;
 }
 
 function notFound(

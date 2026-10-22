@@ -190,7 +190,10 @@ function listApiSurfaces(stacks: readonly StackInfo[]): TargetEntry[] {
     cdkPath: string | undefined,
     kind: string
   ): void => {
-    const key = `${stackName}:${logicalId}`;
+    // The construct path when there is one: two `cdk.Stage` stacks may share
+    // an explicit physical name AND (as clones) every logical id, so
+    // `<stackName>:<logicalId>` would collapse two APIs into one entry (#746).
+    const key = cdkPath ?? `${stackName}:${logicalId}`;
     if (!byKey.has(key)) byKey.set(key, makeEntry(stackName, logicalId, cdkPath, kind));
   };
 

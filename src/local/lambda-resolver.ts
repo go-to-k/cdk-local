@@ -14,7 +14,7 @@ import { unzipSync } from 'fflate';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
-import { matchStacks } from '../cli/stack-matcher.js';
+import { describeStacks, selectTargetStack } from '../cli/stack-matcher.js';
 import {
   derivePartitionAndUrlSuffix,
   derivePseudoParametersFromRegion,
@@ -269,10 +269,12 @@ export class LocalInvokeResolutionError extends Error {
  * Two accepted forms:
  *   - `Stack:LogicalId` — colon delimits stack from logical ID. Logical
  *     IDs cannot contain `/` or `:`, so the parse is unambiguous.
- *   - `Stack/Path/...` — display-path form. The stack prefix is the first
- *     `/`-delimited segment; everything after is the construct path
- *     (which itself starts with the same stack name in CDK output, e.g.
- *     `MyStack/MyApi/Handler`).
+ *   - `Stack/Path/...` — display-path form: the whole target is the
+ *     construct path (`MyStack/MyApi/Handler`). `stackPattern` is its first
+ *     `/`-delimited segment, but the resolver picks the stack whose display
+ *     path is the LONGEST prefix of the target first, since a `cdk.Stage`
+ *     stack's path starts with the Stage id (`MyStage/Api/Handler`) —
+ *     `stackPattern` is only the fallback for a wildcard head.
  *
  * For single-stack apps the stack prefix may be omitted entirely:
  *   - Bare `Handler` is treated as a logical ID in the only stack.
@@ -336,7 +338,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
   }
 
   const parsed = parseTarget(target);
-  const stack = pickStack(parsed, stacks);
+  const stack = pickStack(parsed, stacks, target);
 
   const template = stack.template;
   const resources = template.Resources ?? {};
@@ -395,36 +397,33 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
 
 /**
  * Single-stack auto-detect (D4): if the app has exactly one stack, the
- * user may omit the stack prefix. Otherwise an explicit stack pattern is
- * required.
+ * user may omit the stack prefix. Otherwise an explicit stack is required.
+ * Every enumerated stack counts, a `cdk.Stage`'s included, and a path-form
+ * target's stack is its longest display-path prefix — see
+ * `selectTargetStack`.
  */
-function pickStack(parsed: ParsedTarget, stacks: StackInfo[]): StackInfo {
-  if (parsed.stackPattern === null) {
-    if (stacks.length === 1) return stacks[0]!;
-    throw new LocalInvokeResolutionError(
-      `Multiple stacks in app, target '${parsed.pathOrId}' is missing a stack prefix. ` +
-        `Use 'StackName:${parsed.pathOrId}' or 'StackName/...' (path form). ` +
-        `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
-    );
+function pickStack(parsed: ParsedTarget, stacks: StackInfo[], target: string): StackInfo {
+  const selection = selectTargetStack(parsed, target, stacks);
+  switch (selection.kind) {
+    case 'found':
+      return selection.stack;
+    case 'no-prefix':
+      throw new LocalInvokeResolutionError(
+        `Multiple stacks in app, target '${parsed.pathOrId}' is missing a stack prefix. ` +
+          `Use 'StackName:${parsed.pathOrId}' or 'StackName/...' (path form). ` +
+          `Available stacks: ${describeStacks(stacks)}.`
+      );
+    case 'not-found':
+      throw new LocalInvokeResolutionError(
+        `Stack '${selection.pattern}' not found. Available stacks: ${describeStacks(stacks)}.`
+      );
+    case 'ambiguous':
+      throw new LocalInvokeResolutionError(
+        `Stack pattern '${selection.pattern}' matched ${selection.matched.length} stacks: ` +
+          describeStacks(selection.matched) +
+          ". Use a more specific pattern, or the stack's display path (path form)."
+      );
   }
-
-  // Reuse the shared stack-matcher so display-path / wildcard semantics
-  // line up with deploy / diff / destroy.
-  const matched = matchStacks(stacks, [parsed.stackPattern]);
-  if (matched.length === 0) {
-    throw new LocalInvokeResolutionError(
-      `Stack '${parsed.stackPattern}' not found. ` +
-        `Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
-    );
-  }
-  if (matched.length > 1) {
-    throw new LocalInvokeResolutionError(
-      `Stack pattern '${parsed.stackPattern}' matched ${matched.length} stacks: ` +
-        matched.map((s) => s.stackName).join(', ') +
-        '. Use a more specific pattern.'
-    );
-  }
-  return matched[0]!;
 }
 
 /**

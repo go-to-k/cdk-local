@@ -66,7 +66,7 @@ import {
   parseHostPortOverrides,
   type RunEcsTaskOptions,
 } from '../../local/ecs-task-runner.js';
-import { matchStacks } from '../stack-matcher.js';
+import { candidateTargetStack } from '../stack-matcher.js';
 import {
   createLocalStateProvider,
   hostStateSourceFields,
@@ -1326,7 +1326,7 @@ export async function loadAssetContextForTarget(args: {
   // fresh stacks to discover the NEW hash. Both lookups skip when the
   // image isn't a CDK asset.
   const parsed = parseEcsTarget(target);
-  const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+  const candidate = pickCandidateStack(target, stacks);
   if (!candidate) {
     logger.debug(
       `loadAssetContext: stack pattern '${parsed.stackPattern}' from target '${target}' ` +
@@ -1372,7 +1372,7 @@ export async function loadAssetContextForTarget(args: {
     return undefined;
   }
   const newAssetHash = essential.image.assetHash;
-  const manifest = await assetLoader.loadManifest(cdkOutDir, candidate.stackName);
+  const manifest = await assetLoader.loadStackManifest(candidate, cdkOutDir);
   if (!manifest) {
     logger.debug(
       `loadAssetContext: asset manifest missing for stack '${candidate.stackName}' under ` +
@@ -1510,8 +1510,7 @@ async function rollOneTarget(args: {
     logger,
   } = args;
 
-  const parsed = parseEcsTarget(newBoot.target);
-  const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+  const candidate = pickCandidateStack(newBoot.target, stacks);
   const stateProvider = createLocalStateProvider(
     options,
     candidate?.stackName ?? '',
@@ -1660,8 +1659,7 @@ async function bootOneTarget(
   suppressLoadBalancerWarning: boolean,
   imageOverrideTag: string | undefined
 ): Promise<ServiceController> {
-  const parsed = parseEcsTarget(boot.target);
-  const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+  const candidate = pickCandidateStack(boot.target, stacks);
   const stateProvider = createLocalStateProvider(
     options,
     candidate?.stackName ?? '',
@@ -2523,8 +2521,7 @@ export async function buildEcsImageResolutionContext(
   opts: { suppressStateWarning?: boolean } = {}
 ): Promise<EcsImageResolutionContext | undefined> {
   const logger = getLogger();
-  const parsed = parseEcsTarget(target);
-  const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+  const candidate = pickCandidateStack(target, stacks);
   if (!candidate) return undefined;
 
   const needs = detectEcsImageResolutionNeeds(candidate);
@@ -2619,17 +2616,15 @@ export async function buildEcsImageResolutionContext(
   return ctx;
 }
 
-function pickCandidateStack(
-  stackPattern: string | null,
-  stacks: StackInfo[]
-): StackInfo | undefined {
-  if (stackPattern === null) {
-    if (stacks.length === 1) return stacks[0];
-    return undefined;
-  }
-  const matched = matchStacks(stacks, [stackPattern]);
-  if (matched.length === 1) return matched[0];
-  return undefined;
+/**
+ * The stack whose state feeds the state source / image context, by the SAME
+ * rule `resolveEcsServiceTarget` resolves the service with
+ * (`candidateTargetStack`) — a Stage stack's target starts with the Stage id.
+ */
+function pickCandidateStack(target: string, stacks: StackInfo[]): StackInfo | undefined {
+  // Parsed HERE, from the one target string: a `parsed` that disagreed with
+  // `target` would silently drop to the first-segment match.
+  return candidateTargetStack(parseEcsTarget(target), target, stacks);
 }
 
 async function resolveCallerAccountId(
@@ -2869,8 +2864,7 @@ async function resolveAndBuildImageOverrides(args: {
   // a public-registry pin in the resolved template.
   const resolvedForPeek: Array<{ target: string; service: ResolvedEcsService }> = [];
   for (const target of perTarget) {
-    const parsed = parseEcsTarget(target);
-    const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+    const candidate = pickCandidateStack(target, stacks);
     const stateProvider = createLocalStateProvider(
       options,
       candidate?.stackName ?? '',
