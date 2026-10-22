@@ -151,3 +151,37 @@ describe('CdklIoHost', () => {
     });
   });
 });
+
+describe('CdklIoHost message text rendering (go-to-k/cdk-local#827)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('strips SGR colour, escapes every other control and indents continuation lines', async () => {
+    const { renderToolkitMessageText } = await import('../../../src/synthesis/cdkl-io-host.js');
+    expect(renderToolkitMessageText('\x1b[1mStack\x1b[22m ok')).toBe('Stack ok');
+    expect(renderToolkitMessageText('a\x1b[2Jb')).toBe('a\\u001b[2Jb');
+    // The strip cannot splice a fresh ESC sequence: it runs before the escape.
+    expect(renderToolkitMessageText('a\x1b\x1b[0m[2Jb')).toBe('a\\u001b[2Jb');
+    expect(renderToolkitMessageText('a\x9b2J\rb')).toBe('a\\u009b2J\\u000db');
+    expect(renderToolkitMessageText('a\r\nWARN: x\n\nb')).toBe('a\n  WARN: x\n\n  b');
+  });
+
+  it('writes the rendered text, keeping its own level styling after it', async () => {
+    const host = new CdklIoHost({ isCI: false, isTTY: true });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await host.notify({
+      time: new Date(),
+      level: 'warn',
+      action: 'synth',
+      code: 'CDK_ASSEMBLY_W0001',
+      message: '[Warning at /Stack\x1b[2K\rx] annotation\nWARN: forged',
+      data: undefined,
+    });
+    const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+    // chalk may be disabled under the test runner; the body is what is pinned.
+    expect(written.replace(/\x1b\[[0-9;]*m/g, '')).toBe(
+      '[Warning at /Stack\\u001b[2K\\u000dx] annotation\n  WARN: forged\n'
+    );
+  });
+});

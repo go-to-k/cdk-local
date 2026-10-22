@@ -486,3 +486,206 @@ describe('ConsoleLogger with an embedding host logger (go-to-k/cdkd#2429)', () =
     }
   );
 });
+
+describe('ConsoleLogger control escape + continuation indent (go-to-k/cdk-local#827)', () => {
+  // The expected values are written out literally rather than derived from
+  // `renderLogText` / `LOG_CONTINUATION_INDENT`, so a change to the subject
+  // cannot move the expectation with it.
+  const LEVELS = ['debug', 'info', 'warn', 'error'] as const;
+  // Each value an assembly-chosen identifier could carry into a message.
+  const FORGERIES: Array<[string, string]> = [
+    ['an injected newline + WARN: line', 'id-a\nWARN: forged'],
+    ['an injected newline + ready banner', 'id-a\nServer listening on http://evil:1'],
+    ['a carriage return rewriting the line', 'id-a\rERROR: forged'],
+    ['a CRLF + ERROR: line', 'id-a\r\nERROR: forged'],
+    ['an ESC clear-screen', 'id-a\x1b[2Jforged'],
+    ['an ESC erase-line + CR', 'id-a\x1b[2K\rWARN: forged'],
+    ['a C1 CSI', 'id-a\x9b2Jforged'],
+    ['a DEL and a NUL', 'id-a\x7f\x00forged'],
+    ['a Unicode line separator', 'id-a\u2028WARN: forged'],
+  ];
+  // Any control character the logger must never emit from a message body,
+  // with colours off (C0 minus \n / \t, DEL, C1, the Unicode separators).
+  // eslint-disable-next-line no-control-regex -- the control characters are exactly what is hunted.
+  const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/;
+
+  function captureAll(): { lines: () => string[]; restore: () => void } {
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation(() => undefined)
+    );
+    return {
+      lines: () => spies.flatMap((s) => s.mock.calls.map((c) => String(c[0]))),
+      restore: () => {
+        for (const s of spies) s.mockRestore();
+      },
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  for (const mode of ['info', 'debug'] as const) {
+    for (const level of LEVELS) {
+      it.each(FORGERIES)(
+        `${mode}-mode ${level}: %s forges no line and emits no control`,
+        (_label, value) => {
+          const cap = captureAll();
+          try {
+            const logger = new ConsoleLogger(mode, false);
+            logger[level](`Resolving ${value} in stack`);
+            const out = cap.lines();
+            if (mode === 'info' && level === 'debug') {
+              expect(out).toEqual([]);
+              return;
+            }
+            expect(out).toHaveLength(1);
+            const physical = out[0]!.split('\n');
+            expect(out[0]).not.toMatch(UNSAFE);
+            for (const cont of physical.slice(1)) {
+              expect(cont.startsWith('  ')).toBe(true);
+            }
+            // No physical line but the first may begin with anything a
+            // studio matcher or a reader anchors on.
+            for (const line of physical.slice(1)) {
+              expect(line).not.toMatch(/^(WARN|ERROR): /);
+              expect(line).not.toMatch(/^Server listening on /);
+              expect(line).not.toMatch(/^\d{4}-\d{2}-\d{2}T/);
+            }
+          } finally {
+            cap.restore();
+          }
+        }
+      );
+    }
+  }
+
+  it('renders each forgery to an exact, readable value (compact warn)', () => {
+    const cap = captureAll();
+    try {
+      const logger = new ConsoleLogger('info', false);
+      logger.warn('x id-a\nWARN: forged');
+      logger.warn('x id-a\rERROR: forged');
+      logger.warn('x id-a\r\nERROR: forged');
+      logger.warn('x id-a\x1b[2Jforged');
+      logger.warn('x id-a\x9b2Jforged');
+      logger.warn('x\ty');
+      expect(cap.lines()).toEqual([
+        'WARN: x id-a\n  WARN: forged',
+        'WARN: x id-a\\u000dERROR: forged',
+        'WARN: x id-a\n  ERROR: forged',
+        'WARN: x id-a\\u001b[2Jforged',
+        'WARN: x id-a\\u009b2Jforged',
+        'WARN: x\ty',
+      ]);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('keeps a legitimate multi-line message, indenting each non-empty continuation line', () => {
+    const cap = captureAll();
+    try {
+      const logger = new ConsoleLogger('info', false);
+      logger.error('Route discovery failed:\n  - first\n  - second\n\nSee the docs.');
+      logger.info('one\ntwo');
+      // `captureAll` groups by console method: info's line precedes error's.
+      expect(cap.lines()).toEqual([
+        'one\n  two',
+        'ERROR: Route discovery failed:\n    - first\n    - second\n\n  See the docs.',
+      ]);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it("keeps the logger's own colours, escaping only the message's ESC", () => {
+    const cap = captureAll();
+    try {
+      const logger = new ConsoleLogger('info', true);
+      logger.warn('a\x1b[2Jb\nc');
+      logger.error('e\x1b[31m');
+      expect(cap.lines()).toEqual([
+        '\x1b[33mWARN: a\\u001b[2Jb\n  c\x1b[0m',
+        '\x1b[31mERROR: e\\u001b[31m\x1b[0m',
+      ]);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('keeps the verbose-mode colours, escaping only the message', () => {
+    const cap = captureAll();
+    try {
+      const logger = new ConsoleLogger('debug', true);
+      logger.info('a\x1b[2Jb\nc');
+      const [line] = cap.lines();
+      expect(line).toMatch(
+        /^\x1b\[2m\d{4}-\d{2}-\d{2}T[\d:.]+Z\x1b\[0m \x1b\[34mINFO \x1b\[0m a\\u001b\[2Jb\n {2}c$/
+      );
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('renders a child logger prefix and message once (verbose and compact)', () => {
+    const cap = captureAll();
+    try {
+      setLogger(new ConsoleLogger('debug', false));
+      const child = new ConsoleLogger('debug', false).child('mod');
+      child.warn('a\nWARN: b');
+      setLogger(new ConsoleLogger('info', false));
+      child.warn('a\nWARN: b');
+      const out = cap.lines();
+      expect(out[0]).toMatch(/^\S+Z WARN {2}\[mod\] a\n {2}WARN: b$/);
+      expect(out[1]).toBe('WARN: a\n  WARN: b');
+    } finally {
+      cap.restore();
+      setLogger(new ConsoleLogger('info', false));
+    }
+  });
+
+  it('escapes what JSON.stringify leaves raw in the extra arguments', () => {
+    const cap = captureAll();
+    try {
+      const logger = new ConsoleLogger('info', false);
+      logger.warn('m', 'a\u2028b\x9bc\x7f');
+      expect(cap.lines()).toEqual(['WARN: m "a\\u2028b\\u009bc\\u007f"']);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('hands the embedding host the rendered message and string arguments', async () => {
+    const { setEmbedConfig, resetEmbedConfig } =
+      await import('../../../src/local/embed-config.js');
+    const host = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      setLevel: vi.fn(),
+      getLevel: vi.fn(() => 'info' as const),
+    };
+    setEmbedConfig({ logger: host });
+    const cap = captureAll();
+    try {
+      const logger = new ConsoleLogger('info', false);
+      const obj = { k: 'v\x1b' };
+      logger.debug('d\x1b[2J');
+      logger.info('i\nERROR: x');
+      logger.warn('w\r\nWARN: x', 'arg\rz', obj);
+      logger.error('e\x9b');
+      expect(host.debug).toHaveBeenCalledWith('d\\u001b[2J');
+      expect(host.info).toHaveBeenCalledWith('i\n  ERROR: x');
+      // A non-string argument is handed over as-is: the host formats it.
+      expect(host.warn).toHaveBeenCalledWith('w\n  WARN: x', 'arg\\u000dz', obj);
+      expect(host.error).toHaveBeenCalledWith('e\\u009b');
+      expect(cap.lines()).toEqual([]);
+    } finally {
+      cap.restore();
+      resetEmbedConfig();
+      setLogger(new ConsoleLogger('info', false));
+    }
+  });
+});

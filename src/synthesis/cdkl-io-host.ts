@@ -1,5 +1,9 @@
 import { NonInteractiveIoHost, type IoMessage } from '@aws-cdk/toolkit-lib';
-import { resolveConfiguredLogLevel } from '../utils/logger.js';
+import { renderLogText, resolveConfiguredLogLevel } from '../utils/logger.js';
+
+/** An SGR (colour / style) escape — the only ANSI sequence a message may carry. */
+// eslint-disable-next-line no-control-regex -- ESC is exactly what is matched.
+const ANSI_SGR_RE = /\u001b\[[0-9;]*m/g;
 
 /**
  * Custom IoHost that prevents cdk-local from coloring CDK app subprocess
@@ -49,6 +53,12 @@ import { resolveConfiguredLogLevel } from '../utils/logger.js';
  * matched on its text; left unfiltered it pollutes the output of every
  * multi-stack `start-alb` / `start-service` / `studio` synth (it surfaced
  * in the studio ALB-serve LOGS panel).
+ *
+ * Every relayed message's TEXT goes through {@link renderToolkitMessageText}
+ * (go-to-k/cdk-local#827): a toolkit message interpolates assembly-chosen text
+ * (a stack id, a metadata annotation, a line the CDK app wrote to stderr), and
+ * `NonInteractiveIoHost` writes it straight to the stream, bypassing cdk-local's
+ * logger and so its control escape.
  */
 export class CdklIoHost extends NonInteractiveIoHost {
   private readonly suppressNonWarnings = (() => {
@@ -75,8 +85,25 @@ export class CdklIoHost extends NonInteractiveIoHost {
     ) {
       return;
     }
-    return super.notify(reclassified);
+    if (typeof reclassified.message !== 'string') return super.notify(reclassified);
+    return super.notify({
+      ...reclassified,
+      message: renderToolkitMessageText(reclassified.message),
+    });
   }
+}
+
+/**
+ * Render a toolkit message's text the way cdk-local's logger renders its own
+ * ({@link renderLogText}), after STRIPPING its SGR colour escapes rather than
+ * escaping them: toolkit-lib colours a stack id or a hint with chalk, and a
+ * TTY would otherwise show that colour as literal `\u001b[1m` text. The level
+ * colour `NonInteractiveIoHost.formatMessage` adds is applied AFTER this, so it
+ * survives. Stripping runs FIRST, so an ESC the strip leaves adjacent to a
+ * `[` (`\x1b\x1b[0m[2J`) is still escaped by the second step.
+ */
+export function renderToolkitMessageText(text: string): string {
+  return renderLogText(text.replace(ANSI_SGR_RE, ''));
 }
 
 /**
