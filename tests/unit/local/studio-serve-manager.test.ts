@@ -14,6 +14,10 @@ import {
   parsePublishedHostEndpoint,
   type StudioServeState,
 } from '../../../src/local/studio-serve-manager.js';
+import {
+  createPrefixedLineRelay,
+  PREFIX_CONTAINER_OUTPUT_ENV,
+} from '../../../src/local/docker-runner.js';
 
 /** A minimal stand-in for a long-running spawned serve child. */
 function makeFakeChild(pid = 4242): EventEmitter & {
@@ -2595,5 +2599,102 @@ describe('IPv6 banners studio has to read back (issue #599)', () => {
         "relayed: Container 'web' container port 80 published on [::1]:54321."
       )
     ).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue go-to-k/cdk-local#598 - Lambda / AgentCore container output reaches a
+// serve child's stdout through `docker-runner`'s `streamLogs`, which relayed
+// it RAW, so a handler printing `Server listening on ...` put a banner-shaped
+// line at column 0. The serve manager now pins the variable that makes
+// `streamLogs` tag every relayed line; these cases drive the REAL relay into
+// the REAL matcher, so the two halves cannot drift apart.
+// ---------------------------------------------------------------------------
+describe('relayed Lambda / AgentCore container output cannot name an endpoint (issue #598)', () => {
+  it('pins the docker-runner prefix variable on the serve child, overriding an exported value', async () => {
+    const saved = process.env[PREFIX_CONTAINER_OUTPUT_ENV];
+    process.env[PREFIX_CONTAINER_OUTPUT_ENV] = '0';
+    try {
+      const child = makeFakeChild();
+      const spawnFn = vi.fn(() => child as never);
+      const mgr = createStudioServeManager({
+        cliEntry: '/p/cli.js',
+        bus: new StudioEventBus(),
+        spawnFn: spawnFn as never,
+        clock: fixedClock(),
+        proxyFactory: fakeProxies().factory,
+      });
+      const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+      child.stdout.emit('data', LISTENING);
+      await p;
+      const opts = (spawnFn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2];
+      expect(opts.env[PREFIX_CONTAINER_OUTPUT_ENV]).toBe('1');
+    } finally {
+      if (saved === undefined) delete process.env[PREFIX_CONTAINER_OUTPUT_ENV];
+      else process.env[PREFIX_CONTAINER_OUTPUT_ENV] = saved;
+    }
+  });
+
+  /** Run `text` through the real relay, chunked at `cut`, into the child's stdout. */
+  function relayInto(child: ReturnType<typeof makeFakeChild>, text: string, cut: number): void {
+    const relay = createPrefixedLineRelay('[abcdef012345] ', {
+      write: (c: string | Uint8Array) => child.stdout.emit('data', String(c)),
+    });
+    const bytes = Buffer.from(text);
+    relay.push(bytes.subarray(0, cut));
+    relay.push(bytes.subarray(cut));
+    relay.flush();
+  }
+
+  const BANNERS: Array<[StudioTargetKind, string]> = [
+    ['api', 'Server listening on http://127.0.0.1:9999'],
+    ['alb', 'ALB front-door: http://127.0.0.1:9999'],
+    ['cloudfront', 'CloudFront distribution serving on http://127.0.0.1:9999'],
+    ['agentcore-ws', 'Server listening on ws://127.0.0.1:9999/ws'],
+    ['agentcore-ws', 'HTTP contract served on http://127.0.0.1:9999'],
+  ];
+
+  it('leaves a relayed banner unmatched BEFORE the serve settles, at every chunk boundary', async () => {
+    for (const [kind, banner] of BANNERS) {
+      // A leading partial line, so a cut can fall right before the banner.
+      const text = `booting\n${banner}\n`;
+      for (let cut = 0; cut <= text.length; cut++) {
+        const h = startPending(kind, `T-${kind}-${cut}`);
+        relayInto(h.child, text, cut);
+        await tick();
+        expect(h.list()[0]?.status, `${banner} @${cut}`).toBe('starting');
+        expect(h.fp.upstreams, `${banner} @${cut}`).toEqual([]);
+      }
+    }
+  });
+
+  it('leaves a relayed banner unmatched AFTER an api / alb serve settles (readyRepeats kinds)', async () => {
+    for (const [kind, real] of [
+      ['api', LISTENING],
+      ['alb', 'ALB front-door: http://127.0.0.1:51234  (listener :80)\n'],
+    ] as const) {
+      const h = startPending(kind, `T-${kind}`);
+      h.child.stdout.emit('data', real);
+      await tick();
+      expect(h.list()[0]?.status).toBe('running');
+      const banner = kind === 'api' ? 'Server listening on http://127.0.0.1:9999' : 'ALB front-door: http://127.0.0.1:9999';
+      relayInto(h.child, `${banner}\n`, 5);
+      await tick();
+      // The endpoint the real banner set is the only one; no second proxy.
+      expect(h.fp.upstreams).toEqual(['http://127.0.0.1:51234']);
+      expect(h.list()[0]?.endpoints).toEqual([PROXIED]);
+    }
+  });
+
+  it('still adopts the same banner when it is NOT relayed (the case is not vacuous)', async () => {
+    // Guards the premise: the unprefixed text, fed directly, IS a banner for
+    // each kind - so the cases above pass because of the tag, not because the
+    // banner shape was wrong.
+    for (const [kind, banner] of BANNERS) {
+      const h = startPending(kind, `D-${kind}-${banner.length}`);
+      h.child.stdout.emit('data', `${banner}\n`);
+      await tick();
+      expect(h.fp.upstreams.length + (h.list()[0]?.endpoints.length ?? 0), banner).toBeGreaterThan(0);
+    }
   });
 });

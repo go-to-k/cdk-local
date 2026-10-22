@@ -2,6 +2,7 @@ import { flattenToOneLine } from './credential-error.js';
 import { redactDockerArgvValues, describeExitWithoutArgv } from '../utils/docker-argv-redaction.js';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import {
   finchSecretArgvRefusal,
@@ -368,20 +369,123 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
 }
 
 /**
+ * The environment variable that switches {@link streamLogs} from a raw relay
+ * to a line-prefixed one (issue go-to-k/cdk-local#598). `cdkl studio`'s serve
+ * manager PINS it to `1` on every serve child it spawns; nothing else sets it,
+ * so a plain `cdkl invoke` / `start-api` keeps its byte-exact passthrough.
+ *
+ * Why studio needs it: a serve child's stdout is where studio reads the ready
+ * banner — and the endpoint its capture proxy forwards to — off a line
+ * ANCHORED to column 0 (`studio-serve-manager`'s `readyRe`). A Lambda or
+ * AgentCore container relayed raw puts its OWN lines at column 0 too, so a
+ * handler printing `Server listening on http://127.0.0.1:9999` — an ordinary
+ * thing for a web framework to print — was indistinguishable from
+ * `start-api`'s banner. A `[<container>] ` tag in front of every relayed line
+ * is the shape ECS output already arrives in (`container-log-streamer`), and
+ * it cannot match an anchored pattern.
+ *
+ * Spelled as a literal in `studio-serve-manager` (which does not import this
+ * module); `tests/unit/local/studio-serve-manager.test.ts` imports this
+ * constant and asserts the serve child's spawned env against it, which fences
+ * the two spellings together. `studio-dispatch` REMOVES it from its single-shot
+ * children, whose stdout is the response.
+ */
+export const PREFIX_CONTAINER_OUTPUT_ENV = 'CDKL_PREFIX_CONTAINER_OUTPUT';
+
+/** The longest unterminated line {@link createPrefixedLineRelay} holds before breaking it. */
+export const MAX_HELD_LINE_CHARS = 64 * 1024;
+
+/**
+ * A line-buffered relay that writes every line of a byte stream to `out` with
+ * `prefix` in front of it (issue go-to-k/cdk-local#598).
+ *
+ * The whole line is written in ONE `write` call, and a partial tail is HELD
+ * until its newline arrives, so a chunk boundary can never leave a container's
+ * text at the start of a line the prefix does not open — the property the
+ * anchored ready patterns depend on. Lines are split on `\n` alone, exactly as
+ * `studio-serve-manager`'s `streamLines` splits them; splitting on more (a bare
+ * `\r`) here would not make that reader see more lines. A `StringDecoder`
+ * keeps a multi-byte UTF-8 character that straddles two chunks intact.
+ * Exported for unit testing.
+ */
+export function createPrefixedLineRelay(
+  prefix: string,
+  out: Pick<NodeJS.WritableStream, 'write'>
+): { push: (chunk: Buffer) => void; flush: () => void } {
+  const decoder = new StringDecoder('utf8');
+  let pending = '';
+  const emit = (text: string): void => {
+    // Only the new text can hold a newline the held tail did not.
+    let nl = text.indexOf('\n');
+    if (nl !== -1) nl += pending.length;
+    pending += text;
+    while (nl !== -1) {
+      out.write(`${prefix}${pending.slice(0, nl + 1)}`);
+      pending = pending.slice(nl + 1);
+      nl = pending.indexOf('\n');
+    }
+    // A container that never ends a line (a `\r`-only progress bar) must not
+    // grow the held tail without bound: break it, tag still in front.
+    while (pending.length >= MAX_HELD_LINE_CHARS) {
+      // Never cut between the halves of a surrogate pair.
+      const high = pending.charCodeAt(MAX_HELD_LINE_CHARS - 1);
+      const cut = high >= 0xd800 && high <= 0xdbff ? MAX_HELD_LINE_CHARS - 1 : MAX_HELD_LINE_CHARS;
+      out.write(`${prefix}${pending.slice(0, cut)}\n`);
+      pending = pending.slice(cut);
+    }
+  };
+  return {
+    push: (chunk) => emit(decoder.write(chunk)),
+    flush: () => {
+      emit(decoder.end());
+      if (pending.length > 0) {
+        out.write(`${prefix}${pending}\n`);
+        pending = '';
+      }
+    },
+  };
+}
+
+/**
  * `docker logs -f <id>` plumbed to stdout/stderr. Returns a function that
  * stops the stream (used by the caller in a `finally` block).
+ *
+ * Raw by default — what `cdkl invoke` prints is the container's output byte
+ * for byte. Under {@link PREFIX_CONTAINER_OUTPUT_ENV} (a `cdkl studio` serve
+ * child) every line is tagged `[<short container id>] ` instead; see that
+ * constant for why. The short id is the one `docker ps` prints, so a tagged
+ * line can be matched to its container.
  */
 export function streamLogs(containerId: string): () => void {
   const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  proc.stdout?.on('data', (chunk: Buffer) => process.stdout.write(chunk));
-  proc.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
+  let flush = (): void => undefined;
+  if (process.env[PREFIX_CONTAINER_OUTPUT_ENV] === '1') {
+    // Read the id as untrusted for the tag: flattened, and stripped of the
+    // `]` that would close the tag early.
+    const tag = `[${flattenToOneLine(containerId.slice(0, 12)).replace(/[\]\s]/g, '_')}] `;
+    const stdoutRelay = createPrefixedLineRelay(tag, process.stdout);
+    const stderrRelay = createPrefixedLineRelay(tag, process.stderr);
+    proc.stdout?.on('data', (chunk: Buffer) => stdoutRelay.push(chunk));
+    proc.stderr?.on('data', (chunk: Buffer) => stderrRelay.push(chunk));
+    flush = (): void => {
+      stdoutRelay.flush();
+      stderrRelay.flush();
+    };
+    // The follow ends on its own when the container exits: release a final
+    // unterminated line then rather than holding it until the caller stops.
+    proc.on('close', () => flush());
+  } else {
+    proc.stdout?.on('data', (chunk: Buffer) => process.stdout.write(chunk));
+    proc.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk));
+  }
   // Swallow the exit code; this child is just plumbing.
   proc.on('error', () => {
     /* the parent flow surfaces docker errors via runDetached / removeContainer */
   });
   return () => {
+    flush();
     if (!proc.killed) proc.kill('SIGTERM');
   };
 }

@@ -867,3 +867,40 @@ describe('the dispatch child does not inherit CDKL_LOG_STREAM (issue #608)', () 
     await pending;
   });
 });
+
+describe('the dispatch child does not inherit CDKL_PREFIX_CONTAINER_OUTPUT (issue #598)', () => {
+  const prev = process.env['CDKL_PREFIX_CONTAINER_OUTPUT'];
+  afterEach(() => {
+    if (prev === undefined) delete process.env['CDKL_PREFIX_CONTAINER_OUTPUT'];
+    else process.env['CDKL_PREFIX_CONTAINER_OUTPUT'] = prev;
+  });
+
+  it('removes the serve-only container-output tag, so an AgentCore response is not tagged', async () => {
+    // Exported in the operator's shell: inherited, it would make the child's
+    // `streamLogs` tag every relayed container line, and for `agentcore` the
+    // whole of stdout IS the response.
+    process.env['CDKL_PREFIX_CONTAINER_OUTPUT'] = '1';
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const dispatcher = createStudioDispatcher({
+      cliEntry: '/path/to/cli.js',
+      bus: new StudioEventBus(),
+      nodeBin: '/usr/bin/node',
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-prefix',
+    });
+    const p = dispatcher.run({ targetId: 'Stack/Fn', kind: 'lambda', event: {} });
+    child.stdout.emit('data', '{"statusCode":200}');
+    child.emit('close', 0);
+    await p;
+    const [, , opts] = spawnFn.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { env: NodeJS.ProcessEnv },
+    ];
+    // Absent as a key: the child must not see the variable at all.
+    expect(Object.prototype.hasOwnProperty.call(opts.env, 'CDKL_PREFIX_CONTAINER_OUTPUT')).toBe(false);
+    expect(opts.env['CDKL_LOG_STREAM']).toBe('stderr');
+  });
+});

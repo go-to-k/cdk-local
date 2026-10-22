@@ -991,6 +991,60 @@ fi
 rm -f "${ROUTE_FILE}"
 echo "    OK: GET ${SERVED}/hello -> 200 ok"
 
+# Issue #598 — the handler behind /hello writes `Server listening on
+# http://127.0.0.1:9  (cdkl598Probe)` to stdout at column 0: the exact shape of
+# start-api's own ready banner. A studio serve child relays Lambda container
+# output TAGGED (`[<container id>] `), so the line must reach the log store
+# with that tag and must NOT be adopted as a second endpoint for the serve.
+echo "==> A relayed handler banner is tagged and not adopted as an endpoint (issue #598)"
+PROBE_LINE=""
+for _ in $(seq 1 30); do
+  curl -fsS "${URL}/api/logs?q=cdkl598Probe&target=${API_TARGET}" -o "${BODY_FILE}" 2>/dev/null || true
+  PROBE_LINE=$(python3 - "${BODY_FILE}" <<'PY'
+import json, sys
+try:
+    logs = json.load(open(sys.argv[1])).get("logs", [])
+except Exception:
+    logs = []
+hits = [l.get("line", "") for l in logs if "cdkl598Probe" in l.get("line", "")]
+print(hits[0] if hits else "")
+PY
+)
+  if [[ -n "${PROBE_LINE}" ]]; then break; fi
+  sleep 0.5
+done
+if [[ -z "${PROBE_LINE}" ]]; then
+  fail "the handler's banner-shaped line never reached the serve's log store"
+  echo "----- logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------"
+  exit 1
+fi
+if ! [[ "${PROBE_LINE}" =~ ^\[[0-9a-f]{12}\]\ Server\ listening\ on ]]; then
+  fail "the relayed handler line was not tagged with its container id: ${PROBE_LINE}"
+  exit 1
+fi
+# The adoption (if any) is an async proxy startup after the line is read.
+sleep 1
+curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
+if ! EP_COUNT=$(python3 - "${BODY_FILE}" "${API_TARGET}" <<'PY'
+import json, sys
+running = json.load(open(sys.argv[1])).get("running", [])
+mine = [r for r in running if r.get("targetId") == sys.argv[2]]
+if len(mine) != 1:
+    sys.exit(1)
+print(len(mine[0].get("endpoints", [])))
+PY
+); then
+  fail "/api/running did not list exactly one ${API_TARGET} serve"
+  cat "${BODY_FILE}"
+  exit 1
+fi
+if [[ "${EP_COUNT}" != "1" ]]; then
+  fail "the relayed handler banner was adopted: ${API_TARGET} has ${EP_COUNT} endpoints"
+  cat "${BODY_FILE}"
+  exit 1
+fi
+echo "    OK: relayed line tagged and the serve kept its one endpoint"
+
 # The served endpoint is the studio CAPTURE PROXY (slice C2): the request
 # we just made must surface on the timeline as an `invocation` row with the
 # method/path label + the 200 status, proving every request to the served
@@ -1339,7 +1393,9 @@ echo "==> GET /api/logs?q= full-text searches the retained logs"
 # The serve child prints a stable 'Server listening on ...' line, streamed
 # onto the bus as a log event — search must find it.
 curl -fsS "${URL}/api/logs?q=Server%20listening" -o "${BODY_FILE}"
-if ! grep -qF 'Server listening on' "${BODY_FILE}"; then
+# The fixture handler prints a banner-shaped probe line too (issue #598), so
+# require a match that is NOT that probe: the serve child's own banner.
+if ! python3 -c 'import json,sys; sys.exit(0 if any("Server listening on" in l.get("line","") and "cdkl598Probe" not in l.get("line","") for l in json.load(open(sys.argv[1])).get("logs",[])) else 1)' "${BODY_FILE}"; then
   fail "/api/logs search did not find the serve listening line"
   echo "----- logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------"
   exit 1
