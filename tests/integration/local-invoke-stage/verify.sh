@@ -202,6 +202,19 @@ grep -q "declared by" "${LOG_FILE}" && fail "start-api (subset) reported a logic
 SERVERS=$(grep -c "Server listening" "${LOG_FILE}") || SERVERS=0
 [[ "${SERVERS}" -eq 2 ]] || fail "start-api (subset): expected exactly 2 servers, got ${SERVERS}"
 echo "    ok: 2 servers, no collision refusal"
+# Each served stack answers with its OWN handler (one port per API).
+MARKERS=""
+for p in "${PORT}" "$((PORT + 1))"; do
+  R=""
+  for _ in $(seq 1 10); do
+    R=$(curl -sf --max-time 30 "http://127.0.0.1:${p}/marker" 2>/dev/null) && break
+    sleep 1
+  done
+  MARKERS="${MARKERS} $(echo "${R}" | sed -n 's/.*"marker":"\([a-z-]*\)".*/\1/p')"
+done
+SORTED=$(echo ${MARKERS} | tr ' ' '\n' | sort | tr '\n' ' ')
+[[ "${SORTED}" == "api top " ]] || fail "start-api (subset): expected markers 'api top', got '${SORTED}'"
+echo "    ok: the two ports answer api + top"
 term_server "${SERVER_PID}"
 SERVER_PID=""
 : >"${LOG_FILE}"
