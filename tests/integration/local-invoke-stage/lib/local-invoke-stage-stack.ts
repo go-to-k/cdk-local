@@ -20,6 +20,13 @@ const HOST_ARCHITECTURE =
 export interface MarkerStackProps extends cdk.StackProps {
   /** What this stack's handler returns, so verify.sh can tell the stacks apart. */
   marker: string;
+  /**
+   * Also declare a CONTAINER Lambda. Its docker-image asset is found through
+   * the stack's asset manifest, which CDK names after the ARTIFACT id
+   * (`CdklLocalInvokeStageInnerApi<hash>.assets.json`), not the physical name
+   * — the read a Stage stack used to miss (#746).
+   */
+  withImage?: boolean;
 }
 
 /**
@@ -40,6 +47,14 @@ export class MarkerStack extends cdk.Stack {
       environment: { MARKER: props.marker },
     });
 
+    if (props.withImage) {
+      new lambda.DockerImageFunction(this, 'ImageHandler', {
+        architecture: HOST_ARCHITECTURE,
+        code: lambda.DockerImageCode.fromImageAsset(path.join(here, '..', 'docker')),
+        environment: { MARKER: `${props.marker}-image` },
+      });
+    }
+
     const api = new apigwv2.HttpApi(this, 'HttpApi');
     api.addRoutes({
       path: '/marker',
@@ -53,7 +68,7 @@ export class MarkerStack extends cdk.Stack {
 export class InnerStage extends cdk.Stage {
   constructor(scope: Construct, id: string, props?: cdk.StageProps) {
     super(scope, id, props);
-    new MarkerStack(this, 'Api', { marker: 'api' });
+    new MarkerStack(this, 'Api', { marker: 'api', withImage: true });
     new MarkerStack(this, 'ApiV2', { marker: 'apiv2' });
   }
 }

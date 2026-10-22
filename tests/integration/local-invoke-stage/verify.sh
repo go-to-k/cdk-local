@@ -16,6 +16,9 @@
 #   1-3. `cdkl invoke` each stack's handler by its display path; the response
 #        marker proves the stack the target resolved to (`Api` vs `ApiV2`
 #        shares a prefix, `CdklLocalInvokeStage` is a Stage id, not a stack).
+#   3b.  `cdkl invoke` a CONTAINER Lambda in the Stage stack: its image asset
+#        is found through the stack's own asset manifest, named after the
+#        artifact id rather than the physical name.
 #   4.   A bare target is refused as multi-stack: a Stage stack counts.
 #   5.   `cdkl start-api <Stage target>` with NO --stack infers the Stage stack
 #        from the target, serves exactly one API, and routes to `api`.
@@ -123,6 +126,7 @@ expect_marker() {
 expect_marker "[1/6] nested Stage stack" "CdklLocalInvokeStage/Inner/Api/Handler" "api"
 expect_marker "[2/6] prefix-sharing sibling" "CdklLocalInvokeStage/Inner/ApiV2/Handler" "apiv2"
 expect_marker "[3/6] top-level stack" "CdklLocalInvokeStageTop/Handler" "top"
+expect_marker "[3b/6] container Lambda in a Stage stack" "CdklLocalInvokeStage/Inner/Api/ImageHandler" "api-image"
 
 echo "==> [4/6] a bare target is refused as multi-stack (a Stage stack counts)"
 BARE=$(capture ${CLI} invoke Handler --no-pull)
