@@ -364,10 +364,19 @@ function runChild(
       // ordered stream. A serve child has no response channel, so that is safe
       // there and unsafe here -- which is why this one is pinned instead of
       // left to the environment.
-      child = spawnFn(nodeBin, argv, {
-        cwd,
-        env: { ...process.env, CDKL_LOG_LEVEL: 'warn', CDKL_LOG_STREAM: 'stderr' },
-      });
+      //
+      // `CDKL_PREFIX_CONTAINER_OUTPUT` is REMOVED for the same reason (issue
+      // go-to-k/cdk-local#598): it tags relayed container lines, which only a
+      // serve child wants; here an AgentCore agent's stdout IS the response,
+      // so an exported value would corrupt it. Deleted rather than set to
+      // `undefined`, which a spawn env would pass as the string "undefined".
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        CDKL_LOG_LEVEL: 'warn',
+        CDKL_LOG_STREAM: 'stderr',
+      };
+      delete env['CDKL_PREFIX_CONTAINER_OUTPUT'];
+      child = spawnFn(nodeBin, argv, { cwd, env });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
       return;

@@ -385,8 +385,10 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
  * it cannot match an anchored pattern.
  *
  * Spelled as a literal in `studio-serve-manager` (which does not import this
- * module); `tests/unit/local/docker-runner-stream-logs.test.ts` fences the two
- * spellings together.
+ * module); `tests/unit/local/studio-serve-manager.test.ts` imports this
+ * constant and asserts the serve child's spawned env against it, which fences
+ * the two spellings together. `studio-dispatch` REMOVES it from its single-shot
+ * children, whose stdout is the response.
  */
 export const PREFIX_CONTAINER_OUTPUT_ENV = 'CDKL_PREFIX_CONTAINER_OUTPUT';
 
@@ -403,6 +405,9 @@ export const PREFIX_CONTAINER_OUTPUT_ENV = 'CDKL_PREFIX_CONTAINER_OUTPUT';
  * keeps a multi-byte UTF-8 character that straddles two chunks intact.
  * Exported for unit testing.
  */
+/** The longest unterminated line {@link createPrefixedLineRelay} holds before breaking it. */
+export const MAX_HELD_LINE_CHARS = 64 * 1024;
+
 export function createPrefixedLineRelay(
   prefix: string,
   out: Pick<NodeJS.WritableStream, 'write'>
@@ -410,12 +415,20 @@ export function createPrefixedLineRelay(
   const decoder = new StringDecoder('utf8');
   let pending = '';
   const emit = (text: string): void => {
+    // Only the new text can hold a newline the held tail did not.
+    let nl = text.indexOf('\n');
+    if (nl !== -1) nl += pending.length;
     pending += text;
-    let nl = pending.indexOf('\n');
     while (nl !== -1) {
       out.write(`${prefix}${pending.slice(0, nl + 1)}`);
       pending = pending.slice(nl + 1);
       nl = pending.indexOf('\n');
+    }
+    // A container that never ends a line (a `\r`-only progress bar) must not
+    // grow the held tail without bound: break it, tag still in front.
+    while (pending.length >= MAX_HELD_LINE_CHARS) {
+      out.write(`${prefix}${pending.slice(0, MAX_HELD_LINE_CHARS)}\n`);
+      pending = pending.slice(MAX_HELD_LINE_CHARS);
     }
   };
   return {

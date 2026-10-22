@@ -24,7 +24,8 @@ vi.mock('node:child_process', () => ({
   spawn: spawnMock,
 }));
 
-const { streamLogs, createPrefixedLineRelay, PREFIX_CONTAINER_OUTPUT_ENV } = await import(
+const { streamLogs, createPrefixedLineRelay, PREFIX_CONTAINER_OUTPUT_ENV, MAX_HELD_LINE_CHARS } =
+  await import(
   '../../../src/local/docker-runner.js'
 );
 
@@ -176,6 +177,26 @@ describe('createPrefixedLineRelay (issue go-to-k/cdk-local#598)', () => {
       relay.flush();
       expect(writes, `split at ${i}`).toEqual(['[c] café \u{1F600}\n']);
     }
+  });
+
+  it('breaks a line that never ends at the hold bound, tag still in front of every piece', () => {
+    const { relay, writes } = relayInto('[c] ');
+    // A `\r`-only progress bar: no `\n`, ever, delivered in small chunks.
+    const total = MAX_HELD_LINE_CHARS * 2 + 10;
+    const chunk = 'x'.repeat(4096);
+    let sent = 0;
+    while (sent < total) {
+      const piece = chunk.slice(0, Math.min(chunk.length, total - sent));
+      relay.push(Buffer.from(piece));
+      sent += piece.length;
+    }
+    // Two full pieces released while the stream is still open.
+    expect(writes).toEqual([
+      `[c] ${'x'.repeat(MAX_HELD_LINE_CHARS)}\n`,
+      `[c] ${'x'.repeat(MAX_HELD_LINE_CHARS)}\n`,
+    ]);
+    relay.flush();
+    expect(writes.at(-1)).toBe(`[c] ${'x'.repeat(10)}\n`);
   });
 
   it('writes nothing on flush when no tail is pending', () => {
