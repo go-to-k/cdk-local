@@ -97,6 +97,9 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', async (importActual) => 
         hoisted.loadManifestCalls.push({ cdkOutDir, stackName });
         return hoisted.manifest;
       }
+      async loadStackManifest(stack: { stackName: string }, cdkOutDir: string): Promise<unknown> {
+        return this.loadManifest(cdkOutDir, stack.stackName);
+      }
     },
   };
 });

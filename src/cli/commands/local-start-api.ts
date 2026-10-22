@@ -650,34 +650,6 @@ async function localStartApiCommand(
       );
     }
 
-    // PR 8c: stage selection + variable injection. Build the per-API
-    // Stage map for every target stack and attach it to the routes.
-    // Stage selection is `--stage <name>` global override, otherwise
-    // first-attached default. The CLI surfaces a warn line when
-    // `--stage` was passed and at least one API doesn't have a Stage
-    // with that name.
-    const stageMap = new Map<string, ResolvedStage>();
-    for (const stack of targetStacks) {
-      const m = buildStageMap(stack.template, options.stage);
-      for (const [k, v] of m) stageMap.set(k, v);
-    }
-    if (options.stage) {
-      // Walk the routes looking for HTTP API v2 / REST v1 routes whose
-      // API isn't in `stageMap` (i.e. the API had no Stage with the
-      // override name). One warn per such API, deduplicated.
-      const missingApis = new Set<string>();
-      for (const r of routes) {
-        if (!r.apiLogicalId) continue;
-        if (!stageMap.has(r.apiLogicalId)) missingApis.add(r.apiLogicalId);
-      }
-      for (const apiId of missingApis) {
-        logger.warn(
-          `--stage '${options.stage}' did not match any Stage on API '${apiId}'; routes on that API will get stageVariables: null.`
-        );
-      }
-    }
-    attachStageContext(routes, stageMap);
-
     // PR 8b: attach authorizer info to every route. Routes without an
     // authorizer pass through as `{route, authorizer: undefined}`.
     // Routes referencing an unsupported authorizer kind hard-fail here.
@@ -725,6 +697,46 @@ async function localStartApiCommand(
       webSocketApis = filteredWebSocketApis;
     }
 
+    // The stacks the (possibly narrowed) surface actually serves. A subset
+    // spanning stacks synthesizes EVERY stack (`shouldSynthAllStacks`), so
+    // `targetStacks` can hold stacks no served route belongs to — an
+    // unserved `cdk.Stage` clone among them. Everything keyed by bare
+    // logical id below (stage / CORS maps, container specs, the state load)
+    // reads only these, so such a clone can neither collide nor overwrite
+    // (#746). A route always names its stack (`apiStackName`); one that did
+    // not would keep the whole set, the safe direction.
+    const servedRoutes = routesWithAuth.map((r) => r.route);
+    const servedStacks = stacksServing(targetStacks, servedRoutes, webSocketApis);
+
+    // PR 8c: stage selection + variable injection. Build the per-API
+    // Stage map for every SERVED stack (after the target-subset filter, so an
+    // unserved stack sharing an API logical id cannot overwrite an entry) and attach it to the routes.
+    // Stage selection is `--stage <name>` global override, otherwise
+    // first-attached default. The CLI surfaces a warn line when
+    // `--stage` was passed and at least one API doesn't have a Stage
+    // with that name.
+    const stageMap = new Map<string, ResolvedStage>();
+    for (const stack of servedStacks) {
+      const m = buildStageMap(stack.template, options.stage);
+      for (const [k, v] of m) stageMap.set(k, v);
+    }
+    if (options.stage) {
+      // Walk the routes looking for HTTP API v2 / REST v1 routes whose
+      // API isn't in `stageMap` (i.e. the API had no Stage with the
+      // override name). One warn per such API, deduplicated.
+      const missingApis = new Set<string>();
+      for (const r of servedRoutes) {
+        if (!r.apiLogicalId) continue;
+        if (!stageMap.has(r.apiLogicalId)) missingApis.add(r.apiLogicalId);
+      }
+      for (const apiId of missingApis) {
+        logger.warn(
+          `--stage '${options.stage}' did not match any Stage on API '${apiId}'; routes on that API will get stageVariables: null.`
+        );
+      }
+    }
+    attachStageContext(servedRoutes, stageMap);
+
     // PR 8c: per-API CORS config. HTTP API v2's `CorsConfiguration` +
     // Function URL's own `Cors` (issue #644) + CORS borrowed from
     // CloudFront ResponseHeadersPolicy when a CloudFront Distribution
@@ -738,7 +750,7 @@ async function localStartApiCommand(
     // boundary; we only have one slot locally, so closer-to-Lambda
     // wins). The two rarely coexist in practice.
     const corsConfigByApiId = new Map<string, CorsConfig>();
-    for (const stack of targetStacks) {
+    for (const stack of servedStacks) {
       const fromCloudFront = buildCorsConfigFromCloudFrontChain(stack.template);
       for (const [k, v] of fromCloudFront) corsConfigByApiId.set(k, v);
       const direct = buildCorsConfigByApiId(stack.template);
@@ -760,14 +772,14 @@ async function localStartApiCommand(
     // specs, the per-API stage / CORS maps — so two served stacks sharing one
     // (a `cdk.Stage`'s Beta / Prod clones always do) would serve one stack's
     // Lambda for the other's route. Refuse, naming the stacks (#746).
-    assertServedLogicalIdsUnambiguous(targetStacks, routes, routesWithAuth, webSocketApis);
+    assertServedLogicalIdsUnambiguous(servedStacks, servedRoutes, routesWithAuth, webSocketApis);
 
     const stateSourceActive =
       isCfnFlagPresent(options) || hasExtraStateProviderActive(options, extraStateProviders);
     const stateByStack = stateSourceActive
       ? await loadStateForRoutedStacks(
-          targetStacks,
-          routes,
+          servedStacks,
+          servedRoutes,
           routesWithAuth,
           options,
           extraStateProviders
@@ -818,13 +830,13 @@ async function localStartApiCommand(
     // pool then knows everything it needs to lazy-start a fresh one.
     // Authorizer Lambdas are also pooled — they're invoked just like
     // route handlers (PR 8b).
-    const lambdaIds = uniqueLambdaIds(routes, routesWithAuth, webSocketApis);
+    const lambdaIds = uniqueLambdaIds(servedRoutes, routesWithAuth, webSocketApis);
     const specs = new Map<string, ContainerSpec>();
     for (let i = 0; i < lambdaIds.length; i++) {
       const logicalId = lambdaIds[i]!;
       const spec = await buildContainerSpec({
         logicalId,
-        stacks: targetStacks,
+        stacks: servedStacks,
         overrides,
         assumeRole: normalizedAssumeRole,
         containerHost: options.containerHost,
@@ -869,7 +881,7 @@ async function localStartApiCommand(
       specs,
       corsConfigByApiId,
       webSocketApis,
-      stacks: targetStacks,
+      stacks: servedStacks,
     };
   };
 
@@ -1836,6 +1848,27 @@ export function tryEmitFromCfnRedundancyTipOnce(
 }
 
 /**
+ * The stacks owning at least one served route or WebSocket API, in input
+ * order. Every route carries its stack's physical name; should one not, the
+ * whole input is kept rather than a stack silently dropped.
+ *
+ * @internal exported for unit tests.
+ */
+export function stacksServing(
+  stacks: readonly StackInfo[],
+  routes: readonly DiscoveredRoute[],
+  webSocketApis: readonly DiscoveredWebSocketApi[]
+): StackInfo[] {
+  const names = new Set<string>();
+  for (const r of routes) {
+    if (r.apiStackName === undefined) return [...stacks];
+    names.add(r.apiStackName);
+  }
+  for (const api of webSocketApis) names.add(api.apiStackName);
+  return stacks.filter((s) => names.has(s.stackName));
+}
+
+/**
  * The served stacks whose template declares `logicalId` (optionally of one
  * resource type). One predicate for the union-collision refusal below and for
  * {@link resolveLambdaByLogicalId}, so the two cannot disagree.
@@ -2728,7 +2761,7 @@ async function resolveLocalBuildPlan(lambda: ResolvedStartApiImageLambda): Promi
   if (!manifestPath) return undefined;
   const cdkOutDir = path.dirname(manifestPath);
   const loader = new AssetManifestLoader();
-  const manifest = await loader.loadManifest(cdkOutDir, lambda.stack.stackName);
+  const manifest = await loader.loadStackManifest(lambda.stack, cdkOutDir);
   if (!manifest) return undefined;
   const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
   if (!entry) return undefined;

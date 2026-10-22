@@ -30,7 +30,6 @@ import {
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
   parseEcsTarget,
-  type ParsedEcsTarget,
   resolveEcsTaskTarget,
   TASK_ROLE_ACCOUNT_PLACEHOLDER,
   type EcsImageResolutionContext,
@@ -272,8 +271,7 @@ async function localRunTaskCommand(
     // (--from-cfn-stack OR a host-injected extra). Constructed BEFORE the
     // candidate-stack picker so the same provider drives both the
     // image-context state-load AND the post-pass cross-stack resolver.
-    const parsed = parseEcsTarget(resolvedTarget);
-    const candidate = pickCandidateStack(parsed, resolvedTarget, stacks);
+    const candidate = pickCandidateStack(resolvedTarget, stacks);
     stateProvider = createLocalStateProvider(
       options,
       candidate?.stackName ?? '',
@@ -740,12 +738,10 @@ export async function buildEcsImageResolutionContext(
  * Stage stack's target never names the Stage id here while the resolver finds
  * the task — that ran the task with no state source, silently.
  */
-function pickCandidateStack(
-  parsed: ParsedEcsTarget,
-  target: string,
-  stacks: StackInfo[]
-): StackInfo | undefined {
-  return candidateTargetStack(parsed, target, stacks);
+function pickCandidateStack(target: string, stacks: StackInfo[]): StackInfo | undefined {
+  // Parsed HERE, from the one target string: a `parsed` that disagreed with
+  // `target` would silently drop to the first-segment match.
+  return candidateTargetStack(parseEcsTarget(target), target, stacks);
 }
 
 async function resolveCallerAccountId(

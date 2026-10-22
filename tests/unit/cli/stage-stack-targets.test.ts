@@ -11,7 +11,12 @@
  * case: a resolver that kept its own first-segment split would answer
  * "Stack 'MyStage' not found" for the same target.
  */
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
+import { AssetManifestLoader } from '../../../src/assets/asset-manifest-loader.js';
+import { listTargets } from '../../../src/local/target-lister.js';
 import { stackForConstructPath, stackForPathFormTarget } from '../../../src/cli/cdk-path.js';
 import {
   candidateTargetStack,
@@ -36,6 +41,7 @@ import {
   assertServedLogicalIdsUnambiguous,
   pickTargetStacks,
   resolveLambdaByLogicalId,
+  stacksServing,
 } from '../../../src/cli/commands/local-start-api.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../../src/types/resource.js';
@@ -312,5 +318,102 @@ describe('start-api over a union of stacks sharing logical ids (Stage clones)', 
   it('resolveLambdaByLogicalId never takes the first stack that declares the id', () => {
     expect(() => resolveLambdaByLogicalId(FN, [beta, prod])).toThrow(/declared by 2 stacks/);
     expect(markerOf(resolveLambdaByLogicalId(FN, [prod]))).toBe('prod');
+  });
+});
+
+describe('start-api serves only the stacks a served route belongs to', () => {
+  it('stacksServing narrows to the stacks owning a served route or WebSocket API', () => {
+    const beta = stack('Beta-Api', 'Beta/Api');
+    const prod = stack('Prod-Api', 'Prod/Api');
+    const web = stack('Beta-Web', 'Beta/Web');
+    const routes = [{ apiStackName: 'Beta-Api' }] as never;
+    const ws = [{ apiStackName: 'Beta-Web', apiLogicalId: 'Ws' }] as never;
+    expect(stacksServing([beta, prod, web], routes, ws)).toEqual([beta, web]);
+    // A route that names no stack keeps the whole set (the safe direction).
+    expect(stacksServing([beta, prod], [{}] as never, [])).toEqual([beta, prod]);
+  });
+
+  it('a subset naming one Stage clone is not refused because of the unserved other clone', () => {
+    const beta = stack('Beta-Api', 'Beta/Api');
+    const prod = stack('Prod-Api', 'Prod/Api');
+    const routes = [{ apiStackName: 'Beta-Api', apiLogicalId: ALB, lambdaLogicalId: FN }] as never;
+    const served = stacksServing([beta, prod], routes, []);
+    expect(served).toEqual([beta]);
+    expect(() =>
+      assertServedLogicalIdsUnambiguous(served, routes, [{ route: (routes as never[])[0] }] as never)
+    ).not.toThrow();
+  });
+
+  it('refuses a WebSocket API logical id two served stacks declare', () => {
+    const a = stack('A', 'Stage1/Api');
+    const b = stack('B', 'Stage2/Api');
+    expect(() =>
+      assertServedLogicalIdsUnambiguous([a, b], [], [], [{ apiLogicalId: DIST, routes: [] } as never])
+    ).toThrow(/Logical ID Dist1234ABCD is declared by 2/);
+  });
+
+  it('skips a Function URL route in the API check (its id is the Lambda, checked by type)', () => {
+    const a = stack('A', 'A');
+    const b = stack('B', 'B');
+    // `ALB` exists in both stacks, but as a Function URL route's apiLogicalId
+    // it is not an API this server keys anything by.
+    const furl = { route: { source: 'function-url', apiLogicalId: ALB, lambdaLogicalId: '' } };
+    expect(() => assertServedLogicalIdsUnambiguous([a, b], [], [furl] as never)).not.toThrow();
+  });
+
+  it('counts only Lambda owners for a Lambda id', () => {
+    const a = stack('A', 'A');
+    const b = { ...stack('B', 'B'), template: { Resources: { [FN]: { Type: 'AWS::S3::Bucket' } } } };
+    const routes = [{ lambdaLogicalId: FN }] as never;
+    expect(() => assertServedLogicalIdsUnambiguous([a, b as StackInfo], routes, [])).not.toThrow();
+  });
+});
+
+describe('asset manifests are read by the file the assembly names (#746)', () => {
+  it('loadStackManifest reads a Stage stack manifest named after its ARTIFACT id', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cdkl-stage-manifest-'));
+    try {
+      const dir = join(root, 'assembly-MyStage');
+      mkdirSync(dir);
+      const file = join(dir, 'MyStageApiA576A1D2.assets.json');
+      writeFileSync(file, JSON.stringify({ version: '1', files: {}, dockerImages: { h: {} } }));
+      const loader = new AssetManifestLoader();
+      const s = { stackName: 'MyStage-Api', assetManifestPath: file };
+      expect(await loader.loadStackManifest(s, root)).toMatchObject({ dockerImages: { h: {} } });
+      // The physical-name spelling every caller used to rebuild: a silent miss.
+      expect(await loader.loadManifest(dir, 'MyStage-Api')).toBeNull();
+      // No manifest path: the fallback directory + physical name, as before.
+      expect(await loader.loadStackManifest({ stackName: 'Missing' }, root)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('describeStack / globs edge cases', () => {
+  it('renders an assembly-chosen name carrying a control character as a JSON literal', () => {
+    const out = describeStack({ stackName: 'A\u001b[2KB', displayName: 'S/x' });
+    expect(out).not.toContain('\u001b');
+    expect(out).toMatch(/^"A.\[2KB" \(S\/x\)$/);
+  });
+
+  it('`**` matches zero segments', () => {
+    expect(pathGlobMatches('**/Api', 'Api')).toBe(true);
+  });
+});
+
+describe('cdkl list keeps two Stage clones sharing a physical name apart', () => {
+  it('lists one Function URL per stack, keyed by construct path', () => {
+    const urlStack = (displayName: string) => {
+      const s = stack('Shared', displayName);
+      s.template.Resources['FnUrl1234ABCD'] = {
+        Type: 'AWS::Lambda::Url',
+        Properties: { AuthType: 'NONE', TargetFunctionArn: { 'Fn::GetAtt': [FN, 'Arn'] } },
+        Metadata: { 'aws:cdk:path': `${displayName}/Handler/FunctionUrl/Resource` },
+      };
+      return s;
+    };
+    const apis = listTargets([urlStack('Beta/Api'), urlStack('Prod/Api')]).apis;
+    expect(apis.map((e) => e.displayPath)).toEqual(['Beta/Api/Handler', 'Prod/Api/Handler']);
   });
 });

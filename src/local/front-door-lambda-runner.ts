@@ -195,7 +195,7 @@ async function resolveContainerImagePlan(
   if (manifestPath) {
     const cdkOutDir = path.dirname(manifestPath);
     const loader = new AssetManifestLoader();
-    const manifest = await loader.loadManifest(cdkOutDir, lambda.stack.stackName);
+    const manifest = await loader.loadStackManifest(lambda.stack, cdkOutDir);
     const entry = manifest ? getDockerImageBySourceHash(manifest, lambda.imageUri) : undefined;
     if (entry) {
       imageRef = await buildContainerImage(entry.asset, cdkOutDir, {

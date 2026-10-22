@@ -83,6 +83,9 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', async (importActual) => 
       async loadManifest(): Promise<unknown> {
         return loadManifestMock();
       }
+      async loadStackManifest(): Promise<unknown> {
+        return loadManifestMock();
+      }
       getFileAssets(manifest: unknown): unknown {
         return getFileAssetsMock(manifest);
       }

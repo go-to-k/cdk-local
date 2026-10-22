@@ -1,5 +1,5 @@
 import { readFile } from 'fs/promises';
-import { join } from 'path';
+import { basename, dirname, join } from 'path';
 import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets.js';
 import {
   displayUntrustedValue,
@@ -18,18 +18,52 @@ export class AssetManifestLoader {
   private logger = getLogger().child('AssetManifestLoader');
 
   /**
+   * Load a STACK's asset manifest: the file the assembly itself names
+   * (`stack.assetManifestPath`) when the stack carries one, else
+   * `<fallbackDir>/<stackName>.assets.json`.
+   *
+   * Never rebuild the file name from `stackName` when the path is known: CDK
+   * names the manifest after the ARTIFACT id, which differs from the physical
+   * name for every stack under a `cdk.Stage` (`MyStageApiA576A1D2.assets.json`
+   * for `MyStage-Api`) and for any stack with an explicit `stackName`, so the
+   * rebuilt name is a silent ENOENT and the stack's docker-image assets go
+   * unresolved (#746). The directory is the manifest's own, which every caller
+   * already treated as the asset base.
+   */
+  async loadStackManifest(
+    stack: { stackName: string; assetManifestPath?: string | undefined },
+    fallbackDir: string
+  ): Promise<AssetManifest | null> {
+    if (stack.assetManifestPath) {
+      return this.loadManifest(
+        dirname(stack.assetManifestPath),
+        stack.stackName,
+        basename(stack.assetManifestPath)
+      );
+    }
+    return this.loadManifest(fallbackDir, stack.stackName);
+  }
+
+  /**
    * Load asset manifest from CDK output directory
    *
    * @param cdkOutputDir CDK output directory (e.g., "cdk.out")
    * @param stackName Stack name
+   * @param fileName The manifest's file name; `<stackName>.assets.json` by
+   *   default. Prefer {@link loadStackManifest}, which takes it from the
+   *   assembly.
    * @returns Asset manifest or null if not found
    */
-  async loadManifest(cdkOutputDir: string, stackName: string): Promise<AssetManifest | null> {
-    // The stack name comes from the assembly's own `manifest.json`, so a
+  async loadManifest(
+    cdkOutputDir: string,
+    stackName: string,
+    fileName: string = `${stackName}.assets.json`
+  ): Promise<AssetManifest | null> {
+    // The name comes from the assembly's own `manifest.json`, so a
     // hand-modified one can carry `../../x` and point this read outside the
     // directory. CloudFormation stack names cannot contain `/`, so no real
     // synth reaches the refusal (go-to-k/cdk-local#745).
-    const resolved = resolveAssemblyPath(cdkOutputDir, `${stackName}.assets.json`);
+    const resolved = resolveAssemblyPath(cdkOutputDir, fileName);
     if (!resolved.contained) {
       throw new Error(
         `Refusing to read the asset manifest for stack ` +
@@ -39,7 +73,7 @@ export class AssetManifestLoader {
     }
     // The caller's own spelling, as before: the verdict above is about the
     // same file, and a relative `--output` keeps reading relative.
-    const manifestPath = join(cdkOutputDir, `${stackName}.assets.json`);
+    const manifestPath = join(cdkOutputDir, fileName);
 
     try {
       this.logger.debug(`Loading asset manifest from: ${manifestPath}`);

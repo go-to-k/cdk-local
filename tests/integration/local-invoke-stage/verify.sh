@@ -154,7 +154,7 @@ done
 
 RESPONSE=""
 for _ in $(seq 1 10); do
-  if RESPONSE=$(curl -sf "http://127.0.0.1:${PORT}/marker" 2>&1) \
+  if RESPONSE=$(curl -sf --max-time 30 "http://127.0.0.1:${PORT}/marker" 2>&1) \
     && echo "${RESPONSE}" | grep -q '"marker":"api"'; then
     break
   fi
