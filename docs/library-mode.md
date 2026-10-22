@@ -84,25 +84,37 @@ it:
   `assetManifestPath` on every stack that ships assets. `assetOutdir` bounds
   every asset path the assembly supplies.
 
-## Your `commander` major must match cdk-local's
+## Keep your `commander` major the same as cdk-local's
 
 `addCommand` splices a cdk-local-built `Command` into **your** Commander
-tree. If your project and cdk-local resolve different commander MAJORS,
-your tree dispatches a subcommand built by the other major and calls
-internals it does not have — the failure is a `TypeError` deep inside
-`commander/lib/command.js`, not a version warning, and it arrives at
-parse time rather than at install time. Measured with a host on
-commander 15 and cdk-local on 12:
+tree. Your tree then dispatches into that subcommand by calling
+commander's internal methods on it, so when your project and cdk-local
+resolve different commander MAJORS, the call can name a method the other
+copy does not have. The failure is a `TypeError` deep inside
+`commander/lib/command.js`, not a version warning, and it arrives at parse
+time rather than at install time.
 
-```
-TypeError: subCommand._prepareForParse is not a function
-  at Command._dispatchSubcommand (commander/lib/command.js:1368)
-```
+The break is DIRECTIONAL. It happens when YOUR commander is newer than
+cdk-local's by an internal it calls: commander 13 added a
+`subCommand._prepareForParse()` call to `_dispatchSubcommand`, which
+commander 12 does not define. Measured with `program.addCommand(...)`
+driven through `<sub> --help`, `help <sub>`, an unknown option and an
+argParser option, each compared with a same-major (14 and 14) baseline:
+
+| Your commander | cdk-local's commander | Result |
+| --- | --- | --- |
+| 15 | 12 | `TypeError: subCommand._prepareForParse is not a function` at `Command._dispatchSubcommand (commander/lib/command.js:1368)` on every dispatch; only `help <sub>` still renders |
+| 12 | 14 | same as the baseline |
+| 12 | 15 | same as the baseline |
+| 15 | 14 | same as the baseline |
+
+An older host working today is not a guarantee: the next major can add
+another internal call in either direction. Depending on the same major as
+cdk-local is the rule that stays safe.
 
 Two *copies* of the SAME major are fine — commander uses `instanceof`
 only for the `.option(Option)` overload and detects argParser failures by
 `err.code`, so nothing depends on object identity across the boundary.
-What must match is the major.
 
 The type layer does not save you either way, and it does not fully warn
 you: cdk-local's published typings import `Command` and `Option` from
@@ -115,9 +127,43 @@ Measured on that same 15-vs-12 pair: 8 errors, all of the shape
 saveStateBeforeParse, restoreStateBeforeParse, helpGroup, commandsGroup`.
 So a mismatch may typecheck in one direction and fail in the other.
 
-Check the version cdk-local depends on (`commander` in its
-`package.json`) and depend on the same major. `npm ls commander` /
-`pnpm why commander` should show one major.
+### Nothing checks this at install time
+
+`commander` is a regular `dependency` of cdk-local. With a different major
+in your project, both npm and pnpm install it SILENTLY: no error, no
+warning, and two commander copies in the tree. So check it yourself:
+read the `commander` range in cdk-local's `package.json`, depend on the
+same major, and confirm with:
+
+```bash
+npm ls commander     # or: pnpm why commander
+```
+
+which should show ONE major.
+
+### Why commander is not a `peerDependency`
+
+A peer declaration is the usual way to say "the consumer supplies this",
+and it was measured rather than assumed: npm 11 and pnpm 11, cdk-local's
+commander declared four ways, against a host with no commander, the same
+major, and an older and a newer major.
+
+- **Non-optional peer.** npm REFUSES the install (`ERESOLVE`) for any
+  other major, including the older and newer hosts in the table above
+  that work. pnpm installs it with only a generic
+  `Issues with peer dependencies found` line and then runs cdk-local
+  itself on YOUR major, which cdk-local is not tested against.
+- **Optional peer.** With no commander in the project — the plain CLI
+  install, which is most users — nothing provides it and `cdkl` itself
+  fails to start (`ERR_MODULE_NOT_FOUND`), under npm and pnpm alike.
+- **Dependency plus optional peer.** npm stays silent, exactly as with a
+  plain dependency; pnpm prints the same generic line and lets the peer
+  override the dependency, again running cdk-local on your major.
+
+None of the three turns the mismatch into a clear install-time signal,
+and each costs the CLI-only users something to address a constraint only
+library-mode consumers have. It is also the same direction as
+go-to-k/cdkd#2861, which moved cdkd's entries out of `peerDependencies`.
 
 ## Rebranding the embedded commands
 
