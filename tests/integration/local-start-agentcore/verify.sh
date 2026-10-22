@@ -341,7 +341,10 @@ node -e "const f='${AGENT_SRC}';const fs=require('fs');let s=fs.readFileSync(f,'
 wait_reload_count() {
   local want="$1"
   for _ in $(seq 1 300); do
-    [ "$(grep -c 'Reload complete.' "${OUT_FILE}" 2>/dev/null || echo 0)" -ge "${want}" ] && return 0
+    # grep -c prints 0 AND exits 1 on no match, so `|| echo 0` would yield "0\n0".
+    local n
+    n="$(grep -c 'Reload complete.' "${OUT_FILE}" 2>/dev/null)" || n="${n:-0}"
+    [ "${n}" -ge "${want}" ] && return 0
     kill -0 "${CDKL_PID}" 2>/dev/null || fail "--watch serve exited during reload"
     sleep 0.5
   done
