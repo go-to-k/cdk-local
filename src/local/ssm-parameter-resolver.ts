@@ -190,7 +190,7 @@ export async function resolveSsmParameters(
         // The parameter NAMES come from the template's `Default` values, so
         // they land on this default-level warn the same way every other
         // wire-adjacent value does; the flatten costs one call.
-        `${label}: SSM GetParameters(${names.map((n) => displayIdent(n, { listMember: true })).join(', ')}) failed: ${describeAwsFailureForWarn(
+        `${label}: SSM GetParameters(${names.map((n) => displayIdent(n, { listMember: true, maxCodePoints: 1011 })).join(', ')}) failed: ${describeAwsFailureForWarn(
           err,
           'SSM GetParameters'
         )}. ` +

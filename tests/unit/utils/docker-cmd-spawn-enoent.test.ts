@@ -5,7 +5,7 @@
  * checked first, and both values render through `displayUntrustedValue`.
  */
 import { describe, expect, it } from 'vite-plus/test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describeSpawnEnoent, spawnForeground, spawnStreaming } from '../../../src/utils/docker-cmd.js';
@@ -53,5 +53,33 @@ describe('the spawn helpers report a missing cwd', () => {
     expect((err as Error).message).toBe(
       `Failed to execute ${process.execPath}: its working directory ${cwd} does not exist.`
     );
+  });
+});
+
+describe('a non-ENOENT spawn failure names the code, not Node\'s raw-command message', () => {
+  it('spawnForeground: EACCES on a non-executable file', async () => {
+    const d = mkdtempSync(join(tmpdir(), "cdkl-761-eacces' x-"));
+    const file = join(d, 'not-exec');
+    writeFileSync(file, '#!/bin/sh\n');
+    chmodSync(file, 0o644);
+    try {
+      const err = await spawnForeground(file, [], {}).catch((e: unknown) => e);
+      expect((err as Error).message).toBe(`${JSON.stringify(file)} failed: EACCES`);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('describeSpawnEnoent keeps the CDK_DOCKER override hint', () => {
+    const prev = process.env['CDK_DOCKER'];
+    process.env['CDK_DOCKER'] = 'podman-761';
+    try {
+      expect(describeSpawnEnoent('podman-761', undefined)).toBe(
+        "Failed to find and execute podman-761 (resolved via CDK_DOCKER). Install podman-761 or unset CDK_DOCKER to fall back to 'docker'."
+      );
+    } finally {
+      if (prev === undefined) delete process.env['CDK_DOCKER'];
+      else process.env['CDK_DOCKER'] = prev;
+    }
   });
 });
