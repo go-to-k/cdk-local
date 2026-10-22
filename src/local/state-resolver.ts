@@ -104,6 +104,7 @@
 
 import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayIdent } from '../utils/ident-display.js';
 import type { ResourceState } from '../types/state.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { containsDynamicReference } from './dynamic-reference-resolver.js';
@@ -326,7 +327,7 @@ export function substituteAgainstState(
 
   return {
     kind: 'unresolved',
-    reason: `unsupported intrinsic '${intrinsic}' (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join, Fn::Select, Fn::Split)`,
+    reason: `unsupported intrinsic ${displayIdent(intrinsic)} (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join, Fn::Select, Fn::Split)`,
   };
 }
 
@@ -379,7 +380,7 @@ function resolveRef(arg: unknown, context: SubstitutionContext): StateSubstituti
   return {
     kind: 'unresolved',
     reason:
-      `Ref '${arg}': no record in the state source ` +
+      `Ref ${displayIdent(arg)}: no record in the state source ` +
       `(was the resource deployed, or is it a CloudFormation parameter that could not be resolved — ` +
       `e.g. an SSM-backed AWS::SSM::Parameter::Value parameter whose SSM value was not readable?)`,
   };
@@ -392,7 +393,7 @@ function resolvePseudoParameter(
   if (!pseudo) {
     return {
       kind: 'unresolved',
-      reason: `Ref '${name}': pseudo parameter not supplied (need an active state source, e.g. --from-cfn-stack)`,
+      reason: `Ref ${displayIdent(name)}: pseudo parameter not supplied (need an active state source, e.g. --from-cfn-stack)`,
     };
   }
   switch (name) {
@@ -411,10 +412,13 @@ function resolvePseudoParameter(
     default:
       return {
         kind: 'unresolved',
-        reason: `Ref '${name}': pseudo parameter not supported (supported: AWS::AccountId, AWS::Region, AWS::Partition, AWS::URLSuffix)`,
+        reason: `Ref ${displayIdent(name)}: pseudo parameter not supported (supported: AWS::AccountId, AWS::Region, AWS::Partition, AWS::URLSuffix)`,
       };
   }
-  return { kind: 'unresolved', reason: `Ref '${name}': pseudo parameter value not resolved` };
+  return {
+    kind: 'unresolved',
+    reason: `Ref ${displayIdent(name)}: pseudo parameter value not resolved`,
+  };
 }
 
 function resolveGetAtt(arg: unknown, context: SubstitutionContext): StateSubstitutionResult {
@@ -434,7 +438,7 @@ function resolveGetAtt(arg: unknown, context: SubstitutionContext): StateSubstit
     if (dot <= 0 || dot === arg.length - 1) {
       return {
         kind: 'unresolved',
-        reason: `Fn::GetAtt string form must be '<LogicalId>.<Attribute>', got '${arg}'`,
+        reason: `Fn::GetAtt string form must be '<LogicalId>.<Attribute>', got ${displayIdent(arg)}`,
       };
     }
     logicalId = arg.slice(0, dot);
@@ -452,14 +456,14 @@ function resolveGetAtt(arg: unknown, context: SubstitutionContext): StateSubstit
   if (!resource) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetAtt '${logicalId}.${attr}': no record in the state source`,
+      reason: `Fn::GetAtt ${displayIdent(`${logicalId}.${attr}`)}: no record in the state source`,
     };
   }
   const cached = resource.attributes?.[attr];
   if (cached === undefined) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetAtt '${logicalId}.${attr}': attribute not captured in the state source at deploy time`,
+      reason: `Fn::GetAtt ${displayIdent(`${logicalId}.${attr}`)}: attribute not captured in the state source at deploy time`,
     };
   }
   if (typeof cached === 'string' || typeof cached === 'number' || typeof cached === 'boolean') {
@@ -527,7 +531,7 @@ function resolveSub(arg: unknown, context: SubstitutionContext): StateSubstituti
       if (sub.kind !== 'literal') {
         return {
           kind: 'unresolved',
-          reason: `Fn::Sub placeholder '\${${placeholder}}': ${sub.reason}`,
+          reason: `Fn::Sub placeholder \${${displayIdent(placeholder)}}: ${sub.reason}`,
         };
       }
       resolutions.set(placeholder, String(sub.value));
@@ -540,7 +544,7 @@ function resolveSub(arg: unknown, context: SubstitutionContext): StateSubstituti
       if (sub.kind !== 'literal') {
         return {
           kind: 'unresolved',
-          reason: `Fn::Sub placeholder '\${${placeholder}}': ${sub.reason}`,
+          reason: `Fn::Sub placeholder \${${displayIdent(placeholder)}}: ${sub.reason}`,
         };
       }
       resolutions.set(placeholder, String(sub.value));
@@ -554,7 +558,7 @@ function resolveSub(arg: unknown, context: SubstitutionContext): StateSubstituti
       if (sub.kind !== 'literal') {
         return {
           kind: 'unresolved',
-          reason: `Fn::Sub placeholder '\${${placeholder}}': ${sub.reason}`,
+          reason: `Fn::Sub placeholder \${${displayIdent(placeholder)}}: ${sub.reason}`,
         };
       }
       resolutions.set(placeholder, String(sub.value));
@@ -563,7 +567,7 @@ function resolveSub(arg: unknown, context: SubstitutionContext): StateSubstituti
       if (sub.kind !== 'literal') {
         return {
           kind: 'unresolved',
-          reason: `Fn::Sub placeholder '\${${placeholder}}': ${sub.reason}`,
+          reason: `Fn::Sub placeholder \${${displayIdent(placeholder)}}: ${sub.reason}`,
         };
       }
       resolutions.set(placeholder, String(sub.value));
@@ -865,7 +869,7 @@ export async function substituteAgainstStateAsync(
 
   return {
     kind: 'unresolved',
-    reason: `unsupported intrinsic '${intrinsic}' (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join, Fn::Select, Fn::Split, Fn::ImportValue, Fn::GetStackOutput)`,
+    reason: `unsupported intrinsic ${displayIdent(intrinsic)} (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join, Fn::Select, Fn::Split, Fn::ImportValue, Fn::GetStackOutput)`,
   };
 }
 

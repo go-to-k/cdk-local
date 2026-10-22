@@ -6,6 +6,7 @@ import {
   type KvsDataSource,
 } from './cloudfront-kvs.js';
 import { createDeployedKvsDataSource, type KvsClientCredentials } from './cloudfront-kvs-client.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * Resolve the `cf` module for every CloudFront Function that reads a
@@ -69,7 +70,7 @@ export async function resolveKvsModulesForDistribution(
       } else {
         const ref = assoc.kvsLogicalId ?? '<store>';
         warnings.push(
-          `CloudFront Function '${fn.logicalId}' reads KeyValueStore '${ref}', but no binding ` +
+          `CloudFront Function ${displayIdent(fn.logicalId)} reads KeyValueStore ${displayIdent(ref)}, but no binding ` +
             `resolved it — cf.kvs() reads will fail. Pass --from-cfn-stack to read the deployed ` +
             `store, or --kvs-file ${ref}=<file.json> for a local map.`
         );

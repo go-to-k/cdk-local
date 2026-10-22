@@ -78,6 +78,7 @@ import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { workloadClientConfig } from '../utils/workload-identity.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { describeRejectedRoleArn, isIamRoleArn } from '../utils/role-arn.js';
 import { collectSsmParameterRefs, resolveSsmParameters } from './ssm-parameter-resolver.js';
 import type { ResolvedSsmParameters } from './ssm-parameter-resolver.js';
@@ -432,10 +433,10 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       // EMITS the `debug` line carrying the withheld text, so calling it twice
       // for one failure prints that line twice.
       const detail = formatAwsErrorForWarn(err, 'CloudFormation ListStackResources');
-      this.lastLoadError = `ListStackResources(${this.cfnStackName}) failed: ${detail} (region='${this.region}')`;
+      this.lastLoadError = `ListStackResources(${displayStackName(this.cfnStackName)}) failed: ${detail} (region=${displayIdent(this.region)})`;
       logger.warn(
-        `${this.label}: ListStackResources(${this.cfnStackName}) failed: ${detail}. ` +
-          `Was the stack deployed in region '${this.region}'? Falling back.`
+        `${this.label}: ListStackResources(${displayStackName(this.cfnStackName)}) failed: ${detail}. ` +
+          `Was the stack deployed in region ${displayIdent(this.region)}? Falling back.`
       );
       return undefined;
     }
@@ -446,7 +447,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       const stack = resp.Stacks?.[0];
       if (!stack) {
         logger.warn(
-          `${this.label}: DescribeStacks(${this.cfnStackName}) returned no stack; outputs will be empty.`
+          `${this.label}: DescribeStacks(${displayStackName(this.cfnStackName)}) returned no stack; outputs will be empty.`
         );
         outputs = {};
       } else {
@@ -454,7 +455,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       }
     } catch (err) {
       logger.warn(
-        `${this.label}: DescribeStacks(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err, 'CloudFormation DescribeStacks')}. ` +
+        `${this.label}: DescribeStacks(${displayStackName(this.cfnStackName)}) failed: ${formatAwsErrorForWarn(err, 'CloudFormation DescribeStacks')}. ` +
           `Outputs will be empty (Fn::GetStackOutput cannot resolve).`
       );
       outputs = {};

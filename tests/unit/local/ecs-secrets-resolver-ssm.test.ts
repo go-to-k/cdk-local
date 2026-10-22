@@ -164,9 +164,9 @@ describe('resolveSsm — the failure shapes (issue #557)', () => {
   it('throws when the response carries a Parameter with no Value', async () => {
     ssmSend.mockResolvedValue({ Parameter: { Name: SSM_NAME } });
     const message = await ssmFailure();
-    expect(message).toContain(`SSM parameter '${SSM_NAME}' returned no Value`);
-    expect(message).toContain("container 'ApiContainer'");
-    expect(message).toContain("env 'DB_PASSWORD'");
+    expect(message).toContain(`SSM parameter ${SSM_NAME} returned no Value`);
+    expect(message).toContain('container ApiContainer');
+    expect(message).toContain('env DB_PASSWORD');
     // The `err instanceof EcsSecretsResolutionError` re-throw guard: this
     // throw is raised INSIDE the try, so without the guard the catch would
     // re-wrap it as a transport failure and report a resolvable parameter as
@@ -177,7 +177,7 @@ describe('resolveSsm — the failure shapes (issue #557)', () => {
   it('throws the same way when the response carries no Parameter at all', async () => {
     ssmSend.mockResolvedValue({});
     const message = await ssmFailure();
-    expect(message).toContain(`SSM parameter '${SSM_NAME}' returned no Value`);
+    expect(message).toContain(`SSM parameter ${SSM_NAME} returned no Value`);
     expect(message).not.toContain('Failed to resolve SSM parameter');
   });
 
@@ -202,7 +202,7 @@ describe('resolveSsm — the failure shapes (issue #557)', () => {
     );
     const message = await ssmFailure();
     expect(message).toContain(
-      "Failed to resolve SSM parameter for container 'ApiContainer' / env 'DB_PASSWORD'"
+      "Failed to resolve SSM parameter for container ApiContainer / env DB_PASSWORD"
     );
     expect(message).toContain(`(${SSM_NAME})`);
     expect(message).toContain('ParameterNotFound: Parameter /app/db/password not found.');
@@ -367,5 +367,68 @@ describe('the unsupported-shape refusal renders its values display-safe', () => 
     let outside = message;
     for (const v of Object.values(forged)) outside = outside.split(JSON.stringify(v)).join('<v>');
     expect(outside).not.toContain('Healthy');
+  });
+});
+
+// go-to-k/cdk-local#761: the container and env names come from the task
+// definition, so a forging one renders as ONE JSON literal while a plain one
+// prints bare. Expected strings are written by hand.
+describe('resolver messages render template-chosen names (#761)', () => {
+  beforeEach(() => {
+    smSend.mockReset();
+    ssmSend.mockReset();
+  });
+
+  async function failureFor(
+    containerName: string,
+    name: string,
+    valueFrom: string
+  ): Promise<string> {
+    try {
+      await resolveEcsSecrets([{ containerName, name, valueFrom }]);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    return expect.fail('resolveEcsSecrets should have thrown');
+  }
+
+  it('SSM returned no Value: plain bare, forging quoted', async () => {
+    ssmSend.mockResolvedValue({});
+    expect(await failureFor('Api', 'DB_PASSWORD', SSM_ARN)).toBe(
+      'SSM parameter /app/db/password returned no Value for container Api / env DB_PASSWORD.'
+    );
+    expect(await failureFor("Api' x", 'DB\u001b[2Kforged', SSM_ARN)).toBe(
+      `SSM parameter /app/db/password returned no Value for container "Api' x" / env "DB [2Kforged".`
+    );
+  });
+
+  it('SSM transport failure prefix: plain bare, forging quoted', async () => {
+    ssmSend.mockRejectedValue(new Error('network down'));
+    expect(await failureFor('Api', 'DB_PASSWORD', SSM_ARN)).toMatch(
+      /^Failed to resolve SSM parameter for container Api \/ env DB_PASSWORD \(\/app\/db\/password\): /
+    );
+    expect(await failureFor("Api' x", "DB' y", SSM_ARN)).toMatch(
+      /^Failed to resolve SSM parameter for container "Api' x" \/ env "DB' y" \(\/app\/db\/password\): /
+    );
+  });
+
+  it('Secrets Manager transport failure prefix: plain bare, forging quoted', async () => {
+    smSend.mockRejectedValue(new Error('network down'));
+    expect(await failureFor('Api', 'DB_PASSWORD', SM_ARN)).toMatch(
+      /^Failed to resolve Secrets Manager secret for container Api \/ env DB_PASSWORD \(arn:aws:secretsmanager:us-east-1:123456789012:secret:app-token\): /
+    );
+    expect(await failureFor("Api' x", "DB' y", SM_ARN)).toMatch(
+      /^Failed to resolve Secrets Manager secret for container "Api' x" \/ env "DB' y" \(arn:aws:secretsmanager:us-east-1:123456789012:secret:app-token\): /
+    );
+  });
+
+  it('Secrets Manager returned no SecretString: plain bare, forging quoted', async () => {
+    smSend.mockResolvedValue({});
+    expect(await failureFor('Api', 'DB_PASSWORD', SM_ARN)).toBe(
+      'Secrets Manager returned no SecretString for container Api / env DB_PASSWORD (arn:aws:secretsmanager:us-east-1:123456789012:secret:app-token). Binary secrets are not supported.'
+    );
+    expect(await failureFor("Api' x", "DB' y", SM_ARN)).toBe(
+      `Secrets Manager returned no SecretString for container "Api' x" / env "DB' y" (arn:aws:secretsmanager:us-east-1:123456789012:secret:app-token). Binary secrets are not supported.`
+    );
   });
 });

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, normalize, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { proxyAwareFetch } from '../utils/aws-proxy.js';
 import { workloadClientConfig } from '../utils/workload-identity.js';
 import { getLogger } from '../utils/logger.js';
@@ -170,7 +171,9 @@ export async function materializeLayerFromArn(
   if (options.roleArn) {
     try {
       credentials = await assumeRoleForLayer(options.roleArn, layer.region, options);
-      logger.debug(`Layer ${layer.arn}: assumed role ${options.roleArn} for GetLayerVersion`);
+      logger.debug(
+        `Layer ${displayUntrustedValue(layer.arn)}: assumed role ${options.roleArn} for GetLayerVersion`
+      );
     } catch (err) {
       // An ALREADY-FRAMED cdk-local throw passes through untouched; see
       // {@link UnframedLayerError} for why the two cases are separate types.
@@ -183,7 +186,7 @@ export async function materializeLayerFromArn(
       // `src/cli/commands/**`; this one sits outside that scope, which is the
       // only reason it was not covered there.
       throw new LayerMaterializationError(
-        `Layer ${layer.arn}: STS AssumeRole(${flattenToOneLine(options.roleArn)}) failed: ${layerFailureDetail(
+        `Layer ${displayUntrustedValue(layer.arn)}: STS AssumeRole(${flattenToOneLine(options.roleArn)}) failed: ${layerFailureDetail(
           err,
           'STS AssumeRole (--layer-role-arn)'
         )}. ` + 'Check the role trust policy permits your principal and sts:AssumeRole is allowed.'
@@ -209,7 +212,7 @@ export async function materializeLayerFromArn(
     // cdk-local's own literal and is derived from `looksLikeAccessDenied`,
     // which reads the error rather than printing it, so it stays as is.
     throw new LayerMaterializationError(
-      `Layer ${layer.arn}: GetLayerVersion failed in region ${layer.region}: ${layerFailureDetail(
+      `Layer ${displayUntrustedValue(layer.arn)}: GetLayerVersion failed in region ${layer.region}: ${layerFailureDetail(
         err,
         'Lambda GetLayerVersion'
       )}.${hint}`
@@ -225,7 +228,7 @@ export async function materializeLayerFromArn(
     // OpenSSL / proxy-agent text, none of it credential-bearing but none of it
     // one bounded line either. Nothing to WITHHOLD, everything to FLATTEN.
     throw new LayerMaterializationError(
-      `Layer ${layer.arn}: failed to download layer ZIP from the presigned URL: ${sanitizeServiceExceptionMessage(
+      `Layer ${displayUntrustedValue(layer.arn)}: failed to download layer ZIP from the presigned URL: ${sanitizeServiceExceptionMessage(
         errMsg(err)
       )}.`
     );
@@ -252,7 +255,7 @@ export async function materializeLayerFromArn(
       // best-effort
     }
     throw new LayerMaterializationError(
-      `Layer ${layer.arn}: failed to unzip layer contents into '${dir}': ${errMsg(err)}.`
+      `Layer ${displayUntrustedValue(layer.arn)}: failed to unzip layer contents into '${dir}': ${errMsg(err)}.`
     );
   }
   return dir;
@@ -296,7 +299,7 @@ async function fetchLayerContentUrl(
     const versionSuffix = /^(.*):(\d+)$/.exec(layer.arn);
     if (!versionSuffix) {
       throw new LayerMaterializationError(
-        `Layer ${layer.arn}: not a layer-version ARN (no ':<version>' suffix to strip). ` +
+        `Layer ${displayUntrustedValue(layer.arn)}: not a layer-version ARN (no ':<version>' suffix to strip). ` +
           `Expected arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>.`
       );
     }
@@ -502,7 +505,7 @@ async function unzipBufferToDirectory(zipBytes: Uint8Array, destDir: string): Pr
     const targetPath = resolve(destAbsolute, normalized);
     if (!targetPath.startsWith(destAbsolute + (destAbsolute.endsWith('/') ? '' : '/'))) {
       throw new Error(
-        `Refusing to extract entry '${fileName}' — path escapes the destination directory`
+        `Refusing to extract entry ${displayUntrustedValue(fileName)} — path escapes the destination directory`
       );
     }
     // Symlink entries on Unix encode 0xA in the high byte of external
@@ -510,7 +513,9 @@ async function unzipBufferToDirectory(zipBytes: Uint8Array, destDir: string): Pr
     // because they could redirect to arbitrary host paths.
     const unixMode = (externalAttrs >>> 16) & 0xffff;
     if ((unixMode & 0xf000) === 0xa000) {
-      throw new Error(`Refusing to extract symlink entry '${fileName}' from layer ZIP (security)`);
+      throw new Error(
+        `Refusing to extract symlink entry ${displayUntrustedValue(fileName)} from layer ZIP (security)`
+      );
     }
 
     if (fileName.endsWith('/')) {
@@ -521,7 +526,9 @@ async function unzipBufferToDirectory(zipBytes: Uint8Array, destDir: string): Pr
 
     // Read the Local File Header to locate the actual data payload.
     if (view.getUint32(localHeaderOffset, true) !== 0x04034b50) {
-      throw new Error(`Corrupt ZIP: missing Local File Header for '${fileName}'`);
+      throw new Error(
+        `Corrupt ZIP: missing Local File Header for ${displayUntrustedValue(fileName)}`
+      );
     }
     const lfhFileNameLength = view.getUint16(localHeaderOffset + 26, true);
     const lfhExtraFieldLength = view.getUint16(localHeaderOffset + 28, true);
@@ -535,12 +542,12 @@ async function unzipBufferToDirectory(zipBytes: Uint8Array, destDir: string): Pr
       payload = await inflateRaw(compressedData);
     } else {
       throw new Error(
-        `Unsupported ZIP compression method ${compressionMethod} for entry '${fileName}' (only STORE and DEFLATE supported)`
+        `Unsupported ZIP compression method ${compressionMethod} for entry ${displayUntrustedValue(fileName)} (only STORE and DEFLATE supported)`
       );
     }
     if (payload.length !== uncompressedSize && compressionMethod !== 0) {
       throw new Error(
-        `ZIP entry '${fileName}': inflate produced ${payload.length} bytes, expected ${uncompressedSize}`
+        `ZIP entry ${displayUntrustedValue(fileName)}: inflate produced ${payload.length} bytes, expected ${uncompressedSize}`
       );
     }
     // Stream the payload through fs.createWriteStream so we never hold

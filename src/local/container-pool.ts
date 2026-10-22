@@ -5,6 +5,7 @@ import type { ResolvedImageLambda, ResolvedZipLambda } from './lambda-resolver.j
 import { waitForRieReady } from './rie-client.js';
 import { resolveRuntimeCodeMountPath, resolveRuntimeImage } from './runtime-image.js';
 import { getEmbedConfig } from './embed-config.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * Per-Lambda warm container pool for `cdkl start-api` (D8.3).
@@ -471,7 +472,7 @@ export function createContainerPool(
       handle.stopLogStream();
     } catch (err) {
       logger.debug(
-        `stopLogStream(${handle.containerName}) failed: ${err instanceof Error ? err.message : String(err)}`
+        `stopLogStream(${displayIdent(handle.containerName)}) failed: ${err instanceof Error ? err.message : String(err)}`
       );
     }
     try {
@@ -519,7 +520,7 @@ export function createContainerPool(
       const entry = entries.get(logicalId);
       if (!entry) {
         throw new Error(
-          `containerPool.acquire: no spec registered for Lambda '${logicalId}'. This is a bug — every reachable route's Lambda should be registered at server boot.`
+          `containerPool.acquire: no spec registered for Lambda ${displayIdent(logicalId)}. This is a bug — every reachable route's Lambda should be registered at server boot.`
         );
       }
 

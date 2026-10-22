@@ -103,7 +103,7 @@ describe('buildAgentCoreCodeImage', () => {
         entryPoint: ['app.rb'],
         architecture: 'arm64',
       })
-    ).rejects.toThrow(/runtime 'RUBY_3_3' is not supported/);
+    ).rejects.toThrow(/runtime RUBY_3_3 is not supported/);
     expect(runDockerStreamingMock).not.toHaveBeenCalled();
   });
 
@@ -297,4 +297,44 @@ describe('warnIfDependenciesNotVendored (via buildAgentCoreCodeImage)', () => {
       expect(msg.replace(JSON.stringify(dir), '<v>')).not.toContain('Contained and healthy');
     });
   }
+});
+
+describe('buildAgentCoreCodeImage identifier rendering (#761)', () => {
+  it('renders a forging runtime as one JSON literal', async () => {
+    await expect(
+      buildAgentCoreCodeImage({
+        sourceDir: '/src',
+        runtime: "a' b",
+        entryPoint: ['app.rb'],
+        architecture: 'arm64',
+      })
+    ).rejects.toThrow(`runtime "a' b" is not supported`);
+  });
+
+  it('escapes control characters in the docker build stderr', async () => {
+    runDockerStreamingMock.mockRejectedValue(
+      Object.assign(new Error('exit 1'), { stderr: 'step failed\u001b[2K\rINFO all good' })
+    );
+    await expect(
+      buildAgentCoreCodeImage({
+        sourceDir: '/src',
+        runtime: 'PYTHON_3_12',
+        entryPoint: ['app.py'],
+        architecture: 'arm64',
+      })
+    ).rejects.toThrow('step failed\\u001b[2K\\u000dINFO all good');
+  });
+
+  it('prints the computed --no-build tag bare', async () => {
+    isImageInLocalCacheMock.mockResolvedValue(false);
+    const err = await buildAgentCoreCodeImage({
+      sourceDir: '/src',
+      runtime: 'PYTHON_3_12',
+      entryPoint: ['app.py'],
+      architecture: 'arm64',
+      noBuild: true,
+    } as never).catch((e: unknown) => e);
+    // The computed tag is plain, so it prints bare (no quotes around it).
+    expect((err as Error).message).toMatch(/^image cdkl-agentcore-code-[0-9a-f]+ not in local registry/);
+  });
 });

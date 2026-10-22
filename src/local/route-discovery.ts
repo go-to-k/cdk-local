@@ -2,6 +2,7 @@ import { readCdkPath } from '../cli/cdk-path.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
 import { pickRefLogicalId } from './intrinsic-utils.js';
@@ -302,7 +303,7 @@ function discoverRestV1Method(
   const integration = props['Integration'] as Record<string, unknown> | undefined;
   if (!integration) {
     throw new Error(
-      `${stackName}/${logicalId} (AWS::ApiGateway::Method): missing Integration property`
+      `${displayStackName(`${stackName}/${logicalId}`)} (AWS::ApiGateway::Method): missing Integration property`
     );
   }
 
@@ -310,7 +311,7 @@ function discoverRestV1Method(
   const restApiLogicalId = pickRefLogicalId(restApiId);
   if (!restApiLogicalId) {
     throw new Error(
-      `${stackName}/${logicalId} (AWS::ApiGateway::Method): RestApiId must be a { Ref: '...' } reference (got ${shortJson(
+      `${displayStackName(`${stackName}/${logicalId}`)} (AWS::ApiGateway::Method): RestApiId must be a { Ref: '...' } reference (got ${shortJson(
         restApiId
       )}).`
     );
@@ -458,7 +459,7 @@ function discoverRestV1Method(
         pathPattern: path,
         lambdaLogicalId: '',
         unsupported: {
-          reason: `${stackName}/${logicalId}: unknown REST v1 integration type '${String(integrationType)}' (expected AWS_PROXY / AWS / HTTP / HTTP_PROXY / MOCK).`,
+          reason: `${displayStackName(`${stackName}/${logicalId}`)}: unknown REST v1 integration type ${displayIdent(String(integrationType))} (expected AWS_PROXY / AWS / HTTP / HTTP_PROXY / MOCK).`,
         },
       },
     ];
@@ -477,7 +478,7 @@ function discoverRestV1Method(
         pathPattern: path,
         lambdaLogicalId: '',
         unsupported: {
-          reason: `${stackName}/${logicalId}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(
+          reason: `${displayStackName(`${stackName}/${logicalId}`)}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(
             integrationUri
           )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally; deploy the producer stack and use \`${getEmbedConfig().cliName} invoke --from-state\` shapes if you need it.`,
         },
@@ -611,7 +612,7 @@ function buildHttpProxyIntegrationConfig(
   if (typeof uri !== 'string' || uri.length === 0) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: HTTP_PROXY Integration.Uri must be a literal string in v1 (${getEmbedConfig().cliName} start-api does not resolve Fn::Sub / Fn::Join in HTTP_PROXY Uris); got ${shortJson(uri)}.`,
+      reason: `${displayStackName(`${stackName}/${logicalId}`)}: HTTP_PROXY Integration.Uri must be a literal string in v1 (${getEmbedConfig().cliName} start-api does not resolve Fn::Sub / Fn::Join in HTTP_PROXY Uris); got ${shortJson(uri)}.`,
     };
   }
   const integrationHttpMethod = pickStringField(integration, 'IntegrationHttpMethod');
@@ -642,7 +643,7 @@ function buildHttpIntegrationConfig(
   if (typeof uri !== 'string' || uri.length === 0) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: HTTP Integration.Uri must be a literal string in v1 (${getEmbedConfig().cliName} start-api does not resolve Fn::Sub / Fn::Join in HTTP Uris); got ${shortJson(uri)}.`,
+      reason: `${displayStackName(`${stackName}/${logicalId}`)}: HTTP Integration.Uri must be a literal string in v1 (${getEmbedConfig().cliName} start-api does not resolve Fn::Sub / Fn::Join in HTTP Uris); got ${shortJson(uri)}.`,
     };
   }
   const integrationHttpMethod = pickStringField(integration, 'IntegrationHttpMethod');
@@ -684,14 +685,14 @@ function buildAwsIntegrationConfig(
   if (!isLambda) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: REST v1 AWS integration targeting a non-Lambda service (Uri ${shortJson(uri)}) is not emulated locally in ${getEmbedConfig().binaryName} v1. Lambda non-proxy AWS integrations are supported; direct AWS service integrations (S3 / SQS / SNS / DynamoDB) require deploying to AWS. See https://github.com/go-to-k/cdk-local/blob/main/docs/local-emulation.md.`,
+      reason: `${displayStackName(`${stackName}/${logicalId}`)}: REST v1 AWS integration targeting a non-Lambda service (Uri ${shortJson(uri)}) is not emulated locally in ${getEmbedConfig().binaryName} v1. Lambda non-proxy AWS integrations are supported; direct AWS service integrations (S3 / SQS / SNS / DynamoDB) require deploying to AWS. See https://github.com/go-to-k/cdk-local/blob/main/docs/local-emulation.md.`,
     };
   }
   const arnOutcome = resolveLambdaArnOutcome(uri);
   if (arnOutcome.kind === 'unsupported') {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(uri)}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally.`,
+      reason: `${displayStackName(`${stackName}/${logicalId}`)}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(uri)}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally.`,
     };
   }
   const requestTemplates = pickStringRecord(integration['RequestTemplates']);
@@ -831,7 +832,7 @@ function buildRestV1Path(
   const resourceLogicalId = pickRefLogicalId(resourceIdIntrinsic);
   if (!resourceLogicalId) {
     throw new Error(
-      `${stackName}/${methodLogicalId}: ResourceId must be { Ref: '...' } or { 'Fn::GetAtt': [..., 'RootResourceId'] } (got ${shortJson(
+      `${displayStackName(`${stackName}/${methodLogicalId}`)}: ResourceId must be { Ref: '...' } or { 'Fn::GetAtt': [..., 'RootResourceId'] } (got ${shortJson(
         resourceIdIntrinsic
       )}).`
     );
@@ -844,26 +845,26 @@ function buildRestV1Path(
   while (cursor && cursor !== restApiLogicalId) {
     if (visited.has(cursor)) {
       throw new Error(
-        `${stackName}/${methodLogicalId}: cycle detected in AWS::ApiGateway::Resource ParentId chain at ${cursor}`
+        `${displayStackName(`${stackName}/${methodLogicalId}`)}: cycle detected in AWS::ApiGateway::Resource ParentId chain at ${displayIdent(cursor)}`
       );
     }
     visited.add(cursor);
     const node: TemplateResource | undefined = template.Resources?.[cursor];
     if (!node) {
       throw new Error(
-        `${stackName}/${methodLogicalId}: ParentId chain references missing resource '${cursor}'`
+        `${displayStackName(`${stackName}/${methodLogicalId}`)}: ParentId chain references missing resource ${displayIdent(cursor)}`
       );
     }
     if (node.Type !== 'AWS::ApiGateway::Resource') {
       throw new Error(
-        `${stackName}/${methodLogicalId}: ParentId chain hit ${node.Type} (expected AWS::ApiGateway::Resource or RestApi root)`
+        `${displayStackName(`${stackName}/${methodLogicalId}`)}: ParentId chain hit ${node.Type} (expected AWS::ApiGateway::Resource or RestApi root)`
       );
     }
     const nodeProps: Record<string, unknown> = node.Properties ?? {};
     const pathPart = nodeProps['PathPart'];
     if (typeof pathPart !== 'string') {
       throw new Error(
-        `${stackName}/${methodLogicalId}: AWS::ApiGateway::Resource '${cursor}' missing PathPart`
+        `${displayStackName(`${stackName}/${methodLogicalId}`)}: AWS::ApiGateway::Resource ${displayIdent(cursor)} missing PathPart`
       );
     }
     segments.unshift(pathPart);
@@ -926,7 +927,7 @@ function discoverHttpApiRoute(
   const apiLogicalId = pickRefLogicalId(apiId);
   if (!apiLogicalId) {
     throw new Error(
-      `${stackName}/${logicalId} (AWS::ApiGatewayV2::Route): ApiId must be { Ref: '...' } (got ${shortJson(
+      `${displayStackName(`${stackName}/${logicalId}`)} (AWS::ApiGatewayV2::Route): ApiId must be { Ref: '...' } (got ${shortJson(
         apiId
       )}).`
     );
@@ -935,7 +936,7 @@ function discoverHttpApiRoute(
   const routeKey = props['RouteKey'];
   if (typeof routeKey !== 'string' || routeKey.length === 0) {
     throw new Error(
-      `${stackName}/${logicalId} (AWS::ApiGatewayV2::Route): RouteKey must be a string`
+      `${displayStackName(`${stackName}/${logicalId}`)} (AWS::ApiGatewayV2::Route): RouteKey must be a string`
     );
   }
   const apiCdkPath = readApiCdkPath(apiLogicalId, template);
@@ -976,13 +977,13 @@ function discoverHttpApiRoute(
   const target = props['Target'];
   const integrationLogicalId = parseHttpApiTargetIntegration(
     target,
-    `${stackName}/${logicalId}.Target`
+    `${displayStackName(`${stackName}/${logicalId}`)}.Target`
   );
 
   const integration = template.Resources?.[integrationLogicalId];
   if (!integration || integration.Type !== 'AWS::ApiGatewayV2::Integration') {
     throw new Error(
-      `${stackName}/${logicalId} (AWS::ApiGatewayV2::Route): Target points at '${integrationLogicalId}' which is not an AWS::ApiGatewayV2::Integration`
+      `${displayStackName(`${stackName}/${logicalId}`)} (AWS::ApiGatewayV2::Route): Target points at ${displayIdent(integrationLogicalId)} which is not an AWS::ApiGatewayV2::Integration`
     );
   }
   const integrationProps = integration.Properties ?? {};
@@ -996,9 +997,7 @@ function discoverHttpApiRoute(
         ...baseRoute,
         lambdaLogicalId: '',
         unsupported: {
-          reason: `${stackName}/${logicalId}: HTTP API v2 integration type '${String(
-            integrationType
-          )}' is not supported (only AWS_PROXY).`,
+          reason: `${displayStackName(`${stackName}/${logicalId}`)}: HTTP API v2 integration type ${displayIdent(String(integrationType))} is not supported (only AWS_PROXY).`,
         },
       },
     ];
@@ -1022,7 +1021,7 @@ function discoverHttpApiRoute(
         ...baseRoute,
         lambdaLogicalId: '',
         unsupported: {
-          reason: `${stackName}/${integrationLogicalId}.IntegrationUri: ${arnOutcome.detail} (got ${shortJson(
+          reason: `${displayStackName(`${stackName}/${integrationLogicalId}`)}.IntegrationUri: ${arnOutcome.detail} (got ${shortJson(
             integrationProps['IntegrationUri']
           )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally.`,
         },
@@ -1066,9 +1065,7 @@ function classifyServiceIntegrationRoute(
       ...baseRoute,
       lambdaLogicalId: '',
       unsupported: {
-        reason: `${declaredAt}: HTTP API v2 service integration subtype '${stringifyValue(
-          subtypeRaw
-        )}' is not supported by ${getEmbedConfig().cliName} start-api (see https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html for the supported list).`,
+        reason: `${displayStackName(declaredAt)}: HTTP API v2 service integration subtype ${displayIdent(stringifyValue(subtypeRaw))} is not supported by ${getEmbedConfig().cliName} start-api (see https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html for the supported list).`,
       },
     };
   }
@@ -1083,7 +1080,7 @@ function classifyServiceIntegrationRoute(
       ...baseRoute,
       lambdaLogicalId: '',
       unsupported: {
-        reason: `${stackName}/${integrationLogicalId}: HTTP API v2 service integration '${subtypeRaw}' is missing RequestParameters or it is not an object — cannot dispatch to the SDK without input mapping.`,
+        reason: `${displayStackName(`${stackName}/${integrationLogicalId}`)}: HTTP API v2 service integration ${displayIdent(subtypeRaw)} is missing RequestParameters or it is not an object — cannot dispatch to the SDK without input mapping.`,
       },
     };
   }
@@ -1148,7 +1145,7 @@ function discoverFunctionUrl(
   const arnOutcome = resolveLambdaArnOutcome(targetArn);
   if (arnOutcome.kind === 'unsupported') {
     throw new Error(
-      `${stackName}/${logicalId}.TargetFunctionArn: ${arnOutcome.detail} (got ${shortJson(targetArn)}).`
+      `${displayStackName(`${stackName}/${logicalId}`)}.TargetFunctionArn: ${arnOutcome.detail} (got ${shortJson(targetArn)}).`
     );
   }
   const lambdaLogicalId = arnOutcome.logicalId;
@@ -1190,7 +1187,7 @@ function discoverFunctionUrl(
         ...baseRoute,
         lambdaLogicalId,
         unsupported: {
-          reason: `${stackName}/${logicalId}: AuthType ${shortJson(
+          reason: `${displayStackName(`${stackName}/${logicalId}`)}: AuthType ${shortJson(
             authType
           )} is not a recognized Function URL auth type (expected 'NONE' or 'AWS_IAM').`,
         },
@@ -1218,7 +1215,7 @@ function discoverFunctionUrl(
         ...baseRoute,
         lambdaLogicalId,
         unsupported: {
-          reason: `${stackName}/${logicalId}: InvokeMode ${shortJson(
+          reason: `${displayStackName(`${stackName}/${logicalId}`)}: InvokeMode ${shortJson(
             invokeModeRaw
           )} is not a recognized value (expected 'BUFFERED' or 'RESPONSE_STREAM').`,
         },
@@ -1305,7 +1302,9 @@ function parseHttpApiTargetIntegration(target: unknown, location: string): strin
   if (typeof target === 'string') {
     const m = /^integrations\/(.+)$/.exec(target);
     if (m) return m[1]!;
-    throw new Error(`${location}: literal Target '${target}' must start with 'integrations/'`);
+    throw new Error(
+      `${location}: literal Target ${displayIdent(target)} must start with 'integrations/'`
+    );
   }
   if (target && typeof target === 'object' && !Array.isArray(target)) {
     const obj = target as Record<string, unknown>;
@@ -1389,7 +1388,7 @@ function parseRouteKey(routeKey: string): { method: string; pathPattern: string 
   const m = /^([A-Za-z]+)\s+(\S+)$/.exec(routeKey);
   if (!m) {
     throw new Error(
-      `RouteKey '${routeKey}' is malformed: expected '<METHOD> <path>' (e.g. 'GET /items/{id}') or '$default'.`
+      `RouteKey ${displayIdent(routeKey)} is malformed: expected '<METHOD> <path>' (e.g. 'GET /items/{id}') or '$default'.`
     );
   }
   return { method: m[1]!.toUpperCase(), pathPattern: m[2]! };

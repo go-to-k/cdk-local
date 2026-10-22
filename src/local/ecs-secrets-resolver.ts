@@ -4,6 +4,7 @@ import { workloadClientConfig } from '../utils/workload-identity.js';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * Resolve `ContainerDefinitions[].Secrets[].ValueFrom` references to real
@@ -102,7 +103,9 @@ export async function resolveEcsSecrets(
     const results = await Promise.all(
       entries.map(async (entry) => {
         const value = await resolveOne(entry, secretsClient, ssmClient);
-        logger.debug(`Resolved secret ${entry.containerName}.${entry.name} (${entry.valueFrom})`);
+        logger.debug(
+          `Resolved secret ${displayIdent(entry.containerName)}.${displayIdent(entry.name)} (${displayUntrustedValue(entry.valueFrom)})`
+        );
         return { ...entry, value };
       })
     );
@@ -210,7 +213,7 @@ async function resolveSecretsManager(
     // exception's message still prints in full -- that is the half #554 kept;
     // the chain failure is the half it never considered.
     throw new EcsSecretsResolutionError(
-      `Failed to resolve Secrets Manager secret for container '${entry.containerName}' / env '${entry.name}' (${shape.baseArn}): ${describeAwsFailureForWarn(
+      `Failed to resolve Secrets Manager secret for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayUntrustedValue(shape.baseArn)}): ${describeAwsFailureForWarn(
         err,
         'SecretsManager GetSecretValue'
       )}`
@@ -218,7 +221,7 @@ async function resolveSecretsManager(
   }
   if (secretString === undefined) {
     throw new EcsSecretsResolutionError(
-      `Secrets Manager returned no SecretString for container '${entry.containerName}' / env '${entry.name}' (${shape.baseArn}). ` +
+      `Secrets Manager returned no SecretString for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayUntrustedValue(shape.baseArn)}). ` +
         'Binary secrets are not supported.'
     );
   }
@@ -256,19 +259,19 @@ async function resolveSecretsManager(
     // become a lie the moment it turns reachable.
     const kind = err instanceof Error ? err.name : 'unknown';
     throw new EcsSecretsResolutionError(
-      `Container '${entry.containerName}' secret '${entry.name}' specified json-key '${shape.jsonKey}' but the secret value is not valid JSON (${kind}). ` +
+      `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} specified json-key ${displayIdent(shape.jsonKey)} but the secret value is not valid JSON (${kind}). ` +
         'The parser detail is withheld because it would echo the secret plaintext.'
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new EcsSecretsResolutionError(
-      `Container '${entry.containerName}' secret '${entry.name}' specified json-key '${shape.jsonKey}' but the secret root is not a JSON object.`
+      `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} specified json-key ${displayIdent(shape.jsonKey)} but the secret root is not a JSON object.`
     );
   }
   const value = (parsed as Record<string, unknown>)[shape.jsonKey];
   if (value === undefined) {
     throw new EcsSecretsResolutionError(
-      `Container '${entry.containerName}' secret '${entry.name}' specified json-key '${shape.jsonKey}' but no such key exists in the secret JSON.`
+      `Container ${displayIdent(entry.containerName)} secret ${displayIdent(entry.name)} specified json-key ${displayIdent(shape.jsonKey)} but no such key exists in the secret JSON.`
     );
   }
   return typeof value === 'string' ? value : JSON.stringify(value);
@@ -282,7 +285,7 @@ async function resolveSsm(entry: SecretEntry, shape: SsmShape, client: SSMClient
     const value = resp.Parameter?.Value;
     if (value === undefined) {
       throw new EcsSecretsResolutionError(
-        `SSM parameter '${shape.name}' returned no Value for container '${entry.containerName}' / env '${entry.name}'.`
+        `SSM parameter ${displayUntrustedValue(shape.name)} returned no Value for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)}.`
       );
     }
     return value;
@@ -292,7 +295,7 @@ async function resolveSsm(entry: SecretEntry, shape: SsmShape, client: SSMClient
     // the same two axes. cdk-local's own "returned no Value" throw is re-raised
     // on the line above, so withholding never eats it.
     throw new EcsSecretsResolutionError(
-      `Failed to resolve SSM parameter for container '${entry.containerName}' / env '${entry.name}' (${shape.name}): ${describeAwsFailureForWarn(
+      `Failed to resolve SSM parameter for container ${displayIdent(entry.containerName)} / env ${displayIdent(entry.name)} (${displayUntrustedValue(shape.name)}): ${describeAwsFailureForWarn(
         err,
         'SSM GetParameter (ECS secret)'
       )}`

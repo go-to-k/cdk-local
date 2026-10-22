@@ -128,7 +128,7 @@ describe('runEcsTask docker run failure with an empty stderr', () => {
     // Premise: the value really was on the argv.
     const run = execFileMock.mock.calls.find((c) => (c[1] as string[])[0] === 'run');
     expect((run![1] as string[]).join(' ')).toContain(SECRET);
-    expect((err as Error).message).toContain("docker run failed for container 'app': exited with code 125");
+    expect((err as Error).message).toContain("docker run failed for container app: exited with code 125");
     expect((err as Error).message).not.toContain(SECRET);
   });
 });

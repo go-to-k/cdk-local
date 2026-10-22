@@ -7,6 +7,7 @@ import { CdkLocalError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 
 /**
  * Download + extract a `fromS3` AgentCore CodeConfiguration bundle.
@@ -126,7 +127,7 @@ function resolveSafeEntryPath(root: string, entry: string): string {
   const rootWithSep = root.endsWith(sep) ? root : root + sep;
   if (dest !== root && !dest.startsWith(rootWithSep)) {
     throw new CdkLocalError(
-      `Refusing to extract a fromS3 bundle entry that escapes the target dir: '${entry}'.`,
+      `Refusing to extract a fromS3 bundle entry that escapes the target dir: ${displayUntrustedValue(entry)}.`,
       'LOCAL_INVOKE_AGENTCORE_S3_BUNDLE_ZIP_SLIP'
     );
   }

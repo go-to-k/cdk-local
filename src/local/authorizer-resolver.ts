@@ -3,6 +3,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { isFunctionUrlOacFronted } from './cors-handler.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
@@ -208,7 +209,7 @@ export function resolveRestV1Authorizer(
   const authResource = template.Resources?.[authorizerLogicalId];
   if (!authResource || authResource.Type !== 'AWS::ApiGateway::Authorizer') {
     throw new RouteDiscoveryError(
-      `${declaredAt}: AuthorizerId '${authorizerLogicalId}' does not point at an AWS::ApiGateway::Authorizer in stack '${stackName}'.`
+      `${displayStackName(declaredAt)}: AuthorizerId ${displayIdent(authorizerLogicalId)} does not point at an AWS::ApiGateway::Authorizer in stack ${displayStackName(stackName)}.`
     );
   }
   const props = authResource.Properties ?? {};
@@ -217,7 +218,7 @@ export function resolveRestV1Authorizer(
   if (type === 'TOKEN') {
     const lambdaLogicalId = resolveLambdaArn(
       props['AuthorizerUri'],
-      `${stackName}/${authorizerLogicalId}.AuthorizerUri`
+      `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}.AuthorizerUri`
     );
     const identitySource =
       typeof props['IdentitySource'] === 'string'
@@ -238,7 +239,7 @@ export function resolveRestV1Authorizer(
   if (type === 'REQUEST') {
     const lambdaLogicalId = resolveLambdaArn(
       props['AuthorizerUri'],
-      `${stackName}/${authorizerLogicalId}.AuthorizerUri`
+      `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}.AuthorizerUri`
     );
     const identitySources = parseRestV1IdentitySources(
       typeof props['IdentitySource'] === 'string' ? props['IdentitySource'] : ''
@@ -259,7 +260,7 @@ export function resolveRestV1Authorizer(
     const arns = props['ProviderARNs'];
     if (!Array.isArray(arns) || arns.length === 0) {
       throw new RouteDiscoveryError(
-        `${stackName}/${authorizerLogicalId}: COGNITO_USER_POOLS authorizer is missing ProviderARNs.`
+        `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: COGNITO_USER_POOLS authorizer is missing ProviderARNs.`
       );
     }
     // Walk every ProviderARNs[] entry — CFn allows 1+ for multi-pool
@@ -270,11 +271,11 @@ export function resolveRestV1Authorizer(
     const pools: CognitoPoolRef[] = arns.map((entry, idx) => {
       const arn = pickStringFromArn(
         entry,
-        `${stackName}/${authorizerLogicalId}.ProviderARNs[${idx}]`
+        `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}.ProviderARNs[${idx}]`
       );
       const parsed = parseCognitoUserPoolArn(
         arn,
-        `${stackName}/${authorizerLogicalId}.ProviderARNs[${idx}]`
+        `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}.ProviderARNs[${idx}]`
       );
       return { userPoolArn: arn, region: parsed.region, userPoolId: parsed.userPoolId };
     });
@@ -302,7 +303,7 @@ export function resolveRestV1Authorizer(
   // orthogonal to (and composable with) TOKEN / REQUEST / COGNITO_USER_POOLS
   // authorizers.
   throw new RouteDiscoveryError(
-    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by ${getEmbedConfig().cliName} start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
+    `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: AWS::ApiGateway::Authorizer.Type ${displayIdent(stringifyValue(type))} is not supported by ${getEmbedConfig().cliName} start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
   );
 }
 
@@ -320,7 +321,7 @@ export function resolveHttpApiAuthorizer(
   const authResource = template.Resources?.[authorizerLogicalId];
   if (!authResource || authResource.Type !== 'AWS::ApiGatewayV2::Authorizer') {
     throw new RouteDiscoveryError(
-      `${declaredAt}: AuthorizerId '${authorizerLogicalId}' does not point at an AWS::ApiGatewayV2::Authorizer in stack '${stackName}'.`
+      `${displayStackName(declaredAt)}: AuthorizerId ${displayIdent(authorizerLogicalId)} does not point at an AWS::ApiGatewayV2::Authorizer in stack ${displayStackName(stackName)}.`
     );
   }
   const props = authResource.Properties ?? {};
@@ -329,7 +330,7 @@ export function resolveHttpApiAuthorizer(
   if (authType === 'REQUEST') {
     const lambdaLogicalId = resolveLambdaArn(
       props['AuthorizerUri'],
-      `${stackName}/${authorizerLogicalId}.AuthorizerUri`
+      `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}.AuthorizerUri`
     );
     const identitySources = parseHttpV2IdentitySources(props['IdentitySource']);
     const ttl = parseTtl(props['AuthorizerResultTtlInSeconds'], 0, 3600);
@@ -348,14 +349,14 @@ export function resolveHttpApiAuthorizer(
     const jwt = props['JwtConfiguration'];
     if (!jwt || typeof jwt !== 'object') {
       throw new RouteDiscoveryError(
-        `${stackName}/${authorizerLogicalId}: AWS::ApiGatewayV2::Authorizer.JwtConfiguration is required for AuthorizerType=JWT.`
+        `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: AWS::ApiGatewayV2::Authorizer.JwtConfiguration is required for AuthorizerType=JWT.`
       );
     }
     const obj = jwt as Record<string, unknown>;
     const issuer = obj['Issuer'];
     if (typeof issuer !== 'string' || issuer.length === 0) {
       throw new RouteDiscoveryError(
-        `${stackName}/${authorizerLogicalId}: JwtConfiguration.Issuer must be a string.`
+        `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: JwtConfiguration.Issuer must be a string.`
       );
     }
     const audienceRaw = obj['Audience'];
@@ -380,7 +381,7 @@ export function resolveHttpApiAuthorizer(
   }
 
   throw new RouteDiscoveryError(
-    `${stackName}/${authorizerLogicalId}: AWS::ApiGatewayV2::Authorizer.AuthorizerType '${String(authType)}' is not supported by ${getEmbedConfig().cliName} start-api (only REQUEST / JWT).`
+    `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: AWS::ApiGatewayV2::Authorizer.AuthorizerType ${displayIdent(stringifyValue(authType))} is not supported by ${getEmbedConfig().cliName} start-api (only REQUEST / JWT).`
   );
 }
 
@@ -439,6 +440,8 @@ class AuthorizerLambdaUnresolvableError extends RouteDiscoveryError {
  * authorizer Lambda — symmetric with the route-level `IntegrationUri`
  * unresolvable case (issue #431).
  */
+// `location` here, in `parseCognitoUserPoolArn` and in `pickStringFromArn` is a
+// DISPLAY string its caller built from already-rendered parts (#761), never a key.
 function resolveLambdaArn(value: unknown, location: string): string {
   const outcome = resolveLambdaArnShared(value);
   if (outcome.kind === 'resolved') return outcome.logicalId;
@@ -460,7 +463,7 @@ function parseRestV1HeaderSelector(
   const m = /^method\.request\.header\.([A-Za-z0-9-_]+)$/.exec(identitySource.trim());
   if (!m) {
     throw new RouteDiscoveryError(
-      `${stackName}/${authorizerLogicalId}: TOKEN authorizer IdentitySource '${identitySource}' must be 'method.request.header.<HeaderName>'.`
+      `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: TOKEN authorizer IdentitySource ${displayIdent(identitySource)} must be 'method.request.header.<HeaderName>'.`
     );
   }
   return m[1]!.toLowerCase();
@@ -595,7 +598,7 @@ function pickStringFromArn(value: unknown, location: string): string {
       ) {
         const logicalId = arg[0];
         getLogger().warn(
-          `${location}: uses Fn::GetAtt against logical ID '${logicalId}'. ` +
+          `${location}: uses Fn::GetAtt against logical ID ${displayIdent(logicalId)}. ` +
             `${getEmbedConfig().cliName} start-api cannot resolve the deployed user pool ARN — synthesizing ` +
             `an unreachable placeholder so JWKS pass-through admits every token. ` +
             `For real signature verification, set 'providerArns: [pool.userPoolArn]' explicitly on the CDK construct.`
@@ -703,7 +706,7 @@ export function attachAuthorizers(
           route: {
             ...route,
             unsupported: {
-              reason: `${route.declaredAt}: authorizer Lambda Arn unresolvable — ${err.reason}`,
+              reason: `${displayStackName(route.declaredAt)}: authorizer Lambda Arn unresolvable — ${err.reason}`,
             },
           },
         });
@@ -808,7 +811,7 @@ function detectRestV1Authorizer(
   // CUSTOM / COGNITO_USER_POOLS / etc. all need an AuthorizerId Ref.
   if (!refLogicalId) {
     throw new RouteDiscoveryError(
-      `${stack.stackName}/${methodLogicalId}: AuthorizationType='${stringifyValue(authType)}' but AuthorizerId is missing or not a {Ref:...}.`
+      `${displayStackName(stack.stackName)}/${displayIdent(methodLogicalId)}: AuthorizationType=${displayIdent(stringifyValue(authType))} but AuthorizerId is missing or not a {Ref:...}.`
     );
   }
 
@@ -833,7 +836,7 @@ function detectHttpApiAuthorizer(
   const refLogicalId = pickRefLogicalId(authorizerId);
   if (!refLogicalId) {
     throw new RouteDiscoveryError(
-      `${stack.stackName}/${routeLogicalId}: AuthorizationType='${stringifyValue(authType)}' but AuthorizerId is missing or not a {Ref:...}.`
+      `${displayStackName(stack.stackName)}/${displayIdent(routeLogicalId)}: AuthorizationType=${displayIdent(stringifyValue(authType))} but AuthorizerId is missing or not a {Ref:...}.`
     );
   }
   const scopesRaw = props['AuthorizationScopes'];

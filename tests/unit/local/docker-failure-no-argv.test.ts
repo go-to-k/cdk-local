@@ -45,6 +45,16 @@ afterEach(() => {
 });
 
 describe('docker failures with an empty stderr carry no argv', () => {
+  it('docker volume create names a forging volume as one JSON literal (#761)', async () => {
+    failOn.verb = 'volume create';
+    const state = { network: undefined, dockerVolumeNames: [], startedContainers: [], logStoppers: [] };
+    const err = await realizeDockerVolumes(
+      [{ name: "data' x", kind: 'docker', dockerVolumeConfig: { driver: 'local' } } as never],
+      state as never
+    ).catch((e: unknown) => e);
+    expect((err as Error).message).toContain(`docker volume create failed for "data' x": exited with code 125`);
+  });
+
   it('docker volume create', async () => {
     failOn.verb = 'volume create';
     const state = { network: undefined, dockerVolumeNames: [], startedContainers: [], logStoppers: [] };
@@ -60,7 +70,7 @@ describe('docker failures with an empty stderr carry no argv', () => {
     ).catch((e: unknown) => e);
     // Premise: the option really was on the argv.
     expect(calls.some((a) => a.join(' ').includes(SECRET))).toBe(true);
-    expect((err as Error).message).toContain("docker volume create failed for 'data': exited with code 125");
+    expect((err as Error).message).toContain("docker volume create failed for data: exited with code 125");
     expect((err as Error).message).not.toContain(SECRET);
   });
 

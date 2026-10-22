@@ -14,6 +14,7 @@ import {
   SENSITIVE_ENV_KEYS,
 } from './docker-runner.js';
 import { getEmbedConfig } from './embed-config.js';
+import { displayToolOutput } from '../utils/ident-display.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -231,7 +232,9 @@ export async function sweepOrphanedSvcNetworks(prefix: string): Promise<string[]
       .filter((n) => n.length > 0);
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
-    logger.debug(`docker network ls (sweep) failed: ${e.stderr || e.message || String(err)}`);
+    logger.debug(
+      `docker network ls (sweep) failed: ${displayToolOutput(e.stderr || e.message || String(err))}`
+    );
     return [];
   }
 
@@ -253,7 +256,7 @@ export async function sweepOrphanedSvcNetworks(prefix: string): Promise<string[]
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       logger.debug(
-        `docker network inspect ${name} (sweep) failed: ${e.stderr || e.message || String(err)}`
+        `docker network inspect ${name} (sweep) failed: ${displayToolOutput(e.stderr || e.message || String(err))}`
       );
       continue;
     }
@@ -307,7 +310,7 @@ async function createNetworkAndSidecar(args: {
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     throw new DockerRunnerError(
-      `docker network create failed: ${e.stderr?.trim() || e.message || String(err)}. ` +
+      `docker network create failed: ${displayToolOutput(e.stderr?.trim() || e.message || String(err))}. ` +
         `Hint: another ${getEmbedConfig().productName} run may already own subnet ${cidr}; wait for it to ` +
         'finish, or remove the leftover network with `docker network ls` + ' +
         `\`docker network rm\`. \`${getEmbedConfig().cliName} start-service\` shares one network ` +
@@ -366,7 +369,7 @@ async function createNetworkAndSidecar(args: {
     await destroyNetworkOnly(networkName);
     const e = err as { stderr?: string; message?: string };
     throw new DockerRunnerError(
-      `Failed to start metadata-endpoints sidecar: ${e.stderr?.trim() || describeExitWithoutArgv(err)}`
+      `Failed to start metadata-endpoints sidecar: ${displayToolOutput(e.stderr?.trim() || describeExitWithoutArgv(err))}`
     );
   }
 }
@@ -454,7 +457,7 @@ async function destroyNetworkOnly(networkName: string): Promise<void> {
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     logger.debug(
-      `docker network rm ${networkName} failed: ${e.stderr || e.message || String(err)}`
+      `docker network rm ${networkName} failed: ${displayToolOutput(e.stderr || e.message || String(err))}`
     );
   }
 }

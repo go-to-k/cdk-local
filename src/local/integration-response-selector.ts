@@ -37,6 +37,7 @@
  *     implementation always runs the loop.
  */
 
+import { displayIdent } from '../utils/ident-display.js';
 import { VtlEvaluationError } from './vtl-engine.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -243,7 +244,7 @@ export function evaluateResponseParameters(
     opts.onUnsupported?.(
       key,
       value,
-      `ResponseParameter value '${value}' is a mapping expression (integration.response.* / context.*) which ${getEmbedConfig().cliName} start-api does not emulate. Only single-quoted literals are honored.`
+      `ResponseParameter value ${displayIdent(value)} is a mapping expression (integration.response.* / context.*) which ${getEmbedConfig().cliName} start-api does not emulate. Only single-quoted literals are honored.`
     );
   }
   return out;

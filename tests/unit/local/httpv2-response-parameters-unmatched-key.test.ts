@@ -41,11 +41,22 @@ describe('applyResponseParameters — unmatched key surfaces a warn', () => {
     expect(result.headers).toEqual({});
     const warns = warnSpy.mock.calls.map((c) => String(c[0]));
     expect(warns.length).toBeGreaterThan(0);
-    expect(warns[0]).toContain("'appen:header.x-custom'");
+    expect(warns[0]).toContain('key appen:header.x-custom does not');
     expect(warns[0]).toContain('append|overwrite|remove');
     // The path should NOT silently fall through debug.
     const debugs = debugSpy.mock.calls.map((c) => String(c[0]));
-    expect(debugs.join('\n')).not.toContain("'appen:header.x-custom'");
+    expect(debugs.join('\n')).not.toContain('appen:header.x-custom');
+  });
+
+  it('renders a forging key as one JSON literal (#761)', () => {
+    const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    applyResponseParameters(
+      { statusCode: 200, body: 'ok', headers: {} },
+      { '200': { "a' b\u001b[2Kforged": 'value' } },
+      ctx
+    );
+    const warns = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(warns[0]).toContain('ResponseParameters: key "a\' b [2Kforged" does not match');
   });
 
   it('reserved-header skip path fires its own warn (mirrors unmatched-key warn for symmetry)', () => {
@@ -66,7 +77,7 @@ describe('applyResponseParameters — unmatched key surfaces a warn', () => {
     );
     const warns = warnSpy.mock.calls.map((c) => String(c[0]));
     // Assert the reserved-header warn fired with its distinct message.
-    expect(warns.some((w) => w.includes("'content-length' is reserved"))).toBe(true);
+    expect(warns.some((w) => w.includes('header content-length is reserved'))).toBe(true);
     // Assert the unmatched-key warn did NOT fire on this well-formed key
     // (the two warns log distinct messages).
     expect(warns.some((w) => w.includes('does not match the expected shape'))).toBe(false);

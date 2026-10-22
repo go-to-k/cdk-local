@@ -7,6 +7,7 @@ import {
 } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { workloadStsClientConfig } from '../utils/workload-identity.js';
 import { buildStsClientConfig } from '../utils/profile-resolver.js';
@@ -203,7 +204,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   const parsed = parseEcrUri(imageUri);
   if (!parsed) {
     throw new LocalInvokeBuildError(
-      `Image URI '${imageUri}' is not an ECR URI. ` +
+      `Image URI ${displayUntrustedValue(imageUri)} is not an ECR URI. ` +
         `${getEmbedConfig().cliName} invoke v1 only authenticates against ECR for the deployed-image fallback path.`
     );
   }
@@ -519,7 +520,7 @@ async function verifyImageInLocalCache(imageUri: string): Promise<void> {
     await runDockerStreaming(['image', 'inspect', imageUri]);
   } catch {
     throw new LocalInvokeBuildError(
-      `Image '${imageUri}' is not in the local docker cache and --no-pull was set. ` +
+      `Image ${displayUntrustedValue(imageUri)} is not in the local docker cache and --no-pull was set. ` +
         `Either remove --no-pull (${getEmbedConfig().productName} will pull from ECR) or pre-pull the image manually with \`docker pull\`.`
     );
   }

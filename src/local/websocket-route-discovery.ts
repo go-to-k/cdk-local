@@ -2,6 +2,7 @@ import { readCdkPath } from '../cli/cdk-path.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { RouteDiscoveryError } from '../utils/error-handler.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { resolveLambdaArnIntrinsic } from './intrinsic-lambda-arn.js';
 import { pickRefLogicalId } from './intrinsic-utils.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -186,7 +187,7 @@ function discoverOneApi(
 
   if (routes.length === 0) {
     throw new Error(
-      `${declaredAt}: WebSocket API has no AWS::ApiGatewayV2::Route children — at least one route (typically '$connect') is required to dispatch.`
+      `${displayStackName(declaredAt)}: WebSocket API has no AWS::ApiGatewayV2::Route children — at least one route (typically '$connect') is required to dispatch.`
     );
   }
 
@@ -283,7 +284,7 @@ function collectAuthRoutesForApi(
 function assertSupportedSelectionExpression(expr: string, declaredAt: string): void {
   if (!/^\$request\.body(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(expr)) {
     throw new Error(
-      `${declaredAt}: RouteSelectionExpression '${expr}' is not supported in ${getEmbedConfig().cliName} start-api v1 — only '$request.body.<key>' shapes (optionally nested via dots) are recognized. File a follow-up issue if you need '$request.header.X' / '$context.X' / array-index access.`
+      `${displayStackName(declaredAt)}: RouteSelectionExpression ${displayIdent(expr)} is not supported in ${getEmbedConfig().cliName} start-api v1 — only '$request.body.<key>' shapes (optionally nested via dots) are recognized. File a follow-up issue if you need '$request.header.X' / '$context.X' / array-index access.`
     );
   }
 }
@@ -346,11 +347,11 @@ function collectRoutesForApi(
     const declaredAt = `${stackName}/${routeLogicalId}`;
     const routeKey = props['RouteKey'];
     if (typeof routeKey !== 'string' || routeKey.length === 0) {
-      throw new Error(`${declaredAt}: RouteKey must be a non-empty string.`);
+      throw new Error(`${displayStackName(declaredAt)}: RouteKey must be a non-empty string.`);
     }
     if (seenKeys.has(routeKey)) {
       throw new Error(
-        `${declaredAt}: WebSocket API has duplicate RouteKey '${routeKey}' — each RouteKey may appear at most once per API.`
+        `${displayStackName(declaredAt)}: WebSocket API has duplicate RouteKey ${displayIdent(routeKey)} — each RouteKey may appear at most once per API.`
       );
     }
     seenKeys.add(routeKey);
@@ -359,23 +360,21 @@ function collectRoutesForApi(
     const integration = resources[targetLogicalId];
     if (!integration || integration.Type !== 'AWS::ApiGatewayV2::Integration') {
       throw new Error(
-        `${declaredAt}: Target points at '${targetLogicalId}' which is not an AWS::ApiGatewayV2::Integration.`
+        `${displayStackName(declaredAt)}: Target points at ${displayIdent(targetLogicalId)} which is not an AWS::ApiGatewayV2::Integration.`
       );
     }
     const integrationProps = integration.Properties ?? {};
     const integrationType = integrationProps['IntegrationType'];
     if (integrationType !== 'AWS_PROXY') {
       throw new Error(
-        `${declaredAt}: WebSocket route IntegrationType '${String(
-          integrationType
-        )}' is not supported in ${getEmbedConfig().cliName} start-api v1 — only AWS_PROXY (Lambda) integrations are emulated.`
+        `${displayStackName(declaredAt)}: WebSocket route IntegrationType ${displayIdent(String(integrationType))} is not supported in ${getEmbedConfig().cliName} start-api v1 — only AWS_PROXY (Lambda) integrations are emulated.`
       );
     }
 
     const arnOutcome = resolveLambdaArnIntrinsic(integrationProps['IntegrationUri']);
     if (arnOutcome.kind === 'unsupported') {
       throw new Error(
-        `${stackName}/${targetLogicalId}.IntegrationUri: ${arnOutcome.detail} — WebSocket routes must point at a same-template Lambda.`
+        `${displayStackName(`${stackName}/${targetLogicalId}`)}.IntegrationUri: ${arnOutcome.detail} — WebSocket routes must point at a same-template Lambda.`
       );
     }
 
@@ -406,7 +405,9 @@ function parseRouteTarget(target: unknown, location: string): string {
   if (typeof target === 'string') {
     const m = /^integrations\/(.+)$/.exec(target);
     if (m) return m[1]!;
-    throw new Error(`${location}: literal Target '${target}' must start with 'integrations/'.`);
+    throw new Error(
+      `${displayStackName(location)}: literal Target ${displayIdent(target)} must start with 'integrations/'.`
+    );
   }
   if (target && typeof target === 'object' && !Array.isArray(target)) {
     const obj = target as Record<string, unknown>;
@@ -459,7 +460,7 @@ function parseRouteTarget(target: unknown, location: string): string {
     }
   }
   throw new Error(
-    `${location}: Target must be 'integrations/<id>' literal, Fn::Join with the documented shapes, or Fn::Sub with an 'integrations/\${...}' template.`
+    `${displayStackName(location)}: Target must be 'integrations/<id>' literal, Fn::Join with the documented shapes, or Fn::Sub with an 'integrations/\${...}' template.`
   );
 }
 

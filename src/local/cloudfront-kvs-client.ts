@@ -18,6 +18,7 @@ import {
   stringifyThrown,
 } from './credential-error.js';
 import type { KvsDataSource } from './cloudfront-kvs.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 /**
  * Static AWS credentials for the deployed `GetKey` client. A structural subset
@@ -97,7 +98,7 @@ export function createDeployedKvsDataSource(
           // validation, and this throw is relayed into a DEFAULT-level warn by
           // `cloudfront-server.ts`. Same class as the `PhysicalResourceId`
           // flatten (issue #579 review round 3).
-          `cf.kvs().get('${key}') against ${flattenToOneLine(options.kvsArn)} failed: ${describeAwsFailureForWarn(
+          `cf.kvs().get(${displayIdent(key)}) against ${flattenToOneLine(options.kvsArn)} failed: ${describeAwsFailureForWarn(
             err,
             'CloudFront KeyValueStore GetKey'
           )}`
@@ -144,7 +145,7 @@ export async function resolveDeployedKvsArnByName(
     // `warn`. RECONSTRUCTION does not arise: nothing is withheld, so there is
     // no population to split.
     getLogger().debug(
-      `ListKeyValueStores lookup for '${name}' failed: ${flattenToOneLine(stringifyThrown(err))}`
+      `ListKeyValueStores lookup for ${displayIdent(name)} failed: ${flattenToOneLine(stringifyThrown(err))}`
     );
   }
   return undefined;

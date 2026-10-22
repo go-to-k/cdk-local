@@ -464,7 +464,7 @@ const sites: Site[] = [
   {
     name: 'cloudfront-kvs-client.ts / createDeployedKvsDataSource.getValue',
     operation: 'CloudFront KeyValueStore GetKey',
-    reached: "cf.kvs().get('theme') against arn:aws:cloudfront::1:key-value-store/s failed: ",
+    reached: "cf.kvs().get(theme) against arn:aws:cloudfront::1:key-value-store/s failed: ",
     namePrefix: true,
     drive: async (err) => {
       mocks.kvsSend.mockRejectedValue(err);
@@ -532,7 +532,7 @@ const sites: Site[] = [
     name: 'ecs-secrets-resolver.ts / resolveSecretsManager',
     operation: 'SecretsManager GetSecretValue',
     reached:
-      "Failed to resolve Secrets Manager secret for container 'api' / env 'DB_PASSWORD' (arn:aws:secretsmanager:us-east-1:1:secret:db): ",
+      "Failed to resolve Secrets Manager secret for container api / env DB_PASSWORD (arn:aws:secretsmanager:us-east-1:1:secret:db): ",
     namePrefix: true,
     drive: async (err) => {
       mocks.secretsSend.mockRejectedValue(err);
@@ -555,7 +555,7 @@ const sites: Site[] = [
     name: 'ecs-secrets-resolver.ts / resolveSsm',
     operation: 'SSM GetParameter (ECS secret)',
     reached:
-      "Failed to resolve SSM parameter for container 'api' / env 'API_KEY' (/app/api-key): ",
+      "Failed to resolve SSM parameter for container api / env API_KEY (/app/api-key): ",
     namePrefix: true,
     drive: async (err) => {
       mocks.ssmSend.mockRejectedValue(err);
@@ -934,7 +934,7 @@ describe('#579 — the three changes that shipped unfenced in round 1', () => {
 
     it('keeps the message (it is debug) but flattens it onto one line', async () => {
       await driveLookup(new Error('AccessDenied\nServer listening on http://attacker.example/'));
-      const line = debugLines.find((l) => l.includes("ListKeyValueStores lookup for 'store-name'"));
+      const line = debugLines.find((l) => l.includes("ListKeyValueStores lookup for store-name"));
       expect(line, 'the fixture did not reach the debug relay').toBeDefined();
       // Kept in full — nothing is withheld at `debug`.
       expect(line).toContain('Server listening on http://attacker.example/');
@@ -950,7 +950,7 @@ describe('#579 — the three changes that shipped unfenced in round 1', () => {
       // That throw would escape this best-effort `catch` and turn a
       // fall-back-to-unbound-KVS into a hard failure.
       await expect(driveLookup(Object.create(null))).resolves.toBeUndefined();
-      const line = debugLines.find((l) => l.includes("ListKeyValueStores lookup for 'store-name'"));
+      const line = debugLines.find((l) => l.includes("ListKeyValueStores lookup for store-name"));
       expect(line).toContain('[unstringifiable throw]');
     });
 

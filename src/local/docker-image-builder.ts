@@ -4,6 +4,7 @@ import type { DockerImageAssetSource } from '../types/assets.js';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayIdent, displayToolOutput } from '../utils/ident-display.js';
 import { getLogger, type Logger } from '../utils/logger.js';
 import { isImageInLocalCache } from './ecr-puller.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -69,7 +70,7 @@ export async function buildContainerImage(
     logger.info(`Skipping docker build (--no-build). Verifying ${tag} is in local registry...`);
     if (!(await isImageInLocalCache(tag))) {
       throw new LocalInvokeBuildError(
-        `image '${tag}' not in local registry and --no-build is set; ` +
+        `image ${displayIdent(tag)} not in local registry and --no-build is set; ` +
           'remove --no-build or run `docker build` manually first.'
       );
     }
@@ -95,13 +96,15 @@ export async function buildContainerImage(
     ...(options.assetOutdir !== undefined && { assetOutdir: options.assetOutdir }),
   });
   if (actualTag !== tag) {
-    logger.debug(`Re-tagging executable-built image '${actualTag}' → '${tag}'`);
+    logger.debug(
+      `Re-tagging executable-built image ${displayIdent(actualTag)} → ${displayIdent(tag)}`
+    );
     try {
       await runDockerStreaming(['tag', actualTag, tag]);
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       throw new LocalInvokeBuildError(
-        `docker tag failed re-tagging '${actualTag}' → '${tag}': ${e.stderr?.trim() || e.message || String(err)}`
+        `docker tag failed re-tagging ${displayIdent(actualTag)} → ${displayIdent(tag)}: ${displayToolOutput(e.stderr?.trim() || e.message || String(err))}`
       );
     }
   }
@@ -169,7 +172,7 @@ export function warnIfEmulatedPlatform(
   if (warnedEmulatedPlatforms.has(platform)) return;
   warnedEmulatedPlatforms.add(platform);
   const logger = opts.logger ?? getLogger();
-  const what = opts.label ? `'${opts.label}' ` : '';
+  const what = opts.label ? `${displayIdent(opts.label)} ` : '';
   logger.warn(
     `Running ${what}under ${platform} emulation on a ${host} host ` +
       '(the declared architecture differs from the host). Emulation is slower ' +

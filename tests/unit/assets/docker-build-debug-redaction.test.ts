@@ -80,7 +80,7 @@ describe('buildDockerImage --verbose argv redaction', () => {
     expect(line, 'the docker build debug line was not logged').toBeDefined();
     expect(line).not.toContain(SECRET);
     // The KEY survives: "which build arg" is the diagnostic.
-    expect(line).toContain('--build-arg NPM_TOKEN=***');
+    expect(line).toContain('--build-arg "NPM_TOKEN=***"');
     expect(line).toContain('type=s3');
   });
 
@@ -97,5 +97,29 @@ describe('buildDockerImage --verbose argv redaction', () => {
     expect(line).not.toContain(SECRET);
     expect(line).toContain('NPM_TOKEN=***');
     expect([...debugLines, ...warnLines].join('\n')).not.toContain(SECRET);
+  });
+});
+
+// go-to-k/cdk-local#761: docker's stderr carries the output of `RUN` steps of
+// an assembly-chosen Dockerfile, and the debug argv carries assembly-chosen
+// elements (the Dockerfile, the target).
+describe('buildDockerImage renders untrusted output and argv (#761)', () => {
+  it('escapes control characters in the stderr handed to wrapError, keeping line breaks', async () => {
+    mockRunDockerStreaming.mockRejectedValue({ stderr: 'Step 1/2\n\tRUN x\n\u001b[2K\rforged' });
+    const err = await buildDockerImage({ source: { directory: '.' } }, '/tmp/cdk.out', {
+      wrapError,
+      tag: 't',
+    }).catch((e: unknown) => e);
+    expect((err as Error).message).toBe('Step 1/2\n\tRUN x\n\\u001b[2K\\u000dforged');
+  });
+
+  it('quotes an argv element that could forge the line, and leaves plain ones bare', async () => {
+    await buildDockerImage(
+      { source: { directory: '.', dockerBuildTarget: "prod' (cwd=/elsewhere)" } },
+      '/tmp/cdk.out',
+      { wrapError, tag: 't' }
+    );
+    const line = debugLines.find((l) => l.includes(' build --tag '));
+    expect(line).toContain(`build --tag t --target "prod' (cwd=/elsewhere)" .`);
   });
 });

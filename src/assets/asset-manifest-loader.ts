@@ -7,6 +7,7 @@ import {
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
+import { displayStackName } from '../utils/ident-display.js';
 import { resolveAssetSourcePath } from './asset-source-path.js';
 
 /**
@@ -76,7 +77,7 @@ export class AssetManifestLoader {
     const manifestPath = join(cdkOutputDir, fileName);
 
     try {
-      this.logger.debug(`Loading asset manifest from: ${manifestPath}`);
+      this.logger.debug(`Loading asset manifest from: ${displayUntrustedValue(manifestPath)}`);
       const content = await readFile(manifestPath, 'utf-8');
       const manifest = JSON.parse(content) as AssetManifest;
 
@@ -88,12 +89,12 @@ export class AssetManifestLoader {
       return manifest;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        this.logger.debug(`Asset manifest not found: ${manifestPath}`);
+        this.logger.debug(`Asset manifest not found: ${displayUntrustedValue(manifestPath)}`);
         return null;
       }
 
       throw new Error(
-        `Failed to load asset manifest from ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to load asset manifest from ${displayUntrustedValue(manifestPath)}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
@@ -110,7 +111,9 @@ export class AssetManifestLoader {
     for (const [assetHash, asset] of Object.entries(manifest.files)) {
       // Skip CloudFormation templates (they have .json extension)
       if (asset.source.path.endsWith('.json') || asset.source.path.endsWith('.template.json')) {
-        this.logger.debug(`Skipping CloudFormation template asset: ${asset.displayName}`);
+        this.logger.debug(
+          `Skipping CloudFormation template asset: ${displayStackName(asset.displayName)}`
+        );
         continue;
       }
 

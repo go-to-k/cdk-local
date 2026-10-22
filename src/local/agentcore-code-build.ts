@@ -8,6 +8,7 @@ import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { isImageInLocalCache } from './ecr-puller.js';
 import { getEmbedConfig } from './embed-config.js';
+import { displayIdent, displayToolOutput } from '../utils/ident-display.js';
 
 /**
  * Local from-source build for an AgentCore Runtime `CodeConfiguration`
@@ -69,7 +70,7 @@ export async function buildAgentCoreCodeImage(
   const base = RUNTIME_BASE_IMAGES[options.runtime];
   if (!base) {
     throw new LocalInvokeBuildError(
-      `AgentCore CodeConfiguration runtime '${options.runtime}' is not supported for local execution. ` +
+      `AgentCore CodeConfiguration runtime ${displayIdent(options.runtime)} is not supported for local execution. ` +
         `Supported runtimes: ${SUPPORTED_CODE_RUNTIMES.join(', ')}.`
     );
   }
@@ -89,7 +90,7 @@ export async function buildAgentCoreCodeImage(
     logger.info(`Skipping docker build (--no-build). Verifying ${tag} is in local registry...`);
     if (!(await isImageInLocalCache(tag))) {
       throw new LocalInvokeBuildError(
-        `image '${tag}' not in local registry and --no-build is set; ` +
+        `image ${displayIdent(tag)} not in local registry and --no-build is set; ` +
           'remove --no-build or run the build manually first.'
       );
     }
@@ -114,7 +115,7 @@ export async function buildAgentCoreCodeImage(
   } catch (err) {
     const stderr = (err as { stderr?: string }).stderr?.trim();
     throw new LocalInvokeBuildError(
-      `docker build failed for AgentCore code artifact (${displayUntrustedValue(options.sourceDir)})${stderr ? `: ${stderr}` : ''}`
+      `docker build failed for AgentCore code artifact (${displayUntrustedValue(options.sourceDir)})${stderr ? `: ${displayToolOutput(stderr)}` : ''}`
     );
   } finally {
     await rm(buildDir, { recursive: true, force: true }).catch(() => undefined);

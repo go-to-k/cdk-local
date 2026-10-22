@@ -496,7 +496,7 @@ describe('discoverRoutes — REST v1 buildRestV1Path error branches', () => {
         },
       },
     });
-    expect(() => discoverRoutes([stack])).toThrow(/ParentId chain references missing resource 'DoesNotExist'/);
+    expect(() => discoverRoutes([stack])).toThrow(/ParentId chain references missing resource DoesNotExist/);
   });
 
   it('throws when ParentId chain hits a non-Resource type', () => {
@@ -552,7 +552,7 @@ describe('discoverRoutes — REST v1 buildRestV1Path error branches', () => {
       },
     });
     expect(() => discoverRoutes([stack])).toThrow(
-      /AWS::ApiGateway::Resource 'MissingPathPart' missing PathPart/
+      /AWS::ApiGateway::Resource MissingPathPart missing PathPart/
     );
   });
 });

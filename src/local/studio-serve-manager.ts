@@ -14,6 +14,8 @@ import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-arg
 import { buildPerRunArgs, resolveEnvVars, type OptionValues } from './studio-option-specs.js';
 import { buildCatalogArgs, tokenizeRawArgs, type CatalogValues } from './studio-option-catalog.js';
 import { getLogger } from '../utils/logger.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { displayStackName } from '../utils/ident-display.js';
 
 /** A request to start serving a target, as the studio UI posts it. */
 export interface StudioServeRequest {
@@ -291,17 +293,20 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
 /**
  * The `ecs-task-runner` replica publish banner, with its authority captured.
  * The authority is a dotted-quad IPv4 or a bracketed IPv6 literal, each
- * followed by `:<port>`.
+ * followed by `:<port>`. The container name is `displayIdent`'s rendering
+ * (go-to-k/cdk-local#761) and MOVES WITH IT: bare when plain, otherwise ONE
+ * JSON string literal (escapes honoured, so an embedded `"` cannot end it
+ * early), optionally followed by its cut marker.
  */
 const PUBLISHED_ENDPOINT_RE =
-  /^Container '[^']*' container port \d+ published on ((?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]{2,45}\]):\d+)/;
+  /^Container (?:[A-Za-z0-9:_@./+=,~-]+|"(?:[^"\\]|\\.)*")(?: \[cut: [^\]]*\])? container port \d+ published on ((?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]{2,45}\]):\d+)/;
 
 /**
  * Parse an auto-published replica host endpoint from an `ecs` serve child's
  * stdout (issue #392). `start-service` publishes each replica's declared
  * container port on the host — auto-remapping a privileged port (< 1024) to a
  * free high port (issue #357) — and logs the WHOLE line
- * `Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at
+ * `Container web container port 80 published on 127.0.0.1:54321. Reach it at
  * 127.0.0.1:54321.` (`ecs-task-runner`). studio surfaces the FIRST such
  * endpoint as the serve's `hostUrl` so the in-workspace request composer can
  * target it even when the user passed no explicit `--host-port`. Returns
@@ -339,7 +344,7 @@ export function parsePublishedHostEndpoint(line: string): string | undefined {
  * quoted back.
  */
 function describeForeignEndpointRefusal(targetId: string, endpoint: string, what: string): string {
-  const quoted = `'${describeEndpointForMessage(endpoint)}'`;
+  const quoted = displayUntrustedValue(describeEndpointForMessage(endpoint));
   const outcome = 'No endpoint was adopted and no capture proxy was started.';
   // Two different faults reach this one refusal, and calling both
   // "non-loopback" misnames the commoner one: `--host-port 80=abc` builds
@@ -349,13 +354,13 @@ function describeForeignEndpointRefusal(targetId: string, endpoint: string, what
   // whole serve down, making the wrong reason more expensive to misread.
   if (!parsesAsUrl(endpoint)) {
     return (
-      `refused an unparseable ${what} ${quoted} from '${targetId}': it is not a URL, ` +
+      `refused an unparseable ${what} ${quoted} from ${displayStackName(targetId)}: it is not a URL, ` +
       `so studio cannot tell where a request to it would go. ${outcome}`
     );
   }
   return (
     `refused a non-loopback ${what} ${quoted} from ` +
-    `'${targetId}': a serve child always listens on this machine, so studio will ` +
+    `${displayStackName(targetId)}: a serve child always listens on this machine, so studio will ` +
     `not send requests there. ${outcome}`
   );
 }
@@ -658,7 +663,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
     }
     const existing = entries.get(req.targetId);
     if (existing && existing.status !== 'stopped' && existing.status !== 'error') {
-      throw new Error(`'${req.targetId}' is already running.`);
+      throw new Error(`${displayStackName(req.targetId)} is already running.`);
     }
 
     const startedAt = clock();
@@ -785,7 +790,9 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         void stopChild(child, stopGraceMs, setTimeoutFn, clearTimeoutFn);
         void closeProxies(entry);
         if (entries.get(req.targetId) === entry) entries.delete(req.targetId);
-        reject(new Error(`'${req.targetId}' did not start within ${readyTimeoutMs}ms.`));
+        reject(
+          new Error(`${displayStackName(req.targetId)} did not start within ${readyTimeoutMs}ms.`)
+        );
       }, readyTimeoutMs);
       timer.unref?.();
 
@@ -1045,7 +1052,11 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
             // failure. `stop()` emits the `stopped` event + resolves itself,
             // so here we only reject the pending `start()` (the /api/run POST)
             // with an honest "cancelled" message and emit nothing.
-            reject(new Error(`'${req.targetId}' was stopped before it finished starting.`));
+            reject(
+              new Error(
+                `${displayStackName(req.targetId)} was stopped before it finished starting.`
+              )
+            );
             return;
           }
           // Exited before ever listening — a boot failure.
@@ -1074,7 +1085,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
   async function stop(req: StudioStopRequest): Promise<void> {
     const entry = entries.get(req.targetId);
     if (!entry) {
-      throw new Error(`'${req.targetId}' is not running.`);
+      throw new Error(`${displayStackName(req.targetId)} is not running.`);
     }
     // Flag so the child's `close` handler treats this as a user stop, not a
     // boot failure, when the serve was still `starting` (#1).

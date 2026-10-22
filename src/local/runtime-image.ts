@@ -37,6 +37,7 @@
  */
 
 import { getEmbedConfig } from './embed-config.js';
+import { displayIdent } from '../utils/ident-display.js';
 
 interface RuntimeSpec {
   /** ECR image tag the container should pull. */
@@ -113,7 +114,7 @@ export function resolveRuntimeFileExtension(runtime: string): string {
   if (spec.fileExtension === null) {
     throw new UnsupportedRuntimeError(
       runtime,
-      `Inline 'Code.ZipFile' is not supported for runtime '${runtime}'. ` +
+      `Inline 'Code.ZipFile' is not supported for runtime ${displayIdent(runtime)}. ` +
         'The Lambda Handler shape for this runtime names a compiled artifact (a JVM class, a .NET assembly, or — for the OS-only `provided.*` runtimes — an arbitrary `bootstrap` binary) that cannot be expressed as a single inline source file. ' +
         'Use `lambda.Code.fromAsset(<dir>)` with a directory containing the compiled output (.class hierarchy / JAR / DLL / native binary).'
     );
@@ -153,7 +154,7 @@ export function resolveRuntimeSpec(runtime: string): RuntimeSpec {
 
   throw new UnsupportedRuntimeError(
     runtime,
-    `Unknown runtime '${runtime}'. ${getEmbedConfig().cliName} invoke supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14 / ruby3.2 / ruby3.3 / java8.al2 / java11 / java17 / java21 / dotnet6 / dotnet8 / provided.al2 / provided.al2023.`
+    `Unknown runtime ${displayIdent(runtime)}. ${getEmbedConfig().cliName} invoke supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14 / ruby3.2 / ruby3.3 / java8.al2 / java11 / java17 / java21 / dotnet6 / dotnet8 / provided.al2 / provided.al2023.`
   );
 }
 

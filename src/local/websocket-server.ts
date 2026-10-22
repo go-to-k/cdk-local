@@ -3,6 +3,7 @@ import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 
+import { displayStackName } from '../utils/ident-display.js';
 import { getLogger } from '../utils/logger.js';
 import type { ContainerPool } from './container-pool.js';
 import { invokeRie } from './rie-client.js';
@@ -307,7 +308,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
           /* ignore */
         }
         logger.info(
-          `WebSocket $connect denied for connection ${connectionId} on ${cfg.api.declaredAt} ` +
+          `WebSocket $connect denied for connection ${connectionId} on ${displayStackName(cfg.api.declaredAt)} ` +
             `— authorizer returned a non-allow verdict. Client was closed with code 1008.`
         );
         return;
@@ -341,7 +342,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
     };
     registry.register(entry);
     logger.debug(
-      `WebSocket connected: ${connectionId} (${cfg.api.declaredAt}, stage=${cfg.api.stage})`
+      `WebSocket connected: ${connectionId} (${displayStackName(cfg.api.declaredAt)}, stage=${cfg.api.stage})`
     );
 
     // Attach the real listeners NOW. From this point forward, the

@@ -16,7 +16,7 @@ import type { Construct } from 'constructs';
  *   1. Detects the placeholder URI as "pinned to a deployed
  *      registry" (the same anchor `isLocalCdkAssetImage` uses).
  *   2. `docker build`s the supplied Dockerfile, emitting
- *      `Building override image for '<target>' from '<path>'`.
+ *      `Building override image for <target> from '<path>'`.
  *   3. Threads the resulting local tag into the runner so the
  *      booted replica uses the override image, not the placeholder.
  *

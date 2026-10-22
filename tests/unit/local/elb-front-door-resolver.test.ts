@@ -477,7 +477,7 @@ describe('resolveAlbFrontDoor', () => {
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
     // The listener still resolves via its default forward; only the rule is dropped.
     expect(listeners[0]!.rules).toEqual([]);
-    expect(warnings.join('\n')).toMatch(/unsupported condition field 'not-a-real-field'/);
+    expect(warnings.join('\n')).toMatch(/unsupported condition field not-a-real-field/);
   });
 
   it('resolves an http-header condition (name + values)', () => {

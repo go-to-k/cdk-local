@@ -53,6 +53,7 @@ import {
   type RequestParameterContext,
 } from './parameter-mapping.js';
 import { getEmbedConfig } from './embed-config.js';
+import { displayIdent, displayStackName } from '../utils/ident-display.js';
 
 /**
  * The user-facing HTTP server for `cdkl start-api`.
@@ -507,7 +508,7 @@ async function handleRequest(
       );
     } catch (err) {
       logger.error(
-        `Authorizer ${authorizer.logicalId} threw for ${match.route.declaredAt}: ${err instanceof Error ? err.message : String(err)}`
+        `Authorizer ${displayIdent(authorizer.logicalId)} threw for ${displayStackName(match.route.declaredAt)}: ${err instanceof Error ? err.message : String(err)}`
       );
       // Authorizer error is treated as policy-deny (403 on REST v1, 401
       // on HTTP v2, 403 on Function URL AWS_IAM) — matches deployed
@@ -565,7 +566,7 @@ async function handleRequest(
       writeIntegrationOutcome(res, outcome);
     } catch (err) {
       logger.error(
-        `REST v1 ${match.route.restV1Integration.kind} dispatch failed for ${match.route.declaredAt}: ${err instanceof Error ? err.message : String(err)}`
+        `REST v1 ${match.route.restV1Integration.kind} dispatch failed for ${displayStackName(match.route.declaredAt)}: ${err instanceof Error ? err.message : String(err)}`
       );
       if (!res.headersSent) {
         applyCors();
@@ -582,7 +583,7 @@ async function handleRequest(
     handle = await state.pool.acquire(match.route.lambdaLogicalId);
   } catch (err) {
     logger.error(
-      `Failed to acquire container for ${match.route.lambdaLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to acquire container for ${displayIdent(match.route.lambdaLogicalId)}: ${err instanceof Error ? err.message : String(err)}`
     );
     applyCors();
     writeError(res, 502);
@@ -639,7 +640,7 @@ async function handleRequest(
       return;
     } catch (err) {
       logger.error(
-        `RIE streaming invoke failed for ${match.route.lambdaLogicalId}: ${
+        `RIE streaming invoke failed for ${displayIdent(match.route.lambdaLogicalId)}: ${
           err instanceof Error ? err.message : String(err)
         }`
       );
@@ -675,7 +676,7 @@ async function handleRequest(
     res.end(translated.body);
   } catch (err) {
     logger.error(
-      `RIE invoke failed for ${match.route.lambdaLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+      `RIE invoke failed for ${displayIdent(match.route.lambdaLogicalId)}: ${err instanceof Error ? err.message : String(err)}`
     );
     if (!res.headersSent) {
       applyCors();
@@ -1098,7 +1099,7 @@ async function runAuthorizerPass(
       // Defensive: local-start-api always wires this when any IAM
       // route is discovered. Treat absence as policy-deny.
       getLogger().debug(
-        `AWS_IAM authorizer for ${matchCtx.route.declaredAt}: no SigV4 credentials loader configured — denying.`
+        `AWS_IAM authorizer for ${displayStackName(matchCtx.route.declaredAt)}: no SigV4 credentials loader configured — denying.`
       );
       return { result: { allow: false }, denyKind: 'policy-deny' };
     }
@@ -1531,7 +1532,7 @@ async function handleServiceIntegrationRequest(
   };
   const outcome = resolveServiceIntegrationParameters(svc.requestParameters, ctx);
   if (outcome.kind === 'error') {
-    getLogger().warn(`[${route.declaredAt}] ${outcome.reason}`);
+    getLogger().warn(`[${displayStackName(route.declaredAt)}] ${outcome.reason}`);
     const body = JSON.stringify({ message: 'Invalid integration mapping', reason: outcome.reason });
     res.statusCode = 500;
     res.setHeader('content-type', 'application/json');
