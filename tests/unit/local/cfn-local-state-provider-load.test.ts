@@ -77,7 +77,7 @@ describe('CfnLocalStateProvider.load', () => {
     expect(detail).toBeDefined();
     expect(detail).toContain('ListStackResources(Wrong) failed:');
     expect(detail).toContain('ValidationError: Stack with id Wrong does not exist (HTTP 400)');
-    expect(detail).toContain("region='ap-northeast-1'");
+    expect(detail).toContain('(region=ap-northeast-1)');
     // Should NOT include the `--from-cfn-stack:` label prefix the
     // warn-logger adds — the downstream resolver wraps it in its own framing.
     expect(detail).not.toMatch(/^--from-cfn-stack:/);

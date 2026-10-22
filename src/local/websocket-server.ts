@@ -308,7 +308,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
           /* ignore */
         }
         logger.info(
-          `WebSocket $connect denied for connection ${connectionId} on ${cfg.api.declaredAt} ` +
+          `WebSocket $connect denied for connection ${connectionId} on ${displayStackName(cfg.api.declaredAt)} ` +
             `— authorizer returned a non-allow verdict. Client was closed with code 1008.`
         );
         return;

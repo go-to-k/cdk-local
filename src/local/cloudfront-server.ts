@@ -37,6 +37,7 @@ import { applyCorsResponseHeadersFromConfig, matchPreflight } from './cors-handl
 import { formatAuthority } from '../utils/url-authority.js';
 import { displayIdent } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { flattenToOneLine } from './credential-error.js';
 
 /**
  * Invoke a warm Lambda RIE container with a Function URL event, keyed by the
@@ -507,7 +508,7 @@ function setHeadersSafely(
       res.setHeader(name, value.replace(/[\r\n]/g, ''));
     } catch (err) {
       logger.warn(
-        `Skipping invalid response header '${name}': ${err instanceof Error ? err.message : String(err)}`
+        `Skipping invalid response header ${displayIdent(name)}: ${flattenToOneLine(err instanceof Error ? err.message : String(err))}`
       );
     }
   }
@@ -600,7 +601,7 @@ function originUnavailableMessage(
   behavior: ResolvedBehavior
 ): string {
   if (!origin)
-    return `Behavior ${behavior.pathPattern ?? '(default)'} targets unknown origin ${displayIdent(behavior.targetOriginId)}.\n`;
+    return `Behavior ${behavior.pathPattern === undefined ? '(default)' : displayUntrustedValue(behavior.pathPattern)} targets unknown origin ${displayIdent(behavior.targetOriginId)}.\n`;
   if (origin.kind === 'lambda-url') {
     return (
       `Origin ${displayIdent(origin.originId)} is a Lambda Function URL origin whose backing function ` +

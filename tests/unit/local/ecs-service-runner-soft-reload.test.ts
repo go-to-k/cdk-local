@@ -3,6 +3,12 @@ import { FrontDoorEndpointPool } from '../../../src/local/front-door-pool.js';
 import { CloudMapRegistry } from '../../../src/local/cloud-map-registry.js';
 import { ConsoleLogger } from '../../../src/utils/logger.js';
 
+/** The logger line without colour or the severity prefix, which depend on the TTY / env the suite runs under. */
+function plainLogLine(m: unknown): string {
+  // eslint-disable-next-line no-control-regex -- ANSI SGR sequences are what is stripped.
+  return String(m).replace(/\u001b\[[0-9;]*m/g, '').replace(/^(?:WARN|ERROR): /, '');
+}
+
 /**
  * Phase 4 of issue #214 — locks `softReloadReplica` semantics (the
  * `cdkl start-service --watch` / `cdkl start-alb --watch` bind-mount
@@ -1198,5 +1204,111 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
         false
       );
     });
+  });
+});
+
+describe('Cloud Map publish warns render identifiers (#761)', () => {
+  let lines: string[] = [];
+
+  beforeEach(() => {
+    hoisted.bootCount = 0;
+    lines = [];
+    __setSleepImpl(() => Promise.resolve());
+    __setWaitForExitImpl(() => new Promise<number>(() => {}));
+    __setTcpProbeImpl(() => Promise.resolve());
+    __setShadowReadyConfig({ timeoutMs: 50, intervalMs: 5 });
+    __setDockerInspectPublishesHostPortsImpl(async () => false);
+    __setListenProbeImpl(async () => ({ kind: 'listening' }));
+    vi.spyOn(console, 'warn').mockImplementation((m: unknown) => {
+      lines.push(plainLogLine(m));
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    __setWaitForExitImpl(undefined);
+    __setSleepImpl(undefined);
+    __setTcpProbeImpl(undefined);
+    __setShadowReadyConfig(undefined);
+    __setDockerInspectPublishesHostPortsImpl(undefined);
+    __setListenProbeImpl(undefined);
+  });
+
+  async function boot(
+    patch: (svc: ReturnType<typeof fakeService>) => void,
+    stackName: string
+  ): Promise<void> {
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const svc = fakeService();
+    svc.desiredCount = 1;
+    svc.stack = { stackName };
+    patch(svc);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    opts.discovery = {
+      registry,
+      cloudMapIndexByStack: new Map([
+        [
+          stackName,
+          {
+            namespacesByLogicalId: new Map(),
+            namespacesByName: new Map(),
+            servicesByLogicalId: new Map(),
+            warnings: [],
+          },
+        ],
+      ]),
+    };
+    const controller = await startEcsService(svc, opts, createServiceRunState());
+    await controller.shutdown();
+  }
+
+  const warnWith = (needle: string): string => {
+    const l = lines.find((x) => x.includes(needle));
+    expect(l, `no warn contained ${needle}`).toBeDefined();
+    return l!.replace(/^.*?WARN: /, '');
+  };
+
+  it('Service Connect namespace mismatch: plain bare, forging as JSON literals', async () => {
+    await boot((s) => {
+      s.serviceConnect.namespaceName = 'other.local';
+    }, 'AppStack');
+    expect(warnWith('ServiceConnectConfiguration.Namespace')).toBe(
+      'ECS Service Svc ServiceConnectConfiguration.Namespace=other.local does not match any AWS::ServiceDiscovery::PrivateDnsNamespace declared in stack AppStack. Publishing under the literal name anyway; peer services using the same literal will still discover this endpoint.'
+    );
+    lines = [];
+    await boot(
+      (s) => {
+        s.serviceLogicalId = "a' b";
+        s.serviceConnect.namespaceName = 'x\u001b[2Kforged';
+      },
+      'stack\u001b[2Kx'
+    );
+    expect(warnWith('ServiceConnectConfiguration.Namespace')).toBe(
+      'ECS Service "a\' b" ServiceConnectConfiguration.Namespace="x [2Kforged" does not match any AWS::ServiceDiscovery::PrivateDnsNamespace declared in stack "stack [2Kx". Publishing under the literal name anyway; peer services using the same literal will still discover this endpoint.'
+    );
+  });
+
+  it('ServiceRegistries entry that does not resolve: plain bare, forging as JSON literals', async () => {
+    await boot((s) => {
+      s.serviceConnect = undefined;
+      s.serviceRegistries = [{ cloudMapServiceLogicalId: 'CmSvc' }];
+    }, 'AppStack');
+    expect(warnWith('ServiceRegistries[].cloudMapServiceLogicalId=')).toBe(
+      'ECS Service Svc ServiceRegistries[].cloudMapServiceLogicalId=CmSvc did not resolve to an AWS::ServiceDiscovery::Service in stack AppStack. Skipping this registration.'
+    );
+    lines = [];
+    await boot(
+      (s) => {
+        s.serviceLogicalId = "a' b";
+        s.serviceConnect = undefined;
+        s.serviceRegistries = [{ cloudMapServiceLogicalId: 'x\u001b[2Kforged' }];
+      },
+      "stack' x"
+    );
+    expect(warnWith('ServiceRegistries[].cloudMapServiceLogicalId=')).toBe(
+      'ECS Service "a\' b" ServiceRegistries[].cloudMapServiceLogicalId="x [2Kforged" did not resolve to an AWS::ServiceDiscovery::Service in stack "stack\' x". Skipping this registration.'
+    );
   });
 });

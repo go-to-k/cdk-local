@@ -70,7 +70,7 @@ export async function buildContainerImage(
     logger.info(`Skipping docker build (--no-build). Verifying ${tag} is in local registry...`);
     if (!(await isImageInLocalCache(tag))) {
       throw new LocalInvokeBuildError(
-        `image '${tag}' not in local registry and --no-build is set; ` +
+        `image ${displayIdent(tag)} not in local registry and --no-build is set; ` +
           'remove --no-build or run `docker build` manually first.'
       );
     }

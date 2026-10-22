@@ -122,7 +122,7 @@ function pickSource(sources: readonly KvsDataSource[], kvsId: string | undefined
   // that names it by a hardcoded id still resolves to that sole source.
   if (sources.length === 1) return sources[0]!;
   throw new Error(
-    `cf.kvs('${kvsId}'): no associated KeyValueStore matches this id locally ` +
+    `cf.kvs(${displayIdent(kvsId)}): no associated KeyValueStore matches this id locally ` +
       `(associated: ${sources.map((s) => s.kvsId ?? s.label).join(', ')}).`
   );
 }
@@ -132,7 +132,7 @@ function makeHandle(source: KvsDataSource): CloudFrontKvsHandle {
     async get(key: string, options?: { format?: 'string' | 'json' }): Promise<unknown> {
       const value = await source.getValue(key);
       if (value === undefined) {
-        throw new Error(`cf.kvs().get('${key}'): key not found in ${source.label}.`);
+        throw new Error(`cf.kvs().get(${displayIdent(key)}): key not found in ${source.label}.`);
       }
       if (options?.format === 'json') {
         try {
@@ -165,7 +165,7 @@ function makeHandle(source: KvsDataSource): CloudFrontKvsHandle {
           // carries no semver guarantee, so the echo is not narrowed for a
           // caller cdk-local cannot see.
           throw new Error(
-            `cf.kvs().get('${key}', { format: 'json' }): value is not valid JSON: ${
+            `cf.kvs().get(${displayIdent(key)}, { format: 'json' }): value is not valid JSON: ${
               err instanceof Error ? err.message : String(err)
             }`
           );

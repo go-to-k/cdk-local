@@ -208,7 +208,9 @@ describe('createFrontDoorLambdaRunner', () => {
 
   it('renders the logical id bare when plain and as a JSON literal when forging (#761)', async () => {
     const plain = createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' });
-    await expect(plain.invoke({})).rejects.toThrow(/FrontDoorLambdaRunner\(\S+\)\.invoke called/);
+    await expect(plain.invoke({})).rejects.toThrow(
+      'FrontDoorLambdaRunner(EchoFn).invoke called before start() completed.'
+    );
     const forged = createFrontDoorLambdaRunner(zipLambda({ logicalId: "a' b" }), {
       containerHost: '127.0.0.1',
     });

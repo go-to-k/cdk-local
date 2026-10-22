@@ -45,7 +45,7 @@ describe('applyResponseParameters — unmatched key surfaces a warn', () => {
     expect(warns[0]).toContain('append|overwrite|remove');
     // The path should NOT silently fall through debug.
     const debugs = debugSpy.mock.calls.map((c) => String(c[0]));
-    expect(debugs.join('\n')).not.toContain('key appen:header.x-custom does not');
+    expect(debugs.join('\n')).not.toContain('appen:header.x-custom');
   });
 
   it('renders a forging key as one JSON literal (#761)', () => {

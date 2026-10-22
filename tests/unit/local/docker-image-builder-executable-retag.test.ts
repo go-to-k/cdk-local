@@ -106,4 +106,32 @@ describe('docker-image-builder: executable source re-tag', () => {
       })
     ).rejects.toThrow(/re-tagging user-script-image:v1 → cdkl-invoke-/);
   });
+
+  it('renders a forging actualTag as one JSON literal and escapes the stderr (#761)', async () => {
+    mockBuildDockerImage.mockResolvedValueOnce("img' x\u001b[2Kforged");
+    mockRunDocker.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('tag failed'), { stderr: 'denied\u001b[2K\rINFO ok' });
+    });
+    await expect(
+      buildContainerImage({ source: { executable: ['./build.sh'] } }, '/cdk.out', {
+        architecture: 'x86_64',
+      })
+    ).rejects.toThrow(
+      /re-tagging "img' x \[2Kforged" → cdkl-invoke-[0-9a-f]+: denied\\u001b\[2K\\u000dINFO ok$/
+    );
+  });
+
+  it('prints a plain actualTag bare and a plain stderr unchanged (#761)', async () => {
+    mockBuildDockerImage.mockResolvedValueOnce('user-script-image:v1');
+    mockRunDocker.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('tag failed'), { stderr: 'permission denied' });
+    });
+    await expect(
+      buildContainerImage({ source: { executable: ['./build.sh'] } }, '/cdk.out', {
+        architecture: 'x86_64',
+      })
+    ).rejects.toThrow(
+      /^docker tag failed re-tagging user-script-image:v1 → cdkl-invoke-[0-9a-f]+: permission denied$/
+    );
+  });
 });

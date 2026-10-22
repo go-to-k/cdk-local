@@ -6,6 +6,7 @@
  * its suite rather than recomputed here: the port is only worth having if a
  * value cdkd embeds from cdk-local renders byte-identically on both sides.
  */
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vite-plus/test';
 import {
   IDENT_MAX_CODE_POINTS,
@@ -121,14 +122,49 @@ describe('displayIdent', () => {
   });
 });
 
+describe('the cut marker names the withheld tail (host go-to-k/cdkd#4002)', () => {
+  // An independent spelling of the marker, so the cases below do not trust
+  // the implementation under test to compute their own expectation.
+  const marker = (tail: string): string =>
+    `[cut: ${tail.length} more characters withheld, tail sha256:${createHash('sha256').update(tail).digest('hex').slice(0, 32)}]`;
+
+  it('renders two cut values sharing the kept prefix AND the length apart', () => {
+    const prefix = 'P'.repeat(IDENT_MAX_CODE_POINTS);
+    const a = displayIdent(`${prefix}${'a'.repeat(20)}`);
+    const b = displayIdent(`${prefix}${'a'.repeat(19)}b`);
+    expect(a).toBe(`${prefix} ${marker('a'.repeat(20))}`);
+    expect(b).toBe(`${prefix} ${marker(`${'a'.repeat(19)}b`)}`);
+    expect(a).not.toBe(b);
+  });
+
+  it('keeps a value forged to END in a cut marker from rendering as itself', () => {
+    const prefix = 'a'.repeat(IDENT_MAX_CODE_POINTS);
+    const tail = ` ${marker('x'.repeat(70))}`;
+    const forged = `${prefix}${tail}`;
+    expect(displayIdent(forged)).not.toBe(forged);
+    expect(displayIdent(forged)).toBe(`${prefix} ${marker(tail)}`);
+  });
+
+  it('renders a throwing Symbol.toStringTag as the quoted sentinel, not as absent', () => {
+    const doubleBoom = {
+      toString: null,
+      get [Symbol.toStringTag]() {
+        throw new Error('boom from the tag');
+      },
+    };
+    expect(displayIdent(doubleBoom)).toBe(`"${UNRENDERABLE}"`);
+  });
+});
+
 describe('displayStackName', () => {
   it('uses the stack-ref cap, so a long construct path is not cut at 255', () => {
     expect(STACK_REF_MAX_CODE_POINTS).toBe(1152);
     const path = `MyStack/${'Nested'.repeat(60)}/Resource`;
     expect(path.length).toBeGreaterThan(255);
     expect(displayStackName(path)).toBe(path);
-    expect(displayStackName('A'.repeat(1153))).toMatch(
-      /^A{1152} \[cut: 1 more characters withheld, tail sha256:[0-9a-f]{32}\]$/
+    // `printf A | shasum -a 256`, first 32 hex characters.
+    expect(displayStackName('A'.repeat(1153))).toBe(
+      `${'A'.repeat(1152)} [cut: 1 more characters withheld, tail sha256:559aead08264d5795d3909718cdd05ab]`
     );
   });
 

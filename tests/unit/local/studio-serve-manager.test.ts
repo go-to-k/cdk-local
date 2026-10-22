@@ -2698,3 +2698,111 @@ describe('relayed Lambda / AgentCore container output cannot name an endpoint (i
     }
   });
 });
+
+describe('serve-manager renders the target id through displayStackName (#761)', () => {
+  const FORGING = "a' b";
+
+  it('already running: plain bare, forging as one JSON literal', async () => {
+    for (const [id, expected] of [
+      ['MyApi', 'MyApi is already running.'],
+      [FORGING, `"a' b" is already running.`],
+      ['x\u001b[2Kforged', '"x [2Kforged" is already running.'],
+    ] as const) {
+      const child = makeFakeChild();
+      const mgr = createStudioServeManager({
+        cliEntry: 'cli.js',
+        bus: new StudioEventBus(),
+        spawnFn: (() => child) as never,
+        proxyFactory: fakeProxies().factory,
+      });
+      const p = mgr.start({ targetId: id, kind: 'api' });
+      child.stdout.emit('data', 'Server listening on http://127.0.0.1:51234  (X)\n');
+      await p;
+      await expect(mgr.start({ targetId: id, kind: 'api' })).rejects.toThrow(
+        new Error(expected)
+      );
+    }
+  });
+
+  it('is not running: plain bare, forging as one JSON literal', async () => {
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus: new StudioEventBus(),
+      spawnFn: (() => makeFakeChild()) as never,
+    });
+    await expect(mgr.stop({ targetId: 'Nope' })).rejects.toThrow(new Error('Nope is not running.'));
+    await expect(mgr.stop({ targetId: FORGING })).rejects.toThrow(
+      new Error(`"a' b" is not running.`)
+    );
+  });
+
+  it('did not start within: plain bare, forging as one JSON literal', async () => {
+    for (const [id, expected] of [
+      ['MyApi', 'MyApi did not start within 5ms.'],
+      [FORGING, `"a' b" did not start within 5ms.`],
+    ] as const) {
+      const { setTimeoutFn, clearTimeoutFn, fireLast } = manualTimers();
+      const mgr = createStudioServeManager({
+        cliEntry: 'cli.js',
+        bus: new StudioEventBus(),
+        spawnFn: (() => makeFakeChild()) as never,
+        readyTimeoutMs: 5,
+        setTimeoutFn,
+        clearTimeoutFn,
+      });
+      const p = mgr.start({ targetId: id, kind: 'api' });
+      fireLast();
+      await expect(p).rejects.toThrow(new Error(expected));
+    }
+  });
+
+  it('was stopped before it finished starting: plain bare, forging as one JSON literal', async () => {
+    for (const [id, expected] of [
+      ['MyApi', 'MyApi was stopped before it finished starting.'],
+      [FORGING, `"a' b" was stopped before it finished starting.`],
+    ] as const) {
+      const h = startPending('api', id);
+      const stopP = h.stop();
+      h.child.emit('close', 0);
+      await stopP.catch(() => undefined);
+      await expect(h.ready).rejects.toThrow(new Error(expected));
+    }
+  });
+
+  it('foreign-endpoint refusals: plain id bare, forging id as one JSON literal', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['http://attacker.example/', 'MyApi', 'refused a non-loopback'],
+      ['http://attacker.example/', FORGING, 'refused a non-loopback'],
+      ['not-a-url', 'MyApi', 'refused an unparseable'],
+      ['not-a-url', FORGING, 'refused an unparseable'],
+    ];
+    for (const [endpoint, id, head] of cases) {
+      const h = startPending('api', id);
+      h.child.stdout.emit('data', `Server listening on ${endpoint}  (X)\n`);
+      await tick();
+      const shown = id === FORGING ? `"a' b"` : id;
+      const warn = h.logs.map((l) => l.line).find((l) => l.startsWith('WARN: refused'));
+      expect(warn).toContain(`${head} `);
+      expect(warn).toContain(` ${endpoint} from ${shown}: `);
+      await expect(h.ready).rejects.toThrow(` ${endpoint} from ${shown}: `);
+    }
+  });
+});
+
+describe('parsePublishedHostEndpoint accepts a plain bare container name (#761)', () => {
+  it('parses a name carrying @ , + = ~', () => {
+    expect(
+      parsePublishedHostEndpoint(
+        'Container a,b@x+y=z~w container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.'
+      )
+    ).toBe('http://127.0.0.1:54321');
+  });
+
+  it('parses a JSON-literal name holding a quote and a space', () => {
+    expect(
+      parsePublishedHostEndpoint(
+        'Container "a\' b" container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.'
+      )
+    ).toBe('http://127.0.0.1:54321');
+  });
+});

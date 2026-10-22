@@ -303,7 +303,7 @@ export function resolveRestV1Authorizer(
   // orthogonal to (and composable with) TOKEN / REQUEST / COGNITO_USER_POOLS
   // authorizers.
   throw new RouteDiscoveryError(
-    `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: AWS::ApiGateway::Authorizer.Type ${displayIdent(type)} is not supported by ${getEmbedConfig().cliName} start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
+    `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: AWS::ApiGateway::Authorizer.Type ${displayIdent(stringifyValue(type))} is not supported by ${getEmbedConfig().cliName} start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
   );
 }
 
@@ -381,7 +381,7 @@ export function resolveHttpApiAuthorizer(
   }
 
   throw new RouteDiscoveryError(
-    `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: AWS::ApiGatewayV2::Authorizer.AuthorizerType ${displayIdent(authType)} is not supported by ${getEmbedConfig().cliName} start-api (only REQUEST / JWT).`
+    `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: AWS::ApiGatewayV2::Authorizer.AuthorizerType ${displayIdent(stringifyValue(authType))} is not supported by ${getEmbedConfig().cliName} start-api (only REQUEST / JWT).`
   );
 }
 

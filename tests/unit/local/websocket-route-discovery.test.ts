@@ -394,38 +394,46 @@ describe('selection expression validation rejection set (#531 m2)', () => {
     return errors[0];
   }
 
+  // Expected renderings are written out by hand (#761): every value here carries
+  // a `$` or other non-plain character, so it prints as a JSON literal, and the
+  // padded ones print TRIMMED (the surrounding space is not part of the literal).
   it.each([
     // Trailing dot: regex requires at least one identifier after each
     // dot; a bare trailing dot fails the `[A-Za-z_]` class.
-    '$request.body.',
+    ['$request.body.', '"$request.body."'],
     // Nested trailing dot
-    '$request.body.action.',
+    ['$request.body.action.', '"$request.body.action."'],
     // Uppercase prefix: regex is case-sensitive, matches AWS-deployed
     // case-sensitive selection expressions.
-    '$REQUEST.body.action',
+    ['$REQUEST.body.action', '"$REQUEST.body.action"'],
     // Mixed-case middle: the leading `$request.body.` is literal.
-    '$Request.Body.action',
+    ['$Request.Body.action', '"$Request.Body.action"'],
     // Leading / trailing whitespace
-    ' $request.body.action',
-    '$request.body.action ',
+    [' $request.body.action', '"$request.body.action"'],
+    ['$request.body.action ', '"$request.body.action"'],
     // Identifier starting with a digit
-    '$request.body.1action',
+    ['$request.body.1action', '"$request.body.1action"'],
     // Empty key segment in the middle
-    '$request.body..action',
+    ['$request.body..action', '"$request.body..action"'],
     // Hyphen in identifier (regex only allows `[A-Za-z0-9_]`)
-    '$request.body.my-action',
+    ['$request.body.my-action', '"$request.body.my-action"'],
     // Array-index access (called out by the reviewer as a candidate for
     // future support — must error today)
-    '$request.body[0]',
+    ['$request.body[0]', '"$request.body[0]"'],
     // Header / context shapes (already tested above; included here for
     // grouping)
-    '$request.header.action',
-    '$context.connectionId',
-  ])('rejects %j with an actionable error', (expr) => {
+    ['$request.header.action', '"$request.header.action"'],
+    ['$context.connectionId', '"$context.connectionId"'],
+  ])('rejects %j with an actionable error', (expr, rendered) => {
     const err = tryExpression(expr);
     expect(err).toBeDefined();
-    expect(err).toContain(JSON.stringify(expr.trim()));
-    expect(err).toContain('not supported');
+    expect(err).toContain(`RouteSelectionExpression ${rendered} is not supported`);
+  });
+
+  it('prints a plain (no `$`) invalid expression bare, without quotes', () => {
+    const err = tryExpression('action');
+    expect(err).toBeDefined();
+    expect(err).toContain('RouteSelectionExpression action is not supported');
   });
 });
 

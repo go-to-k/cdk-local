@@ -14,7 +14,7 @@ import {
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
-import { displayIdent } from '../utils/ident-display.js';
+import { displayIdent, displayToolOutput } from '../utils/ident-display.js';
 import { getLogger } from '../utils/logger.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
@@ -232,12 +232,12 @@ export async function pullImage(
     // rejects with `SpawnError` (`exitCode` + `stderr` + `stdout`).
     if (e.exitCode === undefined || e.exitCode === null) {
       throw new DockerRunnerError(
-        `docker pull ${displayIdent(image)} failed: ${e.message ?? String(err)}`
+        `docker pull ${displayIdent(image)} failed: ${displayToolOutput(e.message ?? String(err))}`
       );
     }
     const detail = e.stderr?.trim() || e.stdout?.trim() || '(no output)';
     throw new DockerRunnerError(
-      `docker pull ${displayIdent(image)} exited with code ${e.exitCode}: ${detail}`
+      `docker pull ${displayIdent(image)} exited with code ${e.exitCode}: ${displayToolOutput(detail)}`
     );
   }
 }
@@ -374,7 +374,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     // Not `err.message`: execFile folds the whole argv (`-e K=V` included)
     // into it, so an empty stderr would print every env value.
     throw new DockerRunnerError(
-      `docker run failed: ${err.stderr?.trim() || describeExitWithoutArgv(error)}`
+      `docker run failed: ${displayToolOutput(err.stderr?.trim() || describeExitWithoutArgv(error))}`
     );
   }
 }

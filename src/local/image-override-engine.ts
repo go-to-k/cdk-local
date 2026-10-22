@@ -8,7 +8,7 @@ import { getLogger } from '../utils/logger.js';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { getEmbedConfig } from './embed-config.js';
 import { isInteractive } from './target-picker.js';
-import { displayIdent, displayToolOutput } from '../utils/ident-display.js';
+import { displayIdent, displayStackName, displayToolOutput } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 
 /**
@@ -520,7 +520,7 @@ export function canonicalizeImageOverrideKeys(
       );
     }
     const target = [...matches][0] as string;
-    logger.debug(`${flag} key '${key}' resolved to pinned target ${displayIdent(target)}.`);
+    logger.debug(`${flag} key '${key}' resolved to pinned target ${displayStackName(target)}.`);
     return target;
   };
 
@@ -532,7 +532,7 @@ export function canonicalizeImageOverrideKeys(
     if (earlier !== undefined) {
       throw new ImageOverrideError(
         `--image-override keys '${earlier}' and '${key}' both name the pinned target ` +
-          `${displayIdent(target)}. Name each service target at most once.`
+          `${displayStackName(target)}. Name each service target at most once.`
       );
     }
     explicitKeyByTarget.set(target, key);
@@ -558,7 +558,7 @@ export function canonicalizeImageOverrideKeys(
     const conflict = (what: string): never => {
       throw new ImageOverrideError(
         `Per-service image-override flags give ${what} two different values for the pinned ` +
-          `target ${displayIdent(target)} (one of them keyed '${key}'). Pass it once.`
+          `target ${displayStackName(target)} (one of them keyed '${key}'). Pass it once.`
       );
     };
     for (const [k, v] of overlay.buildArgs) {
@@ -734,7 +734,7 @@ export async function resolveImageOverrides(args: {
       }
       const label = labels.get(target);
       const headline =
-        `Detected pinned image on ${displayIdent(target)}` +
+        `Detected pinned image on ${displayStackName(target)}` +
         (label ? ` (${displayUntrustedValue(String(label))})` : '') +
         '.';
       const value = await promptForOverridePath({
@@ -1121,7 +1121,7 @@ export async function runImageOverrideBuilds(
     }
     args.push('.');
     logger.info(
-      `Building override image for ${displayIdent(target)} from '${entry.dockerfile}' (tag=${tag})...`
+      `Building override image for ${displayStackName(target)} from '${entry.dockerfile}' (tag=${tag})...`
     );
     try {
       await runDockerStreaming(args, {
@@ -1133,12 +1133,12 @@ export async function runImageOverrideBuilds(
         // doesn't look like cdk-local hung. The shorter label keeps the
         // spinner line readable on narrow terminals — the (tag=...) detail
         // already shipped via the info log line and is in the scrollback.
-        progressLabel: `Building override image for ${displayIdent(target)}`,
+        progressLabel: `Building override image for ${displayStackName(target)}`,
       });
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       const wrapped = new ImageOverrideError(
-        `docker build failed for --image-override ${displayIdent(target)} (Dockerfile=${entry.dockerfile}): ` +
+        `docker build failed for --image-override ${displayStackName(target)} (Dockerfile=${entry.dockerfile}): ` +
           displayToolOutput(e.stderr?.trim() || e.message || String(err))
       );
       // Best-effort rollback: remove every tag built earlier in this

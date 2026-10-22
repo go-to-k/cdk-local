@@ -24,7 +24,9 @@ import type { ResolvedArnLambdaLayer } from '../../../src/local/lambda-resolver.
  * STORE (method 0) and DEFLATE (method 8); we always emit DEFLATE
  * here because real layer ZIPs use it.
  */
-async function buildZip(entries: { name: string; data: Buffer | string }[]): Promise<Uint8Array> {
+async function buildZip(
+  entries: { name: string; data: Buffer | string; externalAttr?: number }[]
+): Promise<Uint8Array> {
   const central: Buffer[] = [];
   const localParts: Buffer[] = [];
   let offset = 0;
@@ -66,7 +68,7 @@ async function buildZip(entries: { name: string; data: Buffer | string }[]): Pro
     cdEntry.writeUInt16LE(0, 32); // comment
     cdEntry.writeUInt16LE(0, 34); // disk no
     cdEntry.writeUInt16LE(0, 36); // internal
-    cdEntry.writeUInt32LE(0, 38); // external (regular file)
+    cdEntry.writeUInt32LE(entry.externalAttr ?? 0, 38); // external (regular file unless set)
     cdEntry.writeUInt32LE(offset, 42);
     central.push(cdEntry, nameBuf);
     offset += localHeader.length + nameBuf.length + compressed.length;
@@ -378,3 +380,54 @@ describe('materializeLayerFromArn', () => {
     ).rejects.toThrow(/GetLayerVersion response did not include Content\.Location/);
   });
 });
+
+describe('layer ZIP refusals render the entry name through displayUntrustedValue (#761)', () => {
+  const lambdaFactory = (): LambdaSendClient => ({
+    send: async () => ({ Content: { Location: 'https://presigned.example/zip' } }),
+  });
+  const refusalFor = async (
+    entries: { name: string; data: string; externalAttr?: number }[]
+  ): Promise<string> => {
+    const zip = await buildZip(entries);
+    try {
+      await materializeLayerFromArn(makeLayer(), {
+        lambdaClientFactory: lambdaFactory,
+        fetchZip: async () => zip,
+      });
+    } catch (err) {
+      return (err as Error).message;
+    }
+    return expect.fail('materializeLayerFromArn should have thrown');
+  };
+
+  it('path-escape refusal: plain entry name bare, forging one as a JSON literal', async () => {
+    expect(await refusalFor([{ name: '../escaped.txt', data: 'x' }])).toMatch(
+      /: Refusing to extract entry \.\.\/escaped\.txt — path escapes the destination directory\.$/
+    );
+    expect(await refusalFor([{ name: "../a' b.txt", data: 'x' }])).toMatch(
+      /: Refusing to extract entry "\.\.\/a' b\.txt" — path escapes the destination directory\.$/
+    );
+  });
+
+  it('symlink refusal: plain entry name bare, forging one as a JSON literal', async () => {
+    const symlinkAttr = (0xa000 << 16) >>> 0;
+    expect(await refusalFor([{ name: 'nodejs/link', data: 'x', externalAttr: symlinkAttr }])).toMatch(
+      /: Refusing to extract symlink entry nodejs\/link from layer ZIP \(security\)\.$/
+    );
+    expect(
+      await refusalFor([{ name: "nodejs/li' nk", data: 'x', externalAttr: symlinkAttr }])
+    ).toMatch(/: Refusing to extract symlink entry "nodejs\/li' nk" from layer ZIP \(security\)\.$/);
+  });
+
+  it('the Layer prefix renders a forging ARN as a JSON literal', async () => {
+    const zip = await buildZip([{ name: '../e.txt', data: 'x' }]);
+    const err = await materializeLayerFromArn(
+      makeLayer({ arn: "arn:aws:lambda:us-east-1:111122223333:layer:My Layer:3" }),
+      { lambdaClientFactory: lambdaFactory, fetchZip: async () => zip }
+    ).catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(
+      /^Layer "arn:aws:lambda:us-east-1:111122223333:layer:My Layer:3": failed to unzip layer contents into /
+    );
+  });
+});
+
