@@ -103,10 +103,10 @@ argParser option, each compared with a same-major (14 and 14) baseline:
 
 | Your commander | cdk-local's commander | Result |
 | --- | --- | --- |
-| 15 | 12 | `TypeError: subCommand._prepareForParse is not a function` at `Command._dispatchSubcommand (commander/lib/command.js:1368)` |
-| 12 | 14 |same as the baseline |
-| 12 | 15 |same as the baseline |
-| 15 | 14 |same as the baseline |
+| 15 | 12 | `TypeError: subCommand._prepareForParse is not a function` at `Command._dispatchSubcommand (commander/lib/command.js:1368)` on every dispatch; only `help <sub>` still renders |
+| 12 | 14 | same as the baseline |
+| 12 | 15 | same as the baseline |
+| 15 | 14 | same as the baseline |
 
 An older host working today is not a guarantee: the next major can add
 another internal call in either direction. Depending on the same major as
@@ -131,9 +131,9 @@ So a mismatch may typecheck in one direction and fail in the other.
 
 `commander` is a regular `dependency` of cdk-local. With a different major
 in your project, both npm and pnpm install it SILENTLY: no error, no
-warning, and two commander copies in the tree. So check it yourself — read the `commander`
-range in cdk-local's `package.json`, depend on the same major, and confirm
-with:
+warning, and two commander copies in the tree. So check it yourself:
+read the `commander` range in cdk-local's `package.json`, depend on the
+same major, and confirm with:
 
 ```bash
 npm ls commander     # or: pnpm why commander
@@ -162,9 +162,8 @@ major, and an older and a newer major.
 
 None of the three turns the mismatch into a clear install-time signal,
 and each costs the CLI-only users something to address a constraint only
-library-mode consumers have. This also keeps the same direction as
-go-to-k/cdkd#2861, which removed peer declarations from cdkd so that its
-users are not forced to install packages for a coupling they do not have.
+library-mode consumers have. It is also the same direction as
+go-to-k/cdkd#2861, which moved cdkd's entries out of `peerDependencies`.
 
 ## Rebranding the embedded commands
 
