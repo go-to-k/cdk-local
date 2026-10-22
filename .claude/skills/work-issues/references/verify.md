@@ -62,6 +62,10 @@ secret / credential / process-launch / Docker-exec surfaces. Reviewers run
 ONCE, on the final sha; a fix round is re-checked by MESSAGING the same
 reviewer, scoped to the delta, with the delta's COMMIT MESSAGE in the brief
 (the agents read `gh pr diff` / `gh pr view --json files`, never `git log`).
+A tests-only commit after the verdict is a new sha too: re-check it BEFORE
+reporting merge-ready — "last commit not reviewed" is not merge-ready
+(go-to-k/cdk-local#821, go-to-k/cdk-local#822 and go-to-k/cdk-local#824 each
+needed the parent to re-request it).
 `/check-docs` runs once per PR, at that same sha.
 
 - **Reviewer subagents spawned BY A LANE report to the MAIN session**, so a

@@ -109,7 +109,10 @@ DISJOINTNESS rule below and nothing wider** — rankings, premise check and §3-
 are mode-independent.
 
 **Two lanes must edit DISJOINT files** — two issues in the same file bundle
-into ONE lane (one worktree, one PR) or one defers, one lane per shared module.
+into ONE lane (one worktree, one PR) or one defers, one lane per shared module
+— or SLICES: the part on files no open lane holds starts now, the rest after
+that lane merges, the held file being reason (a) external input
+(go-to-k/cdk-local#761 shipped in two PRs).
 Map each candidate to its target file, then rank:
 
 - **Security issues come FIRST**, ahead of every other preference — the one

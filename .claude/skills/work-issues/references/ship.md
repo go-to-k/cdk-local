@@ -5,8 +5,10 @@
 ### Serialization (parent-owned)
 
 Grant one merge-ready lane at a time its turn — resume that lane agent
-(SendMessage) to run its named integ fixture(s) and `/merge-pr` while it holds
-the turn, or run both yourself FROM THAT LANE'S WORKTREE: the `integ` marker is
+(SendMessage) to run its named integ fixture(s) — widened by YOU to every
+fixture reading a shared module the diff changed (go-to-k/cdk-local#822's
+`loadStackManifest`: three fixtures) — and `/merge-pr` while it holds the
+turn, or run both yourself FROM THAT LANE'S WORKTREE: the `integ` marker is
 per-worktree, so it is visible only to a merge judged from the same tree.
 Fixture(s) FIRST, then `/merge-pr`. The Docker daemon is shared host state
 (container / network names, host ports, image tags, the orphan sweep), so never
