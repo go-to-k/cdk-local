@@ -91,7 +91,9 @@
 ## Important existing rules this skill leans on
 
 - **English-only** for all committed/public artifacts (source, docs, PR/commit
-  messages, issue comments on this repo).
+  messages, issue comments on this repo). A question TO the user
+  (`AskUserQuestion`) or the wrap report follows the USER's language, not this
+  rule — an English question had to be re-asked in Japanese.
 - **Always add unit tests** for a fix; do not wait to be asked.
 - **All changes via PR; never commit to `main`.** Develop in a worktree under
   `.claude/worktrees/<branch>/` — or, when the run was launched inside one

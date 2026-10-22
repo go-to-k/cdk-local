@@ -13,10 +13,13 @@ turn mid-lane; otherwise stop at merge-ready and report.
 ### 5-a. Sweep the class, not the instance
 
 **Before fixing, ask whether the defect has SIBLING SITES — and if it does,
-sweep them in THIS lane rather than filing them.** Once the root cause is
-named, grep for the same shape across `src/`; when the report is a stale ENTRY
-in an enumerated list, audit the whole list, both directions, and every COPY of
-it.
+sweep them in THIS lane rather than filing them** — or, when every site,
+FUTURE ones included, passes one chokepoint (the logger, a shared renderer),
+fix it THERE: a sweep is cheaper today and leaves the next site open
+(go-to-k/cdk-local#827, where the user overturned a sweep recommendation).
+Once the root cause is named, grep for the same shape across `src/`; when the
+report is a stale ENTRY in an enumerated list, audit the whole list, both
+directions, and every COPY of it.
 
 - **Query for the PRECONDITION minus the REMEDY, never for the remedy alone.**
   When the defect is a MISSING thing, a grep for the missing thing returns only
@@ -121,8 +124,9 @@ and write cross-references as `go-to-k/<repo>#N`.
 **`now` is the default; `next` needs one of the two reasons
 `.claude/rules/session-report.md` enumerates** (external input / COLD AND
 HEAVY). A maintainer decision is external input only once ASKED via
-`AskUserQuestion` and unanswered; matching what the real service does is a
-routine fidelity call, yours (go-to-k/cdk-local#813). Once external input is
+`AskUserQuestion` (by the PARENT — a lane has no such tool, so it puts the
+question in its report) and unanswered; matching what the real service does
+is a routine fidelity call, yours (go-to-k/cdk-local#813). Once external input is
 excluded the CONTEXT TEST decides: list the files the fix touches or must
 read; if this session read, edited or reviewed ANY of them it is `now` — as
 is anything that compounds if left loose (an integ fixture the fix still
