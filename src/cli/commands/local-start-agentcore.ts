@@ -1,4 +1,4 @@
-import { Command, Option } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   appOptions,
   commonOptions,
@@ -97,7 +97,7 @@ interface LocalStartAgentCoreOptions extends LocalInvokeAgentCoreOptions {
 function parsePort(raw: string): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0 || n > 65535) {
-    throw new CdkLocalError(`--port must be an integer 0-65535, got '${raw}'.`, 'INVALID_PORT');
+    throw new InvalidArgumentError(`--port must be an integer 0-65535, got '${raw}'.`);
   }
   return n;
 }

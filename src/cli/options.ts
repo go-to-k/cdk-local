@@ -1,4 +1,4 @@
-import { Option } from 'commander';
+import { InvalidArgumentError, Option } from 'commander';
 import { getEmbedConfig } from '../local/embed-config.js';
 import { isIamRoleArn } from '../utils/role-arn.js';
 
@@ -171,7 +171,7 @@ export function parseAssumeRoleToken(
     // form newly stricter than the pair form for the same text.
     const bare = raw.trim();
     if (!isIamRoleArn(bare)) {
-      throw new Error(
+      throw new InvalidArgumentError(
         `Invalid --assume-role value "${raw}": expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId=<arn>.`
       );
     }
@@ -182,12 +182,12 @@ export function parseAssumeRoleToken(
   const logicalId = raw.substring(0, eqIndex).trim();
   const arn = raw.substring(eqIndex + 1).trim();
   if (!/^[A-Za-z][A-Za-z0-9]*$/.test(logicalId)) {
-    throw new Error(
+    throw new InvalidArgumentError(
       `Invalid --assume-role value "${raw}": left-hand side "${logicalId}" must be a CloudFormation logical ID (alphanumeric, leading letter).`
     );
   }
   if (!isIamRoleArn(arn)) {
-    throw new Error(
+    throw new InvalidArgumentError(
       `Invalid --assume-role value "${raw}": right-hand side "${arn}" must be an IAM role ARN like arn:aws:iam::123456789012:role/MyRole.`
     );
   }
