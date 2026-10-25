@@ -466,11 +466,23 @@ export function createPrefixedLineRelay(
  * child) every line is tagged `[<short container id>] ` instead; see that
  * constant for why. The short id is the one `docker ps` prints, so a tagged
  * line can be matched to its container.
+ *
+ * `opts.onOutput` additionally receives every raw stdout / stderr chunk, so a
+ * caller can keep the container's recent output for an error message after a
+ * `--rm` container is already gone (`start-web-function`'s readiness failure).
  */
-export function streamLogs(containerId: string): () => void {
+export function streamLogs(
+  containerId: string,
+  opts: { onOutput?: (chunk: Buffer) => void } = {}
+): () => void {
   const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  if (opts.onOutput) {
+    const tap = opts.onOutput;
+    proc.stdout?.on('data', (chunk: Buffer) => tap(chunk));
+    proc.stderr?.on('data', (chunk: Buffer) => tap(chunk));
+  }
   let flush = (): void => undefined;
   if (process.env[PREFIX_CONTAINER_OUTPUT_ENV] === '1') {
     // Read the id as untrusted for the tag: flattened, and stripped of the

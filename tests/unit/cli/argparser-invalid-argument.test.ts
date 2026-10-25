@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { CommanderError, type Command } from 'commander';
 import { createLocalStartAgentCoreCommand } from '../../../src/cli/commands/local-start-agentcore.js';
+import { createLocalStartWebFunctionCommand } from '../../../src/cli/commands/local-start-web-function.js';
 import { createLocalInvokeAgentCoreCommand } from '../../../src/cli/commands/local-invoke-agentcore.js';
 import { createLocalStartServiceCommand } from '../../../src/cli/commands/local-start-service.js';
 import { createLocalStartApiCommand } from '../../../src/cli/commands/local-start-api.js';
@@ -54,6 +55,14 @@ const cases: Array<{
   {
     name: 'start-agentcore --port',
     make: () => createLocalStartAgentCoreCommand(),
+    argv: ['--port', 'abc'],
+    usage: "error: option '--port <n>' argument 'abc' is invalid.",
+    messageFragment: '--port must be an integer 0-65535',
+    valid: ['--port', '8080'],
+  },
+  {
+    name: 'start-web-function --port',
+    make: () => createLocalStartWebFunctionCommand(),
     argv: ['--port', 'abc'],
     usage: "error: option '--port <n>' argument 'abc' is invalid.",
     messageFragment: '--port must be an integer 0-65535',

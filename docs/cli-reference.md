@@ -7,7 +7,7 @@ lifecycle, mTLS, authorizers, networking), see
 [local-emulation.md](./local-emulation.md). When something breaks, see
 [troubleshooting.md](./troubleshooting.md).
 
-cdk-local has eight subcommands, all under the `cdkl` binary:
+cdk-local's subcommands, all under the `cdkl` binary:
 
 | Subcommand | Emulates | Backed by |
 | --- | --- | --- |
@@ -19,6 +19,7 @@ cdk-local has eight subcommands, all under the `cdkl` binary:
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator (replicas only, no load balancer) | `run-task` machinery per replica + shared docker network + restart-on-exit watcher |
 | `cdkl start-alb <targets...>` | ECS service(s) behind an ALB + a local front-door on each listener port | `start-service` machinery + host-side `node:http` reverse proxy round-robining the replicas |
 | `cdkl start-agentcore <target>` | Long-running warm serve of an AgentCore Runtime — HTTP / AGUI (`POST /invocations` + `GET /ping` **and** the `/ws` WebSocket endpoint), MCP (`POST /mcp`), or A2A (`POST /`), all repeatable against one warm container | Agent container (booted once, kept warm) + a host HTTP server proxying the protocol's routes, plus (HTTP / AGUI only) a `/ws` bridge that injects the session-id / `Authorization` headers a browser can't set, all on one port |
+| `cdkl start-web-function <target>` | Long-running serve of one AWS Lambda Web Function revision | The revision's code bundle (a cdk.out file asset) in a Lambda base-image container running its own HTTP server on `AWS_LAMBDA_HTTP_ENDPOINT`, the port published straight to the host |
 | `cdkl studio` | Interactive web console over every runnable target — invoke / serve from the browser, watch a live activity timeline | `node:http` server hosting the embedded UI; spawns the same `invoke` / `start-api` / `start-alb` / `start-service` runners as child processes |
 
 The run commands (`invoke` / `invoke-agentcore` / `start-api` / `run-task` /
@@ -52,7 +53,7 @@ per-command sections below.
 ## Extra arguments are rejected, not discarded
 
 A command that takes ONE target — `invoke`, `invoke-agentcore`,
-`run-task`, `start-agentcore`, `start-cloudfront` — or none at all —
+`run-task`, `start-agentcore`, `start-cloudfront`, `start-web-function` — or none at all —
 `list`, `studio` — exits `1` with
 `error: too many arguments. Expected N arguments but got M.` when handed
 more:
@@ -1958,6 +1959,67 @@ cdkl start-cloudfront MyStack/SiteDist --from-cfn-stack
 - `1` — startup failure (target not a distribution, port bind failure,
   TLS material error) OR uncaught exception.
 - `130` — exited via SIGINT (`^C`).
+
+## `cdkl start-web-function` (serve a Lambda Web Function locally)
+
+`cdkl start-web-function <target>` serves an AWS Lambda Web Function from the
+CDK app on a local port until `^C`. A web function is a plain HTTP server, so
+there is no event to send: run it, then point `curl` or a browser at it.
+
+```bash
+cdkl start-web-function MyStack/Endpoint             # the endpoint's highest-weight revision
+cdkl start-web-function MyStack/WebFn --port 3000    # a function with one revision (or one endpoint)
+cdkl start-web-function MyStack/Endpoint --revision RevV1   # pin a revision
+cdkl start-web-function MyStack/Endpoint --from-cfn-stack --assume-role
+```
+
+**Target.** An `AWS::Lambda::WebFunction`, `AWS::Lambda::WebFunctionEndpoint` or
+`AWS::Lambda::WebFunctionRevision`, by display path or stack-qualified logical
+ID. Exactly one revision is served: `--revision <logicalId>` when given; else
+the target revision; else the endpoint's highest `RevisionWeights` entry (the
+first listed on a tie); else the function's only revision, or the revision its
+only endpoint weights highest. A function with several revisions and no single
+endpoint fails, listing them.
+
+**Code.** `BuildConfig.CodeConfig.S3Object` must be a CDK asset of this app —
+an `s3assets.Asset` passing `asset.s3BucketName` / `asset.s3ObjectKey` — which
+cdk-local matches to the staged directory (or `.zip`) in cdk.out by object key.
+Deployed code is never downloaded: an `S3Object` that matches no local asset
+fails naming the bucket and key, and a `CodeConfig` key other than `S3Object`
+fails naming the key.
+
+**Runtime.** `nodejs24.x` runs in `public.ecr.aws/lambda/nodejs:24` — the Lambda
+Amazon Linux userland, so a bundle's native modules load as they do in the
+cloud — with the image's Runtime Interface Emulator entrypoint replaced by
+`node`, which runs `index.js` from the package root, or the file
+`AWS_LAMBDA_NODEJS_ENTRYPOINT` names. The bundle must carry its own
+`node_modules`. Another runtime fails naming the supported set. The container is
+`linux/arm64` (the cloud runtime's architecture); `--platform linux/amd64` runs
+it natively on an x86 host.
+
+**Serving.** The server must listen on the `host:port` in
+`AWS_LAMBDA_HTTP_ENDPOINT` (`0.0.0.0:8080` in the container); `--port` (default:
+a free port) and `--host` (default `127.0.0.1`) choose where it is published.
+Concurrent requests go straight to the server. The command waits until the
+server answers an HTTP request (one `GET /`, any status) before printing
+`Server listening on http://127.0.0.1:<port>`; a container that exits first, or
+a server that never answers within `--timeout` (default 60000 ms), fails with
+the container's last output lines. SIGINT / SIGTERM remove the container.
+
+**Environment and credentials.** `ServiceConfig.EnvironmentVariables` reach the
+container through the same resolution as `cdkl invoke`: `--env-vars` overrides
+(keyed by the revision's logical ID or construct path), `--from-cfn-stack`
+intrinsic substitution, `{{resolve:...}}` references, and the developer's
+credentials or `--assume-role` STS credentials. Bare `--assume-role` uses the
+revision's `ServiceConfig.ExecutionRoleArn` when it is a literal role ARN; for
+an intrinsic one, pass the ARN explicitly. `AWS_LAMBDA_FUNCTION_NAME` is the
+function's name.
+
+**Not reproduced (warned once at boot, never a failure).**
+`EgressNetworkConnectorArn` (the container uses Docker's default network);
+endpoint types other than `HomeRegion`; weighted traffic splitting (every
+request goes to the one served revision, which the warning names); and an
+`AuthType` other than `ApplicationManaged`, which is not enforced locally.
 
 ## `cdkl studio` (interactive web console)
 

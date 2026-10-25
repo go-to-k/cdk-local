@@ -971,6 +971,14 @@ export interface LambdaContainerEnvOptions extends LocalStateSourceOptions {
   assumeRole?: string | boolean;
   /** `--env-vars` SAM-shape override file path. */
   envVars?: string;
+  /**
+   * `false` skips the two `lambda:GetFunctionConfiguration` fallbacks — the
+   * deployed-env fill for an unresolved env var and the bare
+   * `--assume-role` execution-role lookup. For a caller whose resource is
+   * NOT an `AWS::Lambda::Function` (`start-web-function`'s revision), whose
+   * physical id that API cannot answer for. Default `true`.
+   */
+  deployedFunctionLookups?: boolean;
 }
 
 /** The fully resolved container environment for a Lambda. */
@@ -1113,7 +1121,11 @@ async function resolveLambdaContainerEnvWith(
         }
         let unresolved = audit.unresolved;
         const resolvedKeys = [...audit.resolvedKeys];
-        if (unresolved.length > 0 && stateProvider.resolveDeployedFunctionEnv) {
+        if (
+          unresolved.length > 0 &&
+          options.deployedFunctionLookups !== false &&
+          stateProvider.resolveDeployedFunctionEnv
+        ) {
           const physicalId = loaded.resources[lambda.logicalId]?.physicalId;
           if (physicalId) {
             const deployedEnv = await stateProvider.resolveDeployedFunctionEnv(physicalId);
@@ -1186,7 +1198,7 @@ async function resolveLambdaContainerEnvWith(
     resolvedAssumeRoleArn = await resolveAssumeRoleArnForLambda(
       options.assumeRole,
       stateForRoleHint,
-      stateProvider,
+      options.deployedFunctionLookups === false ? undefined : stateProvider,
       lambda.logicalId
     );
   } finally {

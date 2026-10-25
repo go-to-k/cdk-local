@@ -39,6 +39,10 @@ export {
   type CreateLocalStartAgentCoreCommandOptions,
 } from './cli/commands/local-start-agentcore.js';
 export {
+  createLocalStartWebFunctionCommand,
+  type CreateLocalStartWebFunctionCommandOptions,
+} from './cli/commands/local-start-web-function.js';
+export {
   createLocalListCommand,
   formatTargetListing,
   type CreateLocalListCommandOptions,

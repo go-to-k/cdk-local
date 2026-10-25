@@ -102,3 +102,49 @@ describe('resolveLambdaContainerEnv — explicit --assume-role', () => {
     expect(result.env['GREETING']).toBe('hi');
   });
 });
+
+describe('resolveLambdaContainerEnv — deployedFunctionLookups: false (start-web-function)', () => {
+  function provider() {
+    const spies = {
+      resolveDeployedFunctionEnv: vi.fn(async () => ({ TABLE_NAME: 'deployed-table' })),
+      resolveLambdaExecutionRoleArn: vi.fn(async () => 'arn:aws:iam::123456789012:role/Live'),
+    };
+    const factory = () => ({
+      label: '--from-test',
+      load: async () => ({
+        resources: { Handler: { physicalId: 'rev-physical-id', resourceType: 'X', properties: {} } },
+        outputs: {},
+        region: 'us-east-1',
+      }),
+      buildCrossStackResolver: async () => undefined,
+      dispose: () => undefined,
+      ...spies,
+    });
+    return { spies, extra: { fromTest: factory as never } };
+  }
+
+  it('never calls the GetFunctionConfiguration fallbacks a web function revision cannot answer', async () => {
+    const { spies, extra } = provider();
+    const result = await resolveLambdaContainerEnv(
+      zipLambda({ TABLE_NAME: { Ref: 'Table' } }),
+      { fromTest: true, assumeRole: true, deployedFunctionLookups: false },
+      undefined,
+      extra
+    );
+    expect(spies.resolveDeployedFunctionEnv).not.toHaveBeenCalled();
+    expect(spies.resolveLambdaExecutionRoleArn).not.toHaveBeenCalled();
+    expect(result.assumeRoleApplied).toBe(false);
+  });
+
+  it('still calls them by default (a Lambda function)', async () => {
+    const { spies, extra } = provider();
+    await resolveLambdaContainerEnv(
+      zipLambda({ TABLE_NAME: { Ref: 'Table' } }),
+      { fromTest: true, assumeRole: true },
+      undefined,
+      extra
+    );
+    expect(spies.resolveDeployedFunctionEnv).toHaveBeenCalledWith('rev-physical-id');
+    expect(spies.resolveLambdaExecutionRoleArn).toHaveBeenCalledWith('rev-physical-id');
+  });
+});

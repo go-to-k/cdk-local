@@ -17,6 +17,7 @@ const empty: TargetListing = {
   agentCoreRuntimes: [],
   loadBalancers: [],
   cloudFrontDistributions: [],
+  webFunctions: [],
 };
 
 describe('formatTargetListing', () => {
@@ -33,6 +34,7 @@ describe('formatTargetListing', () => {
       agentCoreRuntimes: [entry('App/ChatAgent', 'App:ChatAgent')],
       loadBalancers: [entry('App/WebLB', 'App:WebLB')],
       cloudFrontDistributions: [entry('App/SiteDist', 'App:SiteDist')],
+      webFunctions: [entry('App/WebFn', 'App:WebFn')],
     };
     const out = formatTargetListing(listing, 'cdkl');
     expect(out).toContain('Lambda Functions  ->  cdkl invoke <target>');
@@ -42,6 +44,7 @@ describe('formatTargetListing', () => {
     expect(out).toContain('AgentCore Runtimes  ->  cdkl invoke-agentcore <target>');
     expect(out).toContain('Application Load Balancers  ->  cdkl start-alb <target...>');
     expect(out).toContain('CloudFront Distributions  ->  cdkl start-cloudfront <target>');
+    expect(out).toContain('Lambda Web Functions  ->  cdkl start-web-function <target>');
   });
 
   it('appends the API surface kind to each API line', () => {

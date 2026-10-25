@@ -375,6 +375,7 @@ describe('countTargets', () => {
       agentCoreRuntimes: [],
       loadBalancers: [],
       cloudFrontDistributions: [],
+      webFunctions: [],
     });
   });
 

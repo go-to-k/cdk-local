@@ -52,7 +52,7 @@ alongside the activating one.
 
 ## Synthesizing with your own synthesizer
 
-`start-agentcore`, `start-cloudfront`, `start-service` and `start-alb` take a
+`start-agentcore`, `start-web-function`, `start-cloudfront`, `start-service` and `start-alb` take a
 `synthesizer` option. Pass one and the command synthesizes the CDK app with it,
 on boot and on every `--watch` reload, instead of the built-in
 `@aws-cdk/toolkit-lib` synthesizer. A host that has its own synthesis (its own
@@ -513,6 +513,10 @@ no duplicate `.addOption(...)` block on the host side.
   `--ws`, `--bearer-token`, `--no-verify-auth`,
   `--sigv4`, `--platform`, `--no-pull`, `--no-build`, `--container-host`,
   `--timeout`, `--assume-role`, `--ecr-role-arn`, `--from-cfn-stack`,
+  `--stack-region`).
+- `addStartWebFunctionSpecificOptions(cmd)` — `cdkl start-web-function`
+  flags (`--revision`, `--port`, `--host`, `--platform`, `--env-vars`,
+  `--no-pull`, `--timeout`, `--assume-role`, `--from-cfn-stack`,
   `--stack-region`).
 - `addStartApiSpecificOptions(cmd)` — `cdkl start-api` flags
   (`--port`, `--host`, `--stack`, `--all-stacks`, `--warm`,
