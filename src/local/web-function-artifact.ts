@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'fs';
+import { existsSync, rmSync, statSync } from 'fs';
 import { dirname } from 'path';
 import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
 import { resolveAssetSourcePath } from '../assets/asset-source-path.js';
@@ -12,9 +12,11 @@ import { assetPathDirs, materializeAssetCodeDir } from './lambda-resolver.js';
 
 /**
  * A web function revision's code, as `cdkl start-web-function` runs it — seam 1
- * of the two that keep a new code source out of the command (issue #831). The
- * runner switches on `kind`; a container-image source becomes a new member here
- * plus one arm there, and the target resolver, the env and the serve loop stay.
+ * of the two that keep a new code source out of the command (issue #831). Only
+ * `planWebFunctionContainer` (web-function-runner) and
+ * {@link disposeWebFunctionArtifact} switch on `kind`; the command never reads
+ * an artifact's fields. A container-image source becomes a new member here plus
+ * one arm in each, and the target resolver, the env and the serve loop stay.
  */
 export type WebFunctionArtifact = WebFunctionZipArtifact | WebFunctionImageArtifact;
 
@@ -33,8 +35,9 @@ export interface WebFunctionZipArtifact {
 
 /**
  * RESERVED for a container-image `CodeConfig` source. No resolver produces it
- * yet; the runner refuses it with a clear error, so adding the source later is
- * a change to the resolver and one runner arm, not to the command.
+ * yet; `planWebFunctionContainer` refuses it with a clear error, so adding the
+ * source later is a change to the resolver and that one function's arm, not to
+ * the command.
  */
 export interface WebFunctionImageArtifact {
   kind: 'image';
@@ -166,6 +169,15 @@ export async function resolveWebFunctionArtifact(
   const match = manifest ? findFileAssetForObjectKey(manifest, code.s3Object.key) : undefined;
   if (!match) throw notFound();
 
+  if (typeof match.asset.source.path !== 'string' || match.asset.source.path.length === 0) {
+    throw new CdkLocalError(
+      `${subject} matches file asset ${displayIdent(match.hash)}, which has no source.path ` +
+        `(it is produced by source.executable at publish time), so there is no staged bundle ` +
+        `in cdk.out to mount. Give the revision an asset of a directory or a .zip file ` +
+        `(for example s3assets.Asset with path: '<dir>').`,
+      'LOCAL_START_WEB_FUNCTION_CODE_ASSET_NO_PATH'
+    );
+  }
   const sourcePath = resolveAssetSourcePath({
     manifestDir,
     value: match.asset.source.path,
@@ -199,6 +211,20 @@ export async function resolveWebFunctionArtifact(
     ...(materialized.tmpDir !== undefined && { tmpDir: materialized.tmpDir }),
     assetHash: match.hash,
   };
+}
+
+/**
+ * Release what {@link resolveWebFunctionArtifact} created on the host (a zip's
+ * extracted temp dir). Idempotent and best-effort; the per-kind knowledge lives
+ * here so the command never inspects an artifact's fields.
+ */
+export function disposeWebFunctionArtifact(artifact: WebFunctionArtifact | undefined): void {
+  if (artifact?.kind !== 'zip' || artifact.tmpDir === undefined) return;
+  try {
+    if (existsSync(artifact.tmpDir)) rmSync(artifact.tmpDir, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
 }
 
 function asObject(value: unknown): Record<string, unknown> | undefined {

@@ -1,15 +1,21 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
-import { resolveLambdaContainerEnv } from '../../../src/cli/commands/local-invoke.js';
+import {
+  resolveLambdaContainerEnv,
+  resolveTemplateRoleArnFromState,
+} from '../../../src/cli/commands/local-invoke.js';
 import type { ResolvedLambda } from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 // Mock STS so the explicit `--assume-role <arn>` path resolves to deterministic
 // temp credentials without a real AWS call (the shared `assumeRoleCredentials`
 // helper in utils/role-arn.ts imports @aws-sdk/client-sts).
+const sts = vi.hoisted(() => ({ assumed: [] as unknown[] }));
 vi.mock('@aws-sdk/client-sts', () => ({
   STSClient: class {
-    async send(): Promise<unknown> {
+    async send(cmd: { input?: unknown }): Promise<unknown> {
+      sts.assumed.push(cmd.input);
       return {
+        Account: '123456789012',
         Credentials: { AccessKeyId: 'AKIATEST', SecretAccessKey: 'secretTEST', SessionToken: 'tokTEST' },
       };
     }
@@ -17,6 +23,9 @@ vi.mock('@aws-sdk/client-sts', () => ({
   },
   AssumeRoleCommand: class {
     constructor(public input: unknown) {}
+  },
+  GetCallerIdentityCommand: class {
+    input = undefined;
   },
 }));
 
@@ -146,5 +155,90 @@ describe('resolveLambdaContainerEnv — deployedFunctionLookups: false (start-we
     );
     expect(spies.resolveDeployedFunctionEnv).toHaveBeenCalledWith('rev-physical-id');
     expect(spies.resolveLambdaExecutionRoleArn).toHaveBeenCalledWith('rev-physical-id');
+  });
+});
+
+describe('resolveTemplateRoleArnFromState', () => {
+  const template = {
+    Resources: {
+      Role: { Type: 'AWS::IAM::Role', Properties: {} },
+      PathRole: { Type: 'AWS::IAM::Role', Properties: { Path: '/svc/' } },
+      Bucket: { Type: 'AWS::S3::Bucket' },
+    },
+  };
+  const pseudo = async () => ({ accountId: '123456789012', partition: 'aws' });
+  const state = (resources: Record<string, unknown>) => ({ resources }) as never;
+
+  it('returns a literal role ARN as written', async () => {
+    const arn = 'arn:aws:iam::123456789012:role/Lit';
+    expect(await resolveTemplateRoleArnFromState(arn, state({}), template, pseudo)).toBe(arn);
+  });
+
+  it('builds the ARN from the role NAME --from-cfn-stack state carries (CDK GetAtt)', async () => {
+    const s = state({ Role: { physicalId: 'App-RoleABC', attributes: {} } });
+    expect(
+      await resolveTemplateRoleArnFromState({ 'Fn::GetAtt': ['Role', 'Arn'] }, s, template, pseudo)
+    ).toBe('arn:aws:iam::123456789012:role/App-RoleABC');
+  });
+
+  it("honours the role's literal Path", async () => {
+    const s = state({ PathRole: { physicalId: 'Named', attributes: {} } });
+    expect(await resolveTemplateRoleArnFromState({ Ref: 'PathRole' }, s, template, pseudo)).toBe(
+      'arn:aws:iam::123456789012:role/svc/Named'
+    );
+  });
+
+  it('prefers a cached Arn attribute without an account lookup', async () => {
+    const lookup = vi.fn(pseudo);
+    const s = state({
+      Role: { physicalId: 'x', attributes: { Arn: 'arn:aws:iam::111111111111:role/Cached' } },
+    });
+    expect(
+      await resolveTemplateRoleArnFromState({ 'Fn::GetAtt': ['Role', 'Arn'] }, s, template, lookup)
+    ).toBe('arn:aws:iam::111111111111:role/Cached');
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('declines a non-role reference, a missing state row and an unknown account', async () => {
+    const s = state({ Role: { physicalId: 'App-Role', attributes: {} }, Bucket: { physicalId: 'b' } });
+    expect(await resolveTemplateRoleArnFromState({ Ref: 'Bucket' }, s, template, pseudo)).toBeUndefined();
+    expect(
+      await resolveTemplateRoleArnFromState({ Ref: 'PathRole' }, state({}), template, pseudo)
+    ).toBeUndefined();
+    expect(
+      await resolveTemplateRoleArnFromState({ Ref: 'Role' }, s, template, async () => undefined)
+    ).toBeUndefined();
+  });
+});
+
+describe('resolveLambdaContainerEnv — bare --assume-role from the template Role (web function)', () => {
+  it('assumes the role --from-cfn-stack-style state names, with no Lambda API call', async () => {
+    sts.assumed = [];
+    const lambda = zipLambda({});
+    (lambda.resource.Properties as Record<string, unknown>)['Role'] = { 'Fn::GetAtt': ['Role', 'Arn'] };
+    lambda.stack.template = { Resources: { Role: { Type: 'AWS::IAM::Role', Properties: {} } } };
+    const resolveLambdaExecutionRoleArn = vi.fn(async () => undefined);
+    const factory = () => ({
+      label: '--from-test',
+      load: async () => ({
+        resources: { Role: { physicalId: 'App-RoleABC', resourceType: 'AWS::IAM::Role', properties: {}, attributes: {} } },
+        outputs: {},
+        region: 'us-east-1',
+      }),
+      buildCrossStackResolver: async () => undefined,
+      dispose: () => undefined,
+      resolveLambdaExecutionRoleArn,
+    });
+    const result = await resolveLambdaContainerEnv(
+      lambda,
+      { fromTest: true, assumeRole: true, deployedFunctionLookups: false, region: 'us-east-1' },
+      undefined,
+      { fromTest: factory as never }
+    );
+    expect(result.assumeRoleApplied).toBe(true);
+    expect(sts.assumed).toContainEqual(
+      expect.objectContaining({ RoleArn: 'arn:aws:iam::123456789012:role/App-RoleABC' })
+    );
+    expect(resolveLambdaExecutionRoleArn).not.toHaveBeenCalled();
   });
 });

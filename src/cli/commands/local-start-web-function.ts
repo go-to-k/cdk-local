@@ -1,4 +1,3 @@
-import { existsSync, rmSync } from 'fs';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   appOptions,
@@ -38,12 +37,13 @@ import { parseTimeoutMs } from './local-invoke-agentcore.js';
 import { resolveLambdaContainerEnv, type LambdaContainerEnvOptions } from './local-invoke.js';
 import { resolveWebFunctionTarget } from '../../local/web-function-resolver.js';
 import {
+  disposeWebFunctionArtifact,
   parseWebFunctionBuildConfig,
   resolveWebFunctionArtifact,
   type WebFunctionArtifact,
 } from '../../local/web-function-artifact.js';
 import {
-  buildWebFunctionStartCommand,
+  defaultWebFunctionPlatform,
   resolveWebFunctionRuntime,
 } from '../../local/web-function-runtime.js';
 import {
@@ -57,8 +57,11 @@ import {
 import {
   RecentOutput,
   WEB_FUNCTION_CONTAINER_PORT,
+  containerFailure,
+  planWebFunctionContainer,
   startWebFunctionContainer,
   waitForWebFunctionReady,
+  watchContainerExit,
 } from '../../local/web-function-runner.js';
 
 /** Options for `cdkl start-web-function`. */
@@ -74,8 +77,8 @@ export interface LocalStartWebFunctionOptions extends LambdaContainerEnvOptions 
   port: number;
   /** Address the port is published on (`--host`, default 127.0.0.1). */
   host: string;
-  /** `--platform`, default `linux/arm64`. */
-  platform: string;
+  /** `--platform`; default: the runtime row's first architecture. */
+  platform?: string;
   /** `--no-pull` sets this false. */
   pull?: boolean;
   /** Readiness deadline in ms (`--timeout`). */
@@ -117,13 +120,18 @@ async function localStartWebFunctionCommand(
 
   let containerId: string | undefined;
   let stopLogs: (() => void) | undefined;
+  let exitWatch: ReturnType<typeof watchContainerExit> | undefined;
   let artifact: WebFunctionArtifact | undefined;
   let tornDown = false;
   let shuttingDown = false;
+  const forever = (): Promise<never> => new Promise<never>(() => undefined);
 
+  // Null-safe and idempotent: it may run before the container exists (a
+  // signal during the pull) or twice (a signal racing a failure).
   const teardown = async (): Promise<void> => {
     if (tornDown) return;
     tornDown = true;
+    exitWatch?.stop();
     if (stopLogs) {
       try {
         stopLogs();
@@ -131,14 +139,9 @@ async function localStartWebFunctionCommand(
         logger.debug(`streamLogs stop failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    // Not `--rm`, so this removal is the only one.
     if (containerId) await removeContainer(containerId);
-    if (artifact?.kind === 'zip' && artifact.tmpDir && existsSync(artifact.tmpDir)) {
-      try {
-        rmSync(artifact.tmpDir, { recursive: true, force: true });
-      } catch {
-        /* best-effort */
-      }
-    }
+    disposeWebFunctionArtifact(artifact);
   };
 
   await applyRoleArnIfSet({
@@ -203,16 +206,24 @@ async function localStartWebFunctionCommand(
   for (const line of webFunctionFidelityWarnings(resolved, serviceConfig)) logger.warn(line);
 
   artifact = await resolveWebFunctionArtifact(resolved.stack, resolved.revisionLogicalId, code);
+
+  // Armed as soon as there is anything on the host to clean up (an extracted
+  // bundle), so ^C during a long first pull still removes it.
+  const shutdown = async (signal: string, exitCode: number): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`Received ${signal}, shutting down...`);
+    await teardown();
+    process.exit(exitCode);
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT', 130));
+  process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
+
+  const recent = new RecentOutput();
   try {
-    if (artifact.kind !== 'zip') {
-      throw new CdkLocalError(
-        'Only a zip code bundle runs locally today.',
-        'LOCAL_START_WEB_FUNCTION_UNSUPPORTED_ARTIFACT'
-      );
-    }
     const assumeRole = webFunctionAssumeRole(options.assumeRole, serviceConfig);
     const containerEnv = await resolveLambdaContainerEnv(
-      buildWebFunctionLambdaView(resolved, serviceConfig, spec.runtime, artifact.codeDir),
+      buildWebFunctionLambdaView(resolved, serviceConfig, spec.runtime),
       {
         ...options,
         ...(assumeRole !== undefined && { assumeRole }),
@@ -234,49 +245,43 @@ async function localStartWebFunctionCommand(
           `is published to it.`
       );
     }
-    const start = buildWebFunctionStartCommand(spec, artifact.codeDir, env, existsSync);
+    const plan = planWebFunctionContainer(artifact, spec, env);
+    const platform = options.platform ?? defaultWebFunctionPlatform(spec);
 
-    await pullImage(spec.baseImage, options.pull === false, options.platform);
+    await pullImage(plan.image, options.pull === false, platform);
+    if (tornDown) return await forever();
     const hostPort = options.port === 0 ? await pickFreePort() : options.port;
     const name = `${getEmbedConfig().resourceNamePrefix}-webfn-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
     logger.info(
-      `Starting web function container (image=${spec.baseImage}, entry=${start.entryFile}, ` +
+      `Starting web function container (image=${plan.image}, start=${plan.label}, ` +
         `port=${hostPort} -> ${WEB_FUNCTION_CONTAINER_PORT})...`
     );
-    containerId = await startWebFunctionContainer({
-      artifact,
-      spec,
-      start,
+    const id = await startWebFunctionContainer({
+      plan,
       env,
       sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
       host: options.host,
       hostPort,
-      platform: options.platform,
+      platform,
       name,
     });
-    const recent = new RecentOutput();
-    stopLogs = streamLogs(containerId, { onOutput: (chunk) => recent.push(chunk) });
-
-    // Armed right after boot, so a signal during the readiness wait still
-    // removes the container.
-    const shutdown = async (signal: string, exitCode: number): Promise<void> => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      logger.info(`Received ${signal}, shutting down...`);
-      await teardown();
-      process.exit(exitCode);
-    };
-    process.on('SIGINT', () => void shutdown('SIGINT', 130));
-    process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
+    if (tornDown) {
+      // A signal tore down while `docker run` was in flight.
+      await removeContainer(id);
+      return await forever();
+    }
+    containerId = id;
+    stopLogs = streamLogs(id, { onOutput: (chunk) => recent.push(chunk) });
+    exitWatch = watchContainerExit(id);
 
     const probeHost = connectHost(options.host);
     await waitForWebFunctionReady({
-      containerId,
+      containerId: id,
       host: probeHost,
       port: hostPort,
       timeoutMs: options.timeout,
       recent,
-      entryFile: start.entryFile,
+      label: plan.label,
     });
     logger.info(
       `Server listening on http://${formatAuthority(probeHost, hostPort)}  ` +
@@ -284,11 +289,24 @@ async function localStartWebFunctionCommand(
     );
     logger.info('Press ^C to shut down.');
   } catch (err) {
+    if (shuttingDown) return await forever();
     await teardown();
     throw err;
   }
 
-  await new Promise<never>(() => undefined);
+  // Serving. The `docker wait` child keeps the process alive; when the server
+  // exits on its own, fail loudly (non-zero) with its last output instead of
+  // exiting 0 with the container and the extracted bundle left behind.
+  if (!exitWatch || !containerId) return await forever();
+  const exitCode = await exitWatch.exited;
+  if (shuttingDown || tornDown) return await forever();
+  const failure = await containerFailure(
+    `The web function container exited (exit code ${exitCode ?? 'unknown'}) while serving.`,
+    containerId,
+    recent
+  );
+  await teardown();
+  throw failure;
 }
 
 export interface CreateLocalStartWebFunctionCommandOptions {
@@ -365,11 +383,9 @@ export function addStartWebFunctionSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--platform <platform>',
-        'docker --platform for the server container. Defaults to linux/arm64, the architecture ' +
-          'the cloud runtime runs on.'
-      )
-        .choices(['linux/amd64', 'linux/arm64'])
-        .default('linux/arm64')
+        "docker --platform for the server container. Defaults to the runtime's cloud " +
+          'architecture (linux/arm64 for nodejs24.x).'
+      ).choices(['linux/amd64', 'linux/arm64'])
     )
     .addOption(
       new Option(

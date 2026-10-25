@@ -166,6 +166,13 @@ export interface DockerRunOptions {
    * `host-gateway` flag since 20.10+).
    */
   extraHosts?: { host: string; ip: string }[];
+  /**
+   * `false` omits `--rm`, so an exited container (and its logs) survive until
+   * the caller's `removeContainer`. `start-web-function` needs that: a server
+   * that crashes at boot would otherwise be gone, stack trace and all, before
+   * its logs are read. Default `true`.
+   */
+  autoRemove?: boolean;
 }
 
 /**
@@ -252,7 +259,7 @@ export async function pullImage(
  *     is cleaned up on any error path including SIGINT.
  */
 export async function runDetached(opts: DockerRunOptions): Promise<string> {
-  const args: string[] = ['run', '-d', '--rm'];
+  const args: string[] = opts.autoRemove === false ? ['run', '-d'] : ['run', '-d', '--rm'];
 
   if (opts.name) {
     args.push('--name', opts.name);

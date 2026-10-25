@@ -1993,27 +1993,33 @@ Amazon Linux userland, so a bundle's native modules load as they do in the
 cloud — with the image's Runtime Interface Emulator entrypoint replaced by
 `node`, which runs `index.js` from the package root, or the file
 `AWS_LAMBDA_NODEJS_ENTRYPOINT` names. The bundle must carry its own
-`node_modules`. Another runtime fails naming the supported set. The container is
-`linux/arm64` (the cloud runtime's architecture); `--platform linux/amd64` runs
-it natively on an x86 host.
+`node_modules`. Another runtime fails naming the supported set. The container's
+default platform is the runtime's cloud architecture (`linux/arm64` for
+`nodejs24.x`); `--platform linux/amd64` runs it natively on an x86 host.
 
 **Serving.** The server must listen on the `host:port` in
 `AWS_LAMBDA_HTTP_ENDPOINT` (`0.0.0.0:8080` in the container); `--port` (default:
 a free port) and `--host` (default `127.0.0.1`) choose where it is published.
 Concurrent requests go straight to the server. The command waits until the
-server answers an HTTP request (one `GET /`, any status) before printing
-`Server listening on http://127.0.0.1:<port>`; a container that exits first, or
-a server that never answers within `--timeout` (default 60000 ms), fails with
-the container's last output lines. SIGINT / SIGTERM remove the container.
+server answers an HTTP request (one `GET /`, any status, each probe allowed up
+to 10 s) before printing `Server listening on http://127.0.0.1:<port>`. A
+container that exits first, or a server that does not answer within `--timeout`
+(default 60000 ms), fails with the container's last output lines — the error
+says whether it never accepted a connection or accepted and was slow to answer.
+If the server exits while serving, the command exits non-zero with its last
+output lines. The container is removed on every exit path, including SIGINT /
+SIGTERM.
 
 **Environment and credentials.** `ServiceConfig.EnvironmentVariables` reach the
 container through the same resolution as `cdkl invoke`: `--env-vars` overrides
 (keyed by the revision's logical ID or construct path), `--from-cfn-stack`
 intrinsic substitution, `{{resolve:...}}` references, and the developer's
-credentials or `--assume-role` STS credentials. Bare `--assume-role` uses the
-revision's `ServiceConfig.ExecutionRoleArn` when it is a literal role ARN; for
-an intrinsic one, pass the ARN explicitly. `AWS_LAMBDA_FUNCTION_NAME` is the
-function's name.
+credentials or `--assume-role` STS credentials. Bare `--assume-role` assumes the
+revision's `ServiceConfig.ExecutionRoleArn`: a literal role ARN as written, or
+the `Fn::GetAtt` / `Ref` CDK synthesizes, resolved against the deployed stack
+under `--from-cfn-stack` (the role's name and `Path` plus the caller's account).
+Without a state-source flag an intrinsic role cannot be resolved, so pass the
+ARN explicitly. `AWS_LAMBDA_FUNCTION_NAME` is the function's name.
 
 **Not reproduced (warned once at boot, never a failure).**
 `EgressNetworkConnectorArn` (the container uses Docker's default network);

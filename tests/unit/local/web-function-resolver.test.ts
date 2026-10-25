@@ -195,3 +195,55 @@ describe('resolveWebFunctionTarget — target forms', () => {
     );
   });
 });
+
+describe('resolveWebFunctionTarget — edge cases', () => {
+  it('prefers an endpoint over the function a path also covers (the order is load-bearing)', () => {
+    // Function-first would see two endpoints and fail; endpoint-first serves EpA's pick.
+    const s = stack('App', {
+      WebFn: { ...fn(), Metadata: { 'aws:cdk:path': 'App/Web/Function' } },
+      RevV1: rev({ Ref: 'WebFn' }, 'App/Other/V1'),
+      RevV2: rev({ Ref: 'WebFn' }, 'App/Other/V2'),
+      EpA: {
+        ...endpoint({ Ref: 'WebFn' }, [{ rev: 'RevV1', weight: 100 }]),
+        Metadata: { 'aws:cdk:path': 'App/Web/EpA' },
+      },
+      EpB: {
+        ...endpoint({ Ref: 'WebFn' }, [{ rev: 'RevV2', weight: 100 }]),
+        Metadata: { 'aws:cdk:path': 'App/Elsewhere/EpB' },
+      },
+    });
+    expect(resolveWebFunctionTarget('App/Web', [s]).revisionLogicalId).toBe('RevV1');
+    expect(() => resolveWebFunctionTarget('App:WebFn', [s])).toThrow(/has 2 revisions/);
+  });
+
+  it('refuses a path that matches two resources of the same kind', () => {
+    const s = twoRevisionApp();
+    expect(() => resolveWebFunctionTarget('App/Web', [{
+      ...s,
+      template: {
+        Resources: {
+          ...s.template.Resources,
+          Ep2: { ...endpoint({ Ref: 'WebFn' }, []), Metadata: { 'aws:cdk:path': 'App/Web/Endpoint2' } },
+        },
+      },
+    } as StackInfo])).toThrow(/matches 2 AWS::Lambda::WebFunctionEndpoint resources: Ep, Ep2/);
+  });
+
+  it('ignores weights whose RevisionId names no revision in this template', () => {
+    const s = stack('App', {
+      WebFn: fn(),
+      Rev: rev({ Ref: 'WebFn' }, 'App/Web/Rev'),
+      Ep: {
+        Type: 'AWS::Lambda::WebFunctionEndpoint',
+        Properties: {
+          FunctionName: { Ref: 'WebFn' },
+          RevisionWeights: [{ RevisionId: 'deployed-revision-id', Weight: 100 }],
+        },
+      },
+    });
+    const r = resolveWebFunctionTarget('App:Ep', [s]);
+    expect(r.revisionLogicalId).toBe('Rev');
+    expect(r.selection).toBe('only-revision');
+    expect(r.endpoint?.weights).toEqual([{ revisionLogicalId: undefined, weight: 100 }]);
+  });
+});

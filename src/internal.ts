@@ -777,6 +777,7 @@ export {
   parseWebFunctionBuildConfig,
   resolveWebFunctionArtifact,
   findFileAssetForObjectKey,
+  disposeWebFunctionArtifact,
   type WebFunctionArtifact,
   type WebFunctionZipArtifact,
   type WebFunctionImageArtifact,
@@ -785,7 +786,9 @@ export {
 export {
   resolveWebFunctionRuntime,
   supportedWebFunctionRuntimes,
-  buildWebFunctionStartCommand,
+  defaultWebFunctionPlatform,
+  buildNodeEntryFileStart,
+  WEB_FUNCTION_RUNTIMES,
   type WebFunctionRuntimeSpec,
   type WebFunctionStartCommand,
 } from './local/web-function-runtime.js';
@@ -799,11 +802,17 @@ export {
   type WebFunctionServiceConfig,
 } from './local/web-function-service-config.js';
 export {
+  planWebFunctionContainer,
   startWebFunctionContainer,
   waitForWebFunctionReady,
+  watchContainerExit,
+  containerFailure,
+  readContainerLogTail,
   RecentOutput,
   WEB_FUNCTION_CONTAINER_PORT,
   type StartWebFunctionContainerOptions,
+  type WebFunctionContainerPlan,
+  type ProbeOutcome,
 } from './local/web-function-runner.js';
 export { addStartApiSpecificOptions } from './cli/commands/local-start-api.js';
 export {

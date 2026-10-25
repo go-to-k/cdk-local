@@ -143,6 +143,8 @@ Covers the container artifact AND the CodeConfiguration managed-runtime artifact
 
 ## CloudFront: `start-cloudfront`
 
+One distribution per invocation.
+
 - **CloudFront Functions** run in-process in a `node:vm` sandbox
   (`cloudfront-js-1.0` / `2.0`, async handlers awaited) that adds the 2.0
   built-ins a bare vm lacks (`Buffer`, `atob` / `btoa`, the text codecs, a
@@ -195,9 +197,9 @@ Covers the container artifact AND the CodeConfiguration managed-runtime artifact
 
 ## Lambda Web Functions: `start-web-function`
 
-ONE revision: `--revision`, else the endpoint's top weight, else the only one.
-Code is the `S3Object` matched to a cdk.out asset (never downloaded), run with
-the RIE entrypoint replaced; ready = an HTTP response, not a TCP accept. Env via
-`resolveLambdaContainerEnv`, `GetFunctionConfiguration` fallbacks off. WARNED,
-not reproduced: egress connector, non-`HomeRegion` endpoint, weighted split,
-non-`ApplicationManaged` auth (unenforced).
+ONE revision: `--revision`, a revision target, the endpoint's top weight, the
+only revision, the only endpoint's pick. Code: the `S3Object`'s cdk.out asset
+(no download), RIE entrypoint replaced, no `--rm`; ready = an HTTP answer,
+not TCP accept. Env: `resolveLambdaContainerEnv` sans Lambda-API fallbacks.
+WARNED only: egress connector, non-`HomeRegion`, weighted split,
+non-`ApplicationManaged` auth.

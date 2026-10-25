@@ -61,6 +61,11 @@ describe('readWebFunctionServiceConfig', () => {
     );
     expect(cfg.environmentUnreadable).toBe(true);
     expect(cfg.environmentVariables).toBeUndefined();
+    const ref = readWebFunctionServiceConfig(
+      resolved({ EnvironmentVariables: { Ref: 'EnvParam' } }).revision
+    );
+    expect(ref.environmentUnreadable).toBe(true);
+    expect(ref.environmentVariables).toBeUndefined();
     const list = readWebFunctionServiceConfig(resolved({ EnvironmentVariables: ['x'] }).revision);
     expect(list.environmentUnreadable).toBe(true);
     expect(list.environmentVariables).toBeUndefined();
@@ -76,23 +81,25 @@ describe('readWebFunctionServiceConfig', () => {
 describe('buildWebFunctionLambdaView', () => {
   it('maps ServiceConfig.EnvironmentVariables onto Environment.Variables, keyed by the revision', () => {
     const r = resolved({ EnvironmentVariables: { GREETING: 'hi' }, TimeoutSeconds: 12 });
-    const view = buildWebFunctionLambdaView(
-      r,
-      readWebFunctionServiceConfig(r.revision),
-      'nodejs24.x',
-      '/code'
-    );
+    const view = buildWebFunctionLambdaView(r, readWebFunctionServiceConfig(r.revision), 'nodejs24.x');
     expect(view.logicalId).toBe('RevV2');
     expect(view.resource.Properties).toEqual({ Environment: { Variables: { GREETING: 'hi' } } });
     expect(view.resource.Metadata).toEqual({ 'aws:cdk:path': 'App/Web/V2' });
     expect(view.timeoutSec).toBe(12);
     expect(view.architecture).toBe('arm64');
-    expect(view.codePath).toBe('/code');
+    expect(view.codePath).toBeNull();
+  });
+
+  it('carries ExecutionRoleArn as the view Role, so a bare --assume-role resolves it from state', () => {
+    const getAtt = { 'Fn::GetAtt': ['Role', 'Arn'] };
+    const r = resolved({ ExecutionRoleArn: getAtt });
+    const view = buildWebFunctionLambdaView(r, readWebFunctionServiceConfig(r.revision), 'x');
+    expect(view.resource.Properties).toEqual({ Role: getAtt });
   });
 
   it('declares no Environment when ServiceConfig has none', () => {
     const r = resolved({});
-    const view = buildWebFunctionLambdaView(r, readWebFunctionServiceConfig(r.revision), 'x', '/c');
+    const view = buildWebFunctionLambdaView(r, readWebFunctionServiceConfig(r.revision), 'x');
     expect(view.resource.Properties).toEqual({});
   });
 });
@@ -188,6 +195,20 @@ describe('webFunctionFidelityWarnings', () => {
     expect(warn({}, homeEndpoint({ authType: 'AwsIam' }))).toEqual([
       expect.stringMatching(/AuthType AwsIam; it is not enforced locally/),
     ]);
+  });
+
+  it('does not count a weight-0 entry as a split', () => {
+    expect(
+      warn(
+        {},
+        homeEndpoint({
+          weights: [
+            { revisionLogicalId: 'RevV1', weight: 0 },
+            { revisionLogicalId: 'RevV2', weight: 100 },
+          ],
+        })
+      )
+    ).toEqual([]);
   });
 
   it('warns that weighted splitting is not emulated, naming the served revision', () => {

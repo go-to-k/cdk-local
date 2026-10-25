@@ -65,8 +65,7 @@ export function readWebFunctionServiceConfig(
 export function buildWebFunctionLambdaView(
   resolved: ResolvedWebFunction,
   config: WebFunctionServiceConfig,
-  runtime: string,
-  codeDir: string
+  runtime: string
 ): ResolvedZipLambda {
   return {
     kind: 'zip',
@@ -78,6 +77,9 @@ export function buildWebFunctionLambdaView(
         ...(config.environmentVariables !== undefined && {
           Environment: { Variables: config.environmentVariables },
         }),
+        // So a bare --assume-role resolves the GetAtt / Ref CDK always
+        // synthesizes here against the loaded state.
+        ...(config.executionRoleArn !== undefined && { Role: config.executionRoleArn }),
       },
       ...(resolved.revision.Metadata !== undefined && { Metadata: resolved.revision.Metadata }),
     },
@@ -86,7 +88,8 @@ export function buildWebFunctionLambdaView(
     layers: [],
     runtime,
     handler: '',
-    codePath: codeDir,
+    // The bundle is mounted by the container plan, never by this view.
+    codePath: null,
     architecture: 'arm64',
   };
 }
@@ -94,10 +97,10 @@ export function buildWebFunctionLambdaView(
 /**
  * The `--assume-role` value to hand the shared resolver. A bare
  * `--assume-role` resolves the revision's own `ExecutionRoleArn` when that is a
- * literal role ARN; an intrinsic one passes the bare form through, where the
- * resolver warns that the ARN must be given explicitly and keeps the shell
- * credentials (the `lambda:GetFunctionConfiguration` lookup a Lambda falls back
- * to cannot answer for a web function revision).
+ * literal role ARN; an intrinsic one (what CDK synthesizes) passes the bare
+ * form through, where the resolver reads it from the view's `Role` against the
+ * state-source flag's deployed state (`resolveTemplateRoleArnFromState`), and
+ * without state warns that the ARN must be given explicitly.
  */
 export function webFunctionAssumeRole(
   assumeRole: string | boolean | undefined,

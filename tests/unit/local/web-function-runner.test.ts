@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 
-const runDetached = vi.hoisted(() => vi.fn(async () => 'cid-1'));
+const runDetached = vi.hoisted(() => vi.fn(async (_opts: Record<string, unknown>) => 'cid-1'));
 vi.mock('../../../src/local/docker-runner.js', async (importActual) => ({
   ...(await importActual<object>()),
   runDetached,
@@ -8,21 +8,74 @@ vi.mock('../../../src/local/docker-runner.js', async (importActual) => ({
 
 const {
   RecentOutput,
+  containerFailure,
+  planWebFunctionContainer,
   startWebFunctionContainer,
   waitForWebFunctionReady,
   WEB_FUNCTION_CONTAINER_PORT,
+  MAX_PROBE_TIMEOUT_MS,
 } = await import('../../../src/local/web-function-runner.js');
 const { resolveWebFunctionRuntime } = await import('../../../src/local/web-function-runtime.js');
+type Spec = import('../../../src/local/web-function-runtime.js').WebFunctionRuntimeSpec;
 
-const spec = resolveWebFunctionRuntime('nodejs24.x');
-const start = { entryPoint: ['/var/lang/bin/node'], cmd: ['/var/task/index.js'], entryFile: 'index.js' };
+const node = resolveWebFunctionRuntime('nodejs24.x');
+const zip = { kind: 'zip' as const, runtime: 'nodejs24.x', codeDir: '/code', assetHash: 'h' };
+
+describe('planWebFunctionContainer', () => {
+  it('mounts a zip bundle read-only and takes the start command from the row', () => {
+    expect(planWebFunctionContainer(zip, node, {}, { fileExists: () => true })).toEqual({
+      image: 'public.ecr.aws/lambda/nodejs:24',
+      mounts: [{ hostPath: '/code', containerPath: '/var/task', readOnly: true }],
+      entryPoint: ['/var/lang/bin/node'],
+      cmd: ['/var/task/index.js'],
+      workingDir: '/var/task',
+      label: 'index.js',
+    });
+  });
+
+  it('refuses the reserved image artifact', () => {
+    expect(() =>
+      planWebFunctionContainer({ kind: 'image', imageUri: 'repo:tag' }, node, {})
+    ).toThrow(/container-image web function source is not supported yet/);
+  });
+
+  it('runs a command-style row unchanged: a row is all a new runtime needs', async () => {
+    const python: Spec = {
+      runtime: 'python3.13',
+      baseImage: 'public.ecr.aws/lambda/python:3.13',
+      codeMountPath: '/var/task',
+      architectures: ['arm64'],
+      buildStart: () => ({
+        entryPoint: ['/var/lang/bin/python3', '-m'],
+        cmd: ['uvicorn', 'app:app', '--port', '8080'],
+        label: 'uvicorn app:app',
+      }),
+    };
+    const plan = planWebFunctionContainer(zip, python, {});
+    runDetached.mockClear();
+    await startWebFunctionContainer({
+      plan,
+      env: {},
+      sensitiveEnvKeys: new Set(),
+      host: '127.0.0.1',
+      hostPort: 1,
+      platform: 'linux/arm64',
+      name: 'cdkl-webfn-x',
+    });
+    expect(runDetached.mock.calls[0]![0]).toMatchObject({
+      image: 'public.ecr.aws/lambda/python:3.13',
+      entryPoint: ['/var/lang/bin/python3', '-m'],
+      cmd: ['uvicorn', 'app:app', '--port', '8080'],
+    });
+  });
+});
 
 describe('startWebFunctionContainer', () => {
-  it('mounts the bundle read-only and replaces the RIE entrypoint with the interpreter', async () => {
+  it('publishes the plan WITHOUT --rm, so a boot crash keeps its logs', async () => {
+    runDetached.mockClear();
+    const plan = planWebFunctionContainer(zip, node, {}, { fileExists: () => true });
     const id = await startWebFunctionContainer({
-      artifact: { kind: 'zip', runtime: 'nodejs24.x', codeDir: '/code', assetHash: 'h' },
-      spec,
-      start,
+      plan,
       env: { AWS_LAMBDA_HTTP_ENDPOINT: '0.0.0.0:8080' },
       sensitiveEnvKeys: new Set(['SECRET']),
       host: '127.0.0.1',
@@ -44,25 +97,8 @@ describe('startWebFunctionContainer', () => {
       host: '127.0.0.1',
       platform: 'linux/arm64',
       name: 'cdkl-webfn-1-abc',
+      autoRemove: false,
     });
-  });
-
-  it('refuses the reserved image artifact without touching Docker', async () => {
-    runDetached.mockClear();
-    await expect(
-      startWebFunctionContainer({
-        artifact: { kind: 'image', imageUri: 'repo:tag' },
-        spec,
-        start,
-        env: {},
-        sensitiveEnvKeys: new Set(),
-        host: '127.0.0.1',
-        hostPort: 1,
-        platform: 'linux/arm64',
-        name: 'cdkl-x',
-      })
-    ).rejects.toThrow(/container-image web function source is not supported yet/);
-    expect(runDetached).not.toHaveBeenCalled();
   });
 });
 
@@ -84,57 +120,86 @@ describe('RecentOutput', () => {
 describe('waitForWebFunctionReady', () => {
   const fakeClock = () => {
     let t = 0;
-    return { now: () => t, sleep: async (ms: number) => void (t += ms) };
+    return { now: () => t, sleep: async (ms: number) => void (t += ms), advance: (ms: number) => (t += ms) };
   };
+  const base = { containerId: 'c', host: '127.0.0.1', port: 18460, label: 'index.js' };
 
   it('returns once a probe gets an HTTP response', async () => {
     const clock = fakeClock();
-    const probe = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const probe = vi.fn().mockResolvedValueOnce('refused').mockResolvedValueOnce('answered');
     await waitForWebFunctionReady(
-      {
-        containerId: 'c',
-        host: '127.0.0.1',
-        port: 1,
-        timeoutMs: 5000,
-        recent: new RecentOutput(),
-        entryFile: 'index.js',
-      },
-      { probe, isRunning: async () => true, ...clock }
+      { ...base, timeoutMs: 5000, recent: new RecentOutput() },
+      { probe, isRunning: async () => true, fetchLogs: async () => [], ...clock }
     );
     expect(probe).toHaveBeenCalledTimes(2);
   });
 
-  it('fails fast with the last container lines when the container exits', async () => {
+  it('gives each probe min(remaining, 10s), so a slow / still comes up', async () => {
     const clock = fakeClock();
-    const recent = new RecentOutput();
-    recent.push('Error: Cannot find module express\n');
-    await expect(
-      waitForWebFunctionReady(
-        { containerId: 'c', host: '127.0.0.1', port: 1, timeoutMs: 60_000, recent, entryFile: 'index.js' },
-        { probe: async () => false, isRunning: async () => false, ...clock }
-      )
-    ).rejects.toThrow(
-      /exited before its server listened on AWS_LAMBDA_HTTP_ENDPOINT[\s\S]*Cannot find module express/
+    const timeouts: number[] = [];
+    const probe = vi.fn(async (_h: string, _p: number, t: number) => {
+      timeouts.push(t);
+      clock.advance(t);
+      return timeouts.length < 2 ? ('timeout' as const) : ('answered' as const);
+    });
+    await waitForWebFunctionReady(
+      { ...base, timeoutMs: 15_000, recent: new RecentOutput() },
+      { probe, isRunning: async () => true, fetchLogs: async () => [], ...clock }
     );
-    expect(clock.now()).toBeLessThan(60_000);
+    expect(timeouts).toEqual([MAX_PROBE_TIMEOUT_MS, 5000]);
   });
 
-  it('times out naming the endpoint contract when nothing ever answers', async () => {
+  it('says "listening but slow" when the last probe timed out', async () => {
     const clock = fakeClock();
     await expect(
       waitForWebFunctionReady(
+        { ...base, timeoutMs: 2000, recent: new RecentOutput() },
         {
-          containerId: 'c',
-          host: '127.0.0.1',
-          port: 18460,
-          timeoutMs: 2000,
-          recent: new RecentOutput(),
-          entryFile: 'index.js',
-        },
-        { probe: async () => false, isRunning: async () => true, ...clock }
+          probe: async (_h, _p, t) => {
+            clock.advance(t);
+            return 'timeout';
+          },
+          isRunning: async () => true,
+          fetchLogs: async () => [],
+          ...clock,
+        }
+      )
+    ).rejects.toThrow(/accepted the connection but did not answer GET \/ within 2000ms — it is listening but slow/);
+  });
+
+  it('says "never accepted" when nothing listens', async () => {
+    const clock = fakeClock();
+    await expect(
+      waitForWebFunctionReady(
+        { ...base, timeoutMs: 2000, recent: new RecentOutput() },
+        { probe: async () => 'refused', isRunning: async () => true, fetchLogs: async () => [], ...clock }
       )
     ).rejects.toThrow(
-      /did not answer HTTP on 127\.0\.0\.1:18460 within 2000ms.*AWS_LAMBDA_HTTP_ENDPOINT.*printed nothing/
+      /never accepted an HTTP connection on 127\.0\.0\.1:18460 within 2000ms.*AWS_LAMBDA_HTTP_ENDPOINT.*printed nothing/
     );
+  });
+
+  it('fails fast with the docker-logs tail when the container exits at boot', async () => {
+    const clock = fakeClock();
+    const fetchLogs = vi.fn(async () => ['SyntaxError: Unexpected token', '    at index.js:3']);
+    await expect(
+      waitForWebFunctionReady(
+        { ...base, timeoutMs: 60_000, recent: new RecentOutput() },
+        { probe: async () => 'refused', isRunning: async () => false, fetchLogs, ...clock }
+      )
+    ).rejects.toThrow(/exited before its server listened[\s\S]*SyntaxError: Unexpected token[\s\S]*index\.js:3/);
+    expect(fetchLogs).toHaveBeenCalledWith('c', 20);
+    expect(clock.now()).toBeLessThan(60_000);
+  });
+});
+
+describe('containerFailure', () => {
+  it('falls back to the relayed lines when docker logs cannot be read', async () => {
+    const recent = new RecentOutput();
+    recent.push('relayed line\n');
+    const err = await containerFailure('boom.', 'c', recent, async () => {
+      throw new Error('gone');
+    });
+    expect(err.message).toMatch(/boom\. Last 1 line\(s\) of container output:\n {2}relayed line/);
   });
 });

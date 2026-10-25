@@ -166,11 +166,12 @@ a log line, and a served HTTP response body.
 
 - **web-function-resolver** (target -> ONE revision), **web-function-artifact**
   (seam 1: `CodeConfig` -> the artifact union; an unknown key FAILS naming it),
-  **web-function-runtime** (seam 2: runtime id -> base image, interpreter,
-  entrypoint env), **web-function-service-config** (`ServiceConfig` -> the
-  Lambda env view; `AWS_LAMBDA_HTTP_ENDPOINT` set LAST), **web-function-runner**
-  (container boot + HTTP readiness, shared by every kind). A new runtime or code
-  source is a row / union member there, never a branch in the command.
+  **web-function-runtime** (seam 2: runtime id -> a row whose own `buildStart`
+  returns the whole command line), **web-function-service-config**
+  (`ServiceConfig` -> the Lambda env view; `AWS_LAMBDA_HTTP_ENDPOINT` set LAST),
+  **web-function-runner** (`planWebFunctionContainer`, the ONE per-kind switch;
+  boot without `--rm`; HTTP readiness; exit watch). A new runtime or code source
+  is a row / union member there, never a branch in the command.
 
 ## Studio
 

@@ -47,6 +47,26 @@ describe('parseWebFunctionBuildConfig', () => {
     ).toThrow(/not a literal string.*must come from a CDK asset in this app/);
   });
 
+  it('fails without a CodeConfig, and without an S3Object', () => {
+    expect(() =>
+      parseWebFunctionBuildConfig('Rev', { RuntimeConfig: { Runtime: 'nodejs24.x' } })
+    ).toThrow(/has no BuildConfig\.CodeConfig object/);
+    expect(() =>
+      parseWebFunctionBuildConfig('Rev', {
+        CodeConfig: {},
+        RuntimeConfig: { Runtime: 'nodejs24.x' },
+      })
+    ).toThrow(/has no BuildConfig\.CodeConfig\.S3Object/);
+  });
+
+  it('passes VersionId through', () => {
+    const parsed = parseWebFunctionBuildConfig('Rev', {
+      CodeConfig: { S3Object: { Bucket: 'b', Key: 'k.zip', VersionId: 'v1' } },
+      RuntimeConfig: { Runtime: 'nodejs24.x' },
+    });
+    expect(parsed.s3Object).toEqual({ bucket: 'b', key: 'k.zip', versionId: 'v1' });
+  });
+
   it('fails without a literal runtime', () => {
     expect(() =>
       parseWebFunctionBuildConfig('Rev', { CodeConfig: { S3Object: { Key: 'k' } } })
@@ -75,6 +95,21 @@ describe('findFileAssetForObjectKey', () => {
     expect(findFileAssetForObjectKey(manifest('pre/abc123.zip'), 'abc123.zip')?.hash).toBe(
       'abc123'
     );
+  });
+
+  it('matches a prefixed key only at a segment boundary', () => {
+    const other: AssetManifest = {
+      version: '52.0.0',
+      files: {
+        zzz: {
+          displayName: 'Other',
+          source: { path: 'asset.zzz', packaging: 'zip' },
+          destinations: { d: { bucketName: 'b', objectKey: 'xkey.zip' } },
+        },
+      },
+      dockerImages: {},
+    };
+    expect(findFileAssetForObjectKey(other, 'key.zip')).toBeUndefined();
   });
 
   it('falls back to the manifest entry keyed by the hash', () => {
@@ -183,6 +218,23 @@ describe('resolveWebFunctionArtifact', () => {
         parseWebFunctionBuildConfig('Rev', buildConfig('abc123.zip'))
       )
     ).rejects.toThrow(/matches no file asset in this app's cdk\.out/);
+  });
+
+  it('explains a source.executable asset, which has no staged bundle', async () => {
+    writeManifest({
+      abc123: {
+        displayName: 'Code',
+        source: { executable: ['./build.sh'] } as never,
+        destinations: { d: { bucketName: 'b', objectKey: 'abc123.zip' } },
+      },
+    });
+    await expect(
+      resolveWebFunctionArtifact(
+        stack,
+        'Rev',
+        parseWebFunctionBuildConfig('Rev', buildConfig('abc123.zip'))
+      )
+    ).rejects.toThrow(/has no source\.path \(it is produced by source\.executable.*asset of a directory or a \.zip/);
   });
 
   it('refuses an asset source that climbs out of the assembly', async () => {
