@@ -12,6 +12,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import { formatAuthority } from '../../utils/url-authority.js';
+import { displayUntrustedValue } from '../../utils/assembly-path.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import {
@@ -38,6 +39,7 @@ import { resolveLambdaContainerEnv, type LambdaContainerEnvOptions } from './loc
 import { resolveWebFunctionTarget } from '../../local/web-function-resolver.js';
 import {
   disposeWebFunctionArtifact,
+  webFunctionArtifactHostPath,
   parseWebFunctionBuildConfig,
   resolveWebFunctionArtifact,
   type WebFunctionArtifact,
@@ -127,15 +129,20 @@ async function localStartWebFunctionCommand(
   let runInFlight: Promise<string> | undefined;
   let teardownPromise: Promise<void> | undefined;
   let shuttingDown = false;
+  // Teardown is blocked on the in-flight `docker run` (no container id yet).
+  let waitingOnRun = false;
   const forever = (): Promise<never> => new Promise<never>(() => undefined);
 
   const doTeardown = async (): Promise<void> => {
     exitWatch?.stop();
     if (containerId === undefined && runInFlight !== undefined) {
+      waitingOnRun = true;
       try {
         containerId = await runInFlight;
       } catch {
         /* docker run failed: no container */
+      } finally {
+        waitingOnRun = false;
       }
     }
     if (stopLogs) {
@@ -218,16 +225,29 @@ async function localStartWebFunctionCommand(
 
   // Armed as soon as there is anything on the host to clean up (an extracted
   // bundle), so ^C during a long first pull still removes it.
-  const shutdown = async (signal: string, exitCode: number): Promise<void> => {
+  const shutdown = async (signal: 'SIGINT' | 'SIGTERM', exitCode: number): Promise<void> => {
     if (shuttingDown) {
-      // A second ^C while teardown waits (on an in-flight `docker run`, say):
-      // the usual convention — exit now, naming what may be left behind.
+      // A second signal. Abandon ONLY while teardown waits on an in-flight
+      // `docker run` (which may never return). Once it is removing the
+      // container / bundle, finish: a double ^C reaches the whole process group,
+      // so exiting here would also cut short the `docker rm -f` child and leave
+      // a credential-bearing container running.
+      if (!waitingOnRun) {
+        logger.info(`Received ${signal} again; still removing the container, please wait...`);
+        return;
+      }
+      const prefix = `${getEmbedConfig().resourceNamePrefix}-webfn-`;
+      const leftover = webFunctionArtifactHostPath(artifact);
       logger.warn(
-        `Received ${signal} again; exiting without waiting for teardown. ` +
-          `A ${getEmbedConfig().resourceNamePrefix}-webfn-* container may remain: ` +
-          `docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-webfn-`
+        `Received ${signal} again; exiting without waiting for docker run to return. The ` +
+          `container may still be starting, and its environment holds the forwarded AWS ` +
+          `credentials. Remove it: docker ps -a --filter name=${prefix} -q | xargs -r docker rm -f` +
+          (leftover !== undefined
+            ? `. Also remove the extracted code bundle: ${displayUntrustedValue(leftover)}`
+            : '') +
+          '.'
       );
-      process.exit(exitCode);
+      process.exit(signal === 'SIGINT' ? 130 : 143);
       return;
     }
     shuttingDown = true;

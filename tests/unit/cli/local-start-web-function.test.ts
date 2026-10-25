@@ -442,7 +442,42 @@ describe('cdkl start-web-function', () => {
     ((await handler('SIGINT')) as () => void)();
     await until(() => exits.length > 0);
     expect(exits[0]!.code).toBe(130);
-    expect(lines.some((l) => l.includes('again; exiting without waiting for teardown'))).toBe(true);
+    const warn = lines.find((l) => l.includes('again; exiting without waiting for docker run'));
+    expect(warn).toBeDefined();
+    expect(warn).toMatch(/may still be starting, and its environment holds the forwarded AWS credentials/);
+    expect(warn).toContain('docker ps -a --filter name=cdkl-webfn- -q | xargs -r docker rm -f');
+    expect(warn).toContain(`Also remove the extracted code bundle: ${h.artifacts[0]!.tmpDir}`);
+  });
+
+  it('a second SIGTERM on the abandoned path exits 143, never 0', async () => {
+    h.runDetached.mockImplementation(() => new Promise<string>(() => undefined));
+    const { exits, handler, until } = await withSignals(['App:Ep']);
+    await until(() => h.runDetached.mock.calls.length > 0);
+    const onTerm = (await handler('SIGTERM')) as () => void;
+    onTerm();
+    await new Promise((r) => setTimeout(r, 10));
+    onTerm();
+    await until(() => exits.length > 0);
+    expect(exits[0]!.code).toBe(143);
+  });
+
+  it('a second signal while the container is being removed waits for removal and dispose', async () => {
+    let finishRemove: () => void = () => undefined;
+    h.removeContainer.mockImplementation(
+      () => new Promise<undefined>((r) => (finishRemove = () => r(undefined)))
+    );
+    const { exits, handler, until } = await withSignals(['App:Ep']);
+    await until(() => lines.includes('Press ^C to shut down.'));
+    ((await handler('SIGINT')) as () => void)();
+    await until(() => h.removeContainer.mock.calls.length > 0);
+    ((await handler('SIGINT')) as () => void)();
+    ((await handler('SIGTERM')) as () => void)();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(exits).toEqual([]); // ignored: the docker rm -f must finish
+    expect(lines.some((l) => l.includes('still removing the container'))).toBe(true);
+    finishRemove();
+    await until(() => exits.length > 0);
+    expect(exits).toEqual([{ code: 130, tmpGone: true }]);
   });
 
   it('a ^C during a failure teardown waits for the SAME teardown before exiting', async () => {

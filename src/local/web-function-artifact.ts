@@ -227,6 +227,17 @@ export function disposeWebFunctionArtifact(artifact: WebFunctionArtifact | undef
   }
 }
 
+/**
+ * The host directory {@link resolveWebFunctionArtifact} created for an artifact
+ * (a zip's extracted temp dir), for a message naming what an abandoned run
+ * leaves behind; `undefined` when it created none.
+ */
+export function webFunctionArtifactHostPath(
+  artifact: WebFunctionArtifact | undefined
+): string | undefined {
+  return artifact?.kind === 'zip' ? artifact.tmpDir : undefined;
+}
+
 function asObject(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)

@@ -778,6 +778,7 @@ export {
   resolveWebFunctionArtifact,
   findFileAssetForObjectKey,
   disposeWebFunctionArtifact,
+  webFunctionArtifactHostPath,
   type WebFunctionArtifact,
   type WebFunctionZipArtifact,
   type WebFunctionImageArtifact,
