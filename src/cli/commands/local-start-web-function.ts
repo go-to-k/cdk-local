@@ -122,16 +122,22 @@ async function localStartWebFunctionCommand(
   let stopLogs: (() => void) | undefined;
   let exitWatch: ReturnType<typeof watchContainerExit> | undefined;
   let artifact: WebFunctionArtifact | undefined;
-  let tornDown = false;
+  // The `docker run -d` in flight, so a teardown that starts before it returns
+  // still finds (and removes) the container the docker CLI goes on to create.
+  let runInFlight: Promise<string> | undefined;
+  let teardownPromise: Promise<void> | undefined;
   let shuttingDown = false;
   const forever = (): Promise<never> => new Promise<never>(() => undefined);
 
-  // Null-safe and idempotent: it may run before the container exists (a
-  // signal during the pull) or twice (a signal racing a failure).
-  const teardown = async (): Promise<void> => {
-    if (tornDown) return;
-    tornDown = true;
+  const doTeardown = async (): Promise<void> => {
     exitWatch?.stop();
+    if (containerId === undefined && runInFlight !== undefined) {
+      try {
+        containerId = await runInFlight;
+      } catch {
+        /* docker run failed: no container */
+      }
+    }
     if (stopLogs) {
       try {
         stopLogs();
@@ -143,6 +149,9 @@ async function localStartWebFunctionCommand(
     if (containerId) await removeContainer(containerId);
     disposeWebFunctionArtifact(artifact);
   };
+  // Memoized PROMISE: every caller (a failure path, a signal racing it) awaits
+  // the SAME teardown, so none can exit before the bundle is disposed.
+  const teardown = (): Promise<void> => (teardownPromise ??= doTeardown());
 
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
@@ -249,14 +258,15 @@ async function localStartWebFunctionCommand(
     const platform = options.platform ?? defaultWebFunctionPlatform(spec);
 
     await pullImage(plan.image, options.pull === false, platform);
-    if (tornDown) return await forever();
+    // A signal during the pull: its shutdown owns the exit.
+    if (teardownPromise) return await forever();
     const hostPort = options.port === 0 ? await pickFreePort() : options.port;
     const name = `${getEmbedConfig().resourceNamePrefix}-webfn-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
     logger.info(
       `Starting web function container (image=${plan.image}, start=${plan.label}, ` +
         `port=${hostPort} -> ${WEB_FUNCTION_CONTAINER_PORT})...`
     );
-    const id = await startWebFunctionContainer({
+    runInFlight = startWebFunctionContainer({
       plan,
       env,
       sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
@@ -265,11 +275,10 @@ async function localStartWebFunctionCommand(
       platform,
       name,
     });
-    if (tornDown) {
-      // A signal tore down while `docker run` was in flight.
-      await removeContainer(id);
-      return await forever();
-    }
+    const id = await runInFlight;
+    // A signal while `docker run` was in flight: its teardown awaited the same
+    // promise and removes this container, then exits.
+    if (teardownPromise) return await forever();
     containerId = id;
     stopLogs = streamLogs(id, { onOutput: (chunk) => recent.push(chunk) });
     exitWatch = watchContainerExit(id);
@@ -299,11 +308,13 @@ async function localStartWebFunctionCommand(
   // exiting 0 with the container and the extracted bundle left behind.
   if (!exitWatch || !containerId) return await forever();
   const exitCode = await exitWatch.exited;
-  if (shuttingDown || tornDown) return await forever();
+  if (shuttingDown || teardownPromise) return await forever();
   const failure = await containerFailure(
     `The web function container exited (exit code ${exitCode ?? 'unknown'}) while serving.`,
     containerId,
-    recent
+    recent,
+    undefined,
+    'LOCAL_START_WEB_FUNCTION_EXITED'
   );
   await teardown();
   throw failure;
@@ -409,7 +420,8 @@ export function addStartWebFunctionSpecificOptions(cmd: Command): Command {
         '--assume-role [arn]',
         "Assume the revision's execution role and forward STS-issued temp credentials to the " +
           'container. (1) `--assume-role <arn>` assumes the explicit ARN; (2) `--assume-role` ' +
-          "(bare) uses the revision's literal ServiceConfig.ExecutionRoleArn; (3) " +
+          "(bare) uses the revision's ServiceConfig.ExecutionRoleArn: a literal ARN as written, or " +
+          'the Fn::GetAtt / Ref CDK synthesizes resolved against --from-cfn-stack deployed state; (3) ' +
           '`--no-assume-role` opts out. Off by default.'
       )
     )

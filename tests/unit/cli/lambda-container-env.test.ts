@@ -199,6 +199,32 @@ describe('resolveTemplateRoleArnFromState', () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
+  it('returns a physical id that already is a role ARN', async () => {
+    const s = state({ Role: { physicalId: 'arn:aws:iam::222222222222:role/Phys', attributes: {} } });
+    expect(await resolveTemplateRoleArnFromState({ Ref: 'Role' }, s, template, pseudo)).toBe(
+      'arn:aws:iam::222222222222:role/Phys'
+    );
+  });
+
+  it('defaults the partition to aws', async () => {
+    const s = state({ Role: { physicalId: 'R', attributes: {} } });
+    expect(
+      await resolveTemplateRoleArnFromState({ Ref: 'Role' }, s, template, async () => ({
+        accountId: '123456789012',
+      }))
+    ).toBe('arn:aws:iam::123456789012:role/R');
+  });
+
+  it('rejects a physical id that is not a role name, and a non-literal Path', async () => {
+    const bad = state({ Role: { physicalId: 'has/slash name', attributes: {} } });
+    expect(await resolveTemplateRoleArnFromState({ Ref: 'Role' }, bad, template, pseudo)).toBeUndefined();
+    const t2 = {
+      Resources: { Role: { Type: 'AWS::IAM::Role', Properties: { Path: { Ref: 'P' } } } },
+    };
+    const ok = state({ Role: { physicalId: 'R', attributes: {} } });
+    expect(await resolveTemplateRoleArnFromState({ Ref: 'Role' }, ok, t2, pseudo)).toBeUndefined();
+  });
+
   it('declines a non-role reference, a missing state row and an unknown account', async () => {
     const s = state({ Role: { physicalId: 'App-Role', attributes: {} }, Bucket: { physicalId: 'b' } });
     expect(await resolveTemplateRoleArnFromState({ Ref: 'Bucket' }, s, template, pseudo)).toBeUndefined();

@@ -71,6 +71,21 @@ describe('planWebFunctionContainer', () => {
 });
 
 describe('startWebFunctionContainer', () => {
+  it('omits sensitiveEnvKeys when there are none', async () => {
+    runDetached.mockClear();
+    const plan = planWebFunctionContainer(zip, node, {}, { fileExists: () => true });
+    await startWebFunctionContainer({
+      plan,
+      env: {},
+      sensitiveEnvKeys: new Set(),
+      host: '127.0.0.1',
+      hostPort: 1,
+      platform: 'linux/arm64',
+      name: 'cdkl-webfn-y',
+    });
+    expect(runDetached.mock.calls[0]![0]).not.toHaveProperty('sensitiveEnvKeys');
+  });
+
   it('publishes the plan WITHOUT --rm, so a boot crash keeps its logs', async () => {
     runDetached.mockClear();
     const plan = planWebFunctionContainer(zip, node, {}, { fileExists: () => true });
@@ -108,6 +123,19 @@ describe('RecentOutput', () => {
     r.push('a\nb');
     r.push('c\nd\n');
     expect(r.tail()).toEqual(['bc', 'd']);
+  });
+
+  it('strips a trailing carriage return', () => {
+    const r = new RecentOutput();
+    r.push('crlf line\r\n');
+    expect(r.tail()).toEqual(['crlf line']);
+  });
+
+  it('flushes an unterminated line once it passes 4096 characters', () => {
+    const r = new RecentOutput();
+    r.push('x'.repeat(4097));
+    r.push('next\n');
+    expect(r.tail()).toEqual(['x'.repeat(4097), 'next']);
   });
 
   it('includes an unterminated tail', () => {
@@ -194,6 +222,27 @@ describe('waitForWebFunctionReady', () => {
 });
 
 describe('containerFailure', () => {
+  it("prefers Docker's own log tail over the relayed lines", async () => {
+    const recent = new RecentOutput();
+    recent.push('relayed only\n');
+    const err = await containerFailure('boom.', 'c', recent, async () => ['from docker']);
+    expect(err.message).toContain('from docker');
+    expect(err.message).not.toContain('relayed only');
+    expect(err.code).toBe('LOCAL_START_WEB_FUNCTION_NOT_READY');
+  });
+
+  it('carries the exit-while-serving code when asked', async () => {
+    const err = await containerFailure(
+      'exited.',
+      'c',
+      new RecentOutput(),
+      async () => [],
+      'LOCAL_START_WEB_FUNCTION_EXITED'
+    );
+    expect(err.code).toBe('LOCAL_START_WEB_FUNCTION_EXITED');
+    expect(err.message).toBe('exited. The container printed nothing.');
+  });
+
   it('falls back to the relayed lines when docker logs cannot be read', async () => {
     const recent = new RecentOutput();
     recent.push('relayed line\n');

@@ -30,17 +30,17 @@ The first run pulls `public.ecr.aws/lambda/<runtime>:<version>` (~200-400 MB dep
 ### Orphan containers / networks from a previous run
 
 ```bash
-docker ps --filter name=cdkl- -q | wc -l         # should be 0
+docker ps -a --filter name=cdkl- -q | wc -l         # should be 0
 docker network ls --filter name=cdkl-task- -q | wc -l   # should be 0
 docker network ls --filter name=cdkl-svc- -q  | wc -l   # should be 0
 ```
 
-Any non-zero count = a previous `cdkl` run was interrupted and left state behind. Either:
+Any non-zero count = a previous `cdkl` run was interrupted and left state behind. Keep the `-a`: `cdkl start-web-function` runs its container without `--rm` (so a server that crashes at boot keeps its logs), and a run killed with `SIGKILL` leaves an EXITED `cdkl-webfn-*` container behind. That container's `docker inspect` output shows its environment, including the AWS credentials forwarded into it, so remove it rather than leaving it around. Either:
 
 - Re-run the same command — cdk-local will reap the orphan name collision and continue. For `cdkl start-service` specifically, the next run automatically reclaims any leaked `cdkl-svc-*` shared network that has no live owner before it re-creates its own, so the fixed-subnet "Pool overlaps" failure no longer requires a manual `docker network rm`.
 - Or sweep manually:
   ```bash
-  docker ps --filter name=cdkl- -q | xargs -r docker rm -f
+  docker ps -a --filter name=cdkl- -q | xargs -r docker rm -f
   docker network ls --filter name=cdkl-task- -q | xargs -r docker network rm
   docker network ls --filter name=cdkl-svc-  -q | xargs -r docker network rm
   ```

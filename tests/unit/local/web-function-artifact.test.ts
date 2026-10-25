@@ -237,6 +237,33 @@ describe('resolveWebFunctionArtifact', () => {
     ).rejects.toThrow(/has no source\.path \(it is produced by source\.executable.*asset of a directory or a \.zip/);
   });
 
+  it('fails when the asset source is missing from cdk.out', async () => {
+    writeManifest({
+      abc123: {
+        displayName: 'Code',
+        source: { path: 'asset.abc123', packaging: 'zip' },
+        destinations: { d: { bucketName: 'b', objectKey: 'abc123.zip' } },
+      },
+    });
+    await expect(
+      resolveWebFunctionArtifact(stack, 'Rev', parseWebFunctionBuildConfig('Rev', buildConfig('abc123.zip')))
+    ).rejects.toThrow(/source .*asset\.abc123 does not exist\. Re-synthesize/);
+  });
+
+  it('fails when the asset source is a plain file, not a bundle', async () => {
+    writeFileSync(join(outdir, 'asset.abc123.txt'), 'x');
+    writeManifest({
+      abc123: {
+        displayName: 'Code',
+        source: { path: 'asset.abc123.txt', packaging: 'file' },
+        destinations: { d: { bucketName: 'b', objectKey: 'abc123.zip' } },
+      },
+    });
+    await expect(
+      resolveWebFunctionArtifact(stack, 'Rev', parseWebFunctionBuildConfig('Rev', buildConfig('abc123.zip')))
+    ).rejects.toThrow(/is neither a directory nor a \.zip archive/);
+  });
+
   it('refuses an asset source that climbs out of the assembly', async () => {
     writeManifest({
       abc123: {

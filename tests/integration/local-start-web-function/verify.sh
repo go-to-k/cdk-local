@@ -186,7 +186,9 @@ set -e
 [ "${BOOM_RC}" -ne 0 ] || fail "start-web-function exited 0 for an entry file that throws at boot"
 grep -q 'container exited before its server listened' "${OUT_FILE}" \
   || fail "the boot failure is not reported as an exit before listening"
-grep -q 'boom-at-boot' "${OUT_FILE}" || fail "the boot failure does not show the app's stack trace"
+# After the error's `Last N line(s)` header, not merely in the live relay above it.
+awk '/Last [0-9]+ line\(s\) of container output:/ { h = 1 } h && /boom-at-boot/ { f = 1 } END { exit !f }' \
+  "${OUT_FILE}" || fail "the boot failure error does not quote the app's stack trace"
 assert_no_orphans "the boot failure"
 
 echo "[verify] PASS"

@@ -13,6 +13,8 @@ const h = vi.hoisted(() => ({
   runDetached: vi.fn(async (_opts: Record<string, unknown>) => 'cid-web'),
   pullImage: vi.fn(async (..._a: unknown[]) => undefined),
   removeContainer: vi.fn(async (_id: string) => undefined),
+  streamLogs: vi.fn((..._a: unknown[]) => () => undefined),
+  failureCodes: [] as unknown[],
   ready: vi.fn(async (_args: Record<string, unknown>) => undefined),
   exited: new Promise<number | undefined>(() => undefined),
   envCalls: [] as unknown[][],
@@ -25,14 +27,17 @@ vi.mock('../../../src/local/docker-runner.js', async (importActual) => ({
   pickFreePort: vi.fn(async () => 40123),
   pullImage: h.pullImage,
   runDetached: h.runDetached,
-  streamLogs: vi.fn(() => () => undefined),
+  streamLogs: h.streamLogs,
   removeContainer: h.removeContainer,
 }));
 vi.mock('../../../src/local/web-function-runner.js', async (importActual) => ({
   ...(await importActual<object>()),
   waitForWebFunctionReady: h.ready,
   watchContainerExit: vi.fn(() => ({ exited: h.exited, stop: () => undefined })),
-  containerFailure: vi.fn(async (message: string) => new Error(`${message} [last lines]`)),
+  containerFailure: vi.fn(async (message: string, ...rest: unknown[]) => {
+    h.failureCodes.push(rest[3]);
+    return new Error(`${message} [last lines]`);
+  }),
 }));
 vi.mock('../../../src/local/web-function-artifact.js', async (importActual) => {
   const actual = await importActual<typeof import('../../../src/local/web-function-artifact.js')>();
@@ -221,7 +226,9 @@ describe('cdkl start-web-function', () => {
     h.runDetached.mockReset().mockResolvedValue('cid-web');
     h.ready.mockReset().mockResolvedValue(undefined);
     h.pullImage.mockClear();
-    h.removeContainer.mockClear();
+    h.removeContainer.mockReset().mockResolvedValue(undefined);
+    h.streamLogs.mockReset().mockReturnValue(() => undefined);
+    h.failureCodes = [];
     h.exited = new Promise(() => undefined);
     h.envCalls = [];
     h.artifacts = [];
@@ -347,6 +354,82 @@ describe('cdkl start-web-function', () => {
     expect(h.removeContainer).toHaveBeenCalledWith('cid-web');
     expect(existsSync(h.artifacts[0]!.tmpDir!)).toBe(false);
     expect(lines.join('\n')).toMatch(/container exited \(exit code 1\) while serving\. \[last lines\]/);
+  });
+
+  it('reports an exit while serving with its own error code', async () => {
+    h.exited = Promise.resolve(3);
+    await runToFailure(['App:Ep']);
+    expect(h.failureCodes).toEqual(['LOCAL_START_WEB_FUNCTION_EXITED']);
+  });
+
+  it('tears down when streamLogs throws synchronously', async () => {
+    h.streamLogs.mockImplementation(() => {
+      throw new Error('spawn docker ENOENT');
+    });
+    const code = await runToFailure(['App:Ep']);
+    expect(code).toBe(1);
+    expect(h.removeContainer).toHaveBeenCalledWith('cid-web');
+    expect(existsSync(h.artifacts[0]!.tmpDir!)).toBe(false);
+  });
+
+  it('lets --platform win over the runtime row default', async () => {
+    await boot(['App:Ep', '--platform', 'linux/amd64']);
+    expect(runOpts().platform).toBe('linux/amd64');
+    expect(h.pullImage).toHaveBeenCalledWith('public.ecr.aws/lambda/nodejs:24', false, 'linux/amd64');
+  });
+
+  /** Drive the command with the signal handlers it registers captured, not emitted. */
+  async function withSignals(argv: string[]) {
+    captureConsole();
+    const exits: { code: number | undefined; tmpGone: boolean }[] = [];
+    vi.spyOn(process, 'exit').mockImplementation(((c?: number) => {
+      const tmp = h.artifacts[0]?.tmpDir;
+      exits.push({ code: c, tmpGone: tmp !== undefined && !existsSync(tmp) });
+    }) as never);
+    const run = command(assembly()).parseAsync([...argv, '--app', 'x'], { from: 'user' });
+    const handler = async (sig: 'SIGINT' | 'SIGTERM') => {
+      for (let i = 0; i < 400; i++) {
+        const fresh = process.listeners(sig).filter((l) => !(sig === 'SIGINT' ? sigint : sigterm).includes(l));
+        if (fresh.length > 0) return fresh[fresh.length - 1]!;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      throw new Error('no handler');
+    };
+    const until = async (cond: () => boolean) => {
+      for (let i = 0; i < 400 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+    };
+    return { exits, run, handler, until };
+  }
+
+  it('a SIGTERM during docker run removes the container that run then creates', async () => {
+    let finishRun: (id: string) => void = () => undefined;
+    h.runDetached.mockImplementation(() => new Promise<string>((r) => (finishRun = r)));
+    const { exits, handler, until } = await withSignals(['App:Ep']);
+    await until(() => h.runDetached.mock.calls.length > 0);
+    const onTerm = await handler('SIGTERM');
+    (onTerm as () => void)();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exits).toEqual([]); // still waiting for the in-flight run
+    finishRun('cid-late');
+    await until(() => exits.length > 0);
+    expect(h.removeContainer).toHaveBeenCalledWith('cid-late');
+    expect(exits[0]).toEqual({ code: 0, tmpGone: true });
+  });
+
+  it('a ^C during a failure teardown waits for the SAME teardown before exiting', async () => {
+    h.ready.mockRejectedValue(new Error('never ready'));
+    let finishRemove: () => void = () => undefined;
+    h.removeContainer.mockImplementation(() => new Promise<undefined>((r) => (finishRemove = () => r(undefined))));
+    const { exits, handler, until } = await withSignals(['App:Ep']);
+    await until(() => h.removeContainer.mock.calls.length > 0);
+    const onInt = await handler('SIGINT');
+    (onInt as () => void)();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exits).toEqual([]); // the ^C must not exit mid-teardown
+    finishRemove();
+    await until(() => exits.some((e) => e.code === 130));
+    expect(h.removeContainer).toHaveBeenCalledTimes(1);
+    expect(exits.every((e) => e.tmpGone)).toBe(true);
   });
 
   it('fails on an unknown runtime before touching Docker', async () => {

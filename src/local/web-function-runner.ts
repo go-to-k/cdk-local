@@ -223,7 +223,10 @@ export async function containerFailure(
   message: string,
   containerId: string,
   recent: RecentOutput,
-  fetchLogs: WebFunctionReadyDeps['fetchLogs'] = readContainerLogTail
+  fetchLogs: WebFunctionReadyDeps['fetchLogs'] = readContainerLogTail,
+  code:
+    | 'LOCAL_START_WEB_FUNCTION_NOT_READY'
+    | 'LOCAL_START_WEB_FUNCTION_EXITED' = 'LOCAL_START_WEB_FUNCTION_NOT_READY'
 ): Promise<CdkLocalError> {
   let lines: string[] = [];
   try {
@@ -238,7 +241,7 @@ export async function containerFailure(
           .map((l) => `  ${displayToolOutput(l)}`)
           .join('\n')}`
       : ' The container printed nothing.';
-  return new CdkLocalError(`${message}${detail}`, 'LOCAL_START_WEB_FUNCTION_NOT_READY');
+  return new CdkLocalError(`${message}${detail}`, code);
 }
 
 /**
@@ -275,10 +278,16 @@ export function watchContainerExit(containerId: string): {
   };
 }
 
-/** One `GET /` against the published port; any HTTP status counts. */
-function probeHttp(host: string, port: number, timeoutMs: number): Promise<ProbeOutcome> {
+/**
+ * One `GET /` against the published port; any HTTP status counts. The socket
+ * timeout also runs during connect, so a probe is `timeout` ("accepted, slow to
+ * answer") only once the `connect` event fired; a connect that never completes
+ * (a dropped SYN) is `refused`. Exported for unit testing.
+ */
+export function probeHttp(host: string, port: number, timeoutMs: number): Promise<ProbeOutcome> {
   return new Promise((resolveProbe) => {
     let timedOut = false;
+    let connected = false;
     const req = request(
       {
         host,
@@ -293,11 +302,16 @@ function probeHttp(host: string, port: number, timeoutMs: number): Promise<Probe
         resolveProbe('answered');
       }
     );
+    req.on('socket', (socket) => {
+      socket.once('connect', () => {
+        connected = true;
+      });
+    });
     req.on('timeout', () => {
       timedOut = true;
       req.destroy();
     });
-    req.on('error', () => resolveProbe(timedOut ? 'timeout' : 'refused'));
+    req.on('error', () => resolveProbe(timedOut && connected ? 'timeout' : 'refused'));
     req.end();
   });
 }
@@ -316,18 +330,45 @@ async function containerIsRunning(containerId: string): Promise<boolean> {
   }
 }
 
-/** `docker logs --tail <n>` of a (possibly exited) container, stdout then stderr. */
-export async function readContainerLogTail(containerId: string, lines: number): Promise<string[]> {
-  const { stdout, stderr } = await execFileAsync(
-    getDockerCmd(),
-    ['logs', '--tail', String(lines), containerId],
-    { maxBuffer: 4 * 1024 * 1024 }
-  );
-  return `${stdout}${stderr}`
-    .split('\n')
-    .map((l) => l.replace(/\r$/, ''))
-    .filter((l) => l.length > 0)
-    .slice(-lines);
+/**
+ * `docker logs --tail <n>` of a (possibly exited) container with stdout and
+ * stderr MERGED in arrival order — the `2>&1` reading — so a stack trace on
+ * stderr stays between the stdout lines around it. Rejects on a non-zero exit.
+ */
+export function readContainerLogTail(
+  containerId: string,
+  lines: number,
+  spawnFn: typeof spawn = spawn
+): Promise<string[]> {
+  return new Promise((resolveLogs, rejectLogs) => {
+    const proc = spawnFn(getDockerCmd(), ['logs', '--tail', String(lines), containerId], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const take = (c: Buffer): void => {
+      if (size > 4 * 1024 * 1024) return;
+      chunks.push(c);
+      size += c.length;
+    };
+    proc.stdout?.on('data', take);
+    proc.stderr?.on('data', take);
+    proc.on('error', rejectLogs);
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        rejectLogs(new Error(`docker logs exited ${code}`));
+        return;
+      }
+      resolveLogs(
+        Buffer.concat(chunks)
+          .toString()
+          .split('\n')
+          .map((l) => l.replace(/\r$/, ''))
+          .filter((l) => l.length > 0)
+          .slice(-lines)
+      );
+    });
+  });
 }
 
 const defaultReadyDeps: WebFunctionReadyDeps = {

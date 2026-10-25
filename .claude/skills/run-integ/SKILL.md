@@ -26,7 +26,7 @@ moves the merge base and stales the `integ` marker the run earned.
    Confirm `verify.sh` exists; if not, the test has no Docker-driven flow yet —
    exit with a clear error naming the missing script.
 
-3. **Pre-flight Docker sweep**: `docker ps --filter name=cdkl- -q | wc -l` and
+3. **Pre-flight Docker sweep**: `docker ps -a --filter name=cdkl- -q | wc -l` and
    `docker network ls --filter name=cdkl-task- -q | wc -l` must both return `0`.
    If not, abort and ask the user to run `/cleanup` — running on top of orphans
    causes name collisions.
@@ -101,7 +101,7 @@ moves the merge base and stales the `integ` marker the run earned.
 6. **Verify Docker cleanup** (mandatory regardless of pass/fail):
 
    ```bash
-   docker ps --filter name=cdkl- -q | wc -l         # must be 0
+   docker ps -a --filter name=cdkl- -q | wc -l         # must be 0
    docker network ls --filter name=cdkl-task- -q | wc -l   # must be 0
    docker network ls --filter name=cdkl-svc- -q  | wc -l   # must be 0
    ```
