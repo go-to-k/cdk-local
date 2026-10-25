@@ -122,10 +122,13 @@ echo "[verify]   RevV2 served: ${BODY}"
 echo "[verify] step 4: ten concurrent slow requests are all answered, overlapped"
 CONC_DIR="$(mktemp -d)"
 START_MS="$(node -e 'console.log(Date.now())')"
+CURL_PIDS=()
 for i in $(seq 1 10); do
   curl -s "${URL}/slow" > "${CONC_DIR}/${i}.json" &
+  CURL_PIDS+=("$!")
 done
-wait
+# Wait on the curls only: a bare `wait` also waits on the backgrounded serve.
+wait "${CURL_PIDS[@]}"
 END_MS="$(node -e 'console.log(Date.now())')"
 OK_COUNT="$(grep -l '"path":"/slow"' "${CONC_DIR}"/*.json | wc -l | tr -d ' ')"
 rm -rf "${CONC_DIR}"
