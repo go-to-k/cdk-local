@@ -971,6 +971,14 @@ export interface LambdaContainerEnvOptions extends LocalStateSourceOptions {
   assumeRole?: string | boolean;
   /** `--env-vars` SAM-shape override file path. */
   envVars?: string;
+  /**
+   * `false` skips the two `lambda:GetFunctionConfiguration` fallbacks — the
+   * deployed-env fill for an unresolved env var and the bare
+   * `--assume-role` execution-role lookup. For a caller whose resource is
+   * NOT an `AWS::Lambda::Function` (`start-web-function`'s revision), whose
+   * physical id that API cannot answer for. Default `true`.
+   */
+  deployedFunctionLookups?: boolean;
 }
 
 /** The fully resolved container environment for a Lambda. */
@@ -1113,7 +1121,11 @@ async function resolveLambdaContainerEnvWith(
         }
         let unresolved = audit.unresolved;
         const resolvedKeys = [...audit.resolvedKeys];
-        if (unresolved.length > 0 && stateProvider.resolveDeployedFunctionEnv) {
+        if (
+          unresolved.length > 0 &&
+          options.deployedFunctionLookups !== false &&
+          stateProvider.resolveDeployedFunctionEnv
+        ) {
           const physicalId = loaded.resources[lambda.logicalId]?.physicalId;
           if (physicalId) {
             const deployedEnv = await stateProvider.resolveDeployedFunctionEnv(physicalId);
@@ -1183,12 +1195,31 @@ async function resolveLambdaContainerEnvWith(
 
   let resolvedAssumeRoleArn: string | undefined;
   try {
-    resolvedAssumeRoleArn = await resolveAssumeRoleArnForLambda(
-      options.assumeRole,
-      stateForRoleHint,
-      stateProvider,
-      lambda.logicalId
-    );
+    // A resource the GetFunctionConfiguration fallback cannot answer for (a web
+    // function revision) resolves a bare --assume-role from its TEMPLATE role
+    // reference against the loaded state instead.
+    const fromTemplate =
+      options.assumeRole === true && options.deployedFunctionLookups === false && stateForRoleHint
+        ? await resolveTemplateRoleArnFromState(
+            lambda.resource.Properties?.['Role'],
+            stateForRoleHint,
+            lambda.stack.template,
+            () => resolvePseudoParametersForInvoke(lambda.stack.region, options)
+          )
+        : undefined;
+    if (fromTemplate !== undefined) {
+      logger.info(
+        `--assume-role: auto-resolved execution role from state: ${flattenToOneLine(fromTemplate)}`
+      );
+    }
+    resolvedAssumeRoleArn =
+      fromTemplate ??
+      (await resolveAssumeRoleArnForLambda(
+        options.assumeRole,
+        stateForRoleHint,
+        options.deployedFunctionLookups === false ? undefined : stateProvider,
+        lambda.logicalId
+      ));
   } finally {
     stateProvider?.dispose();
   }
@@ -1473,6 +1504,46 @@ export function resolveExecutionRoleArnFromState(
     }
   }
   return undefined;
+}
+
+/**
+ * Resolve an execution role from the TEMPLATE's role value against deployed
+ * state, without a Lambda API call: a literal role ARN as written; a `Ref` /
+ * `Fn::GetAtt` to a same-stack `AWS::IAM::Role` through the state's cached
+ * `Arn` attribute, or a physical id that already is an ARN, or — the
+ * `--from-cfn-stack` shape, where `ListStackResources` gives the role NAME —
+ * `arn:<partition>:iam::<account>:role<Path><name>` with the role's literal
+ * `Path` (default `/`) and the caller's account. Every result is shape-checked
+ * with {@link isIamRoleArn}; anything else is `undefined`.
+ */
+export async function resolveTemplateRoleArnFromState(
+  templateRole: unknown,
+  state: Pick<StackState, 'resources'>,
+  template: { Resources?: Record<string, { Type: string; Properties?: Record<string, unknown> }> },
+  pseudo: () => Promise<{ accountId?: string; partition?: string } | undefined>
+): Promise<string | undefined> {
+  if (isIamRoleArn(templateRole)) return templateRole;
+  if (!templateRole || typeof templateRole !== 'object' || Array.isArray(templateRole)) {
+    return undefined;
+  }
+  const ref = pickReferencedLogicalId(templateRole as Record<string, unknown>);
+  if (ref === undefined) return undefined;
+  const roleResource = template.Resources?.[ref];
+  if (roleResource?.Type !== 'AWS::IAM::Role') return undefined;
+  const deployed = state.resources[ref];
+  if (!deployed) return undefined;
+  const cached = deployed.attributes?.['Arn'];
+  if (isIamRoleArn(cached)) return cached;
+  const physicalId = deployed.physicalId;
+  if (isIamRoleArn(physicalId)) return physicalId;
+  if (typeof physicalId !== 'string' || !/^[\w+=,.@-]{1,64}$/.test(physicalId)) return undefined;
+  const rawPath = roleResource.Properties?.['Path'];
+  if (rawPath !== undefined && typeof rawPath !== 'string') return undefined;
+  const rolePath = rawPath ?? '/';
+  const bag = await pseudo();
+  if (!bag?.accountId) return undefined;
+  const arn = `arn:${bag.partition ?? 'aws'}:iam::${bag.accountId}:role${rolePath}${physicalId}`;
+  return isIamRoleArn(arn) ? arn : undefined;
 }
 
 function pickReferencedLogicalId(intrinsic: Record<string, unknown>): string | undefined {

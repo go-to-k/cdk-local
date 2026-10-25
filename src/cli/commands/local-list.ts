@@ -107,7 +107,7 @@ export function formatTargetListing(
   options: FormatTargetListingOptions = {}
 ): string {
   if (countTargets(listing) === 0) {
-    return `No runnable targets (Lambda functions, APIs, ECS services / tasks, AgentCore Runtimes, load balancers, CloudFront distributions) found in this CDK app.`;
+    return `No runnable targets (Lambda functions, APIs, ECS services / tasks, AgentCore Runtimes, load balancers, CloudFront distributions, Lambda web functions) found in this CDK app.`;
   }
 
   const long = options.long ?? false;
@@ -142,6 +142,12 @@ export function formatTargetListing(
       'CloudFront Distributions',
       `${cliName} start-cloudfront <target>`,
       listing.cloudFrontDistributions,
+      long
+    ),
+    formatSection(
+      'Lambda Web Functions',
+      `${cliName} start-web-function <target>`,
+      listing.webFunctions,
       long
     ),
   ];

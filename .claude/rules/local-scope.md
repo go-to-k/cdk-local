@@ -6,11 +6,6 @@ command's emulation surface. Flag spellings live in README.md.
 
 ## Lambda / API Gateway
 
-- Lambda functions run in a real `public.ecr.aws/lambda/*` container via the
-  Lambda Runtime Interface Emulator.
-- API Gateway routing: REST v1 / HTTP v2 / Function URL / WebSocket over a local
-  HTTP server, with Lambda / Cognito User Pool JWT / IAM SigV4 authorizers.
-
 **Container env is one shared rule.** `resolveLambdaContainerEnv` resolves the
 env of EVERY locally booted Lambda container — direct `cdkl invoke`, ALB Lambda
 targets, CloudFront Function URL origins, Lambda@Edge — once per backing Lambda
@@ -126,9 +121,6 @@ Covers the container artifact AND the CodeConfiguration managed-runtime artifact
 
 ### `start-agentcore` (long-running serve)
 
-Boots the container ONCE and keeps it warm on one host port until `^C`, so many
-calls reuse one container.
-
 - **Inbound auth mirrors the cloud PER REQUEST**, unlike single-shot
   `invoke-agentcore`, which validates a token ONCE at boot: each `POST`'s
   `Authorization` is verified against the OIDC discovery URL / JWKS — `401` with
@@ -151,8 +143,7 @@ calls reuse one container.
 
 ## CloudFront: `start-cloudfront`
 
-The `viewer-request` -> S3 origin -> `viewer-response` pipeline, one
-distribution per invocation.
+One distribution per invocation.
 
 - **CloudFront Functions** run in-process in a `node:vm` sandbox
   (`cloudfront-js-1.0` / `2.0`, async handlers awaited) that adds the 2.0
@@ -203,3 +194,12 @@ distribution per invocation.
 - `--watch` atomically swaps the in-memory routing model under the live socket:
   viewer functions and S3 origins reload, but a Function URL origin's warm
   container is BOOT-TIME ONLY.
+
+## Lambda Web Functions: `start-web-function`
+
+ONE revision: `--revision`, a revision target, the endpoint's top weight, the
+only revision, the only endpoint's pick. Code: the `S3Object`'s cdk.out asset
+(no download), RIE entrypoint replaced, no `--rm`; ready = an HTTP answer,
+not TCP accept. Env: `resolveLambdaContainerEnv` sans Lambda-API fallbacks.
+WARNED only: egress connector, non-`HomeRegion`, weighted split,
+non-`ApplicationManaged` auth.

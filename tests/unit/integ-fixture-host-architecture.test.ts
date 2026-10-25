@@ -105,7 +105,10 @@ const LAMBDA_CTORS = new Map<string, string>([
  * `architecture` at all.
  *
  * A CloudFront Function is a different service entirely; it runs on
- * CloudFront's edge, not in a container, so there is nothing to pin.
+ * CloudFront's edge, not in a container, so there is nothing to pin. A Lambda
+ * Web Function (`CfnWebFunction`, issue #831) has no `Architectures` property
+ * at all -- the cloud runtime is arm64-only, so `start-web-function` pins
+ * `--platform` itself and its fixture's verify.sh passes the host's.
  *
  * This set is an escape hatch, and the failure message for an
  * unrecognized spelling points contributors straight at it -- so it is
@@ -114,7 +117,7 @@ const LAMBDA_CTORS = new Map<string, string>([
  * instance, would silence the fence for every container Lambda in the
  * repo; that edit now fails and has to be argued for in review.
  */
-const NON_LAMBDA_CTORS = new Set<string>(['new cloudfront.Function(']);
+const NON_LAMBDA_CTORS = new Set<string>(['new cloudfront.Function(', 'new CfnWebFunction(']);
 
 /** Fixture sources required to run their Lambdas at the host architecture. */
 const HOST_ARCHITECTURE_STACKS = [
@@ -207,8 +210,9 @@ const PINNED_STACKS = [
 const NOT_YET_CONVERTED: string[] = [];
 
 /**
- * Fixture sources that match `*Function(` but construct NO Lambda at all
- * -- CloudFront Functions only. They have nothing to declare, and they
+ * Fixture sources that match `*Function(` but construct NO architecture-taking
+ * Lambda -- CloudFront Functions and Lambda Web Functions only. They have
+ * nothing to declare, and they
  * are listed so the discovery check can account for them without the
  * fence pretending they are unconverted Lambdas (which would mean
  * `NOT_YET_CONVERTED` could never reach empty).
@@ -216,6 +220,7 @@ const NOT_YET_CONVERTED: string[] = [];
 const NON_LAMBDA_ONLY = [
   'tests/integration/local-start-cloudfront/lib/local-start-cloudfront-stack.ts',
   'tests/integration/local-start-cloudfront-kvs-from-cfn-stack/lib/local-start-cloudfront-kvs-from-cfn-stack-stack.ts',
+  'tests/integration/local-start-web-function/lib/local-start-web-function-stack.ts',
 ];
 
 /**
@@ -664,7 +669,7 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
         'NON_LAMBDA_CTORS silences the architecture check for a constructor entirely. ' +
           'Adding one is a deliberate claim that the construct is not a Lambda and has ' +
           'no architecture -- update this assertion in the same commit so it is reviewed'
-      ).toEqual(['new cloudfront.Function(']);
+      ).toEqual(['new cloudfront.Function(', 'new CfnWebFunction(']);
 
       const lambdaish = [...NON_LAMBDA_CTORS].filter((c) => c.includes('lambda.'));
       expect(

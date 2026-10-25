@@ -166,6 +166,13 @@ export interface DockerRunOptions {
    * `host-gateway` flag since 20.10+).
    */
   extraHosts?: { host: string; ip: string }[];
+  /**
+   * `false` omits `--rm`, so an exited container (and its logs) survive until
+   * the caller's `removeContainer`. `start-web-function` needs that: a server
+   * that crashes at boot would otherwise be gone, stack trace and all, before
+   * its logs are read. Default `true`.
+   */
+  autoRemove?: boolean;
 }
 
 /**
@@ -252,7 +259,7 @@ export async function pullImage(
  *     is cleaned up on any error path including SIGINT.
  */
 export async function runDetached(opts: DockerRunOptions): Promise<string> {
-  const args: string[] = ['run', '-d', '--rm'];
+  const args: string[] = opts.autoRemove === false ? ['run', '-d'] : ['run', '-d', '--rm'];
 
   if (opts.name) {
     args.push('--name', opts.name);
@@ -466,11 +473,23 @@ export function createPrefixedLineRelay(
  * child) every line is tagged `[<short container id>] ` instead; see that
  * constant for why. The short id is the one `docker ps` prints, so a tagged
  * line can be matched to its container.
+ *
+ * `opts.onOutput` additionally receives every raw stdout / stderr chunk, so a
+ * caller can keep the container's recent output for an error message after a
+ * `--rm` container is already gone (`start-web-function`'s readiness failure).
  */
-export function streamLogs(containerId: string): () => void {
+export function streamLogs(
+  containerId: string,
+  opts: { onOutput?: (chunk: Buffer) => void } = {}
+): () => void {
   const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  if (opts.onOutput) {
+    const tap = opts.onOutput;
+    proc.stdout?.on('data', (chunk: Buffer) => tap(chunk));
+    proc.stderr?.on('data', (chunk: Buffer) => tap(chunk));
+  }
   let flush = (): void => undefined;
   if (process.env[PREFIX_CONTAINER_OUTPUT_ENV] === '1') {
     // Read the id as untrusted for the tag: flattened, and stripped of the

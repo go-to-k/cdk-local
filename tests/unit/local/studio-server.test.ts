@@ -175,6 +175,7 @@ const emptyListing = (): TargetListing => ({
   agentCoreRuntimes: [],
   loadBalancers: [],
   cloudFrontDistributions: [],
+  webFunctions: [],
 });
 
 describe('annotatePinnedEcsTargets', () => {
@@ -308,6 +309,7 @@ describe('toStudioTargetGroups', () => {
       ecsServices: [{ qualifiedId: 'S:Svc' }],
       ecsTaskDefinitions: [{ qualifiedId: 'S:Task' }],
       cloudFrontDistributions: [{ qualifiedId: 'S:Dist', displayPath: 'S/Dist' }],
+      webFunctions: [],
     };
     const groups = toStudioTargetGroups(listing);
 

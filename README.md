@@ -63,7 +63,7 @@ Run every `cdkl` command from your CDK project root (the directory containing `c
 
 Every command takes its target two ways:
 
-- **Leave it off** and cdk-local lists every matching target for you to pick with the arrow keys — no need to know or type the CDK path (`invoke` / `invoke-agentcore` / `start-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select).
+- **Leave it off** and cdk-local lists every matching target for you to pick with the arrow keys — no need to know or type the CDK path (`invoke` / `invoke-agentcore` / `start-agentcore` / `start-web-function` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select).
 - **Or name it** — pass the CDK display path (e.g. `cdkl invoke MyStack/Fn`) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix. A stack inside a `cdk.Stage` is named by its display path (`cdkl invoke MyStage/Api/Fn`) and counts toward the stack total, so one top-level stack plus a Stage is multi-stack.
 
 ![cdkl invoke against a local sample CDK app — standalone, no deploy](assets/cdkl-invoke.gif)
@@ -86,6 +86,7 @@ Per-command notes — full capabilities are in [Supported resources](#supported-
 - **`start-cloudfront`** serves the `viewer-request` -> origin -> `viewer-response` pipeline over S3 / Lambda Function URL origins, running CloudFront Functions and Lambda@Edge locally ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)).
 - **`invoke-agentcore`** runs a Bedrock AgentCore Runtime agent once ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
 - **`start-agentcore`** serves an AgentCore Runtime warm — one container you hit repeatedly until `^C` ([details](docs/cli-reference.md#cdkl-start-agentcore-serve-an-agentcore-runtimes-http-contract--ws-locally)).
+- **`start-web-function`** serves a Lambda Web Function: one revision's code bundle in a container listening on `AWS_LAMBDA_HTTP_ENDPOINT`, on a local port ([details](docs/cli-reference.md#cdkl-start-web-function-serve-a-lambda-web-function-locally)).
 - **`studio`** opens a local web console over the same targets, no target needed: [Web console — `cdkl studio`](#web-console--cdkl-studio).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
@@ -100,6 +101,7 @@ cdkl start-api          # API Gateway REST v1 / HTTP v2 / WebSocket + Function U
 cdkl start-cloudfront   # CloudFront: S3 / Lambda Function URL origins + Functions (static site / SPA / SSR)
 cdkl invoke-agentcore   # Bedrock AgentCore Runtime (HTTP / MCP / A2A / AGUI)
 cdkl start-agentcore    # serve an AgentCore Runtime warm: HTTP (POST /invocations + /ws) / MCP (POST /mcp) / A2A (POST /), repeatable
+cdkl start-web-function # Lambda Web Function: one revision's HTTP server on a local port
 cdkl list               # every runnable target, grouped by command (alias: ls)
 cdkl studio             # interactive web console over every target
 ```
@@ -293,6 +295,7 @@ Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each l
 | Cloud Map / Service Connect registry | `start-service` / `start-alb` — service discovery between local replicas |
 | ALB-fronted ECS / Lambda services | `start-alb` — HTTP / HTTPS listeners, all six listener-rule conditions, weighted forwards, redirect / fixed-response, mixed ECS + Lambda targets, authenticate-cognito / authenticate-oidc (local Bearer-JWT enforcement), WebSocket Upgrade |
 | CloudFront distributions (S3 + Lambda Function URL origins + CloudFront Functions + Lambda@Edge) | `start-cloudfront` — **CloudFront Functions** (viewer-request / viewer-response) and **Lambda@Edge** (real RIE container, all four event types) over an S3 origin served from **local files** — the **BucketDeployment** source or a `--origin <id>=<dir>` dir — or from **real S3** on demand (`--from-cfn-stack`); plus Lambda Function URL origins, **KeyValueStore** reads, `ResponseHeadersPolicy` CORS, `--tls`, `--watch` ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)) |
+| Lambda Web Functions (`WebFunction` / `WebFunctionRevision` / `WebFunctionEndpoint`) | `start-web-function` — one revision (the endpoint's highest weight, or `--revision`) from its cdk.out code asset, `nodejs24.x` |
 | Bedrock AgentCore Runtime agents | `invoke-agentcore` — single-shot (boot, invoke, tear down); `start-agentcore` — long-running warm serve, one container kept warm to hit repeatedly until `^C` |
 
 Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.

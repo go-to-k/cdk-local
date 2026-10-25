@@ -83,6 +83,8 @@ export interface TargetListing {
   loadBalancers: TargetEntry[];
   /** `AWS::CloudFront::Distribution` — `cdkl start-cloudfront`. */
   cloudFrontDistributions: TargetEntry[];
+  /** `AWS::Lambda::WebFunction` — `cdkl start-web-function`. */
+  webFunctions: TargetEntry[];
 }
 
 function makeEntry(
@@ -262,6 +264,7 @@ export function listTargets(stacks: readonly StackInfo[]): TargetListing {
     agentCoreRuntimes: sortEntries(scanAgentCoreRuntimes(stacks)),
     loadBalancers: sortEntries(scanApplicationLoadBalancers(stacks)),
     cloudFrontDistributions: sortEntries(scanByType(stacks, 'AWS::CloudFront::Distribution')),
+    webFunctions: sortEntries(scanByType(stacks, 'AWS::Lambda::WebFunction')),
   };
 }
 
@@ -300,6 +303,7 @@ export function countTargets(listing: TargetListing): number {
     listing.ecsTaskDefinitions.length +
     listing.agentCoreRuntimes.length +
     listing.loadBalancers.length +
-    listing.cloudFrontDistributions.length
+    listing.cloudFrontDistributions.length +
+    listing.webFunctions.length
   );
 }

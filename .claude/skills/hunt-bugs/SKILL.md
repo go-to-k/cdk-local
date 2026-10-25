@@ -187,7 +187,7 @@ verification gotcha — so the next sweep starts smarter.
 A pure-local run leaves no AWS resources, but a crashed serve can orphan
 containers, networks and (rarely) vitest worker forks:
 
-- After EVERY run, sweep `docker ps --filter name=cdkl-` and
+- After EVERY run, sweep `docker ps -a --filter name=cdkl-` and
   `docker network ls --filter name=cdkl-task-` / `cdkl-svc-`. Any hit is an
   orphan; clean it via **`/cleanup`** (containers, networks and vitest forks).
   `/run-integ` sweeps; a hand-run `verify.sh` or a crashed serve does not.

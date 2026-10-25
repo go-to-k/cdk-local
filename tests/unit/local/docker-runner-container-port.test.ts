@@ -51,4 +51,17 @@ describe('runDetached container-port publishing', () => {
     });
     expect(publishArg()).toBe('127.0.0.1:9200:8000');
   });
+
+  const argv = (): string[] => (execFileMock.mock.calls[0] as [string, string[], unknown])[1];
+
+  it('runs with --rm by default', async () => {
+    await runDetached({ image: 'img', mounts: [], env: {}, cmd: [], hostPort: 1 });
+    expect(argv().slice(0, 3)).toEqual(['run', '-d', '--rm']);
+  });
+
+  it('omits --rm when autoRemove is false (start-web-function keeps boot-crash logs)', async () => {
+    await runDetached({ image: 'img', mounts: [], env: {}, cmd: [], hostPort: 1, autoRemove: false });
+    expect(argv().slice(0, 2)).toEqual(['run', '-d']);
+    expect(argv()).not.toContain('--rm');
+  });
 });

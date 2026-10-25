@@ -755,6 +755,65 @@ export { addRunTaskSpecificOptions } from './cli/commands/local-run-task.js';
 export { addInvokeSpecificOptions } from './cli/commands/local-invoke.js';
 export { addInvokeAgentCoreSpecificOptions } from './cli/commands/local-invoke-agentcore.js';
 export { addStartAgentCoreSpecificOptions } from './cli/commands/local-start-agentcore.js';
+export { addStartWebFunctionSpecificOptions } from './cli/commands/local-start-web-function.js';
+/**
+ * `start-web-function` (issue #831) building blocks, for a host CLI that serves
+ * a Lambda Web Function itself: target -> one revision, the two seams (code
+ * artifact, runtime table), the `ServiceConfig` env mapping and the container
+ * runner with its HTTP readiness wait.
+ */
+export {
+  resolveWebFunctionTarget,
+  WebFunctionResolutionError,
+  WEB_FUNCTION_TYPE,
+  WEB_FUNCTION_REVISION_TYPE,
+  WEB_FUNCTION_ENDPOINT_TYPE,
+  type ResolvedWebFunction,
+  type ResolvedWebFunctionEndpoint,
+  type WebFunctionRevisionWeight,
+  type WebFunctionRevisionSelection,
+} from './local/web-function-resolver.js';
+export {
+  parseWebFunctionBuildConfig,
+  resolveWebFunctionArtifact,
+  findFileAssetForObjectKey,
+  disposeWebFunctionArtifact,
+  type WebFunctionArtifact,
+  type WebFunctionZipArtifact,
+  type WebFunctionImageArtifact,
+  type WebFunctionCodeConfig,
+} from './local/web-function-artifact.js';
+export {
+  resolveWebFunctionRuntime,
+  supportedWebFunctionRuntimes,
+  defaultWebFunctionPlatform,
+  buildNodeEntryFileStart,
+  WEB_FUNCTION_RUNTIMES,
+  type WebFunctionRuntimeSpec,
+  type WebFunctionStartCommand,
+} from './local/web-function-runtime.js';
+export {
+  readWebFunctionServiceConfig,
+  buildWebFunctionLambdaView,
+  webFunctionAssumeRole,
+  finalizeWebFunctionEnv,
+  webFunctionFidelityWarnings,
+  WEB_FUNCTION_HTTP_ENDPOINT_ENV,
+  type WebFunctionServiceConfig,
+} from './local/web-function-service-config.js';
+export {
+  planWebFunctionContainer,
+  startWebFunctionContainer,
+  waitForWebFunctionReady,
+  watchContainerExit,
+  containerFailure,
+  readContainerLogTail,
+  RecentOutput,
+  WEB_FUNCTION_CONTAINER_PORT,
+  type StartWebFunctionContainerOptions,
+  type WebFunctionContainerPlan,
+  type ProbeOutcome,
+} from './local/web-function-runner.js';
 export { addStartApiSpecificOptions } from './cli/commands/local-start-api.js';
 export {
   addStartServiceSpecificOptions,

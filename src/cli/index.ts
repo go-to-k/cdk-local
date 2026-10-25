@@ -9,6 +9,7 @@ import { createLocalStartServiceCommand } from './commands/local-start-service.j
 import { createLocalStartAlbCommand } from './commands/local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './commands/local-start-cloudfront.js';
 import { createLocalStartAgentCoreCommand } from './commands/local-start-agentcore.js';
+import { createLocalStartWebFunctionCommand } from './commands/local-start-web-function.js';
 import { createLocalListCommand } from './commands/local-list.js';
 import { createLocalStudioCommand } from './commands/local-studio.js';
 
@@ -28,6 +29,7 @@ program.addCommand(createLocalStartServiceCommand());
 program.addCommand(createLocalStartAlbCommand());
 program.addCommand(createLocalStartCloudFrontCommand());
 program.addCommand(createLocalStartAgentCoreCommand());
+program.addCommand(createLocalStartWebFunctionCommand());
 program.addCommand(createLocalListCommand());
 program.addCommand(createLocalStudioCommand());
 

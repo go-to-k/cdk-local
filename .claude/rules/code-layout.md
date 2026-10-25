@@ -5,12 +5,8 @@ not break. Read before adding, moving or splitting a module.
 
 ## `src/cli/`
 
-Commander command factories — `createLocalInvokeCommand`,
-`createLocalInvokeAgentCoreCommand`, `createLocalStartApiCommand`,
-`createLocalRunTaskCommand`, `createLocalStartServiceCommand`,
-`createLocalStartAlbCommand`, `createLocalStartCloudFrontCommand`,
-`createLocalStartAgentCoreCommand`, `createLocalListCommand`,
-`createLocalStudioCommand` — plus shared option helpers.
+Commander command factories — one `createLocal*Command` per verb in
+`commands/local-<verb>.ts` — plus shared option helpers.
 
 - **`start-cloudfront`** bypasses the ECS/Docker `runEcsServiceEmulator` (no
   Cloud Map): synth, resolve one distribution into an in-memory routing model,

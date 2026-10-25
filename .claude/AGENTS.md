@@ -35,6 +35,8 @@ AWS managed services.
   `docker cp` soft-reload); the `--image-override` flag family rebuilds
   deployed-registry-pinned images from a local Dockerfile (also on
   `run-task`).
+- Lambda Web Functions — `start-web-function` runs one revision's HTTP
+  server from its cdk.out asset on a local port
 - Bedrock AgentCore Runtime agents — single-shot `invoke-agentcore`
   (HTTP / MCP / A2A contracts, `--ws` streaming) and the warm
   `start-agentcore` serve (all four protocols, per-request JWT / SigV4
@@ -123,9 +125,6 @@ pnpm install
 
 # Build (tsdown via vp pack)
 vp run build
-
-# Watch
-vp run dev
 
 # Typecheck
 vp run typecheck
@@ -391,7 +390,7 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   Details: [.claude/rules/hooks.md](.claude/rules/hooks.md).
 
 - **After running integration tests**: verify no leftover Docker containers /
-  networks remain (`docker ps --filter name=cdkl-`,
+  networks remain (`docker ps -a --filter name=cdkl-`,
   `docker network ls --filter name=cdkl-task-` / `cdkl-svc-`), and run the AWS
   orphan sweep for EVERY fixture, requiring exit 0:
 
@@ -519,7 +518,7 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   requires ALL of: working tree clean and no dangling feature branch; no
   open PRs owned by this session; no running background tasks / integs /
   subagents; no leftover Docker containers or networks from local runs
-  (`docker ps --filter name=cdkl-`, `docker network ls --filter
+  (`docker ps -a --filter name=cdkl-`, `docker network ls --filter
   name=cdkl-task-`); every TODO filed as an issue; **zero `Session-fit: now`
   TODOs open** (an open `now` and CLOSEABLE cannot both be true — do the
   item, or re-classify it with the reason stated).
@@ -609,7 +608,7 @@ decide.
 - `cdk-local` is the **npm package** name (what users import / install).
 - When referring to the project in prose, use "cdk-local".
 - When referring to the CLI command in code blocks / examples, use
-  `cdkl invoke / invoke-agentcore / start-api / run-task / start-service / start-alb / start-cloudfront / list`.
+  `cdkl <command>` (e.g. `cdkl invoke`).
 - Do NOT name, recommend, or compare against any third-party product
   in committed artifacts (README, docs, JSDoc, CONTRIBUTING). No
   comparison tables, no "pair with" / "use alongside" recommendations,
@@ -624,7 +623,6 @@ decide.
 
 ## Reference
 
-- `README.md` — user-facing intro + install + usage.
 - `docs/library-mode.md` — programmatic / library-mode integration
   surface (factory exports, `LocalStateProvider` API) — linked from
   README's "Programmatic use" pointer.

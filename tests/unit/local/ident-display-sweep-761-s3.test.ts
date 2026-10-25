@@ -72,6 +72,7 @@ describe('cdkl list renders the display path and qualified id (#761)', () => {
       agentCoreRuntimes: [],
       loadBalancers: [],
       cloudFrontDistributions: [],
+      webFunctions: [],
     } as never;
   }
 
