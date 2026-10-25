@@ -16,6 +16,9 @@
 #   2. `--revision RevV1` overrides the weights.
 #   3. `--revision RevAlt` sets AWS_LAMBDA_NODEJS_ENTRYPOINT=alt.js, so the
 #      runtime starts alt.js instead of index.js.
+#   4. A server that exits while serving (`/crash`) ends the command non-zero.
+#   5. `--revision RevBoom` (an entry file that throws at load) fails boot with
+#      the app's stack trace. Both failure arms leave no container behind.
 #
 # Fully local — nothing is deployed. Run via `/run-integ local-start-web-function`
 # (recommended) or directly:
@@ -157,5 +160,33 @@ echo "${BODY}" | grep -q '"entry":"alt"' || fail "the entrypoint env did not sta
 echo "${BODY}" | grep -q '"revision":"alt"' || fail "RevAlt not served: ${BODY}"
 stop_server
 assert_no_orphans "the entrypoint serve"
+
+echo "[verify] step 8: a server that exits while serving ends the command non-zero"
+boot_serve "${STACK}/Endpoint" --revision RevV1 --port "$((PORT + 3))" --no-pull
+curl -s "http://127.0.0.1:$((PORT + 3))/crash" >/dev/null || true
+for _ in $(seq 1 120); do kill -0 "${CDKL_PID}" 2>/dev/null || break; sleep 0.25; done
+kill -0 "${CDKL_PID}" 2>/dev/null && fail "start-web-function kept running after its server exited"
+set +e
+wait "${CDKL_PID}"
+CRASH_RC=$?
+set -e
+CDKL_PID=""
+[ "${CRASH_RC}" -ne 0 ] || fail "start-web-function exited 0 after its server exited"
+grep -q 'container exited (exit code 3) while serving' "${OUT_FILE}" \
+  || fail "the serving-exit message does not name exit code 3"
+assert_no_orphans "the serving exit"
+
+echo "[verify] step 9: an entry file that throws at boot fails with its stack trace"
+: > "${OUT_FILE}"
+set +e
+${CLI} start-web-function "${STACK}/WebFn" --revision RevBoom --port "$((PORT + 4))" --no-pull \
+  ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} > "${OUT_FILE}" 2>&1
+BOOM_RC=$?
+set -e
+[ "${BOOM_RC}" -ne 0 ] || fail "start-web-function exited 0 for an entry file that throws at boot"
+grep -q 'container exited before its server listened' "${OUT_FILE}" \
+  || fail "the boot failure is not reported as an exit before listening"
+grep -q 'boom-at-boot' "${OUT_FILE}" || fail "the boot failure does not show the app's stack trace"
+assert_no_orphans "the boot failure"
 
 echo "[verify] PASS"

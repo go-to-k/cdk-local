@@ -54,6 +54,11 @@ export class LocalStartWebFunctionStack extends cdk.Stack {
       GREETING: 'hello-from-alt',
       AWS_LAMBDA_NODEJS_ENTRYPOINT: 'alt.js',
     });
+    revision('RevBoom', {
+      REVISION_LABEL: 'boom',
+      GREETING: 'hello-from-boom',
+      AWS_LAMBDA_NODEJS_ENTRYPOINT: 'boom.js',
+    });
 
     new CfnWebFunctionEndpoint(this, 'Endpoint', {
       functionName: fn.ref,

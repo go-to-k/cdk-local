@@ -29,7 +29,10 @@ http
       );
     };
     if (req.url === '/slow') setTimeout(reply, 500);
-    else reply();
+    else if (req.url === '/crash') {
+      reply();
+      res.on('finish', () => process.exit(3));
+    } else reply();
   })
   .listen(Number(port), host, () => {
     console.error(`web function (${entry}) listening on ${host}:${port}`);
