@@ -267,4 +267,39 @@ describe('resolveLambdaContainerEnv — bare --assume-role from the template Rol
     );
     expect(resolveLambdaExecutionRoleArn).not.toHaveBeenCalled();
   });
+
+  it('does NOT run for a Lambda (cdkl invoke): its GetFunctionConfiguration path stays', async () => {
+    sts.assumed = [];
+    const lambda = zipLambda({});
+    (lambda.resource.Properties as Record<string, unknown>)['Role'] = { 'Fn::GetAtt': ['Role', 'Arn'] };
+    lambda.stack.template = { Resources: { Role: { Type: 'AWS::IAM::Role', Properties: {} } } };
+    const resolveLambdaExecutionRoleArn = vi.fn(async () => 'arn:aws:iam::123456789012:role/FromApi');
+    const factory = () => ({
+      label: '--from-test',
+      load: async () => ({
+        resources: {
+          Handler: { physicalId: 'fn-physical', resourceType: 'AWS::Lambda::Function', properties: {} },
+          Role: { physicalId: 'App-RoleABC', resourceType: 'AWS::IAM::Role', properties: {}, attributes: {} },
+        },
+        outputs: {},
+        region: 'us-east-1',
+      }),
+      buildCrossStackResolver: async () => undefined,
+      dispose: () => undefined,
+      resolveLambdaExecutionRoleArn,
+    });
+    await resolveLambdaContainerEnv(
+      lambda,
+      { fromTest: true, assumeRole: true, region: 'us-east-1' },
+      undefined,
+      { fromTest: factory as never }
+    );
+    expect(resolveLambdaExecutionRoleArn).toHaveBeenCalledWith('fn-physical');
+    expect(sts.assumed).toContainEqual(
+      expect.objectContaining({ RoleArn: 'arn:aws:iam::123456789012:role/FromApi' })
+    );
+    expect(sts.assumed).not.toContainEqual(
+      expect.objectContaining({ RoleArn: 'arn:aws:iam::123456789012:role/App-RoleABC' })
+    );
+  });
 });

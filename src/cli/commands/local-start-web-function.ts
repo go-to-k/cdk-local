@@ -219,7 +219,17 @@ async function localStartWebFunctionCommand(
   // Armed as soon as there is anything on the host to clean up (an extracted
   // bundle), so ^C during a long first pull still removes it.
   const shutdown = async (signal: string, exitCode: number): Promise<void> => {
-    if (shuttingDown) return;
+    if (shuttingDown) {
+      // A second ^C while teardown waits (on an in-flight `docker run`, say):
+      // the usual convention — exit now, naming what may be left behind.
+      logger.warn(
+        `Received ${signal} again; exiting without waiting for teardown. ` +
+          `A ${getEmbedConfig().resourceNamePrefix}-webfn-* container may remain: ` +
+          `docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-webfn-`
+      );
+      process.exit(exitCode);
+      return;
+    }
     shuttingDown = true;
     logger.info(`Received ${signal}, shutting down...`);
     await teardown();

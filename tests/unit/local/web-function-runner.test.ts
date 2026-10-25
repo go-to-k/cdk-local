@@ -177,6 +177,29 @@ describe('waitForWebFunctionReady', () => {
     expect(timeouts).toEqual([MAX_PROBE_TIMEOUT_MS, 5000]);
   });
 
+  it('never hands a probe a timeout below 1 ms', async () => {
+    // now(): 0 (deadline = 1), then 0.5 (loop check, remaining 0.5), then past it.
+    const clock = [0, 0.5, 0.5];
+    let calls = 0;
+    const timeouts: number[] = [];
+    await expect(
+      waitForWebFunctionReady(
+        { ...base, timeoutMs: 1, recent: new RecentOutput() },
+        {
+          probe: async (_h, _p, ms) => {
+            timeouts.push(ms);
+            return 'refused';
+          },
+          isRunning: async () => true,
+          fetchLogs: async () => [],
+          now: () => clock[calls++] ?? 5,
+          sleep: async () => undefined,
+        }
+      )
+    ).rejects.toThrow(/never accepted/);
+    expect(timeouts[0]).toBe(1);
+  });
+
   it('says "listening but slow" when the last probe timed out', async () => {
     const clock = fakeClock();
     await expect(
@@ -229,6 +252,15 @@ describe('containerFailure', () => {
     expect(err.message).toContain('from docker');
     expect(err.message).not.toContain('relayed only');
     expect(err.code).toBe('LOCAL_START_WEB_FUNCTION_NOT_READY');
+  });
+
+  it('falls back to the relayed lines when fetchLogs throws synchronously', async () => {
+    const recent = new RecentOutput();
+    recent.push('relayed\n');
+    const err = await containerFailure('boom.', 'c', recent, () => {
+      throw new Error('sync');
+    });
+    expect(err.message).toContain('relayed');
   });
 
   it('carries the exit-while-serving code when asked', async () => {

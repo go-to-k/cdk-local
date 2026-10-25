@@ -332,8 +332,10 @@ async function containerIsRunning(containerId: string): Promise<boolean> {
 
 /**
  * `docker logs --tail <n>` of a (possibly exited) container with stdout and
- * stderr MERGED in arrival order — the `2>&1` reading — so a stack trace on
- * stderr stays between the stdout lines around it. Rejects on a non-zero exit.
+ * stderr merged in ARRIVAL order. Two pipes make that approximate — close to,
+ * but not guaranteed to be, the container's own interleaving (a true `2>&1`)
+ * — which still keeps a stderr stack trace near the stdout lines around it.
+ * Rejects on a non-zero exit.
  */
 export function readContainerLogTail(
   containerId: string,

@@ -225,7 +225,7 @@ describe('cdkl start-web-function', () => {
     lines = [];
     h.runDetached.mockReset().mockResolvedValue('cid-web');
     h.ready.mockReset().mockResolvedValue(undefined);
-    h.pullImage.mockClear();
+    h.pullImage.mockReset().mockResolvedValue(undefined);
     h.removeContainer.mockReset().mockResolvedValue(undefined);
     h.streamLogs.mockReset().mockReturnValue(() => undefined);
     h.failureCodes = [];
@@ -414,6 +414,35 @@ describe('cdkl start-web-function', () => {
     await until(() => exits.length > 0);
     expect(h.removeContainer).toHaveBeenCalledWith('cid-late');
     expect(exits[0]).toEqual({ code: 0, tmpGone: true });
+    // The main path must not go on to serve the container teardown removes.
+    expect(h.streamLogs).not.toHaveBeenCalled();
+    expect(h.ready).not.toHaveBeenCalled();
+  });
+
+  it('a signal during the image pull starts no container afterwards', async () => {
+    let finishPull: () => void = () => undefined;
+    h.pullImage.mockImplementation(() => new Promise<undefined>((r) => (finishPull = () => r(undefined))));
+    const { exits, handler, until } = await withSignals(['App:Ep']);
+    await until(() => h.pullImage.mock.calls.length > 0);
+    ((await handler('SIGTERM')) as () => void)();
+    await until(() => exits.length > 0);
+    expect(exits[0]).toEqual({ code: 0, tmpGone: true });
+    finishPull();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.runDetached).not.toHaveBeenCalled();
+  });
+
+  it('a second signal while teardown waits on docker run exits immediately', async () => {
+    h.runDetached.mockImplementation(() => new Promise<string>(() => undefined));
+    const { exits, handler, until } = await withSignals(['App:Ep']);
+    await until(() => h.runDetached.mock.calls.length > 0);
+    ((await handler('SIGTERM')) as () => void)();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exits).toEqual([]);
+    ((await handler('SIGINT')) as () => void)();
+    await until(() => exits.length > 0);
+    expect(exits[0]!.code).toBe(130);
+    expect(lines.some((l) => l.includes('again; exiting without waiting for teardown'))).toBe(true);
   });
 
   it('a ^C during a failure teardown waits for the SAME teardown before exiting', async () => {

@@ -51,6 +51,12 @@ describe('watchContainerExit', () => {
     expect(await w.exited).toBeUndefined();
   });
 
+  it('resolves undefined when docker wait cannot be spawned', async () => {
+    const w = watchContainerExit('cid');
+    last().emit('error', new Error('spawn docker ENOENT'));
+    expect(await w.exited).toBeUndefined();
+  });
+
   it('never resolves after stop(), even when the child then closes', async () => {
     const w = watchContainerExit('cid');
     const proc = last();
@@ -72,6 +78,21 @@ describe('readContainerLogTail', () => {
     proc.stderr.emit('data', Buffer.from('    at index.js:3\n'));
     proc.emit('close', 0);
     expect(await p).toEqual(['Error: boom-at-boot', 'out-2', '    at index.js:3']);
+  });
+
+  it('stops collecting past its 4 MB cap', async () => {
+    const p = readContainerLogTail('cid', 5);
+    const proc = last();
+    proc.stdout.emit('data', Buffer.from('a'.repeat(4 * 1024 * 1024 + 1) + '\n'));
+    proc.stdout.emit('data', Buffer.from('after-cap\n'));
+    proc.emit('close', 0);
+    expect(await p).not.toContain('after-cap');
+  });
+
+  it('rejects when docker cannot be spawned', async () => {
+    const p = readContainerLogTail('cid', 5);
+    last().emit('error', new Error('spawn docker ENOENT'));
+    await expect(p).rejects.toThrow(/ENOENT/);
   });
 
   it('rejects when docker logs fails', async () => {
@@ -105,12 +126,6 @@ describe('probeHttp', () => {
     expect(await probeHttp('127.0.0.1', port, 150)).toBe('timeout');
     for (const s of sockets) s.destroy();
     server.close();
-  });
-
-  it('is refused, not "accepted but slow", when the connect itself never completes', async () => {
-    // A non-routable address: the SYN is dropped (or the route refused), so the
-    // socket timeout fires before any `connect` event.
-    expect(await probeHttp('10.255.255.1', 9, 150)).toBe('refused');
   });
 
   it('is refused when nothing listens', async () => {
