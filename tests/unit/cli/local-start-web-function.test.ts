@@ -445,8 +445,12 @@ describe('cdkl start-web-function', () => {
     const warn = lines.find((l) => l.includes('again; exiting without waiting for docker run'));
     expect(warn).toBeDefined();
     expect(warn).toMatch(/may still be starting, and its environment holds the forwarded AWS credentials/);
-    expect(warn).toContain('docker ps -a --filter name=cdkl-webfn- -q | xargs -r docker rm -f');
-    expect(warn).toContain(`Also remove the extracted code bundle: ${h.artifacts[0]!.tmpDir}`);
+    const name = (h.runDetached.mock.calls[0]![0] as { name: string }).name;
+    expect(name).toMatch(/^cdkl-webfn-\d+-[a-z0-9]+$/);
+    expect(warn).toContain(`docker rm -f ${name}`);
+    expect(warn).not.toContain('xargs');
+    expect(warn).not.toContain('code bundle');
+    expect(exits[0]!.tmpGone).toBe(true);
   });
 
   it('a second SIGTERM on the abandoned path exits 143, never 0', async () => {
@@ -458,7 +462,7 @@ describe('cdkl start-web-function', () => {
     await new Promise((r) => setTimeout(r, 10));
     onTerm();
     await until(() => exits.length > 0);
-    expect(exits[0]!.code).toBe(143);
+    expect(exits[0]).toEqual({ code: 143, tmpGone: true });
   });
 
   it('a second signal while the container is being removed waits for removal and dispose', async () => {

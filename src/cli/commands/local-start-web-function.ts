@@ -12,7 +12,6 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import { formatAuthority } from '../../utils/url-authority.js';
-import { displayUntrustedValue } from '../../utils/assembly-path.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import {
@@ -39,7 +38,6 @@ import { resolveLambdaContainerEnv, type LambdaContainerEnvOptions } from './loc
 import { resolveWebFunctionTarget } from '../../local/web-function-resolver.js';
 import {
   disposeWebFunctionArtifact,
-  webFunctionArtifactHostPath,
   parseWebFunctionBuildConfig,
   resolveWebFunctionArtifact,
   type WebFunctionArtifact,
@@ -131,6 +129,8 @@ async function localStartWebFunctionCommand(
   let shuttingDown = false;
   // Teardown is blocked on the in-flight `docker run` (no container id yet).
   let waitingOnRun = false;
+  // The in-flight run's container name, so an abandoned shutdown can name it.
+  let containerName: string | undefined;
   const forever = (): Promise<never> => new Promise<never>(() => undefined);
 
   const doTeardown = async (): Promise<void> => {
@@ -236,16 +236,13 @@ async function localStartWebFunctionCommand(
         logger.info(`Received ${signal} again; still removing the container, please wait...`);
         return;
       }
-      const prefix = `${getEmbedConfig().resourceNamePrefix}-webfn-`;
-      const leftover = webFunctionArtifactHostPath(artifact);
+      // The bundle is ours alone: remove it now, synchronously.
+      disposeWebFunctionArtifact(artifact);
       logger.warn(
         `Received ${signal} again; exiting without waiting for docker run to return. The ` +
           `container may still be starting, and its environment holds the forwarded AWS ` +
-          `credentials. Remove it: docker ps -a --filter name=${prefix} -q | xargs -r docker rm -f` +
-          (leftover !== undefined
-            ? `. Also remove the extracted code bundle: ${displayUntrustedValue(leftover)}`
-            : '') +
-          '.'
+          `credentials. Remove it by its name (this works even if it is created after this ` +
+          `exit): docker rm -f ${containerName ?? '<name>'}`
       );
       process.exit(signal === 'SIGINT' ? 130 : 143);
       return;
@@ -291,7 +288,8 @@ async function localStartWebFunctionCommand(
     // A signal during the pull: its shutdown owns the exit.
     if (teardownPromise) return await forever();
     const hostPort = options.port === 0 ? await pickFreePort() : options.port;
-    const name = `${getEmbedConfig().resourceNamePrefix}-webfn-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+    const name =
+      (containerName = `${getEmbedConfig().resourceNamePrefix}-webfn-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
     logger.info(
       `Starting web function container (image=${plan.image}, start=${plan.label}, ` +
         `port=${hostPort} -> ${WEB_FUNCTION_CONTAINER_PORT})...`
