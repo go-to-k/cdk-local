@@ -173,6 +173,18 @@ a log line, and a served HTTP response body.
   boot without `--rm`; HTTP readiness; exit watch). A new runtime or code source
   is a row / union member there, never a branch in the command.
 
+## Lambda MicroVMs
+
+- **microvm-image** (target -> ONE `MicrovmImage`; config parse — an enabled
+  hook needs a literal `Hooks.Port`; `CodeArtifact.Uri` -> the cdk.out asset,
+  which must hold a root `Dockerfile`), **microvm-hooks** (the HTTP hook driver:
+  build hooks poll 503 / refused, runtime hooks are one POST), **microvm-runner**
+  (`buildMicrovmImage` through `buildDockerImage`; `LocalMicrovm` owns ONE
+  container's state machine, `terminate()` memoized), **microvm-front-door**
+  (one `node:http` server per MicroVM: port routing, header / subprotocol
+  stripping, the `/_cdkl/microvm` control path). The command only sequences
+  them; a container port is reachable only if PUBLISHED at `docker run`.
+
 ## Studio
 
 - **studio-custom-resource-filter** — hides CDK custom-resource /

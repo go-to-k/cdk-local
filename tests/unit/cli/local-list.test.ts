@@ -18,6 +18,7 @@ const empty: TargetListing = {
   loadBalancers: [],
   cloudFrontDistributions: [],
   webFunctions: [],
+  microvmImages: [],
 };
 
 describe('formatTargetListing', () => {
@@ -35,6 +36,7 @@ describe('formatTargetListing', () => {
       loadBalancers: [entry('App/WebLB', 'App:WebLB')],
       cloudFrontDistributions: [entry('App/SiteDist', 'App:SiteDist')],
       webFunctions: [entry('App/WebFn', 'App:WebFn')],
+      microvmImages: [entry('App/Image', 'App:Image')],
     };
     const out = formatTargetListing(listing, 'cdkl');
     expect(out).toContain('Lambda Functions  ->  cdkl invoke <target>');
@@ -45,6 +47,7 @@ describe('formatTargetListing', () => {
     expect(out).toContain('Application Load Balancers  ->  cdkl start-alb <target...>');
     expect(out).toContain('CloudFront Distributions  ->  cdkl start-cloudfront <target>');
     expect(out).toContain('Lambda Web Functions  ->  cdkl start-web-function <target>');
+    expect(out).toContain('Lambda MicroVM Images  ->  cdkl start-microvm <target>');
   });
 
   it('appends the API surface kind to each API line', () => {

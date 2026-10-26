@@ -10,6 +10,7 @@ import { createLocalStartAlbCommand } from './commands/local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './commands/local-start-cloudfront.js';
 import { createLocalStartAgentCoreCommand } from './commands/local-start-agentcore.js';
 import { createLocalStartWebFunctionCommand } from './commands/local-start-web-function.js';
+import { createLocalStartMicrovmCommand } from './commands/local-start-microvm.js';
 import { createLocalListCommand } from './commands/local-list.js';
 import { createLocalStudioCommand } from './commands/local-studio.js';
 
@@ -30,6 +31,7 @@ program.addCommand(createLocalStartAlbCommand());
 program.addCommand(createLocalStartCloudFrontCommand());
 program.addCommand(createLocalStartAgentCoreCommand());
 program.addCommand(createLocalStartWebFunctionCommand());
+program.addCommand(createLocalStartMicrovmCommand());
 program.addCommand(createLocalListCommand());
 program.addCommand(createLocalStudioCommand());
 

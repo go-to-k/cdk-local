@@ -90,6 +90,11 @@ const NON_AUTHORITY: readonly Allowed[] = [
   },
   {
     file: 'local/docker-runner.ts',
+    contains: "'-p', `${host}:${extra.hostPort}",
+    why: 'docker `-p` publish grammar',
+  },
+  {
+    file: 'local/docker-runner.ts',
     contains: '${mount.hostPath}:${mount.containerPath}',
     why: 'docker `-v` bind mount: two filesystem paths, no host',
   },

@@ -60,8 +60,7 @@ Invariants:
 
 Rebuilds a registry-pinned target from a local Dockerfile under the
 deterministic tag `cdkl-override-<svc>-<hash>:local`, threaded through the
-rebuild primitive. Engine: `src/local/image-override-engine.ts` (issue
-go-to-k/cdk-local#238).
+rebuild primitive. Engine: `src/local/image-override-engine.ts` (#238).
 
 - A per-service build-input form overrides the global per-key on that target;
   `enforceImageOverrideOrphans` FAILS the boot when one names a service the map
@@ -80,9 +79,9 @@ each listener port across replicas and applies the listener rules.
 
 - HTTP **and HTTPS** listeners are served. A cloud-HTTPS listener runs over plain
   HTTP by default, with `X-Forwarded-Proto: https` preserved and redirect
-  `#{protocol}` resolving to `https`; the degradation is logged per listener,
-  never silent. `--tls` opts in to real termination. Deployed `Certificates[]`
-  ACM ARNs are NOT fetched — ACM private keys are not retrievable by design.
+  `#{protocol}` resolving to `https`; logged per listener. `--tls` opts in to
+  real termination. ACM `Certificates[]` are NOT fetched (keys are not
+  retrievable).
 - `authenticate-cognito` / `authenticate-oidc`: a Bearer-JWT check (signature +
   `iss` + `aud` + `exp` against the deployed ALB's JWKS / OIDC discovery URL) or
   an `AWSELBAuthSessionCookie-*` pass-through, defeatable with
@@ -91,8 +90,8 @@ each listener port across replicas and applies the listener rules.
 - WebSocket Upgrade is proxied for ECS forward targets through the same
   rule-matching + auth-gate pipeline, then the raw TCP socket is bridged.
   Lambda target groups refuse it with 502, mirroring ALB itself.
-- `TargetType: lambda` target groups invoke the Lambda locally with a
-  `requestContext.elb` event, so one forward can mix ECS and Lambda targets.
+- `TargetType: lambda` target groups invoke the Lambda locally
+  (`requestContext.elb` event); one forward can mix ECS and Lambda targets.
 
 ## Bedrock AgentCore Runtime
 
@@ -114,10 +113,9 @@ Covers the container artifact AND the CodeConfiguration managed-runtime artifact
 - `--from-cfn-stack` reaches parity with `cdkl invoke` / `run-task`: same-stack
   ECR ContainerUri resolution, `AWS::SSM::Parameter::Value` env values, bare
   `--assume-role` resolving an intrinsic `RoleArn` from state.
-- `--watch` works ONLY on the long-running `--ws` path (same classifier as the
-  ECS serves); the `/ws` socket is closed cleanly on every firing, since
-  AgentCore has no mid-session handoff. The single-shot HTTP / MCP / A2A paths
-  WARN once and proceed single-shot.
+- `--watch` works ONLY on the long-running `--ws` path (the ECS classifier);
+  the `/ws` socket closes on every firing (no mid-session handoff). The
+  single-shot paths WARN once and proceed.
 
 ### `start-agentcore` (long-running serve)
 
@@ -126,10 +124,9 @@ Covers the container artifact AND the CodeConfiguration managed-runtime artifact
   `Authorization` is verified against the OIDC discovery URL / JWKS — `401` with
   no token, `403` when invalid, forwarded on pass; `GET /ping` stays
   unauthenticated. `--sigv4` is mutually exclusive with `--bearer-token`.
-- For HTTP / AGUI the SAME port also serves `/ws` behind a host WebSocket BRIDGE:
-  a header-less client (a browser `WebSocket` cannot set the session-id or
-  `Authorization` upgrade header) could not otherwise hold a session, so the
-  bridge injects them, with a fresh session-id per connection / request unless
+- For HTTP / AGUI the SAME port also serves `/ws` behind a host WebSocket BRIDGE
+  that injects the session-id / `Authorization` upgrade headers a browser
+  `WebSocket` cannot set — a fresh session-id per connection unless
   `--session-id` pins one.
 - All four protocols are served: HTTP / AGUI on 8080, MCP on 8000, A2A on 9000.
   MCP / A2A have no `GET /ping`, so readiness is an HTTP response to the protocol
@@ -147,23 +144,22 @@ One distribution per invocation.
 
 - **CloudFront Functions** run in-process in a `node:vm` sandbox
   (`cloudfront-js-1.0` / `2.0`, async handlers awaited) that adds the 2.0
-  built-ins a bare vm lacks (`Buffer`, `atob` / `btoa`, the text codecs, a
-  `require` for `crypto` / `querystring` / `buffer`) from Node — a superset of
-  the documented 2.0 subset. `fs` / `process` / timers / network / `eval` are NOT
-  provided (a `ReferenceError`, matching the restricted runtime). The vm is a
-  fidelity sandbox, not a security boundary.
+  built-ins a bare vm lacks (`Buffer`, `atob` / `btoa`, text codecs, `require`
+  of `crypto` / `querystring` / `buffer`) — a superset of the 2.0 subset. `fs` /
+  `process` / timers / network / `eval` are absent (`ReferenceError`). The vm is
+  a fidelity sandbox, not a security boundary.
 - **S3 origin content** is the BucketDeployment source asset from the cloud
   assembly (origin bucket -> `Custom::CDKBucketDeployment` -> `SourceObjectKeys`),
   served with `DefaultRootObject` (ROOT ONLY — sub-paths are not auto-indexed)
   and `CustomErrorResponses`.
 - With NO local BucketDeployment source, `--from-cfn-stack` reads the deployed
-  bucket from **real S3 on demand** (a `GetObject` per touched key, no pre-sync).
-  Bucket name, in PRIORITY ORDER: the same-stack bucket's physical id from
-  `ListStackResources`; else a literal name from the origin's `DomainName`; else
-  — for a pure intrinsic — `cloudfront:GetDistributionConfig`. `AccessDenied`
-  warns with the `--origin` hatch.
-- `--cache-origin` caches that reader only, so without `--from-cfn-stack` it is
-  a no-op — a boot-time WARN keeps that visible.
+  bucket from **real S3 on demand** (`GetObject` per touched key).
+  Bucket name, in PRIORITY ORDER: the same-stack physical id
+  (`ListStackResources`), a literal `DomainName`, else
+  `cloudfront:GetDistributionConfig`. `AccessDenied` warns with the `--origin`
+  hatch.
+- `--cache-origin` caches that reader only (a no-op, WARNED, without
+  `--from-cfn-stack`).
 - Path patterns route across `DefaultCacheBehavior` + `CacheBehaviors[]`; a
   viewer-request function returning a `statusCode` short-circuits.
 - **ResponseHeadersPolicy CORS** (`CorsConfig`) is reproduced per behavior: a
@@ -173,18 +169,15 @@ One distribution per invocation.
   matching is literal-or-`*` (no wildcard subdomains; an AWS-managed policy id is
   not fetchable, so its CORS is skipped). Non-CORS sections are not applied.
 - **Lambda Function URL origins** resolve `DomainName` -> `AWS::Lambda::Url` ->
-  the backing function, booted once in a warm RIE container and invoked with a
-  Function URL (payload v2.0) event. start-cloudfront is therefore PURE-LOCAL
-  (no Docker) for a pure-S3 distribution and boots a container ONLY for such an
-  origin. **AWS_IAM auth on the Function URL is NOT enforced, and response
+  the backing function in a warm RIE container (payload v2.0 event); a pure-S3
+  distribution needs no Docker. **AWS_IAM auth on the Function URL is NOT enforced, and response
   streaming is buffered.**
-- **KeyValueStore reads** (`cf.kvs().get` / `exists`) are reproduced: the
+- **KeyValueStore reads** (`cf.kvs().get` / `exists`): the
   `import cf from 'cloudfront'` line is stripped and a `cf` module injected,
-  backed by the deployed store (its physical id is the store NAME, resolved via
-  `ListKeyValueStores`, then read through the real SigV4A-signed `GetKey`
-  data-plane API) or by a local JSON map (`--kvs-file <key>=<file>`). A read with
-  NO binding fails with an error naming both flags. `meta()` / `count()` and KVS
-  writes are NOT reproduced.
+  backed by the deployed store (resolved by NAME via `ListKeyValueStores`, read
+  through the SigV4A-signed `GetKey` API) or a local JSON map (`--kvs-file`). A
+  read with NO binding fails naming both flags. `meta()` / `count()` and writes
+  are NOT reproduced.
 - **Lambda@Edge** functions ARE run, each in a warm RIE container, with all four
   event types wired — `viewer-request` / `origin-request` (either may
   short-circuit or rewrite) -> origin -> `origin-response` / `viewer-response`.
@@ -203,3 +196,15 @@ only revision, the only endpoint's pick. Code: the `S3Object`'s cdk.out asset
 not TCP accept. Env: `resolveLambdaContainerEnv` sans Lambda-API fallbacks.
 WARNED only: egress connector, non-`HomeRegion`, weighted split,
 non-`ApplicationManaged` auth.
+
+## Lambda MicroVMs: `start-microvm`
+
+Dockerfile from `CodeArtifact.Uri`'s cdk.out asset (no download), built once;
+one container per `--count`, no `--rm`. Hooks in cloud order: `/ready` (503 /
+refused retried), `/validate` on the SAME container, `/run` with `{microvmId,
+runHookPayload}`; traffic only after `/run` answers 200. Ports
+8080 / `Hooks.Port` / EXPOSE / `--proxy-port` are PUBLISHED (Docker Desktop
+cannot route to container IPs); any other is 403. `X-aws-proxy-*` and MicroVM
+subprotocols stripped. Suspend = hook + `docker pause`. WARNED only: no
+snapshot (pre-`/ready` state NOT shared), JWE auth, idle policy, egress, OS
+caps, sizing.

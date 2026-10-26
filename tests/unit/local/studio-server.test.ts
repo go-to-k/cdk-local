@@ -176,6 +176,7 @@ const emptyListing = (): TargetListing => ({
   loadBalancers: [],
   cloudFrontDistributions: [],
   webFunctions: [],
+  microvmImages: [],
 });
 
 describe('annotatePinnedEcsTargets', () => {
@@ -310,6 +311,7 @@ describe('toStudioTargetGroups', () => {
       ecsTaskDefinitions: [{ qualifiedId: 'S:Task' }],
       cloudFrontDistributions: [{ qualifiedId: 'S:Dist', displayPath: 'S/Dist' }],
       webFunctions: [],
+      microvmImages: [],
     };
     const groups = toStudioTargetGroups(listing);
 

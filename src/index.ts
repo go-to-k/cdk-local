@@ -43,6 +43,10 @@ export {
   type CreateLocalStartWebFunctionCommandOptions,
 } from './cli/commands/local-start-web-function.js';
 export {
+  createLocalStartMicrovmCommand,
+  type CreateLocalStartMicrovmCommandOptions,
+} from './cli/commands/local-start-microvm.js';
+export {
   createLocalListCommand,
   formatTargetListing,
   type CreateLocalListCommandOptions,

@@ -20,6 +20,7 @@ cdk-local's subcommands, all under the `cdkl` binary:
 | `cdkl start-alb <targets...>` | ECS service(s) behind an ALB + a local front-door on each listener port | `start-service` machinery + host-side `node:http` reverse proxy round-robining the replicas |
 | `cdkl start-agentcore <target>` | Long-running warm serve of an AgentCore Runtime — HTTP / AGUI (`POST /invocations` + `GET /ping` **and** the `/ws` WebSocket endpoint), MCP (`POST /mcp`), or A2A (`POST /`), all repeatable against one warm container | Agent container (booted once, kept warm) + a host HTTP server proxying the protocol's routes, plus (HTTP / AGUI only) a `/ws` bridge that injects the session-id / `Authorization` headers a browser can't set, all on one port |
 | `cdkl start-web-function <target>` | Long-running serve of one AWS Lambda Web Function revision | The revision's code bundle (a cdk.out file asset) in a Lambda base-image container running its own HTTP server on `AWS_LAMBDA_HTTP_ENDPOINT`, the port published straight to the host |
+| `cdkl start-microvm <target>` | Long-running run of AWS Lambda MicroVMs from one `MicrovmImage` (`--count` of them), lifecycle hooks included | The image's code artifact (a cdk.out file asset holding a `Dockerfile`) built once with `docker build`, one container per MicroVM, each behind its own host-side `node:http` front door doing the port routing, header stripping and suspend / resume / terminate control |
 | `cdkl studio` | Interactive web console over every runnable target — invoke / serve from the browser, watch a live activity timeline | `node:http` server hosting the embedded UI; spawns the same `invoke` / `start-api` / `start-alb` / `start-service` runners as child processes |
 
 The run commands (`invoke` / `invoke-agentcore` / `start-api` / `run-task` /
@@ -53,7 +54,7 @@ per-command sections below.
 ## Extra arguments are rejected, not discarded
 
 A command that takes ONE target — `invoke`, `invoke-agentcore`,
-`run-task`, `start-agentcore`, `start-cloudfront`, `start-web-function` — or none at all —
+`run-task`, `start-agentcore`, `start-cloudfront`, `start-web-function`, `start-microvm` — or none at all —
 `list`, `studio` — exits `1` with
 `error: too many arguments. Expected N arguments but got M.` when handed
 more:
@@ -2026,6 +2027,116 @@ ARN explicitly. `AWS_LAMBDA_FUNCTION_NAME` is the function's name.
 endpoint types other than `HomeRegion`; weighted traffic splitting (every
 request goes to the one served revision, which the warning names); and an
 `AuthType` other than `ApplicationManaged`, which is not enforced locally.
+
+## `cdkl start-microvm` (run Lambda MicroVMs locally)
+
+`cdkl start-microvm <target>` runs AWS Lambda MicroVMs from an
+`AWS::Lambda::MicrovmImage` in the CDK app until `^C`: it builds the image's
+`Dockerfile` once, starts `--count` containers (default 1), drives each one's
+lifecycle hooks in the cloud's order, and serves each MicroVM on its own local
+URL.
+
+```bash
+cdkl start-microvm MyStack/Image                              # one MicroVM on a free port
+cdkl start-microvm MyStack/Image --count 3 --port 8000        # three MicroVMs on 8000, 8001, 8002
+cdkl start-microvm MyStack/Image --run-hook-payload tenant-a  # the /run hook's runHookPayload
+cdkl start-microvm MyStack/Image --proxy-port 5005            # make container port 5005 routable
+cdkl start-microvm MyStack/Image --assume-role arn:aws:iam::123456789012:role/MicrovmExec
+```
+
+**Target.** An `AWS::Lambda::MicrovmImage` (the L1 `CfnMicrovmImage`), by
+display path or stack-qualified logical ID.
+
+**Code and build.** `CodeArtifact.Uri` must be the `s3://` URI of a CDK asset of
+this app — an `s3assets.Asset` of a directory holding the `Dockerfile` and the
+app, passing `asset.s3ObjectUrl` — which cdk-local matches to the staged
+directory (or `.zip`, extracted) in cdk.out by object key. Deployed code is never
+downloaded. The bundle must have a `Dockerfile` at its root; cdk-local builds it
+with the local Docker engine (`docker build`, tagged
+`cdkl-microvm-<asset hash>`; `--no-build-cache` adds `--no-cache`) for the
+image's `CpuConfigurations` architecture (`ARM_64` -> `linux/arm64`, `X86_64` ->
+`linux/amd64`; `--platform` overrides), and the container starts the app with
+the image's own `ENTRYPOINT` / `CMD`. The Lambda container base
+`public.ecr.aws/lambda/microvms:al2023-minimal` is published for arm64 only and
+ships no language runtime, so on an amd64 host build from a multi-arch base or
+pass `--platform`.
+
+**Lifecycle.** For each MicroVM, in order: the container starts; `/ready` is
+polled when enabled (503, or a refused connection while the app starts, is
+retried until `ReadyTimeoutInSeconds`; any status other than 200 / 503 fails;
+a request held open until the deadline fails, as it ends the cloud build) —
+without a `/ready` hook the app must answer any HTTP request on `Hooks.Port`
+(or 8080 with no hooks) within `--timeout`; `/validate` is polled the same way;
+`/run` is POSTed once with `{"microvmId":"mvm-<uuid>","runHookPayload":"..."}`
+and must answer 200 within `RunTimeoutInSeconds`. Only then does the front door
+start and print `MicroVM <id> listening on http://127.0.0.1:<port>`. Hooks are
+the POSTs to `/aws/lambda-microvms/runtime/v1/<hook>` on `Hooks.Port`; a hook
+not `ENABLED` is skipped, and an enabled hook without a literal `Hooks.Port`
+fails before anything is built. A hook without its own `TimeoutInSeconds` gets
+`--timeout` (default 60000 ms), except `/terminate`, which gets 10 s. A failure
+removes the containers and prints the container's last output lines.
+
+**Front door (one per MicroVM).** `--port` (default: a free port) is the first
+MicroVM's port and MicroVM *i* listens on `--port` + *i*; `--host` (default
+`127.0.0.1`) is where they listen. A request goes to container port 8080, or to
+the port in `X-aws-proxy-port`, or — for a WebSocket — the
+`lambda-microvms.port.N` subprotocol. Every `X-aws-proxy-*` header and the
+MicroVM subprotocols (`lambda-microvms`, `lambda-microvms.authentication.*`,
+`lambda-microvms.port.*`) are removed before the app sees the request, and a
+WebSocket client that offered only MicroVM subprotocols gets `lambda-microvms`
+selected in the `101`. Errors match the cloud endpoint's: `400` for a port value
+that is not 1-65535, `403` for a port that is not reachable, `502` when the app
+does not answer on the port.
+
+**Which ports are reachable.** Each container publishes 8080, `Hooks.Port`, every
+port its image `EXPOSE`s, and every `--proxy-port` (repeatable), each to its own
+loopback host port; the front door forwards to those. Any other port answers
+`403` naming the published set. The container ports are published rather than
+reached on a Docker network because Docker Desktop does not route the host to
+container IP addresses, and publishing only 8080 would make `X-aws-proxy-port`
+unusable.
+
+**Control endpoint.** Each front door reserves `/_cdkl/microvm`:
+
+| Request | Effect |
+| --- | --- |
+| `GET /_cdkl/microvm` | `{"microvmId", "state", "ports"}` |
+| `POST /_cdkl/microvm/suspend` | `/suspend` hook, then `docker pause` |
+| `POST /_cdkl/microvm/resume` | `docker unpause`, then `/resume` hook; traffic flows after it answers 200 |
+| `POST /_cdkl/microvm/terminate` | `/terminate` hook, then the container is removed; the last one ends the command (exit 0) |
+
+An action the state does not allow answers `409`, a hook failure `502`. While a
+MicroVM is suspended its requests get `503`; with `--auto-resume` (the idle
+policy's `autoResumeEnabled`) a request is held while the MicroVM resumes
+instead, and gets `502` if the resume fails. A failed `/resume` leaves it
+suspended; a failed `/terminate` is reported and the container removed anyway.
+
+**Shutdown.** SIGINT / SIGTERM calls `/terminate` on every running MicroVM,
+then removes the containers (named `cdkl-microvm-<pid>-<index>-<random>`, run
+without `--rm` so a crashed boot keeps its logs). A second signal is ignored
+while containers are being removed. A container that exits on its own ends the
+command non-zero with its last output lines.
+
+**Environment and credentials.** `EnvironmentVariables` reach every container
+through the same resolution as `cdkl invoke` (`--env-vars` keyed by the image's
+logical ID or construct path, `--from-cfn-stack`, `{{resolve:...}}`), with the
+developer's credentials forwarded. The execution role is a `run-microvm`
+parameter, not part of the template, so `--assume-role` takes the ARN
+explicitly.
+
+**Not reproduced (warned once at boot, never a failure).** Each MicroVM is a
+Docker container started fresh, not a MicroVM restored from the image
+snapshot: state the app initializes before `/ready` answers 200 is **not**
+shared across MicroVMs (each runs its own startup), there is no VM isolation,
+and suspend freezes the processes in place rather than checkpointing memory.
+`/validate` runs on the same container as `/ready` (the cloud uses a fresh
+MicroVM from the built snapshot). Requests are accepted without
+`X-aws-proxy-auth` (the JWE token is not checked). The idle policy
+(`maxIdleDurationSeconds`, `suspendedDurationSeconds`) and
+`maximumDurationInSeconds` are not emulated. `BaseImageArn` /
+`BaseImageVersion` (the build runs on the local Docker engine),
+`EgressNetworkConnectors`, `AdditionalOsCapabilities`, `Resources` sizing and
+`Logging` are warned when set.
 
 ## `cdkl studio` (interactive web console)
 

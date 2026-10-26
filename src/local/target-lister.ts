@@ -85,6 +85,8 @@ export interface TargetListing {
   cloudFrontDistributions: TargetEntry[];
   /** `AWS::Lambda::WebFunction` — `cdkl start-web-function`. */
   webFunctions: TargetEntry[];
+  /** `AWS::Lambda::MicrovmImage` — `cdkl start-microvm`. */
+  microvmImages: TargetEntry[];
 }
 
 function makeEntry(
@@ -265,6 +267,7 @@ export function listTargets(stacks: readonly StackInfo[]): TargetListing {
     loadBalancers: sortEntries(scanApplicationLoadBalancers(stacks)),
     cloudFrontDistributions: sortEntries(scanByType(stacks, 'AWS::CloudFront::Distribution')),
     webFunctions: sortEntries(scanByType(stacks, 'AWS::Lambda::WebFunction')),
+    microvmImages: sortEntries(scanByType(stacks, 'AWS::Lambda::MicrovmImage')),
   };
 }
 
@@ -304,6 +307,7 @@ export function countTargets(listing: TargetListing): number {
     listing.agentCoreRuntimes.length +
     listing.loadBalancers.length +
     listing.cloudFrontDistributions.length +
-    listing.webFunctions.length
+    listing.webFunctions.length +
+    listing.microvmImages.length
   );
 }

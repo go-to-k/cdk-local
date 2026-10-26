@@ -376,6 +376,7 @@ describe('countTargets', () => {
       loadBalancers: [],
       cloudFrontDistributions: [],
       webFunctions: [],
+      microvmImages: [],
     });
   });
 

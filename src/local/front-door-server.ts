@@ -956,7 +956,7 @@ const HOP_BY_HOP_HEADERS = [
  * produce a malformed response; the headers named in a `Connection` token list
  * are also hop-by-hop and removed. Mutates `headers` in place.
  */
-function stripHopByHopHeaders(headers: NodeJS.Dict<string | string[]>): void {
+export function stripHopByHopHeaders(headers: NodeJS.Dict<string | string[]>): void {
   const connection = headers['connection'];
   const connectionValue = Array.isArray(connection) ? connection.join(',') : connection;
   if (connectionValue) {
@@ -1211,7 +1211,7 @@ function bridgeWebSocket(
  * close it. Used for the pre-101-Switching-Protocols failure paths
  * (no rule match, no replica, Lambda target, etc.).
  */
-function writeRawHttpError(socket: Duplex, statusCode: number, message: string): void {
+export function writeRawHttpError(socket: Duplex, statusCode: number, message: string): void {
   if (socket.destroyed) return;
   const body = `${message}\n`;
   const statusText = STATUS_TEXT[statusCode] ?? 'Error';
@@ -1343,7 +1343,9 @@ function sanitizeRawHeaderValue(value: string): string {
 const STATUS_TEXT: Record<number, string> = {
   301: 'Moved Permanently',
   302: 'Found',
+  400: 'Bad Request',
   401: 'Unauthorized',
+  403: 'Forbidden',
   404: 'Not Found',
   502: 'Bad Gateway',
   503: 'Service Unavailable',

@@ -814,6 +814,77 @@ export {
   type WebFunctionContainerPlan,
   type ProbeOutcome,
 } from './local/web-function-runner.js';
+export {
+  addStartMicrovmSpecificOptions,
+  readRunHookPayload,
+  buildMicrovmLambdaView,
+  finalizeMicrovmEnv,
+  microvmFidelityWarnings,
+} from './cli/commands/local-start-microvm.js';
+/**
+ * `start-microvm` (issue #835) building blocks, for a host CLI that runs
+ * Lambda MicroVMs itself: target -> one MicrovmImage and its config, the code
+ * artifact (cdk.out asset -> Dockerfile build context), the image build, the
+ * lifecycle-hook driver, one MicroVM's container lifecycle, and the per-MicroVM
+ * front door (port routing, header stripping, control endpoint).
+ */
+export {
+  resolveMicrovmImageTarget,
+  readMicrovmImageConfig,
+  resolveMicrovmCodeArtifact,
+  disposeMicrovmCodeArtifact,
+  s3KeyOfUri,
+  MicrovmResolutionError,
+  MICROVM_IMAGE_TYPE,
+  MICROVM_DEFAULT_INGRESS_PORT,
+  type MicrovmImageConfig,
+  type MicrovmHookConfig,
+  type MicrovmHookName,
+  type MicrovmBuildHook,
+  type MicrovmRuntimeHook,
+  type MicrovmCodeArtifact,
+  type ResolvedMicrovmImage,
+} from './local/microvm-image.js';
+export {
+  pollBuildHook,
+  callRuntimeHook,
+  waitForAppAnswer,
+  postHook,
+  runHookBody,
+  generateMicrovmId,
+  MicrovmHookError,
+  MICROVM_HOOK_PATH_PREFIX,
+  MAX_RUN_HOOK_PAYLOAD_BYTES,
+  type HookEndpoint,
+  type HookPostResult,
+  type MicrovmHookDeps,
+} from './local/microvm-hooks.js';
+export {
+  startMicrovmFrontDoor,
+  selectTargetPort,
+  stripMicrovmProxyHeaders,
+  rewriteUpgradeResponseHead,
+  MicrovmStateError,
+  MICROVM_CONTROL_PATH,
+  PROXY_PORT_HEADER,
+  MICROVM_WS_BASE_PROTOCOL,
+  type MicrovmState,
+  type MicrovmProxyTarget,
+  type MicrovmFrontDoorOptions,
+  type RunningMicrovmFrontDoor,
+  type PortSelection,
+} from './local/microvm-front-door.js';
+export {
+  LocalMicrovm,
+  buildMicrovmImage,
+  microvmImageTag,
+  readExposedPorts,
+  planMicrovmPorts,
+  setContainerPaused,
+  DEFAULT_TERMINATE_HOOK_TIMEOUT_MS,
+  type LocalMicrovmOptions,
+  type LocalMicrovmDeps,
+} from './local/microvm-runner.js';
 export { addStartApiSpecificOptions } from './cli/commands/local-start-api.js';
 export {
   addStartServiceSpecificOptions,
