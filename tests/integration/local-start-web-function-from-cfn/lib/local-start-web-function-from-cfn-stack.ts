@@ -40,6 +40,15 @@ export class ProducerStack extends cdk.Stack {
 export interface WebFunctionConsumerStackProps extends cdk.StackProps {
   readonly exportName: string;
   readonly functionName: string;
+  /**
+   * The versioned code bucket verify.sh owns, and the uploaded object's
+   * version. The Lambda Web service reads the code itself as
+   * `lambda.amazonaws.com`, which the CDK bootstrap asset bucket grants
+   * nothing; verify.sh's bucket policy grants it. Unset (a bare synth), the
+   * revision points at the asset bucket.
+   */
+  readonly codeBucket?: string;
+  readonly codeVersion?: string;
 }
 
 /**
@@ -80,7 +89,15 @@ export class WebFunctionConsumerStack extends cdk.Stack {
     new CfnWebFunctionRevision(this, 'Rev', {
       functionName: fn.ref,
       buildConfig: {
-        codeConfig: { s3Object: { bucket: code.s3BucketName, key: code.s3ObjectKey } },
+        // The key stays the asset's `<hash>.zip`, so `cdkl` still matches the
+        // staged asset in cdk.out; only the bucket (and version) differ.
+        codeConfig: {
+          s3Object: {
+            bucket: props.codeBucket ?? code.s3BucketName,
+            key: code.s3ObjectKey,
+            ...(props.codeVersion !== undefined && { versionId: props.codeVersion }),
+          },
+        },
         runtimeConfig: { runtime: 'nodejs24.x' },
       },
       serviceConfig: {
@@ -93,5 +110,7 @@ export class WebFunctionConsumerStack extends cdk.Stack {
         },
       },
     });
+    // verify.sh reads the asset key here to upload the code under it.
+    new cdk.CfnOutput(this, 'CodeKey', { value: code.s3ObjectKey });
   }
 }

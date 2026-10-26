@@ -19,4 +19,11 @@ new WebFunctionConsumerStack(app, integStackName('CdkLocalWebFnFromCfnConsumer')
   description: 'Consumer stack: a Lambda Web Function whose ServiceConfig env uses Ref / Fn::ImportValue / Fn::GetAtt.',
   exportName: EXPORT_NAME,
   functionName: integScopedName('cdkl-integ-webfn-from-cfn'),
+  // verify.sh's versioned code bucket (same lane-scoped name it creates) and
+  // the upload's version id, which it exports as CODE_VERSION. Unset (a bare
+  // synth), the revision points at the asset bucket.
+  ...(process.env['CODE_VERSION'] && {
+    codeBucket: integScopedName('cdkl-webfn-from-cfn-code'),
+    codeVersion: process.env['CODE_VERSION'],
+  }),
 }).addDependency(producer);

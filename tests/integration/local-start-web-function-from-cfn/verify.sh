@@ -25,7 +25,13 @@
 #      ExecutionRoleArn is resolved by the role's deployed name and Path, and
 #      STS GetCallerIdentity INSIDE the container reports that assumed role.
 #   4. Both stacks are deleted with `aws cloudformation delete-stack`
-#      (consumer first, so the import is released before the export).
+#      (consumer first, so the import is released before the export), then
+#      the code bucket (every object version and delete marker first).
+#
+# The revision's code lives in a versioned bucket this script owns, not the
+# CDK asset bucket: the Lambda Web service reads it as lambda.amazonaws.com,
+# which the bootstrap bucket's policy grants nothing. It is uploaded under the
+# asset's own `<hash>.zip` key, so the local cdk.out match still works.
 #
 # Run via `/run-integ local-start-web-function-from-cfn`. Requires Docker and
 # AWS credentials allowed to deploy in the target account. Uses host ports
@@ -45,6 +51,16 @@ EXPORT_NAME="$(integ_scoped_name cdkl-webfn-from-cfn-shared)"
 SHARED_PARAM="$(integ_scoped_name /cdkl-integ/webfn-from-cfn/shared)"
 SHARED_VALUE="shared-from-webfn-producer" # kept in sync with the stack's SHARED_VALUE
 IMAGE="public.ecr.aws/lambda/nodejs:24"
+# The web function's literal FunctionName (kept in sync with bin/app.ts); the
+# code bucket policy is scoped to its revisions.
+FUNCTION_NAME="$(integ_scoped_name cdkl-integ-webfn-from-cfn)"
+# A versioned code bucket this script owns. The Lambda Web service reads the
+# revision's code as lambda.amazonaws.com, which the CDK bootstrap asset
+# bucket grants nothing, so the code is uploaded here under the SAME
+# `<hash>.zip` key the s3assets.Asset synthesizes (the local cdk.out match
+# still works). Lane-suffixed, so the AWS orphan sweep owns it; bin/app.ts
+# builds the same name.
+CODE_BUCKET="$(integ_scoped_name cdkl-webfn-from-cfn-code)"
 PORT=18480
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -70,6 +86,7 @@ echo "[verify] region=${REGION} producer=${PRODUCER_STACK} consumer=${CONSUMER_S
 CDKL_PID=""
 OUT_FILE="$(mktemp)"
 WE_CREATED_STACKS=0
+WE_CREATED_BUCKET=0
 
 stop_server() {
   if [ -n "${CDKL_PID}" ] && kill -0 "${CDKL_PID}" 2>/dev/null; then
@@ -91,8 +108,23 @@ cleanup() {
     delete_stack "${CONSUMER_STACK}" || true
     delete_stack "${PRODUCER_STACK}" || true
   fi
+  # After the stacks: the revision referenced the code until its stack went.
+  [ "${WE_CREATED_BUCKET}" -eq 1 ] && reap_code_bucket
   exit "${rc}"
 }
+
+# Every version and delete marker of every object, then the bucket.
+reap_code_bucket() { (
+  set +e
+  aws s3api list-object-versions --bucket "${CODE_BUCKET}" --region "${REGION}" \
+    --query '[Versions[].[Key, VersionId], DeleteMarkers[].[Key, VersionId]][]' --output text 2>/dev/null \
+    | while read -r key version; do
+      [ -n "${key}" ] && [ "${key}" != "None" ] || continue
+      aws s3api delete-object --bucket "${CODE_BUCKET}" --key "${key}" --version-id "${version}" \
+        --region "${REGION}" >/dev/null 2>&1
+    done
+  aws s3api delete-bucket --bucket "${CODE_BUCKET}" --region "${REGION}" >/dev/null 2>&1
+) }
 trap cleanup EXIT INT TERM
 
 fail() {
@@ -140,6 +172,56 @@ for stack in "${PRODUCER_STACK}" "${CONSUMER_STACK}"; do
     exit 1
   fi
 done
+
+echo "[verify] step 2b: the versioned code bucket, readable by the Lambda Web service"
+if aws s3api head-bucket --bucket "${CODE_BUCKET}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: bucket ${CODE_BUCKET} already exists — a leftover of an earlier run (see aws-orphan-sweep.sh)"
+  exit 1
+fi
+ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+WE_CREATED_BUCKET=1
+if [ "${REGION}" = "us-east-1" ]; then
+  aws s3api create-bucket --bucket "${CODE_BUCKET}" --region "${REGION}" >/dev/null
+else
+  aws s3api create-bucket --bucket "${CODE_BUCKET}" --region "${REGION}" \
+    --create-bucket-configuration "LocationConstraint=${REGION}" >/dev/null
+fi
+aws s3api put-bucket-versioning --bucket "${CODE_BUCKET}" --region "${REGION}" \
+  --versioning-configuration Status=Enabled
+aws s3api put-bucket-policy --bucket "${CODE_BUCKET}" --region "${REGION}" --policy "{
+  \"Version\": \"2012-10-17\",
+  \"Statement\": [{
+    \"Effect\": \"Allow\",
+    \"Principal\": {\"Service\": \"lambda.amazonaws.com\"},
+    \"Action\": [\"s3:GetObject\", \"s3:GetObjectVersion\"],
+    \"Resource\": \"arn:aws:s3:::${CODE_BUCKET}/*\",
+    \"Condition\": {
+      \"StringEquals\": {\"aws:SourceAccount\": \"${ACCOUNT}\"},
+      \"ArnLike\": {\"aws:SourceArn\": \"arn:aws:lambda:${REGION}:${ACCOUNT}:web-function/${FUNCTION_NAME}/revision/*\"}
+    }
+  }]
+}"
+# A placeholder until the upload returns the real version id (synth only).
+export CODE_VERSION="pending"
+
+echo "[verify] step 2c: synth to read the asset key, upload web/ zipped under it"
+cdk synth "${CONSUMER_STACK}" --no-version-reporting -q >/dev/null
+CODE_KEY="$(node -e '
+  const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const v = t.Outputs && t.Outputs.CodeKey && t.Outputs.CodeKey.Value;
+  if (typeof v !== "string" || !/^[0-9a-f]{64}\.zip$/.test(v)) process.exit(1);
+  console.log(v);
+' "cdk.out/${CONSUMER_STACK}.template.json")" || fail "no literal <hash>.zip CodeKey output in the synthesized template"
+ZIP_DIR="$(mktemp -d)"
+(cd web && zip -q "${ZIP_DIR}/code.zip" index.js)
+CODE_VERSION="$(aws s3api put-object --bucket "${CODE_BUCKET}" --key "${CODE_KEY}" \
+  --body "${ZIP_DIR}/code.zip" --region "${REGION}" --query VersionId --output text)"
+rm -rf "${ZIP_DIR}"
+case "${CODE_VERSION}" in
+  "" | None | null) fail "the code upload returned no version id: '${CODE_VERSION}'" ;;
+esac
+export CODE_VERSION
+echo "[verify]   s3://${CODE_BUCKET}/${CODE_KEY} version ${CODE_VERSION}"
 
 echo "[verify] step 3: cdk deploy producer + consumer (pinned upstream CDK CLI)"
 WE_CREATED_STACKS=1
@@ -205,5 +287,10 @@ echo "[verify] step 7: delete the stacks (consumer first, then producer)"
 delete_stack "${CONSUMER_STACK}"
 delete_stack "${PRODUCER_STACK}"
 WE_CREATED_STACKS=0
+reap_code_bucket
+WE_CREATED_BUCKET=0
+if aws s3api head-bucket --bucket "${CODE_BUCKET}" --region "${REGION}" >/dev/null 2>&1; then
+  fail "code bucket ${CODE_BUCKET} still exists after teardown"
+fi
 
 echo "[verify] PASS"
