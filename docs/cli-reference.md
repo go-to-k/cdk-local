@@ -2108,11 +2108,19 @@ not rely on it.
 | `POST /_cdkl/microvm/resume` | `docker unpause`, then `/resume` hook; traffic flows after it answers 200 |
 | `POST /_cdkl/microvm/terminate` | waits for an in-flight suspend / resume, unpauses, `/terminate` hook, then the container is removed; the last one ends the command (exit 0) |
 
-The control path answers only requests addressed to this front door: a `Host`
-that is not its own address (a loopback name or the `--host` address, and its
-port), an `Origin` that is not `http://<that Host>`, or a `Sec-Fetch-Site` other
-than `same-origin` / `none` is refused with `403`, so a web page in a browser
-cannot drive it. Requests to the app itself are not checked.
+The control path answers only requests addressed to this front door, so a web
+page in a browser cannot drive it; anything else is refused with `403`:
+
+- `Host` must carry the front door's own port (a `Host` without a port means
+  80) and an allowed name. Under a wildcard bind (`--host 0.0.0.0` / `::`) any
+  IP literal or loopback name (`localhost`, `127.0.0.1`, `[::1]`) is allowed;
+  under a loopback bind, the loopback names; under any other bind, only the
+  bound host itself. Names compare case-insensitively.
+- `Origin`, when present, must be `http://<that Host>` (so `Origin: null` is
+  refused).
+- `Sec-Fetch-Site`, when present, must be `same-origin` or `none`.
+
+Requests to the app itself are not checked.
 
 An action the state does not allow answers `409`, a hook failure `502`. While a
 MicroVM is suspending, suspended or resuming its requests get `503`; with

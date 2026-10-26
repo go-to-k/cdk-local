@@ -60,6 +60,39 @@ describe('stripMicrovmProxyHeaders', () => {
   });
 });
 
+describe('controlRequestRefusal', () => {
+  const ok = (headers: Record<string, string>, host: string, port: number) =>
+    controlRequestRefusal(headers, host, port);
+  it('accepts the bound authority, case-insensitively, and a portless Host as port 80', () => {
+    expect(ok({ host: '127.0.0.1:8000' }, '127.0.0.1', 8000)).toBeUndefined();
+    expect(ok({ host: 'LOCALHOST:8000' }, '127.0.0.1', 8000)).toBeUndefined();
+    expect(ok({ host: 'localhost' }, '127.0.0.1', 80)).toBeUndefined();
+    expect(ok({ host: 'localhost' }, '127.0.0.1', 8000)).toMatch(/Host header/);
+  });
+  it('refuses a matching name on another port', () => {
+    expect(ok({ host: '127.0.0.1:9999' }, '127.0.0.1', 8000)).toMatch(/Host header/);
+  });
+  it('under a wildcard bind accepts an IP literal and a loopback name, refuses a DNS name', () => {
+    expect(ok({ host: '192.168.1.20:8000' }, '0.0.0.0', 8000)).toBeUndefined();
+    expect(ok({ host: '[fe80::1]:8000' }, '::', 8000)).toBeUndefined();
+    expect(ok({ host: 'localhost:8000' }, '0.0.0.0', 8000)).toBeUndefined();
+    expect(ok({ host: 'rebind.example:8000' }, '0.0.0.0', 8000)).toMatch(/Host header/);
+  });
+  it('allows loopback names only for a loopback or wildcard bind', () => {
+    expect(ok({ host: 'localhost:8000' }, '192.168.1.20', 8000)).toMatch(/Host header/);
+    expect(ok({ host: '192.168.1.20:8000' }, '192.168.1.20', 8000)).toBeUndefined();
+  });
+  it('refuses Sec-Fetch-Site same-site / cross-site and Origin null or foreign', () => {
+    const host = { host: '127.0.0.1:8000' };
+    expect(ok({ ...host, 'sec-fetch-site': 'same-site' }, '127.0.0.1', 8000)).toMatch(/same-site request/);
+    expect(ok({ ...host, 'sec-fetch-site': 'cross-site' }, '127.0.0.1', 8000)).toMatch(/cross-site request/);
+    expect(ok({ ...host, 'sec-fetch-site': 'none' }, '127.0.0.1', 8000)).toBeUndefined();
+    expect(ok({ ...host, origin: 'null' }, '127.0.0.1', 8000)).toMatch(/from origin null/);
+    expect(ok({ ...host, origin: 'http://127.0.0.1:8001' }, '127.0.0.1', 8000)).toMatch(/from origin/);
+    expect(ok({ ...host, origin: 'http://127.0.0.1:8000' }, '127.0.0.1', 8000)).toBeUndefined();
+  });
+});
+
 describe('rewriteUpgradeResponseHead', () => {
   const head = 'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket';
   it('selects lambda-microvms on a 101 that selected nothing', () => {
@@ -256,8 +289,6 @@ describe('startMicrovmFrontDoor', () => {
       let headSeen = false;
       let pending = Buffer.alloc(0);
       let ended = false;
-      let lastStall = 0;
-      let finalStall = false;
       sock.on('data', (c: Buffer) => {
         if (!headSeen) {
           pending = Buffer.concat([pending, c]);
@@ -268,13 +299,11 @@ describe('startMicrovmFrontDoor', () => {
         } else {
           total += c.length;
         }
-        // A slow reader: stall now and then, so the kernel buffers fill and the
-        // relay must hold data back (and still deliver it after the upstream FIN).
-        if (total - lastStall > 2 * 1024 * 1024 || (!finalStall && total > SIZE - 512 * 1024)) {
-          if (total > SIZE - 512 * 1024) finalStall = true;
-          lastStall = total;
+        // A slow reader through the LAST few MiB: one 'data' every few ms, so
+        // the kernel buffers are full when the upstream sends its FIN.
+        if (total > SIZE - 24 * 1024 * 1024) {
           sock.pause();
-          setTimeout(() => sock.resume(), finalStall ? 300 : 30);
+          setTimeout(() => sock.resume(), 3);
         }
       });
       sock.on('end', () => {
@@ -285,6 +314,58 @@ describe('startMicrovmFrontDoor', () => {
     });
     expect(received).toEqual({ body: SIZE, ended: true });
   }, 30_000);
+
+  it('answers 502 (and closes) when the upstream FINs before a complete 101 head', async () => {
+    const quitter = createServer();
+    quitter.on('upgrade', (_req, socket) => socket.end());
+    upstreamPorts.set(9600, await listen(quitter));
+    await start();
+    const raw = await upgrade([...WS, 'X-aws-proxy-port: 9600']);
+    expect(raw).toMatch(/^HTTP\/1\.1 502 Bad Gateway[\s\S]*closed the connection before answering the upgrade/);
+  });
+
+  it('a client closing the WebSocket ends the upstream side', async () => {
+    let upstreamEnded: () => void = () => undefined;
+    const ended = new Promise<void>((r) => (upstreamEnded = r));
+    const app = createServer();
+    let appSocket: import('node:stream').Duplex | undefined;
+    app.on('upgrade', (_req, socket) => {
+      appSocket = socket;
+      socket.on('end', () => upstreamEnded());
+      socket.on('error', () => undefined);
+      socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    });
+    upstreamPorts.set(9700, await listen(app));
+    await start();
+    const sock = connect(fd!.port, '127.0.0.1', () => {
+      sock.write([...WS, 'X-aws-proxy-port: 9700', '', ''].join('\r\n'));
+    });
+    await new Promise<void>((r) => sock.once('data', () => r()));
+    sock.end();
+    try {
+      await Promise.race([
+        ended,
+        new Promise((_r, rej) => setTimeout(() => rej(new Error('upstream never ended')), 2000)),
+      ]);
+    } finally {
+      appSocket?.destroy();
+      sock.destroy();
+    }
+  });
+
+  it('a held auto-resume request answers 503 when the MicroVM is terminated meanwhile', async () => {
+    await start(true);
+    target.setState('suspending');
+    const orig = target.resume;
+    target.resume = async () => {
+      target.setState('terminating');
+      throw new MicrovmStateError('MicroVM mvm-test is terminating; only a suspended MicroVM can be resumed.');
+    };
+    const r = await send('/x');
+    target.resume = orig;
+    expect(r.status).toBe(503);
+    expect(r.body).toMatch(/MicroVM mvm-test is terminating\./);
+  });
 
   it('forwards to 8080 by default and to the X-aws-proxy-port, stripping the proxy headers', async () => {
     await start();

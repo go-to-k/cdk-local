@@ -5,6 +5,7 @@ import {
   microvmImageTag,
   planMicrovmPorts,
 } from '../../../src/local/microvm-runner.js';
+import { MicrovmStateError } from '../../../src/local/microvm-front-door.js';
 import type { HookPostResult, MicrovmHookDeps } from '../../../src/local/microvm-hooks.js';
 import type { MicrovmHookName, MicrovmImageConfig } from '../../../src/local/microvm-image.js';
 
@@ -332,6 +333,20 @@ describe('LocalMicrovm state races (a terminate wins over an in-flight transitio
     await r;
     expect(vm.state()).toBe('running');
     expect(log).toEqual(['hook suspend', 'paused', 'unpaused', 'hook resume']);
+  });
+
+  it('a resume waiting on a suspend refuses with a state error once terminate() started', async () => {
+    const { vm, release } = gated();
+    await vm.boot(undefined);
+    const s = vm.suspend();
+    const r = vm.resume();
+    const term = vm.terminate();
+    await release(); // the suspend's pause
+    await expect(r).rejects.toBeInstanceOf(MicrovmStateError);
+    expect(vm.state()).toBe('terminating');
+    await s;
+    await release(); // terminate's unpause
+    await term;
   });
 
   it('a failing docker pause rolls back to running; a failing unpause stays suspended', async () => {

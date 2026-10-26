@@ -210,6 +210,12 @@ async function admit(
     try {
       await opts.target.resume();
     } catch (err) {
+      // A terminate that started meanwhile makes the resume refuse; that is
+      // the MicroVM going away (503 below), not a resume failure.
+      const now = opts.target.state();
+      if (err instanceof MicrovmStateError && (now === 'terminating' || now === 'terminated')) {
+        return { status: 503, message: `MicroVM ${id} is ${now}.` };
+      }
       return {
         status: 502,
         message: `MicroVM ${id} could not be resumed for this request: ${err instanceof Error ? err.message : String(err)}`,
@@ -376,9 +382,10 @@ export function controlRequestRefusal(
     return `Refusing a ${fetchSite} request to the MicroVM control endpoint: it accepts requests from this origin only (curl, or a page this front door served).`;
   }
   const host = (Array.isArray(headers.host) ? headers.host[0] : headers.host)?.trim().toLowerCase();
-  const m = host === undefined ? null : /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(host);
+  // A Host without a port means the scheme default (80 for http).
+  const m = host === undefined ? null : /^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/.exec(host);
   const name = m?.[1];
-  const port = m ? Number(m[2]) : NaN;
+  const port = m ? (m[2] !== undefined ? Number(m[2]) : 80) : NaN;
   const bindName =
     boundHost.includes(':') && !boundHost.startsWith('[') ? `[${boundHost}]` : boundHost;
   const loopbackBind = isWildcard(boundHost) || LOOPBACK_NAMES.includes(bindName.toLowerCase());
@@ -445,8 +452,9 @@ async function handleUpgrade(
     }
     upstreamSocket.write(`${lines.join('\r\n')}\r\n\r\n`);
     if (head.length > 0) upstreamSocket.write(head);
-    // Backpressure-aware, and a client FIN half-closes the upstream (end), not destroy.
-    clientSocket.pipe(upstreamSocket);
+    // Backpressure-aware. `end: false`: the client side's 'close' handler
+    // below ends the upstream, which also covers a close before this point.
+    clientSocket.pipe(upstreamSocket, { end: false });
   });
   // The 101 is relayed through ONE rewrite: a client that offered only the
   // MicroVM protocols must see `lambda-microvms` selected, or a client that
@@ -482,26 +490,41 @@ async function handleUpgrade(
     if (!clientSocket.destroyed) clientSocket.destroy();
     if (!upstreamSocket.destroyed) upstreamSocket.destroy();
   };
+  // Set once a raw HTTP error was written to the client: it is ending itself.
+  let answered = false;
+  const answer502 = (why: string): void => {
+    if (answered || clientSocket.destroyed) return;
+    answered = true;
+    writeRawHttpError(
+      clientSocket,
+      502,
+      `The application in MicroVM ${opts.target.microvmId} ${why} on port ${selection.port}.`
+    );
+  };
+  // The upstream's FIN also ends its write side (no half-open), so stop
+  // feeding it client bytes rather than writing after its end.
+  upstreamSocket.on('end', () => clientSocket.unpipe(upstreamSocket));
   upstreamSocket.on('error', () => {
-    if (!connected && !clientSocket.destroyed) {
-      writeRawHttpError(
-        clientSocket,
-        502,
-        `The application in MicroVM ${opts.target.microvmId} is not responding on port ${selection.port}.`
-      );
-      return;
-    }
-    closeBoth();
+    if (!connected) return answer502('is not responding');
+    if (responseHead === undefined) closeBoth();
   });
-  // A clean close travels as an `end` through pipe(); only an abrupt one
-  // (an error or a reset) tears the other side down.
   upstreamSocket.on('close', (hadError) => {
+    // Before the 101 head is complete nothing has reached the client, so
+    // answer 502 rather than leaving it waiting forever.
+    if (responseHead !== undefined)
+      return answer502('closed the connection before answering the upgrade');
+    // After it, a clean close travels as an `end` through pipe(); only an
+    // abrupt one (an error or a reset) tears the client down.
     if (hadError) closeBoth();
   });
   clientSocket.on('error', closeBoth);
-  clientSocket.on('close', () => {
+  // The client's FIN (the upgraded socket is half-open capable) or its close
+  // ends the upstream; the upstream's own FIN then travels back through pipe().
+  const endUpstream = (): void => {
     if (!upstreamSocket.destroyed && !upstreamSocket.writableEnded) upstreamSocket.end();
-  });
+  };
+  clientSocket.on('end', endUpstream);
+  clientSocket.on('close', endUpstream);
 }
 
 /**
