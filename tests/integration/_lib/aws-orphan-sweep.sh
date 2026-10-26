@@ -330,6 +330,17 @@ derive_bucket_prefixes() { # derive_bucket_prefixes <fixture dir>
     | sed -E 's/^[^"]*"//' | sort -u | grep -v '^$' || true
 }
 
+# A bucket a fixture names through the lane helper
+# (`CODE_BUCKET="$(integ_scoped_name cdkl-...)"`) carries the lane suffix, so
+# unlike a literal-prefix bucket it IS attributable: an exact match is this
+# lane's orphan. The variable must name a bucket (`*BUCKET*`), which keeps an
+# export or parameter base from being swept as a bucket.
+derive_lane_bucket_bases() { # derive_lane_bucket_bases <fixture dir>
+  fixture_code "$1/verify.sh" \
+    | grep -ohE '^[[:space:]]*[A-Za-z_]*BUCKET[A-Za-z0-9_]*="\$\(integ_scoped_name [\"'"'"']?cdkl-[a-z0-9-]*' \
+    | sed -E 's/^.*integ_scoped_name [\"'"'"']?//' | sort -u | grep -v '^$' || true
+}
+
 # --------------------------------------------------------------- aws driver
 
 AWS_OUT=""
@@ -532,6 +543,29 @@ sweep_buckets() { # sweep_buckets <literal prefixes>
   done <<<"${prefixes}"
 }
 
+sweep_lane_buckets() { # sweep_lane_buckets <suffixed bucket names>
+  local names="$1" name
+  run_aws s3 ls
+  if [ "${AWS_RC}" -ne 0 ]; then
+    err "INDETERMINATE: could not list S3 buckets (aws rc=${AWS_RC})"
+    err "  ${AWS_ERR}"
+    raise "${EX_INDETERMINATE}"
+    return 0
+  fi
+  while IFS= read -r name; do
+    [ -n "${name}" ] || continue
+    # The bucket name is the third field of `aws s3 ls`; an exact compare,
+    # so a longer name that merely starts with this one is not claimed.
+    if printf '%s\n' "${AWS_OUT}" | awk -v n="${name}" '$3 == n { found = 1 } END { exit !found }'; then
+      say "ORPHAN bucket: ${name} (this fixture)"
+      orphan_other="${orphan_other}bucket ${name} (empty every object version and delete marker, then delete-bucket)"$'\n'
+      raise "${EX_ORPHAN}"
+    else
+      say "clean: bucket ${name} does not exist"
+    fi
+  done <<<"${names}"
+}
+
 # ------------------------------------------------------------- remediation
 
 print_remediation() {
@@ -688,9 +722,11 @@ main() {
     err "WARN: ${unresolvable_scoped} scoped-name call site(s) in ${fixture} are not literals; findings they own will be labelled 'this lane, another fixture'. The lane-wide filter still finds them."
   fi
   prefixes=""
+  lane_buckets=""
   if fixture_creates_bucket "${verify}"; then
     prefixes=$(derive_bucket_prefixes "${dir}")
-    [ -n "${prefixes}" ] || die "${fixture} creates a bucket out of band but no literal bucket-name prefix could be derived from ${verify}; refusing to report a sweep that never looked"
+    lane_buckets=$(derive_lane_bucket_bases "${dir}")
+    [ -n "${prefixes}${lane_buckets}" ] || die "${fixture} creates a bucket out of band but no literal bucket-name prefix could be derived from ${verify} (nor a lane-scoped bucket name built with integ_scoped_name); refusing to report a sweep that never looked"
   fi
 
   # A fixture that DEPLOYS but names no stack is a derivation failure, not
@@ -744,6 +780,14 @@ main() {
   sweep_exports "${scoped_full}"
   if [ -n "${prefixes}" ]; then
     sweep_buckets "${prefixes}"
+  fi
+  if [ -n "${lane_buckets}" ]; then
+    lane_bucket_full=""
+    while IFS= read -r base; do
+      [ -n "${base}" ] || continue
+      lane_bucket_full="${lane_bucket_full}$(integ_scoped_name "${base}")"$'\n'
+    done <<<"${lane_buckets}"
+    sweep_lane_buckets "${lane_bucket_full}"
   fi
 
   print_remediation

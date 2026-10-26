@@ -346,6 +346,23 @@ else
   check "a fixture that creates no bucket is not swept for buckets" 0
 fi
 
+# A bucket named through the lane helper DOES carry the lane suffix, so an
+# exact match is this fixture's orphan (exit 2), and a longer name that only
+# starts with it is not claimed.
+SWEEP_ENV=(INTEG_STACK_SUFFIX=deadbeef
+           AWS_S3_OUT="2026-01-01 00:00:00 cdkl-webfn-from-cfn-code-deadbeef")
+sweep local-start-web-function-from-cfn
+eq "a lane-scoped code bucket that exists exits 2 (orphan)" "2" "${RC}"
+has "the lane-scoped bucket is called an orphan of this fixture" "${OUT}" \
+    "ORPHAN bucket: cdkl-webfn-from-cfn-code-deadbeef (this fixture)"
+SWEEP_ENV=(INTEG_STACK_SUFFIX=deadbeef
+           AWS_S3_OUT="2026-01-01 00:00:00 cdkl-webfn-from-cfn-code-deadbeef-other")
+sweep local-start-web-function-from-cfn
+eq "a longer bucket name that only starts with the lane name is not claimed" "0" "${RC}"
+SWEEP_ENV=(INTEG_STACK_SUFFIX=deadbeef AWS_FAIL_ON=s3)
+sweep local-start-web-function-from-cfn
+eq "a failing 's3 ls' for a lane-scoped bucket exits 3 (indeterminate)" "3" "${RC}"
+
 # ================================================== 7. indeterminate verdict
 # Every query failing IN TURN. This is the section a text grep cannot have:
 # each of these is a failure path, and instance 4 was a failure path that

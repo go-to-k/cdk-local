@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "microvm-from-cfn-env-substitution"
+  ]
+}

@@ -221,6 +221,7 @@ const NON_LAMBDA_ONLY = [
   'tests/integration/local-start-cloudfront/lib/local-start-cloudfront-stack.ts',
   'tests/integration/local-start-cloudfront-kvs-from-cfn-stack/lib/local-start-cloudfront-kvs-from-cfn-stack-stack.ts',
   'tests/integration/local-start-web-function/lib/local-start-web-function-stack.ts',
+  'tests/integration/local-start-web-function-from-cfn/lib/local-start-web-function-from-cfn-stack.ts',
 ];
 
 /**

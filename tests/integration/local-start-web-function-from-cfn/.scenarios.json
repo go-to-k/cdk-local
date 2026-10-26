@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "webfn-from-cfn-env-substitution",
+    "webfn-assume-role-cfn-name-path"
+  ]
+}
