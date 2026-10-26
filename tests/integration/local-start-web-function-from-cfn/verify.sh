@@ -84,6 +84,10 @@ delete_stack() { # delete_stack <name>: delete-stack, then wait for it to be gon
 echo "[verify] region=${REGION} producer=${PRODUCER_STACK} consumer=${CONSUMER_STACK} export=${EXPORT_NAME} param=${SHARED_PARAM}"
 
 CDKL_PID=""
+# Every serve this run started (no `--rm`): cleanup removes their containers by
+# pid, so a SIGKILLed serve — after the --assume-role arm one holding
+# assumed-role credentials — leaves none behind.
+RUN_PIDS=()
 OUT_FILE="$(mktemp)"
 WE_CREATED_STACKS=0
 WE_CREATED_BUCKET=0
@@ -97,9 +101,16 @@ stop_server() {
   CDKL_PID=""
 }
 
+containers_of() {
+  docker ps -a --filter "name=cdkl-webfn-$1-" --format '{{.Names}}' || true
+}
+
 cleanup() {
   rc=$?
   stop_server
+  for pid in ${RUN_PIDS[@]+"${RUN_PIDS[@]}"}; do
+    for name in $(containers_of "${pid}"); do docker rm -f "${name}" >/dev/null 2>&1 || true; done
+  done
   rm -f "${OUT_FILE}"
   # Gated on the sentinel: a pre-existing same-named stack (pre-flight exit)
   # is someone else's and is never deleted here.
@@ -140,6 +151,7 @@ boot_serve() {
   : > "${OUT_FILE}"
   ${CLI} start-web-function "$@" --no-pull ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} > "${OUT_FILE}" 2>&1 &
   CDKL_PID=$!
+  RUN_PIDS+=("${CDKL_PID}")
   for _ in $(seq 1 240); do
     grep -q 'Server listening on http://' "${OUT_FILE}" && return 0
     kill -0 "${CDKL_PID}" 2>/dev/null || fail "start-web-function exited before it was ready"
@@ -151,7 +163,7 @@ boot_serve() {
 assert_no_orphans() {
   sleep 1
   local orphans
-  orphans="$(docker ps -a --filter "name=cdkl-webfn-$1-" --format '{{.Names}}' || true)"
+  orphans="$(containers_of "$1")"
   [ -z "${orphans}" ] || fail "leftover web function container(s): ${orphans}"
 }
 
@@ -264,8 +276,14 @@ echo "${BODY}" | grep -q "\"refValue\":\"${REF_PHYSICAL}\"" || fail "Ref not res
 echo "${BODY}" | grep -q "\"importedValue\":\"${SHARED_VALUE}\"" || fail "ImportValue not resolved: ${BODY}"
 echo "${BODY}" | grep -q '"getattValue":null' || fail "GetAtt unexpectedly resolved: ${BODY}"
 echo "${BODY}" | grep -q '"staticValue":"always-the-same"' || fail "literal env regressed: ${BODY}"
-grep -q 'could not substitute env var GETATT_VALUE' "${OUT_FILE}" || fail "no GetAtt substitution warning"
-grep -q 'it will be dropped' "${OUT_FILE}" || fail "the GetAtt warning does not say the value is dropped"
+# One line carries the whole warning. A line naming GETATT_VALUE and
+# "could not substitute" without the full phrase means the wording drifted.
+GETATT_RE='could not substitute env var GETATT_VALUE \(.*\)\. Override it via --env-vars or it will be dropped'
+if ! grep -Eq "${GETATT_RE}" "${OUT_FILE}"; then
+  DRIFTED="$(grep 'GETATT_VALUE' "${OUT_FILE}" | grep 'could not substitute' | head -1 || true)"
+  [ -z "${DRIFTED}" ] || fail "the GetAtt warning wording drifted: ${DRIFTED}"
+  fail "no GetAtt substitution warning"
+fi
 WHO="$(curl -s --max-time 20 "http://127.0.0.1:$((PORT + 1))/whoami")"
 echo "${WHO}" | grep -q "assumed-role/${ROLE_NAME}/" && fail "the execution role was assumed without --assume-role: ${WHO}"
 echo "[verify]   ${BODY}"

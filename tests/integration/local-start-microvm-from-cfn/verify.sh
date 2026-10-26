@@ -64,6 +64,9 @@ delete_stack() { # delete_stack <name>: delete-stack, then wait for it to be gon
 echo "[verify] region=${REGION} producer=${PRODUCER_STACK} consumer=${CONSUMER_STACK} export=${EXPORT_NAME} param=${SHARED_PARAM}"
 
 CDKL_PID=""
+# Every serve this run started: cleanup removes their containers by pid even
+# after a run's CDKL_PID was cleared (a leftover found by terminate_run).
+RUN_PIDS=()
 OUT_FILE="$(mktemp)"
 WE_CREATED_STACKS=0
 
@@ -81,11 +84,10 @@ stop_server() {
 
 cleanup() {
   rc=$?
-  local pid="${CDKL_PID}"
   stop_server
-  if [ -n "${pid}" ]; then
+  for pid in ${RUN_PIDS[@]+"${RUN_PIDS[@]}"}; do
     for name in $(containers_of "${pid}"); do docker rm -f "${name}" >/dev/null 2>&1 || true; done
-  fi
+  done
   rm -f "${OUT_FILE}"
   # Gated on the sentinel: a pre-existing same-named stack (pre-flight exit)
   # is someone else's and is never deleted here.
@@ -110,6 +112,7 @@ boot_run() {
   : > "${OUT_FILE}"
   ${CLI} start-microvm "$@" --platform "${PLATFORM}" > "${OUT_FILE}" 2>&1 &
   CDKL_PID=$!
+  RUN_PIDS+=("${CDKL_PID}")
   for _ in $(seq 1 480); do
     grep -q 'Press ^C to terminate the MicroVM(s).' "${OUT_FILE}" && return 0
     kill -0 "${CDKL_PID}" 2>/dev/null || fail "start-microvm exited before it was ready"
@@ -192,8 +195,14 @@ echo "${BODY}" | grep -q "\"refValue\":\"${REF_PHYSICAL}\"" || fail "Ref not res
 echo "${BODY}" | grep -q "\"importedValue\":\"${SHARED_VALUE}\"" || fail "ImportValue not resolved: ${BODY}"
 echo "${BODY}" | grep -q '"getattValue":null' || fail "GetAtt unexpectedly resolved: ${BODY}"
 echo "${BODY}" | grep -q '"staticValue":"always-the-same"' || fail "literal env regressed: ${BODY}"
-grep -q 'could not substitute env var GETATT_VALUE' "${OUT_FILE}" || fail "no GetAtt substitution warning"
-grep -q 'it will be dropped' "${OUT_FILE}" || fail "the GetAtt warning does not say the value is dropped"
+# One line carries the whole warning. A line naming GETATT_VALUE and
+# "could not substitute" without the full phrase means the wording drifted.
+GETATT_RE='could not substitute env var GETATT_VALUE \(.*\)\. Override it via --env-vars or it will be dropped'
+if ! grep -Eq "${GETATT_RE}" "${OUT_FILE}"; then
+  DRIFTED="$(grep 'GETATT_VALUE' "${OUT_FILE}" | grep 'could not substitute' | head -1 || true)"
+  [ -z "${DRIFTED}" ] || fail "the GetAtt warning wording drifted: ${DRIFTED}"
+  fail "no GetAtt substitution warning"
+fi
 echo "[verify]   ${BODY}"
 terminate_run
 
