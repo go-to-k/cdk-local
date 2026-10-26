@@ -168,9 +168,8 @@ any tag whose major is not 0.
 
 Known behavior: the release PR is created with `GITHUB_TOKEN`, and GitHub
 does not trigger `pull_request` workflows for such PRs — so the release PR
-shows NO CI checks. Its diff is only version/CHANGELOG/manifest; the
-maintainer merges it via the web UI. Handing the release-please step a PAT
-would restore CI on it.
+shows NO CI checks and the ruleset blocks it, `--admin` too. Push an empty
+commit to its branch to start CI, then squash-merge once green (#833).
 
 **A standing release PR goes STALE, and looks fine while it is.**
 release-please does NOT rebuild a release PR whose computed release is
