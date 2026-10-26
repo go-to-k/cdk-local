@@ -59,6 +59,9 @@ export interface RunningMicrovmFrontDoor {
   close(): Promise<void>;
 }
 
+/** How long close() lets open connections finish before cutting them. */
+export const CLOSE_GRACE_MS = 1000;
+
 /** The outcome of reading a request's target port. */
 export type PortSelection =
   | { ok: true; port: number }
@@ -169,8 +172,16 @@ export function startMicrovmFrontDoor(
       else res.destroy();
     });
   });
+  // Upgraded sockets leave the HTTP server's bookkeeping (closeAllConnections
+  // does not reach them), so close() tracks and ends them itself.
+  const upgraded = new Set<Duplex>();
+  const track = (sock: Duplex): void => {
+    upgraded.add(sock);
+    sock.once('close', () => upgraded.delete(sock));
+  };
   server.on('upgrade', (req, socket: Duplex, head: Buffer) => {
-    void handleUpgrade(req, socket, head, opts).catch((err) => {
+    track(socket);
+    void handleUpgrade(req, socket, head, opts, track).catch((err) => {
       logger.debug(`microvm upgrade error: ${err instanceof Error ? err.message : String(err)}`);
       writeRawHttpError(socket, 502, 'The MicroVM front door failed to forward the upgrade.');
     });
@@ -190,7 +201,13 @@ export function startMicrovmFrontDoor(
             // `/terminate`) still reaches its caller; then cut what is left.
             server.close(() => resolveClose());
             server.closeIdleConnections();
-            setTimeout(() => server.closeAllConnections(), 1000).unref();
+            for (const sock of upgraded) sock.end();
+            setTimeout(() => {
+              server.closeAllConnections();
+              // A half-open WebSocket peer that never closes must not hold
+              // close() (and the process's shutdown) open.
+              for (const sock of upgraded) sock.destroy();
+            }, CLOSE_GRACE_MS).unref();
           }),
       });
     });
@@ -417,7 +434,8 @@ async function handleUpgrade(
   req: IncomingMessage,
   clientSocket: Duplex,
   head: Buffer,
-  opts: MicrovmFrontDoorOptions
+  opts: MicrovmFrontDoorOptions,
+  track: (sock: Duplex) => void
 ): Promise<void> {
   const selection = selectTargetPort(req.headers);
   if (!selection.ok) {
@@ -440,6 +458,7 @@ async function handleUpgrade(
   const appProtocolsLeft = headers['sec-websocket-protocol'] !== undefined;
 
   const upstreamSocket = netConnect({ host: upstream.host, port: upstream.port });
+  track(upstreamSocket);
   upstreamSocket.setNoDelay(true);
   let connected = false;
   let responseHead: Buffer | undefined = Buffer.alloc(0);
@@ -513,18 +532,22 @@ async function handleUpgrade(
     // answer 502 rather than leaving it waiting forever.
     if (responseHead !== undefined)
       return answer502('closed the connection before answering the upgrade');
-    // After it, a clean close travels as an `end` through pipe(); only an
-    // abrupt one (an error or a reset) tears the client down.
+    // After it, a clean close ENDS the client (its pending data still flushes,
+    // then the FIN) — pipe() does too when the upstream emitted 'end', which a
+    // destroyed upstream may not; only an abrupt close tears the client down.
     if (hadError) closeBoth();
+    else if (!clientSocket.writableEnded) clientSocket.end();
   });
   clientSocket.on('error', closeBoth);
-  // The client's FIN (the upgraded socket is half-open capable) or its close
-  // ends the upstream; the upstream's own FIN then travels back through pipe().
-  const endUpstream = (): void => {
+  // The client's FIN (the upgraded socket is half-open capable) half-closes
+  // the upstream; the upstream's own FIN then travels back through pipe(). A
+  // full client close destroys the upstream: nobody is left to read it.
+  clientSocket.on('end', () => {
     if (!upstreamSocket.destroyed && !upstreamSocket.writableEnded) upstreamSocket.end();
-  };
-  clientSocket.on('end', endUpstream);
-  clientSocket.on('close', endUpstream);
+  });
+  clientSocket.on('close', () => {
+    if (!upstreamSocket.destroyed) upstreamSocket.destroy();
+  });
 }
 
 /**

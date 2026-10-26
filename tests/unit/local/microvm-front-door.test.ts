@@ -69,6 +69,9 @@ describe('controlRequestRefusal', () => {
     expect(ok({ host: 'localhost' }, '127.0.0.1', 80)).toBeUndefined();
     expect(ok({ host: 'localhost' }, '127.0.0.1', 8000)).toMatch(/Host header/);
   });
+  it('refuses a request with no Host header', () => {
+    expect(ok({}, '127.0.0.1', 8000)).toMatch(/Host header \(<none>\)/);
+  });
   it('refuses a matching name on another port', () => {
     expect(ok({ host: '127.0.0.1:9999' }, '127.0.0.1', 8000)).toMatch(/Host header/);
   });
@@ -322,6 +325,37 @@ describe('startMicrovmFrontDoor', () => {
     await start();
     const raw = await upgrade([...WS, 'X-aws-proxy-port: 9600']);
     expect(raw).toMatch(/^HTTP\/1\.1 502 Bad Gateway[\s\S]*closed the connection before answering the upgrade/);
+  });
+
+  it('close() is not held open by an upgraded WebSocket that never closes', async () => {
+    const app = createServer();
+    const appSockets: import('node:stream').Duplex[] = [];
+    app.on('upgrade', (_req, socket) => {
+      appSockets.push(socket);
+      socket.on('error', () => undefined);
+      socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    });
+    upstreamPorts.set(9750, await listen(app));
+    await start();
+    // A half-open-capable peer that never ends or closes its side.
+    const sock = connect({ port: fd!.port, host: '127.0.0.1', allowHalfOpen: true }, () => {
+      sock.write([...WS, 'X-aws-proxy-port: 9750', '', ''].join('\r\n'));
+    });
+    sock.on('error', () => undefined);
+    await new Promise<void>((r) => sock.once('data', () => r()));
+    const t0 = Date.now();
+    const closing = fd!.close();
+    fd = undefined;
+    try {
+      await Promise.race([
+        closing,
+        new Promise((_r, rej) => setTimeout(() => rej(new Error('close() still pending')), 3000)),
+      ]);
+      expect(Date.now() - t0).toBeLessThan(2500);
+    } finally {
+      sock.destroy();
+      for (const a of appSockets) a.destroy();
+    }
   });
 
   it('a client closing the WebSocket ends the upstream side', async () => {
