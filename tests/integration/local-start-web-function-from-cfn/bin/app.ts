@@ -12,6 +12,7 @@ const EXPORT_NAME = integScopedName('cdkl-webfn-from-cfn-shared');
 const producer = new ProducerStack(app, integStackName('CdkLocalWebFnFromCfnProducer'), {
   description: 'Producer stack: exports a value the web function imports.',
   exportName: EXPORT_NAME,
+  parameterName: integScopedName('/cdkl-integ/webfn-from-cfn/shared'),
 });
 
 new WebFunctionConsumerStack(app, integStackName('CdkLocalWebFnFromCfnConsumer'), {

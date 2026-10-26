@@ -14,13 +14,26 @@ export const SHARED_VALUE = 'shared-from-webfn-producer';
 
 export interface ProducerStackProps extends cdk.StackProps {
   readonly exportName: string;
+  /** Lane-unique name of the producer's SSM parameter. */
+  readonly parameterName: string;
 }
 
-/** Exports one literal, consumed through `Fn::ImportValue`. */
+/**
+ * Exports one literal, consumed through `Fn::ImportValue`. The stack holds a
+ * real resource (an SSM parameter carrying the literal): the CDK CLI skips a
+ * stack with no resources, which would leave the export uncreated.
+ */
 export class ProducerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ProducerStackProps) {
     super(scope, id, props);
-    new cdk.CfnOutput(this, 'SharedValue', { value: SHARED_VALUE, exportName: props.exportName });
+    const shared = new ssm.StringParameter(this, 'SharedParam', {
+      parameterName: props.parameterName,
+      stringValue: SHARED_VALUE,
+    });
+    new cdk.CfnOutput(this, 'SharedValue', {
+      value: shared.stringValue,
+      exportName: props.exportName,
+    });
   }
 }
 

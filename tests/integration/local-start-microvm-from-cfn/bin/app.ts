@@ -12,6 +12,7 @@ const EXPORT_NAME = integScopedName('cdkl-microvm-from-cfn-shared');
 const producer = new ProducerStack(app, integStackName('CdkLocalMicrovmFromCfnProducer'), {
   description: 'Producer stack: exports a value the MicroVM image imports.',
   exportName: EXPORT_NAME,
+  parameterName: integScopedName('/cdkl-integ/microvm-from-cfn/shared'),
 });
 
 new MicrovmConsumerStack(app, integStackName('CdkLocalMicrovmFromCfnConsumer'), {

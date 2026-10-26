@@ -40,6 +40,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../_lib/stack-name.sh"
 PRODUCER_STACK="$(integ_stack_name CdkLocalWebFnFromCfnProducer)"
 CONSUMER_STACK="$(integ_stack_name CdkLocalWebFnFromCfnConsumer)"
 EXPORT_NAME="$(integ_scoped_name cdkl-webfn-from-cfn-shared)"
+# The producer's SSM parameter (a stack resource: the CDK CLI skips a stack
+# with none, which would leave the export uncreated). Deleted with its stack.
+SHARED_PARAM="$(integ_scoped_name /cdkl-integ/webfn-from-cfn/shared)"
 SHARED_VALUE="shared-from-webfn-producer" # kept in sync with the stack's SHARED_VALUE
 IMAGE="public.ecr.aws/lambda/nodejs:24"
 PORT=18480
@@ -62,7 +65,7 @@ delete_stack() { # delete_stack <name>: delete-stack, then wait for it to be gon
   aws cloudformation wait stack-delete-complete --stack-name "$1" --region "${REGION}"
 }
 
-echo "[verify] region=${REGION} producer=${PRODUCER_STACK} consumer=${CONSUMER_STACK} export=${EXPORT_NAME}"
+echo "[verify] region=${REGION} producer=${PRODUCER_STACK} consumer=${CONSUMER_STACK} export=${EXPORT_NAME} param=${SHARED_PARAM}"
 
 CDKL_PID=""
 OUT_FILE="$(mktemp)"
