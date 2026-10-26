@@ -39,6 +39,9 @@ const { createLocalStartAlbCommand } = await import('../../../src/cli/commands/l
 const { createLocalStartWebFunctionCommand } = await import(
   '../../../src/cli/commands/local-start-web-function.js'
 );
+const { createLocalStartMicrovmCommand } = await import(
+  '../../../src/cli/commands/local-start-microvm.js'
+);
 
 type Factory = (opts: { synthesizer?: CdkAppSynthesizer }) => Command;
 
@@ -48,6 +51,7 @@ const COMMANDS: Array<[string, Factory, string[]]> = [
   ['start-service', createLocalStartServiceCommand, ['Stack/Service']],
   ['start-alb', createLocalStartAlbCommand, ['Stack/Alb']],
   ['start-web-function', createLocalStartWebFunctionCommand, ['Stack/Endpoint']],
+  ['start-microvm', createLocalStartMicrovmCommand, ['Stack/Image']],
 ];
 
 class Exit extends Error {}

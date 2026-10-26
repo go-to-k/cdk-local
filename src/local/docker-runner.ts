@@ -167,6 +167,12 @@ export interface DockerRunOptions {
    */
   extraHosts?: { host: string; ip: string }[];
   /**
+   * More `-p <host>:<hostPort>:<containerPort>` publishes after the primary
+   * one. `start-microvm` publishes every port its front door may route
+   * `X-aws-proxy-port` to.
+   */
+  extraPorts?: { hostPort: number; containerPort: number }[];
+  /**
    * `false` omits `--rm`, so an exited container (and its logs) survive until
    * the caller's `removeContainer`. `start-web-function` needs that: a server
    * that crashes at boot would otherwise be gone, stack trace and all, before
@@ -284,6 +290,9 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   args.push('-p', `${host}:${opts.hostPort}:${opts.containerPort ?? 8080}`);
   if (opts.debugPort !== undefined) {
     args.push('-p', `${host}:${opts.debugPort}:${opts.debugPort}`);
+  }
+  for (const extra of opts.extraPorts ?? []) {
+    args.push('-p', `${host}:${extra.hostPort}:${extra.containerPort}`);
   }
 
   for (const mount of opts.mounts) {
@@ -480,7 +489,11 @@ export function createPrefixedLineRelay(
  */
 export function streamLogs(
   containerId: string,
-  opts: { onOutput?: (chunk: Buffer) => void } = {}
+  opts: {
+    onOutput?: (chunk: Buffer) => void;
+    /** Tag every relayed line with this prefix (`start-microvm --count N` names each MicroVM). */
+    prefix?: string;
+  } = {}
 ): () => void {
   const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -491,10 +504,11 @@ export function streamLogs(
     proc.stderr?.on('data', (chunk: Buffer) => tap(chunk));
   }
   let flush = (): void => undefined;
-  if (process.env[PREFIX_CONTAINER_OUTPUT_ENV] === '1') {
+  if (opts.prefix !== undefined || process.env[PREFIX_CONTAINER_OUTPUT_ENV] === '1') {
     // Read the id as untrusted for the tag: flattened, and stripped of the
     // `]` that would close the tag early.
-    const tag = `[${flattenToOneLine(containerId.slice(0, 12)).replace(/[\]\s]/g, '_')}] `;
+    const tag =
+      opts.prefix ?? `[${flattenToOneLine(containerId.slice(0, 12)).replace(/[\]\s]/g, '_')}] `;
     const stdoutRelay = createPrefixedLineRelay(tag, process.stdout);
     const stderrRelay = createPrefixedLineRelay(tag, process.stderr);
     proc.stdout?.on('data', (chunk: Buffer) => stdoutRelay.push(chunk));

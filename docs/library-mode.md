@@ -52,7 +52,7 @@ alongside the activating one.
 
 ## Synthesizing with your own synthesizer
 
-`start-agentcore`, `start-web-function`, `start-cloudfront`, `start-service` and `start-alb` take a
+`start-agentcore`, `start-web-function`, `start-microvm`, `start-cloudfront`, `start-service` and `start-alb` take a
 `synthesizer` option. Pass one and the command synthesizes the CDK app with it,
 on boot and on every `--watch` reload, instead of the built-in
 `@aws-cdk/toolkit-lib` synthesizer. A host that has its own synthesis (its own
@@ -518,6 +518,11 @@ no duplicate `.addOption(...)` block on the host side.
   flags (`--revision`, `--port`, `--host`, `--platform`, `--env-vars`,
   `--no-pull`, `--timeout`, `--assume-role`, `--from-cfn-stack`,
   `--stack-region`).
+- `addStartMicrovmSpecificOptions(cmd)` — `cdkl start-microvm` flags
+  (`--count`, `--run-hook-payload`, `--run-hook-payload-file`, `--port`,
+  `--host`, `--platform`, `--proxy-port`, `--auto-resume`,
+  `--no-build-cache`, `--env-vars`, `--timeout`, `--assume-role`,
+  `--from-cfn-stack`, `--stack-region`).
 - `addStartApiSpecificOptions(cmd)` — `cdkl start-api` flags
   (`--port`, `--host`, `--stack`, `--all-stacks`, `--warm`,
   `--per-lambda-concurrency`, `--no-pull`, `--container-host`,

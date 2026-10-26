@@ -107,7 +107,7 @@ export function formatTargetListing(
   options: FormatTargetListingOptions = {}
 ): string {
   if (countTargets(listing) === 0) {
-    return `No runnable targets (Lambda functions, APIs, ECS services / tasks, AgentCore Runtimes, load balancers, CloudFront distributions, Lambda web functions) found in this CDK app.`;
+    return `No runnable targets (Lambda functions, APIs, ECS services / tasks, AgentCore Runtimes, load balancers, CloudFront distributions, Lambda web functions, Lambda MicroVM images) found in this CDK app.`;
   }
 
   const long = options.long ?? false;
@@ -148,6 +148,12 @@ export function formatTargetListing(
       'Lambda Web Functions',
       `${cliName} start-web-function <target>`,
       listing.webFunctions,
+      long
+    ),
+    formatSection(
+      'Lambda MicroVM Images',
+      `${cliName} start-microvm <target>`,
+      listing.microvmImages,
       long
     ),
   ];

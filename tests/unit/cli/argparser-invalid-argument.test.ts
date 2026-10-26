@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { CommanderError, type Command } from 'commander';
 import { createLocalStartAgentCoreCommand } from '../../../src/cli/commands/local-start-agentcore.js';
 import { createLocalStartWebFunctionCommand } from '../../../src/cli/commands/local-start-web-function.js';
+import { createLocalStartMicrovmCommand } from '../../../src/cli/commands/local-start-microvm.js';
 import { createLocalInvokeAgentCoreCommand } from '../../../src/cli/commands/local-invoke-agentcore.js';
 import { createLocalStartServiceCommand } from '../../../src/cli/commands/local-start-service.js';
 import { createLocalStartApiCommand } from '../../../src/cli/commands/local-start-api.js';
@@ -67,6 +68,30 @@ const cases: Array<{
     usage: "error: option '--port <n>' argument 'abc' is invalid.",
     messageFragment: '--port must be an integer 0-65535',
     valid: ['--port', '8080'],
+  },
+  {
+    name: 'start-microvm --port',
+    make: () => createLocalStartMicrovmCommand(),
+    argv: ['--port', 'abc'],
+    usage: "error: option '--port <n>' argument 'abc' is invalid.",
+    messageFragment: '--port must be an integer 0-65535',
+    valid: ['--port', '8080'],
+  },
+  {
+    name: 'start-microvm --count',
+    make: () => createLocalStartMicrovmCommand(),
+    argv: ['--count', '0'],
+    usage: "error: option '--count <n>' argument '0' is invalid.",
+    messageFragment: '--count must be an integer 1-64',
+    valid: ['--count', '2'],
+  },
+  {
+    name: 'start-microvm --proxy-port',
+    make: () => createLocalStartMicrovmCommand(),
+    argv: ['--proxy-port', '70000'],
+    usage: "error: option '--proxy-port <port>' argument '70000' is invalid.",
+    messageFragment: '--proxy-port must be an integer 1-65535',
+    valid: ['--proxy-port', '9000'],
   },
   {
     name: 'start-agentcore --timeout',

@@ -73,6 +73,7 @@ describe('cdkl list renders the display path and qualified id (#761)', () => {
       loadBalancers: [],
       cloudFrontDistributions: [],
       webFunctions: [],
+      microvmImages: [],
     } as never;
   }
 
