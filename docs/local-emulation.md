@@ -633,8 +633,8 @@ it only adds `CapacityProviderConfig` (CDK:
 `cdkl start-api` run it like any other function, in the same RIE
 container. `CapacityProviderConfig`, `FunctionScalingConfig` and the
 `AWS::Lambda::CapacityProvider` resource are not read: there are no EC2
-instances locally, and an execution environment serves one request at a
-time.
+instances locally, and each local container serves one request at a time
+(on AWS one execution environment serves several concurrently).
 
 ### `invoke` exit codes
 
