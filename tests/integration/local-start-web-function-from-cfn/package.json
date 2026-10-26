@@ -1,0 +1,21 @@
+{
+  "name": "cdkl-integ-local-start-web-function-from-cfn",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkl start-web-function --from-cfn-stack (deployed via the pinned upstream CDK CLI)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "2.1145.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.274.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module",
+  "packageManager": "pnpm@11.5.1"
+}
