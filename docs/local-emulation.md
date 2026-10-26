@@ -625,6 +625,17 @@ The same cap applies to `cdkl start-api`'s warm container pool — each
 cold-started container for a Lambda with `EphemeralStorage` gets the
 same sized `/tmp`.
 
+### Lambda Managed Instances
+
+A function on a capacity provider is still an `AWS::Lambda::Function` —
+it only adds `CapacityProviderConfig` (CDK:
+`new lambda.CapacityProvider(...).addFunction(fn)`). `cdkl invoke` and
+`cdkl start-api` run it like any other function, in the same RIE
+container. `CapacityProviderConfig`, `FunctionScalingConfig` and the
+`AWS::Lambda::CapacityProvider` resource are not read: there are no EC2
+instances locally, and an execution environment serves one request at a
+time.
+
 ### `invoke` exit codes
 
 - `0` — RIE answered, regardless of whether the handler returned a
