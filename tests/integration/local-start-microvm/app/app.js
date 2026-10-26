@@ -3,6 +3,7 @@
 // 8080 and 9000, so verify.sh can assert the hook order, the run payload and
 // the port routing from the outside.
 const http = require('http');
+const crypto = require('crypto');
 
 const HOOK_PREFIX = '/aws/lambda-microvms/runtime/v1/';
 const state = {
@@ -51,6 +52,52 @@ http
   })
   .listen(9001, '0.0.0.0');
 
+// A minimal WebSocket echo (RFC 6455 text frames, no extensions) for the
+// upgrade arm: the first frame reports the Sec-WebSocket-Protocol header the
+// app received, then every client text frame is echoed back.
+function wsFrame(text) {
+  const payload = Buffer.from(text);
+  const len = payload.length;
+  const head = len < 126 ? Buffer.from([0x81, len]) : Buffer.from([0x81, 126, len >> 8, len & 0xff]);
+  return Buffer.concat([head, payload]);
+}
+
+function handleUpgrade(req, socket) {
+  const accept = crypto
+    .createHash('sha1')
+    .update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+    .digest('base64');
+  socket.write(
+    'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
+  );
+  socket.write(
+    wsFrame(JSON.stringify({ subprotocolHeader: req.headers['sec-websocket-protocol'] ?? null }))
+  );
+  let buf = Buffer.alloc(0);
+  socket.on('data', (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    while (buf.length >= 2) {
+      const opcode = buf[0] & 0x0f;
+      let len = buf[1] & 0x7f;
+      let off = 2;
+      if (len === 126) {
+        if (buf.length < 4) return;
+        len = buf.readUInt16BE(2);
+        off = 4;
+      }
+      if (buf.length < off + 4 + len) return;
+      const mask = buf.subarray(off, off + 4);
+      const data = Buffer.from(buf.subarray(off + 4, off + 4 + len));
+      for (let i = 0; i < data.length; i++) data[i] ^= mask[i % 4];
+      buf = buf.subarray(off + 4 + len);
+      if (opcode === 0x8) return socket.end(Buffer.from([0x88, 0]));
+      if (opcode === 0x1) socket.write(wsFrame(`echo:${data.toString()}`));
+    }
+  });
+  socket.on('error', () => undefined);
+}
+
 for (const port of [8080, 9000]) {
   http
     .createServer(async (req, res) => {
@@ -66,6 +113,7 @@ for (const port of [8080, 9000]) {
         proxyHeaders: Object.keys(req.headers).filter((h) => h.startsWith('x-aws-proxy-')),
       });
     })
+    .on('upgrade', handleUpgrade)
     .listen(port, '0.0.0.0');
 }
 

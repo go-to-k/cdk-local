@@ -13,7 +13,8 @@
 #      payload, the generated microvmId and EnvironmentVariables reach the app;
 #      8080 by default, 9000 by X-aws-proxy-port; X-aws-proxy-* headers never
 #      reach the app; invalid -> 400, unpublished -> 403, published but not
-#      listening -> 502.
+#      listening -> 502; a WebSocket routed by lambda-microvms.port.9000 echoes,
+#      the app sees no MicroVM subprotocol, and the 101 selects lambda-microvms.
 #   2. Control endpoint: suspend -> 503 while suspended -> resume -> served,
 #      with the /suspend and /resume hooks observed.
 #   3. SIGTERM -> /terminate observed for the MicroVM, no container left.
@@ -154,6 +155,27 @@ echo "${BODY}" | grep -q '"proxyHeaders":\[\]' || fail "X-aws-proxy-* headers re
 [ "$(status_of "${URL}/" -H 'X-aws-proxy-port: 9200')" = "403" ] || fail "unpublished port not 403"
 [ "$(status_of "${URL}/" -H 'X-aws-proxy-port: 9100')" = "502" ] \
   || fail "published port with no listener (--proxy-port 9100) not 502"
+
+echo "[verify] step 4b: WebSocket routed by lambda-microvms.port.9000, MicroVM subprotocols stripped"
+WS_OUT="$(node -e '
+const ws = new WebSocket(process.argv[1], ["lambda-microvms", "lambda-microvms.port.9000"]);
+const got = [];
+const timer = setTimeout(() => { console.log(JSON.stringify({ error: "timeout", got })); process.exit(1); }, 10000);
+ws.onopen = () => ws.send("ping");
+ws.onerror = (e) => { console.log(JSON.stringify({ error: String(e.message || e.type), got })); process.exit(1); };
+ws.onmessage = (m) => {
+  got.push(String(m.data));
+  if (got.length === 2) {
+    clearTimeout(timer);
+    console.log(JSON.stringify({ protocol: ws.protocol, got }));
+    ws.close();
+  }
+};
+' "ws://127.0.0.1:${PORT}/ws")" || fail "WebSocket client failed: ${WS_OUT}"
+echo "${WS_OUT}" | grep -q '"protocol":"lambda-microvms"' || fail "101 did not select lambda-microvms: ${WS_OUT}"
+echo "${WS_OUT}" | grep -q 'subprotocolHeader\\":null' || fail "the app saw a subprotocol header: ${WS_OUT}"
+echo "${WS_OUT}" | grep -q '"echo:ping"' || fail "the echo did not round-trip through port 9000: ${WS_OUT}"
+echo "[verify]   ${WS_OUT}"
 
 echo "[verify] step 5: suspend -> 503 -> resume -> served"
 curl -s -X POST "${URL}/_cdkl/microvm/suspend" | grep -q '"state":"suspended"' || fail "suspend did not report suspended"
