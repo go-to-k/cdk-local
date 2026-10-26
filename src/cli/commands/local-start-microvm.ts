@@ -401,6 +401,13 @@ async function localStartMicrovmCommand(
   const recents = new Map<string, RecentOutput>();
   let allTerminated!: () => void;
   const everyVmTerminated = new Promise<void>((r) => (allTerminated = r));
+  // Only once ALL `--count` MicroVMs exist: while MicroVM i is still in
+  // `docker run`, the earlier ones being terminated is not "every MicroVM".
+  const checkAllTerminated = (): void => {
+    if (vms.length === options.count && vms.every((v) => v.state() === 'terminated')) {
+      allTerminated();
+    }
+  };
   let unexpectedExit!: (e: { vm: LocalMicrovm; code: number | undefined }) => void;
   const anyUnexpectedExit = new Promise<{ vm: LocalMicrovm; code: number | undefined }>(
     (r) => (unexpectedExit = r)
@@ -479,9 +486,7 @@ async function localStartMicrovmCommand(
           timeoutMs: options.timeout,
           // Its front door stays up answering 503 until the process ends,
           // as a terminated MicroVM's endpoint stops serving.
-          onTerminated: () => {
-            if (vms.every((v) => v.state() === 'terminated')) allTerminated();
-          },
+          onTerminated: checkAllTerminated,
         },
         { isAlive: async () => !exited }
       );
@@ -508,6 +513,7 @@ async function localStartMicrovmCommand(
       );
     }
     logger.info('Press ^C to terminate the MicroVM(s).');
+    checkAllTerminated();
   } catch (err) {
     if (shuttingDown) return await forever();
     const failed = vms.at(-1);

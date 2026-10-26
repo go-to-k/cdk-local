@@ -65,26 +65,28 @@ export type PortSelection =
   | { ok: false; status: 400; message: string };
 
 /**
- * The container port a request targets: a WebSocket's `lambda-microvms.port.N`
- * subprotocol, else the `X-aws-proxy-port` header, else 8080. A value that is
- * not an integer 1-65535 is a 400, as the cloud's endpoint answers.
+ * The container port a request targets, in the order the cloud's endpoint
+ * applies: the `X-aws-proxy-port` header, else a WebSocket's
+ * `lambda-microvms.port.N` subprotocol, else 8080. A value that is not an
+ * integer 1-65535 is a 400, as the cloud's endpoint answers.
  */
 export function selectTargetPort(headers: IncomingMessage['headers']): PortSelection {
-  const fromProtocol = subprotocols(headers).find((p) =>
-    p.startsWith(`${MICROVM_WS_BASE_PROTOCOL}.port.`)
-  );
+  const fromHeader = firstHeader(headers[PROXY_PORT_HEADER]);
+  const fromProtocol =
+    fromHeader === undefined
+      ? subprotocols(headers).find((p) => p.startsWith(`${MICROVM_WS_BASE_PROTOCOL}.port.`))
+      : undefined;
   const raw =
-    fromProtocol !== undefined
+    fromHeader ??
+    (fromProtocol !== undefined
       ? fromProtocol.slice(`${MICROVM_WS_BASE_PROTOCOL}.port.`.length)
-      : firstHeader(headers[PROXY_PORT_HEADER]);
+      : undefined);
   if (raw === undefined) return { ok: true, port: MICROVM_DEFAULT_INGRESS_PORT };
   const trimmed = raw.trim();
   const n = /^\d{1,5}$/.test(trimmed) ? Number(trimmed) : NaN;
   if (!Number.isInteger(n) || n < 1 || n > 65535) {
     const source =
-      fromProtocol !== undefined
-        ? 'WebSocket subprotocol lambda-microvms.port.'
-        : 'X-aws-proxy-port';
+      fromHeader === undefined ? 'WebSocket subprotocol lambda-microvms.port.' : 'X-aws-proxy-port';
     return {
       ok: false,
       status: 400,
@@ -144,16 +146,23 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
  * - `POST /_cdkl/microvm/resume`    — `docker unpause`, then `/resume` hook
  * - `POST /_cdkl/microvm/terminate` — `/terminate` hook, then the container is removed
  *
- * A request reaching a suspended MicroVM gets 503 unless `autoResume` is set,
- * in which case it is held while the MicroVM resumes (502 when the resume
- * fails), as the cloud's auto-resume does.
+ * A request reaching a suspending / suspended / resuming MicroVM gets 503
+ * unless `autoResume` is set, in which case it is held while the MicroVM
+ * resumes (every held request shares the one resume; 502 when it fails), as
+ * the cloud's auto-resume does.
+ *
+ * The control path refuses (403) a request a browser page could send from
+ * another origin: a `Sec-Fetch-Site` other than `same-origin` / `none`, an
+ * `Origin` that is not this front door, or a `Host` that is not this front
+ * door's own authority (DNS rebinding). Proxied app traffic is not checked.
  */
 export function startMicrovmFrontDoor(
   opts: MicrovmFrontDoorOptions
 ): Promise<RunningMicrovmFrontDoor> {
   const logger = getLogger().child('microvm');
+  const bound = { port: opts.port };
   const server: Server = createServer((req, res) => {
-    void handleRequest(req, res, opts).catch((err) => {
+    void handleRequest(req, res, opts, bound.port).catch((err) => {
       logger.debug(`microvm front door error: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent)
         writeText(res, 502, 'The MicroVM front door failed to forward the request.');
@@ -172,6 +181,7 @@ export function startMicrovmFrontDoor(
       server.off('error', rejectStart);
       const address = server.address();
       const port = typeof address === 'object' && address !== null ? address.port : opts.port;
+      bound.port = port;
       resolveStart({
         port,
         close: () =>
@@ -193,7 +203,10 @@ async function admit(
 ): Promise<{ status: number; message: string } | undefined> {
   const id = opts.target.microvmId;
   let state = opts.target.state();
-  if ((state === 'suspended' || state === 'suspending') && opts.autoResume) {
+  if (
+    (state === 'suspended' || state === 'suspending' || state === 'resuming') &&
+    opts.autoResume
+  ) {
     try {
       await opts.target.resume();
     } catch (err) {
@@ -219,10 +232,17 @@ async function admit(
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  opts: MicrovmFrontDoorOptions
+  opts: MicrovmFrontDoorOptions,
+  boundPort: number
 ): Promise<void> {
   const path = (req.url ?? '/').split('?')[0]!;
   if (path === MICROVM_CONTROL_PATH || path.startsWith(`${MICROVM_CONTROL_PATH}/`)) {
+    const refusal = controlRequestRefusal(req.headers, opts.host, boundPort);
+    if (refusal !== undefined) {
+      req.resume();
+      writeText(res, 403, refusal);
+      return;
+    }
     await handleControl(req, res, path, opts);
     return;
   }
@@ -330,6 +350,53 @@ async function handleControl(
   writeJson(res, 200, { microvmId: target.microvmId, state: target.state() });
 }
 
+const LOOPBACK_NAMES = ['localhost', '127.0.0.1', '[::1]'];
+
+function isWildcard(host: string): boolean {
+  return host === '0.0.0.0' || host === '::' || host === '[::]';
+}
+
+function isIpLiteral(name: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(name) || /^\[[0-9a-f:.]+\]$/i.test(name);
+}
+
+/**
+ * Why a control request must be refused, or `undefined` to serve it. Exported
+ * for unit testing. Allowed `Host` names: the bound host, the loopback names
+ * when bound to a loopback or wildcard address, and (wildcard bind only) any
+ * IP literal — a DNS name pointing here is what DNS rebinding sends.
+ */
+export function controlRequestRefusal(
+  headers: IncomingMessage['headers'],
+  boundHost: string,
+  boundPort: number
+): string | undefined {
+  const fetchSite = firstHeader(headers['sec-fetch-site'])?.trim().toLowerCase();
+  if (fetchSite !== undefined && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+    return `Refusing a ${fetchSite} request to the MicroVM control endpoint: it accepts requests from this origin only (curl, or a page this front door served).`;
+  }
+  const host = (Array.isArray(headers.host) ? headers.host[0] : headers.host)?.trim().toLowerCase();
+  const m = host === undefined ? null : /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(host);
+  const name = m?.[1];
+  const port = m ? Number(m[2]) : NaN;
+  const bindName =
+    boundHost.includes(':') && !boundHost.startsWith('[') ? `[${boundHost}]` : boundHost;
+  const loopbackBind = isWildcard(boundHost) || LOOPBACK_NAMES.includes(bindName.toLowerCase());
+  const nameOk =
+    name !== undefined &&
+    (name === bindName.toLowerCase() ||
+      (loopbackBind && LOOPBACK_NAMES.includes(name)) ||
+      (isWildcard(boundHost) && isIpLiteral(name)));
+  if (!nameOk || port !== boundPort) {
+    return `Refusing a MicroVM control request whose Host header (${(host ?? '<none>').slice(0, 64)}) is not this front door's address.`;
+  }
+  const origin = firstHeader(headers.origin)?.trim().toLowerCase();
+  if (origin !== undefined && origin !== `http://${host}`) {
+    return `Refusing a MicroVM control request from origin ${origin.slice(0, 64)}: it accepts requests from this origin only.`;
+  }
+  return undefined;
+}
+
 /** A control action the MicroVM's current state does not allow (answered 409). */
 export class MicrovmStateError extends Error {
   constructor(message: string) {
@@ -378,38 +445,39 @@ async function handleUpgrade(
     }
     upstreamSocket.write(`${lines.join('\r\n')}\r\n\r\n`);
     if (head.length > 0) upstreamSocket.write(head);
+    // Backpressure-aware, and a client FIN half-closes the upstream (end), not destroy.
     clientSocket.pipe(upstreamSocket);
   });
   // The 101 is relayed through ONE rewrite: a client that offered only the
   // MicroVM protocols must see `lambda-microvms` selected, or a client that
   // requires a subprotocol answer (as `ws` does) fails the handshake — the
   // app never saw that protocol, so it cannot select it itself.
-  upstreamSocket.on('data', (chunk: Buffer) => {
-    if (responseHead === undefined) {
-      clientSocket.write(chunk);
-      return;
-    }
-    responseHead = Buffer.concat([responseHead, chunk]);
+  const onHead = (chunk: Buffer): void => {
+    responseHead = Buffer.concat([responseHead!, chunk]);
     const end = responseHead.indexOf('\r\n\r\n');
     if (end === -1 && responseHead.length < 64 * 1024) return;
-    const headText =
+    // Head complete: stop reading by hand and hand the rest to pipe(), which
+    // honours the client's backpressure and propagates the upstream's FIN.
+    upstreamSocket.pause();
+    upstreamSocket.off('data', onHead);
+    const out =
       end === -1
-        ? responseHead.toString('latin1')
-        : responseHead.subarray(0, end).toString('latin1');
-    const rest = end === -1 ? Buffer.alloc(0) : responseHead.subarray(end + 4);
-    responseHead = undefined;
-    clientSocket.write(
-      end === -1
-        ? Buffer.from(headText, 'latin1')
+        ? responseHead
         : Buffer.concat([
             Buffer.from(
-              rewriteUpgradeResponseHead(headText, offeredBase && !appProtocolsLeft) + '\r\n\r\n',
+              rewriteUpgradeResponseHead(
+                responseHead.subarray(0, end).toString('latin1'),
+                offeredBase && !appProtocolsLeft
+              ) + '\r\n\r\n',
               'latin1'
             ),
-            rest,
-          ])
-    );
-  });
+            responseHead.subarray(end + 4),
+          ]);
+    responseHead = undefined;
+    clientSocket.write(out);
+    upstreamSocket.pipe(clientSocket);
+  };
+  upstreamSocket.on('data', onHead);
   const closeBoth = (): void => {
     if (!clientSocket.destroyed) clientSocket.destroy();
     if (!upstreamSocket.destroyed) upstreamSocket.destroy();
@@ -425,9 +493,15 @@ async function handleUpgrade(
     }
     closeBoth();
   });
-  upstreamSocket.on('close', closeBoth);
+  // A clean close travels as an `end` through pipe(); only an abrupt one
+  // (an error or a reset) tears the other side down.
+  upstreamSocket.on('close', (hadError) => {
+    if (hadError) closeBoth();
+  });
   clientSocket.on('error', closeBoth);
-  clientSocket.on('close', closeBoth);
+  clientSocket.on('close', () => {
+    if (!upstreamSocket.destroyed && !upstreamSocket.writableEnded) upstreamSocket.end();
+  });
 }
 
 /**

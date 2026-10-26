@@ -166,6 +166,9 @@ export class LocalMicrovm implements MicrovmProxyTarget {
   readonly containerId: string;
   private current: MicrovmState | 'booting' = 'booting';
   private resuming: Promise<void> | undefined;
+  private suspending: Promise<void> | undefined;
+  /** Whether the container is `docker pause`d right now. */
+  private paused = false;
   private terminating: Promise<void> | undefined;
   private readonly opts: LocalMicrovmOptions;
   private readonly deps: LocalMicrovmDeps;
@@ -272,30 +275,63 @@ export class LocalMicrovm implements MicrovmProxyTarget {
       this.log(`/validate hook answered 200 after ${attempts} attempt(s)`);
     }
     await this.runtimeHook('run', runHookBody(this.microvmId, runHookPayload));
-    this.current = 'running';
+    // A terminate() that started meanwhile owns the state from here on.
+    if (this.current === 'booting') this.current = 'running';
   }
 
-  async suspend(): Promise<void> {
+  /** `docker pause` / `unpause`, recording what the container really is now. */
+  private async setPaused(paused: boolean): Promise<void> {
+    await this.deps.setPaused(this.containerId, paused);
+    this.paused = paused;
+  }
+
+  /**
+   * Suspend a running MicroVM: `/suspend`, then `docker pause`. A failure of
+   * either leaves it RUNNING (unpaused). Every state write on completion is
+   * guarded: a terminate() that started meanwhile keeps its own state.
+   */
+  suspend(): Promise<void> {
     if (this.current !== 'running') {
-      throw new MicrovmStateError(
-        `MicroVM ${this.microvmId} is ${this.state()}; only a running MicroVM can be suspended.`
+      return Promise.reject(
+        new MicrovmStateError(
+          `MicroVM ${this.microvmId} is ${this.state()}; only a running MicroVM can be suspended.`
+        )
       );
     }
     this.current = 'suspending';
-    try {
-      await this.runtimeHook('suspend');
-      await this.deps.setPaused(this.containerId, true);
-    } catch (err) {
-      this.current = 'running';
-      throw err;
-    }
-    this.current = 'suspended';
-    this.log('suspended (container paused)');
+    this.suspending = (async () => {
+      try {
+        await this.runtimeHook('suspend');
+        await this.setPaused(true);
+      } catch (err) {
+        if (this.current === 'suspending') this.current = 'running';
+        throw err;
+      } finally {
+        this.suspending = undefined;
+      }
+      if (this.current === 'suspending') {
+        this.current = 'suspended';
+        this.log('suspended (container paused)');
+      }
+    })();
+    return this.suspending;
   }
 
-  /** Resume a suspended MicroVM. Concurrent callers (auto-resumed requests) share one resume. */
+  /**
+   * Resume a suspended MicroVM: `docker unpause`, then `/resume`; traffic is
+   * accepted once it answers 200. Concurrent callers (auto-resumed requests)
+   * share one resume, and a resume asked for while a suspend is in flight
+   * waits for that suspend first. A failure leaves it SUSPENDED (re-paused).
+   */
   resume(): Promise<void> {
     if (this.current === 'resuming' && this.resuming) return this.resuming;
+    if (this.current === 'suspending' && this.suspending) {
+      // A failed suspend leaves the MicroVM running: nothing to resume then.
+      return this.suspending.then(
+        () => this.resume(),
+        () => undefined
+      );
+    }
     if (this.current !== 'suspended') {
       return Promise.reject(
         new MicrovmStateError(
@@ -306,40 +342,45 @@ export class LocalMicrovm implements MicrovmProxyTarget {
     this.current = 'resuming';
     this.resuming = (async () => {
       try {
-        await this.deps.setPaused(this.containerId, false);
+        await this.setPaused(false);
         try {
           await this.runtimeHook('resume');
         } catch (err) {
           // The /resume hook failed: back to SUSPENDED, as the cloud keeps it there.
-          await this.deps.setPaused(this.containerId, true).catch(() => undefined);
+          if (this.current === 'resuming') await this.setPaused(true).catch(() => undefined);
           throw err;
         }
       } catch (err) {
-        this.current = 'suspended';
+        if (this.current === 'resuming') this.current = 'suspended';
         throw err;
       } finally {
         this.resuming = undefined;
       }
-      this.current = 'running';
-      this.log('resumed');
+      if (this.current === 'resuming') {
+        this.current = 'running';
+        this.log('resumed');
+      }
     })();
     return this.resuming;
   }
 
   /**
-   * Terminate: `/terminate` (a failure or timeout is reported, not fatal —
-   * the container is removed either way), then remove the container.
-   * Idempotent: every caller awaits the same termination.
+   * Terminate: wait for an in-flight suspend / resume, unpause a paused
+   * container (so `/terminate` cannot hang against frozen processes), call
+   * `/terminate` (a failure or timeout is reported, not fatal — the container
+   * is removed either way), then remove the container. Idempotent: every
+   * caller awaits the same termination.
    */
   terminate(): Promise<void> {
     this.terminating ??= (async () => {
-      const was = this.current;
+      const wasBooting = this.current === 'booting';
       this.current = 'terminating';
+      await Promise.allSettled(
+        [this.suspending, this.resuming].filter((p): p is Promise<void> => p !== undefined)
+      );
       try {
-        if (was === 'suspended' || was === 'suspending') {
-          await this.deps.setPaused(this.containerId, false).catch(() => undefined);
-        }
-        if (was !== 'booting') await this.runtimeHook('terminate');
+        if (this.paused) await this.setPaused(false).catch(() => undefined);
+        if (!wasBooting) await this.runtimeHook('terminate');
       } catch (err) {
         getLogger().warn(
           `MicroVM ${this.microvmId}: ${err instanceof Error ? err.message : String(err)} Removing its container anyway.`

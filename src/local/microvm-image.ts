@@ -231,9 +231,14 @@ export function readMicrovmImageConfig(
     );
   }
 
+  // An empty list or an empty object is not "set" (the L1 types make
+  // several of these required, so CDK apps write `[]` / `{}`).
   const present = (key: string): boolean => {
     const v = props[key];
-    return v !== undefined && !(Array.isArray(v) && v.length === 0);
+    if (v === undefined || v === null) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === 'object') return Object.keys(v).length > 0;
+    return true;
   };
   if (present('EgressNetworkConnectors')) {
     unemulated.push("EgressNetworkConnectors (the container uses Docker's default network egress)");
@@ -245,6 +250,9 @@ export function readMicrovmImageConfig(
   }
   if (present('Resources')) {
     unemulated.push('Resources sizing (the container gets no memory limit)');
+  }
+  if (present('BaseImageVersion')) {
+    unemulated.push('BaseImageVersion (the local build uses whatever the Dockerfile names)');
   }
   if (present('Logging')) {
     unemulated.push(

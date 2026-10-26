@@ -21,7 +21,11 @@ const h = vi.hoisted(() => ({
   }),
   callRuntimeHook: vi.fn(async (hook: string, ep: { port: number }, _t: number, body?: string) => {
     h.hookCalls.push(`${hook}@${ep.port}${body ? ` ${body}` : ''}`);
+    h.order.push(`${hook}@${ep.port}`);
   }),
+  order: [] as string[],
+  fdOpts: [] as Record<string, unknown>[],
+  logStopCalls: 0,
   exited: [] as ((code: number) => void)[],
   artifacts: [] as { tmpDir?: string }[],
   nextPort: 41000,
@@ -41,6 +45,16 @@ vi.mock('../../../src/local/microvm-hooks.js', async (importActual) => ({
   callRuntimeHook: h.callRuntimeHook,
   waitForAppAnswer: vi.fn(async () => undefined),
 }));
+vi.mock('../../../src/local/microvm-front-door.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../../src/local/microvm-front-door.js')>();
+  return {
+    ...actual,
+    startMicrovmFrontDoor: vi.fn((o: Parameters<typeof actual.startMicrovmFrontDoor>[0]) => {
+      h.fdOpts.push(o as never);
+      return actual.startMicrovmFrontDoor(o);
+    }),
+  };
+});
 vi.mock('../../../src/local/microvm-runner.js', async (importActual) => ({
   ...(await importActual<object>()),
   buildMicrovmImage: h.build,
@@ -199,8 +213,13 @@ describe('cdkl start-microvm', () => {
     lines = [];
     let n = 0;
     h.runDetached.mockReset().mockImplementation(async () => `cid-${n++}`);
-    h.removeContainer.mockReset().mockResolvedValue(undefined);
-    h.streamLogs.mockReset().mockReturnValue(() => undefined);
+    h.removeContainer.mockReset().mockImplementation(async (id: string) => {
+      h.order.push(`remove ${id}`);
+    });
+    h.streamLogs.mockReset().mockImplementation(() => () => void h.logStopCalls++);
+    h.order = [];
+    h.fdOpts = [];
+    h.logStopCalls = 0;
     h.build.mockClear();
     h.pollBuildHook.mockClear();
     h.callRuntimeHook.mockClear();
@@ -277,8 +296,11 @@ describe('cdkl start-microvm', () => {
     fireSignal('SIGTERM');
     await until(() => exits.length > 0);
     expect(exits).toEqual([0]);
-    expect(h.hookCalls.sort()).toEqual(['terminate@41001', 'terminate@41004']);
-    expect(h.removeContainer.mock.calls.map((c) => c[0]).sort()).toEqual(['cid-0', 'cid-1']);
+    // Each MicroVM's /terminate runs before its container is removed.
+    const tail = h.order.slice(-4);
+    expect(tail.indexOf('terminate@41001')).toBeLessThan(tail.indexOf('remove cid-0'));
+    expect(tail.indexOf('terminate@41004')).toBeLessThan(tail.indexOf('remove cid-1'));
+    expect([...tail].sort()).toEqual(['remove cid-0', 'remove cid-1', 'terminate@41001', 'terminate@41004']);
     expect(existsSync(h.artifacts[0]!.tmpDir!)).toBe(false);
   });
 
@@ -325,10 +347,9 @@ describe('cdkl start-microvm', () => {
   });
 
   it('--port gives MicroVM i the port base+i', async () => {
-    await boot(['Img', '--count', '2', '--port', '0']);
-    const [a, b] = urls();
-    expect(a).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-    expect(b).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    const base = 47613;
+    await boot(['Img', '--count', '2', '--port', String(base)]);
+    expect(urls()).toEqual([`http://127.0.0.1:${base}`, `http://127.0.0.1:${base + 1}`]);
     fireSignal('SIGTERM');
     await until(() => h.removeContainer.mock.calls.length === 2);
   });
@@ -341,6 +362,8 @@ describe('cdkl start-microvm', () => {
     expect(warns.some((l) => l.includes('idle policy is not emulated'))).toBe(true);
     expect(warns.some((l) => l.includes('/validate is called on the same container'))).toBe(true);
     expect(warns.some((l) => l.includes('EgressNetworkConnectors'))).toBe(true);
+    // BaseImageArn is always warned: the build never runs on the managed base OS.
+    expect(warns.some((l) => l.includes('(BaseImageArn)'))).toBe(true);
     fireSignal('SIGTERM');
     await until(() => h.removeContainer.mock.calls.length === 1);
   });
@@ -351,6 +374,121 @@ describe('cdkl start-microvm', () => {
     expect(exits).toEqual([1]);
     expect(lines.join('\n')).toMatch(/run hook payload is 16385 bytes; run-microvm accepts at most 16384/);
     expect(h.runDetached).not.toHaveBeenCalled();
+  });
+
+  it('wires --auto-resume into every front door (off by default)', async () => {
+    await boot(['Img', '--count', '2', '--auto-resume']);
+    expect(h.fdOpts.map((o) => o['autoResume'])).toEqual([true, true]);
+    fireSignal('SIGTERM');
+    await until(() => h.removeContainer.mock.calls.length === 2);
+    h.fdOpts = [];
+    lines = [];
+    await boot(['Img']);
+    expect(h.fdOpts.map((o) => o['autoResume'])).toEqual([false]);
+    fireSignal('SIGTERM');
+    await until(() => h.removeContainer.mock.calls.length === 3);
+  });
+
+  it('--count 2: terminating ONE through control keeps the command (and the other) running', async () => {
+    const { exits, isSettled } = await boot(['Img', '--count', '2']);
+    expect((await post(`${urls()[0]}/_cdkl/microvm/terminate`)).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(isSettled()).toBe(false);
+    expect(exits).toEqual([]);
+    expect(h.removeContainer.mock.calls.map((c) => c[0])).toEqual(['cid-0']);
+    fireSignal('SIGTERM');
+    await until(() => exits.length > 0);
+  });
+
+  it('terminating the first MicroVM while the second is still in docker run does not end the command', async () => {
+    let releaseRun: (id: string) => void = () => undefined;
+    h.runDetached.mockReset()
+      .mockImplementationOnce(async () => 'cid-0')
+      .mockImplementationOnce(() => new Promise<string>((r) => (releaseRun = r)));
+    captureConsole();
+    const exits: number[] = [];
+    vi.spyOn(process, 'exit').mockImplementation(((c?: number) => void exits.push(c ?? 0)) as never);
+    let settled = false;
+    void command(assembly())
+      .parseAsync(['Img', '--count', '2', '--app', 'x'], { from: 'user' })
+      .finally(() => (settled = true));
+    await until(() => h.runDetached.mock.calls.length === 2);
+    expect((await post(`${urls()[0]}/_cdkl/microvm/terminate`)).status).toBe(200);
+    releaseRun('cid-1');
+    await until(() => lines.includes(READY));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(settled).toBe(false);
+    expect(h.removeContainer.mock.calls.map((c) => c[0])).toEqual(['cid-0']);
+    fireSignal('SIGTERM');
+    await until(() => exits.length > 0);
+  });
+
+  it('a SIGTERM during docker run removes the container that run then creates', async () => {
+    let releaseRun: (id: string) => void = () => undefined;
+    h.runDetached.mockReset().mockImplementation(() => new Promise<string>((r) => (releaseRun = r)));
+    captureConsole();
+    const exits: number[] = [];
+    vi.spyOn(process, 'exit').mockImplementation(((c?: number) => void exits.push(c ?? 0)) as never);
+    void command(assembly()).parseAsync(['Img', '--app', 'x'], { from: 'user' });
+    await until(() => h.runDetached.mock.calls.length > 0);
+    fireSignal('SIGTERM');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exits).toEqual([]); // waits for the in-flight run
+    releaseRun('cid-late');
+    await until(() => exits.length > 0);
+    expect(exits).toEqual([0]);
+    expect(h.removeContainer).toHaveBeenCalledWith('cid-late');
+    expect(h.pollBuildHook).not.toHaveBeenCalled();
+  });
+
+  it('a second signal while teardown waits on docker run exits at once, naming the container', async () => {
+    h.runDetached.mockReset().mockImplementation(() => new Promise<string>(() => undefined));
+    captureConsole();
+    const exits: number[] = [];
+    vi.spyOn(process, 'exit').mockImplementation(((c?: number) => void exits.push(c ?? 0)) as never);
+    void command(assembly()).parseAsync(['Img', '--app', 'x'], { from: 'user' });
+    await until(() => h.runDetached.mock.calls.length > 0);
+    fireSignal('SIGTERM');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exits).toEqual([]);
+    fireSignal('SIGINT');
+    await until(() => exits.length > 0);
+    expect(exits).toEqual([130]);
+    const name = (h.runDetached.mock.calls[0]![0] as { name: string }).name;
+    expect(lines.some((l) => l.includes(`docker rm -f ${name}`))).toBe(true);
+  });
+
+  it('a second signal while containers are being removed is ignored until removal finishes', async () => {
+    let finishRemove: () => void = () => undefined;
+    const { exits } = await boot(['Img']);
+    h.removeContainer.mockImplementation(() => new Promise<undefined>((r) => (finishRemove = () => r(undefined))));
+    fireSignal('SIGINT');
+    await until(() => h.removeContainer.mock.calls.length > 0);
+    fireSignal('SIGINT');
+    fireSignal('SIGTERM');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(exits).toEqual([]);
+    expect(lines.some((l) => l.includes('still terminating the MicroVMs'))).toBe(true);
+    finishRemove();
+    await until(() => exits.length > 0);
+    expect(exits).toEqual([130]);
+  });
+
+  it('a ^C during a failure teardown joins the SAME teardown (log streams stopped once)', async () => {
+    h.pollBuildHook.mockRejectedValueOnce(new Error('ready broke'));
+    let finishRemove: () => void = () => undefined;
+    h.removeContainer.mockImplementation(() => new Promise<undefined>((r) => (finishRemove = () => r(undefined))));
+    captureConsole();
+    const exits: number[] = [];
+    vi.spyOn(process, 'exit').mockImplementation(((c?: number) => void exits.push(c ?? 0)) as never);
+    void command(assembly()).parseAsync(['Img', '--app', 'x'], { from: 'user' });
+    await until(() => h.removeContainer.mock.calls.length > 0);
+    fireSignal('SIGINT');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exits).toEqual([]);
+    finishRemove();
+    await until(() => exits.includes(130));
+    expect(h.logStopCalls).toBe(1);
   });
 
   it('is exported from the public entry, with its option helper on the internal one', () => {

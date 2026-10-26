@@ -234,3 +234,128 @@ describe('LocalMicrovm', () => {
     expect(vm.routablePorts()).toEqual([8080, 9001]);
   });
 });
+
+/** A LocalMicrovm whose docker pause / unpause and hooks are gated by the test. */
+function gated(opts: { pauseFails?: boolean; unpauseFails?: boolean; alive?: boolean } = {}) {
+  const log: string[] = [];
+  const gates: (() => void)[] = [];
+  const gate = (): Promise<void> => new Promise((r) => gates.push(r));
+  let t = 0;
+  const vm = new LocalMicrovm(
+    {
+      microvmId: 'mvm-g',
+      containerId: 'cid-g',
+      ports: new Map([
+        [8080, { host: '127.0.0.1', port: 40080 }],
+        [9001, { host: '127.0.0.1', port: 40901 }],
+      ]),
+      config: config(ALL),
+      timeoutMs: 1000,
+    },
+    {
+      hooks: {
+        post: async (_h, _p, path) => {
+          log.push(`hook ${path.split('/').pop()}`);
+          t += 1;
+          return { kind: 'status', status: opts.alive === false ? 503 : 200, body: '' };
+        },
+        sleep: async (ms) => void (t += ms),
+        now: () => t,
+      },
+      setPaused: async (_id, paused) => {
+        await gate();
+        if (paused && opts.pauseFails) throw new Error('docker pause failed');
+        if (!paused && opts.unpauseFails) throw new Error('docker unpause failed');
+        log.push(paused ? 'paused' : 'unpaused');
+      },
+      remove: async () => void log.push('removed'),
+      ...(opts.alive !== undefined && { isAlive: async () => opts.alive! }),
+    }
+  );
+  const release = async (): Promise<void> => {
+    for (let i = 0; i < 50 && gates.length === 0; i++) await new Promise((r) => setTimeout(r, 1));
+    gates.shift()?.();
+  };
+  return { vm, log, release };
+}
+
+describe('LocalMicrovm state races (a terminate wins over an in-flight transition)', () => {
+  it('suspended -> resume() -> terminate(): ends terminated, never running', async () => {
+    const { vm, log, release } = gated();
+    await vm.boot(undefined);
+    const s = vm.suspend();
+    await release();
+    await s;
+    const r = vm.resume();
+    const term = vm.terminate();
+    await release(); // the resume's unpause
+    await r;
+    // The resume completing must not hand the state back to 'running'.
+    expect(vm.state()).toBe('terminating');
+    await term;
+    expect(vm.state()).toBe('terminated');
+    expect(log.slice(-2)).toEqual(['hook terminate', 'removed']);
+  });
+
+  it('suspend() concurrent with terminate(): ends terminated, and the paused container is unpaused before /terminate', async () => {
+    const { vm, log, release } = gated();
+    await vm.boot(undefined);
+    log.length = 0;
+    const s = vm.suspend();
+    const term = vm.terminate();
+    await release(); // the suspend's pause completes...
+    await s;
+    expect(vm.state()).toBe('terminating');
+    await release(); // ...then terminate unpauses it before calling /terminate
+    await term;
+    expect(vm.state()).toBe('terminated');
+    expect(log).toEqual(['hook suspend', 'paused', 'unpaused', 'hook terminate', 'removed']);
+  });
+
+  it('boot() finishing after a terminate() leaves the state terminated', async () => {
+    const { vm } = gated();
+    const term = vm.terminate();
+    await term;
+    await vm.boot(undefined).catch(() => undefined);
+    expect(vm.state()).toBe('terminated');
+  });
+
+  it('a resume requested while suspending waits for the suspend, then resumes', async () => {
+    const { vm, log, release } = gated();
+    await vm.boot(undefined);
+    log.length = 0;
+    const s = vm.suspend();
+    const r = vm.resume();
+    await release(); // pause
+    await s;
+    await release(); // unpause
+    await r;
+    expect(vm.state()).toBe('running');
+    expect(log).toEqual(['hook suspend', 'paused', 'unpaused', 'hook resume']);
+  });
+
+  it('a failing docker pause rolls back to running; a failing unpause stays suspended', async () => {
+    const a = gated({ pauseFails: true });
+    await a.vm.boot(undefined);
+    const s = a.vm.suspend();
+    await a.release();
+    await expect(s).rejects.toThrow(/docker pause failed/);
+    expect(a.vm.state()).toBe('running');
+
+    const b = gated({ unpauseFails: true });
+    await b.vm.boot(undefined);
+    const s2 = b.vm.suspend();
+    await b.release();
+    await s2;
+    const r = b.vm.resume();
+    await b.release();
+    await expect(r).rejects.toThrow(/docker unpause failed/);
+    expect(b.vm.state()).toBe('suspended');
+    expect(b.log).not.toContain('hook resume');
+  });
+
+  it('wires isAlive into the build-hook poll: a dead container fails the boot fast', async () => {
+    const { vm } = gated({ alive: false });
+    await expect(vm.boot(undefined)).rejects.toMatchObject({ code: 'LOCAL_START_MICROVM_EXITED' });
+  });
+});

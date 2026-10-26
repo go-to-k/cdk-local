@@ -2078,9 +2078,10 @@ removes the containers and prints the container's last output lines.
 
 **Front door (one per MicroVM).** `--port` (default: a free port) is the first
 MicroVM's port and MicroVM *i* listens on `--port` + *i*; `--host` (default
-`127.0.0.1`) is where they listen. A request goes to container port 8080, or to
-the port in `X-aws-proxy-port`, or — for a WebSocket — the
-`lambda-microvms.port.N` subprotocol. Every `X-aws-proxy-*` header and the
+`127.0.0.1`) is where they listen. A request goes to the container port in
+`X-aws-proxy-port` when the header is present; else, for a WebSocket, the port
+in a `lambda-microvms.port.N` subprotocol; else 8080 — the header wins over the
+subprotocol, as on the cloud endpoint. Every `X-aws-proxy-*` header and the
 MicroVM subprotocols (`lambda-microvms`, `lambda-microvms.authentication.*`,
 `lambda-microvms.port.*`) are removed before the app sees the request, and a
 WebSocket client that offered only MicroVM subprotocols gets `lambda-microvms`
@@ -2094,7 +2095,9 @@ loopback host port; the front door forwards to those. Any other port answers
 `403` naming the published set. The container ports are published rather than
 reached on a Docker network because Docker Desktop does not route the host to
 container IP addresses, and publishing only 8080 would make `X-aws-proxy-port`
-unusable.
+unusable. `Hooks.Port` is therefore reachable through `X-aws-proxy-port` locally
+too; whether the cloud endpoint routes to the hooks port is unverified, so do
+not rely on it.
 
 **Control endpoint.** Each front door reserves `/_cdkl/microvm`:
 
@@ -2103,12 +2106,19 @@ unusable.
 | `GET /_cdkl/microvm` | `{"microvmId", "state", "ports"}` |
 | `POST /_cdkl/microvm/suspend` | `/suspend` hook, then `docker pause` |
 | `POST /_cdkl/microvm/resume` | `docker unpause`, then `/resume` hook; traffic flows after it answers 200 |
-| `POST /_cdkl/microvm/terminate` | `/terminate` hook, then the container is removed; the last one ends the command (exit 0) |
+| `POST /_cdkl/microvm/terminate` | waits for an in-flight suspend / resume, unpauses, `/terminate` hook, then the container is removed; the last one ends the command (exit 0) |
+
+The control path answers only requests addressed to this front door: a `Host`
+that is not its own address (a loopback name or the `--host` address, and its
+port), an `Origin` that is not `http://<that Host>`, or a `Sec-Fetch-Site` other
+than `same-origin` / `none` is refused with `403`, so a web page in a browser
+cannot drive it. Requests to the app itself are not checked.
 
 An action the state does not allow answers `409`, a hook failure `502`. While a
-MicroVM is suspended its requests get `503`; with `--auto-resume` (the idle
-policy's `autoResumeEnabled`) a request is held while the MicroVM resumes
-instead, and gets `502` if the resume fails. A failed `/resume` leaves it
+MicroVM is suspending, suspended or resuming its requests get `503`; with
+`--auto-resume` (the idle policy's `autoResumeEnabled`) a request is held
+instead — after an in-flight suspend, through ONE resume every held request
+shares — and gets `502` if the resume fails. A failed `/resume` leaves it
 suspended; a failed `/terminate` is reported and the container removed anyway.
 
 **Shutdown.** SIGINT / SIGTERM calls `/terminate` on every running MicroVM,
@@ -2133,10 +2143,11 @@ and suspend freezes the processes in place rather than checkpointing memory.
 MicroVM from the built snapshot). Requests are accepted without
 `X-aws-proxy-auth` (the JWE token is not checked). The idle policy
 (`maxIdleDurationSeconds`, `suspendedDurationSeconds`) and
-`maximumDurationInSeconds` are not emulated. `BaseImageArn` /
-`BaseImageVersion` (the build runs on the local Docker engine),
-`EgressNetworkConnectors`, `AdditionalOsCapabilities`, `Resources` sizing and
-`Logging` are warned when set.
+`maximumDurationInSeconds` are not emulated. `BaseImageArn` is always warned
+(the build runs on the local Docker engine, not the managed MicroVM base OS);
+`BaseImageVersion`, `EgressNetworkConnectors`, `AdditionalOsCapabilities`,
+`Resources` sizing and `Logging` are warned when set (an empty list or object
+counts as not set).
 
 ## `cdkl studio` (interactive web console)
 

@@ -133,8 +133,16 @@ describe('readMicrovmImageConfig', () => {
     expect(config.unemulated.join('\n')).toMatch(/Logging/);
     expect(config.unemulated.join('\n')).toMatch(/EnvironmentVariables is an intrinsic/);
     expect(
-      readMicrovmImageConfig('I', image({ EgressNetworkConnectors: [], Resources: [] })).unemulated
+      readMicrovmImageConfig('I', image({ EgressNetworkConnectors: [], Resources: [], Logging: {} }))
+        .unemulated
     ).toEqual([]);
+  });
+
+  it('warns on BaseImageVersion when set, and not otherwise', () => {
+    expect(
+      readMicrovmImageConfig('I', image({ BaseImageVersion: '1' })).unemulated.join('\n')
+    ).toMatch(/BaseImageVersion/);
+    expect(readMicrovmImageConfig('I', image({ BaseImageArn: 'arn:x' })).unemulated).toEqual([]);
   });
 });
 

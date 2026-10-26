@@ -15,11 +15,13 @@
 #      reach the app; invalid -> 400, unpublished -> 403, published but not
 #      listening -> 502; a WebSocket routed by lambda-microvms.port.9000 echoes,
 #      the app sees no MicroVM subprotocol, and the 101 selects lambda-microvms.
-#   2. Control endpoint: suspend -> 503 while suspended -> resume -> served,
+#   2. Control endpoint: suspend (container docker-paused) -> 503 while
+#      suspended -> resume -> served,
 #      with the /suspend and /resume hooks observed.
 #   3. SIGTERM -> /terminate observed for the MicroVM, no container left.
 #   4. `--count 2`: two URLs answering with different microvmIds; SIGTERM
-#      terminates both.
+#      terminates both. With `--auto-resume`, three concurrent requests to a
+#      suspended MicroVM all get 200 through ONE /resume.
 #   5. `NeverReadyImage`: boot fails non-zero with the /ready timeout message
 #      and leaves no container.
 #
@@ -28,7 +30,8 @@
 #
 #     bash tests/integration/local-start-microvm/verify.sh
 #
-# Requires Docker. Uses host ports 18470-18473.
+# Requires Docker. Uses host ports 18470-18474. Every curl has --max-time, so a
+# broken gate fails the arm instead of hanging it.
 
 set -euo pipefail
 
@@ -115,7 +118,7 @@ terminate_run() {
 }
 
 status_of() {
-  curl -s -o /dev/null -w '%{http_code}' "$@"
+  curl -s --max-time 10 -o /dev/null -w '%{http_code}' "$@"
 }
 
 echo "[verify] step 1: install + build cdk-local"
@@ -139,7 +142,7 @@ grep -q '/validate hook answered 200' "${OUT_FILE}" || fail "/validate was not c
 grep -q '/run hook answered 200' "${OUT_FILE}" || fail "/run was not called"
 MVM_ID="$(grep -oE 'MicroVM mvm-[0-9a-f-]+ listening' "${OUT_FILE}" | head -1 | awk '{print $2}')"
 [ -n "${MVM_ID}" ] || fail "no microvmId in the ready banner"
-BODY="$(curl -s "${URL}/hello")"
+BODY="$(curl -s --max-time 10 "${URL}/hello")"
 echo "${BODY}" | grep -q '"port":8080' || fail "default request not routed to 8080: ${BODY}"
 echo "${BODY}" | grep -q "\"microvmId\":\"${MVM_ID}\"" || fail "/run microvmId not seen by the app: ${BODY}"
 echo "${BODY}" | grep -q "\"runHookPayload\":\"${PAYLOAD}\"" || fail "run payload not seen by the app: ${BODY}"
@@ -148,7 +151,7 @@ echo "${BODY}" | grep -q '"hooks":\["ready","validate","run"\]' || fail "hook or
 echo "[verify]   ${MVM_ID}: ${BODY}"
 
 echo "[verify] step 4: port routing and header stripping"
-BODY="$(curl -s "${URL}/alt" -H 'X-aws-proxy-port: 9000' -H 'X-aws-proxy-auth: token' -H 'X-aws-proxy-extra: 1')"
+BODY="$(curl -s --max-time 10 "${URL}/alt" -H 'X-aws-proxy-port: 9000' -H 'X-aws-proxy-auth: token' -H 'X-aws-proxy-extra: 1')"
 echo "${BODY}" | grep -q '"port":9000' || fail "X-aws-proxy-port: 9000 not routed to 9000: ${BODY}"
 echo "${BODY}" | grep -q '"proxyHeaders":\[\]' || fail "X-aws-proxy-* headers reached the app: ${BODY}"
 [ "$(status_of "${URL}/" -H 'X-aws-proxy-port: abc')" = "400" ] || fail "invalid X-aws-proxy-port not 400"
@@ -178,11 +181,15 @@ echo "${WS_OUT}" | grep -q '"echo:ping"' || fail "the echo did not round-trip th
 echo "[verify]   ${WS_OUT}"
 
 echo "[verify] step 5: suspend -> 503 -> resume -> served"
-curl -s -X POST "${URL}/_cdkl/microvm/suspend" | grep -q '"state":"suspended"' || fail "suspend did not report suspended"
+curl -s --max-time 10 -X POST "${URL}/_cdkl/microvm/suspend" | grep -q '"state":"suspended"' || fail "suspend did not report suspended"
 grep -q 'HOOK suspend -> 200' "${OUT_FILE}" || fail "/suspend hook not observed"
+CONTAINER="$(grep -oE '\(container cdkl-microvm-[^)]+\)' "${OUT_FILE}" | head -1 | tr -d '()' | awk '{print $2}')"
+[ -n "${CONTAINER}" ] || fail "no container name in the boot log"
+[ "$(docker inspect -f '{{.State.Paused}}' "${CONTAINER}")" = "true" ] \
+  || fail "container ${CONTAINER} is not paused while the MicroVM is suspended"
 [ "$(status_of "${URL}/while-suspended")" = "503" ] || fail "a request to a suspended MicroVM was not 503"
-curl -s -X POST "${URL}/_cdkl/microvm/resume" | grep -q '"state":"running"' || fail "resume did not report running"
-BODY="$(curl -s "${URL}/after-resume")"
+curl -s --max-time 10 -X POST "${URL}/_cdkl/microvm/resume" | grep -q '"state":"running"' || fail "resume did not report running"
+BODY="$(curl -s --max-time 10 "${URL}/after-resume")"
 echo "${BODY}" | grep -q '"hooks":\["ready","validate","run","suspend","resume"\]' \
   || fail "/resume hook not observed by the app: ${BODY}"
 
@@ -193,8 +200,8 @@ grep -q 'HOOK terminate -> 200' "${OUT_FILE}" || fail "the app did not log its /
 
 echo "[verify] step 7: --count 2 runs two independent MicroVMs"
 boot_run "${STACK}/Image" --port "$((PORT + 2))" --count 2
-A="$(curl -s "http://127.0.0.1:$((PORT + 2))/")"
-B="$(curl -s "http://127.0.0.1:$((PORT + 3))/")"
+A="$(curl -s --max-time 10 "http://127.0.0.1:$((PORT + 2))/")"
+B="$(curl -s --max-time 10 "http://127.0.0.1:$((PORT + 3))/")"
 ID_A="$(echo "${A}" | grep -oE 'mvm-[0-9a-f-]+' | head -1)"
 ID_B="$(echo "${B}" | grep -oE 'mvm-[0-9a-f-]+' | head -1)"
 [ -n "${ID_A}" ] && [ -n "${ID_B}" ] || fail "a --count 2 URL did not answer with a microvmId: ${A} / ${B}"
@@ -202,6 +209,25 @@ ID_B="$(echo "${B}" | grep -oE 'mvm-[0-9a-f-]+' | head -1)"
 terminate_run
 [ "$(grep -c '/terminate hook answered 200' "${OUT_FILE}")" -eq 2 ] \
   || fail "SIGTERM did not terminate both MicroVMs"
+
+echo "[verify] step 7b: --auto-resume: concurrent requests to a suspended MicroVM share ONE resume"
+boot_run "${STACK}/Image" --port "$((PORT + 4))" --auto-resume
+AR_URL="http://127.0.0.1:$((PORT + 4))"
+curl -s --max-time 10 -X POST "${AR_URL}/_cdkl/microvm/suspend" | grep -q '"state":"suspended"' \
+  || fail "suspend did not report suspended (auto-resume run)"
+AR_DIR="$(mktemp -d)"
+AR_PIDS=()
+for i in 1 2 3; do
+  curl -s --max-time 20 -o /dev/null -w '%{http_code}' "${AR_URL}/held-${i}" > "${AR_DIR}/${i}" &
+  AR_PIDS+=("$!")
+done
+wait "${AR_PIDS[@]}"
+AR_CODES="$(cat "${AR_DIR}/1" "${AR_DIR}/2" "${AR_DIR}/3")"
+rm -rf "${AR_DIR}"
+[ "${AR_CODES}" = "200200200" ] || fail "held requests did not all succeed after auto-resume: ${AR_CODES}"
+[ "$(grep -c 'HOOK resume -> 200' "${OUT_FILE}")" -eq 1 ] \
+  || fail "the three held requests did not share exactly one /resume"
+terminate_run
 
 echo "[verify] step 8: a /ready that never answers 200 fails with the timeout"
 : > "${OUT_FILE}"

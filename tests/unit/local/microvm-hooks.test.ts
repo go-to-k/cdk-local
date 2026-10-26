@@ -148,6 +148,25 @@ describe('waitForAppAnswer', () => {
   });
 });
 
+describe('waitForAppAnswer isAlive', () => {
+  it('fails fast once the container is gone', async () => {
+    let t = 0;
+    let probes = 0;
+    await expect(
+      waitForAppAnswer(EP, 60_000, {
+        probe: async () => {
+          probes++;
+          return 'refused';
+        },
+        sleep: async (ms) => void (t += ms),
+        now: () => t,
+        isAlive: async () => false,
+      })
+    ).rejects.toMatchObject({ code: 'LOCAL_START_MICROVM_EXITED' });
+    expect(probes).toBe(4);
+  });
+});
+
 describe('postHook (real HTTP)', () => {
   let server: Server | undefined;
   afterEach(async () => {
