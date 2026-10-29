@@ -30,6 +30,10 @@ import type {
   ResolvedOrigin,
 } from './cloudfront-resolver.js';
 import { serveLambdaUrlOrigin } from './cloudfront-lambda-origin.js';
+import {
+  serveWebFunctionOrigin,
+  type WebFunctionOriginTarget,
+} from './cloudfront-web-function-origin.js';
 import { serveFromStaticOrigin } from './cloudfront-static-origin.js';
 import type { S3OriginReader } from './cloudfront-s3-origin.js';
 import type { FrontDoorTlsMaterials } from './front-door-tls.js';
@@ -105,6 +109,14 @@ export interface StartCloudFrontServerOptions {
    * has no reader and is served as 502 (restart to bind it).
    */
   s3OriginReaders?: Map<string, S3OriginReader>;
+  /**
+   * Booted servers for `web-function` origins, keyed by the
+   * `AWS::Lambda::WebFunctionEndpoint` logical id (go-to-k/cdkd#5516). Built
+   * once at boot and NOT recreated on a `--watch` reload — like
+   * {@link lambdaInvokers}; an endpoint origin appearing only after a reload has
+   * no server and is served as 502 (restart to boot it).
+   */
+  webFunctionOrigins?: Map<string, WebFunctionOriginTarget>;
 }
 
 /** Start the local CloudFront server and resolve once it is listening. */
@@ -118,6 +130,8 @@ export async function startCloudFrontServer(
   const lambdaInvokers: LambdaUrlInvokerMap = options.lambdaInvokers ?? new Map();
   const edgeInvokers: LambdaUrlInvokerMap = options.edgeInvokers ?? new Map();
   const s3OriginReaders: Map<string, S3OriginReader> = options.s3OriginReaders ?? new Map();
+  const webFunctionOrigins: Map<string, WebFunctionOriginTarget> =
+    options.webFunctionOrigins ?? new Map();
   const state: { distribution: ResolvedDistribution } = { distribution: options.distribution };
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
@@ -128,6 +142,7 @@ export async function startCloudFrontServer(
       lambdaInvokers,
       edgeInvokers,
       s3OriginReaders,
+      webFunctionOrigins,
       logger
     ).catch((err) => {
       logger.warn(`Request handling failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -169,6 +184,7 @@ async function handleRequest(
   lambdaInvokers: LambdaUrlInvokerMap,
   edgeInvokers: LambdaUrlInvokerMap,
   s3OriginReaders: Map<string, S3OriginReader>,
+  webFunctionOrigins: Map<string, WebFunctionOriginTarget>,
   logger: ReturnType<typeof getLogger>
 ): Promise<void> {
   const distribution = state.distribution;
@@ -277,14 +293,15 @@ async function handleRequest(
     querystring: edgeInput.querystring,
     method: edgeInput.method,
     headers: rawMapToIncomingHeaders(edgeInput.headers),
-    // Buffered lazily — only a Lambda Function URL origin reads it; an
-    // includeBody edge stage may have already cached it on edgeInput.body.
+    // Buffered lazily — only a Lambda Function URL / Web Function origin reads
+    // it; an includeBody edge stage may have already cached it on edgeInput.body.
     readBody: () =>
       edgeInput.body !== undefined ? Promise.resolve(edgeInput.body) : readRequestBody(req),
     sourceIp: clientIp,
     distribution,
     lambdaInvokers,
     s3OriginReaders,
+    webFunctionOrigins,
     logger,
   });
   if (!originResult) return writePlain(res, 502, originUnavailableMessage(origin, behavior));
@@ -528,12 +545,13 @@ interface ServeFromOriginArgs {
   querystring: string;
   method: string;
   headers: IncomingMessage['headers'];
-  /** Lazily buffer the request body — called only by a Lambda Function URL origin. */
+  /** Lazily buffer the request body — called only by a Lambda Function URL / Web Function origin. */
   readBody: () => Promise<Buffer>;
   sourceIp: string;
   distribution: ResolvedDistribution;
   lambdaInvokers: LambdaUrlInvokerMap;
   s3OriginReaders: Map<string, S3OriginReader>;
+  webFunctionOrigins: Map<string, WebFunctionOriginTarget>;
   logger: ReturnType<typeof getLogger>;
 }
 
@@ -559,6 +577,32 @@ async function serveFromOrigin(
         body: await args.readBody(),
         sourceIp: args.sourceIp,
       },
+    });
+    return {
+      statusCode: result.statusCode,
+      headers: result.headers,
+      body: result.body,
+      ...(result.cookies.length > 0 && { setCookies: result.cookies }),
+    };
+  }
+
+  // A Web Function endpoint origin: forward to the booted revision server.
+  if (origin.kind === 'web-function') {
+    const target = args.webFunctionOrigins.get(origin.endpointLogicalId);
+    if (!target) return undefined;
+    const result = await serveWebFunctionOrigin({
+      target,
+      request: {
+        method: args.method,
+        uri: args.uri,
+        querystring: args.querystring,
+        headers: args.headers,
+        body: await args.readBody(),
+        sourceIp: args.sourceIp,
+      },
+      ...(origin.readTimeoutSeconds !== undefined && {
+        readTimeoutSeconds: origin.readTimeoutSeconds,
+      }),
     });
     return {
       statusCode: result.statusCode,
@@ -608,10 +652,16 @@ function originUnavailableMessage(
       `${displayIdent(origin.functionLogicalId)} was not booted (it was added after start-up). Restart start-cloudfront.\n`
     );
   }
+  if (origin.kind === 'web-function') {
+    return (
+      `Origin ${displayIdent(origin.originId)} is a Lambda Web Function endpoint origin whose endpoint ` +
+      `${displayIdent(origin.endpointLogicalId)} was not booted (it was added after start-up). Restart start-cloudfront.\n`
+    );
+  }
   if (origin.kind === 'custom') {
     return (
       `Origin ${displayIdent(origin.originId)} is a custom (non-S3) origin (${displayUntrustedValue(String(origin.domainName))}). ` +
-      'cdkl start-cloudfront serves S3 origins and Lambda Function URL origins only.\n'
+      'cdkl start-cloudfront serves S3, Lambda Function URL and Lambda Web Function endpoint origins only.\n'
     );
   }
   if (origin.kind === 's3-deployed') {

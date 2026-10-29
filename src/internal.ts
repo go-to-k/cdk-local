@@ -922,8 +922,8 @@ export {
 /**
  * `start-cloudfront` runtime layer (issue #363): the distribution resolver
  * (synthesized `AWS::CloudFront::Distribution` -> behaviors / CloudFront
- * Functions / S3 origins / Lambda Function URL origins / custom error
- * responses), the in-process CloudFront Function `node:vm` runtime, the S3
+ * Functions / S3 origins / Lambda Function URL origins / Web Function endpoint
+ * origins / custom error responses), the in-process CloudFront Function `node:vm` runtime, the S3
  * static-origin server, the Lambda Function URL origin server (issue #376),
  * and the local HTTP/HTTPS distribution server. Exposed for host CLIs that
  * drive the same local-CloudFront serving without re-importing the command
@@ -933,6 +933,7 @@ export {
   resolveCloudFrontDistribution,
   isCloudFrontDistribution,
   pickFunctionUrlLogicalIdFromOrigin,
+  pickWebFunctionEndpointLogicalIdFromOrigin,
   pickTargetFunctionLogicalId,
   pickLambdaEdgeFunctionLogicalId,
   describeS3OriginDomain,

@@ -125,7 +125,8 @@ a log line, and a served HTTP response body.
   `s3-deployed`; `describeS3OriginDomain` parses a literal bucket name out of an
   external origin's `DomainName`, marking a pure-intrinsic one
   `deployedConfigOnly`; a Function URL origin -> backing function via
-  `DomainName` + `AWS::Lambda::Url` `TargetFunctionArn`; custom / unresolved
+  `DomainName` + `AWS::Lambda::Url` `TargetFunctionArn`; a Web Function
+  endpoint origin -> its `GetAtt[<endpoint>, DomainName]`; custom / unresolved
   flagged); per-behavior CORS via `resolveResponseHeadersPolicyCors`, SHARED with
   the `start-api` chain.
 - **cloudfront-function-runtime** — compiles and runs an inline function in a
@@ -147,7 +148,9 @@ a log line, and a served HTTP response body.
   resolution; `classifyS3Error` maps a miss to the SPA fallback, an
   `AccessDenied` to an actionable `--origin` warning),
   **cloudfront-lambda-origin** (a payload-v2.0 event via `buildHttpApiV2Event`
-  with a synthetic `$default` route), **cloudfront-edge-event** (the
+  with a synthetic `$default` route), **cloudfront-web-function-origin** (the
+  buffered HTTP forward to a booted revision server, reusing front-door-server's
+  `stripHopByHopHeaders`), **cloudfront-edge-event** (the
   `{ Records: [{ cf: {...} }] }` wire format and the header multi-map).
 - **cloudfront-distribution-config** — `resolveDeployedOriginBucket`, the
   `GetDistributionConfig` fallback for a pure-intrinsic bucket name. **It never
@@ -156,8 +159,8 @@ a log line, and a served HTTP response body.
 - **cloudfront-server** — the local server; the per-request ORDER is fixed:
   behavior match -> CORS preflight short-circuit -> viewer-request fn ->
   Lambda@Edge viewer-request / origin-request (either may short-circuit or
-  rewrite) -> origin (static, deployed-S3 reader or Function URL invoker, all
-  boot-time maps) -> Lambda@Edge origin-response -> viewer-response fn THEN
+  rewrite) -> origin (static, deployed-S3 reader, Function URL invoker or Web
+  Function server target, all boot-time maps) -> Lambda@Edge origin-response -> viewer-response fn THEN
   Lambda@Edge viewer-response (both run, CloudFront Function FIRST) ->
   `applyCorsResponseHeadersFromConfig`. A mutable distribution cell lets
   `--watch` swap the model under the live socket.
@@ -172,6 +175,11 @@ a log line, and a served HTTP response body.
   **web-function-runner** (`planWebFunctionContainer`, the ONE per-kind switch;
   boot without `--rm`; HTTP readiness; exit watch). A new runtime or code source
   is a row / union member there, never a branch in the command.
+- **cli/commands/web-function-serve** — `WebFunctionServe`, the ONE boot ->
+  ready -> teardown sequence `start-web-function` and `start-cloudfront`'s
+  endpoint origins share. Its teardown may start at any point of `start()`: it
+  awaits an in-flight extraction / `docker run` so the container is still
+  removed, and `start()` then resolves `undefined`.
 - **s3-object-asset** — a template's S3 object -> its cdk.out file asset,
   SHARED by web-function-artifact, cloudfront-resolver (BucketDeployment origin
   dirs) and microvm-image: `findFileAssetForObjectKey`, the BucketDeployment

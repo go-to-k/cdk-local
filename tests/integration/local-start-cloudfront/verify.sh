@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify.sh — cdkl start-cloudfront integ test (#363, no AWS, no Docker)
+# verify.sh — cdkl start-cloudfront integ test (#363, no AWS; Docker only for WebDist)
 #
 # Serves a static-site CloudFront distribution locally: an S3 origin whose
 # content is the BucketDeployment source asset resolved out of the cloud
@@ -18,6 +18,12 @@
 #   - --watch      -> editing the site source re-synths + swaps the routing
 #                     model under the live socket; the new content is served.
 #   - SIGTERM frees the listening port.
+#   - WebDist (go-to-k/cdkd#5516): a Lambda Web Function endpoint origin runs
+#     the revision the endpoint weights pick in a container (Docker) and the
+#     origin request is forwarded to it, with the viewer-response function and
+#     the ResponseHeadersPolicy CORS applied over its response; a /deploy/*
+#     behavior reaches a second endpoint whose code is an extract: false
+#     BucketDeployment. SIGTERM removes every web function container.
 #
 #     bash tests/integration/local-start-cloudfront/verify.sh
 
@@ -46,6 +52,15 @@ cleanup() {
   if [[ -n "${WARN_PID:-}" ]] && kill -0 "${WARN_PID}" 2>/dev/null; then
     kill -KILL "${WARN_PID}" 2>/dev/null || true
   fi
+  if [[ -n "${WEB_PID:-}" ]] && kill -0 "${WEB_PID}" 2>/dev/null; then
+    kill -TERM "${WEB_PID}" 2>/dev/null || true
+    for _ in $(seq 1 80); do
+      if ! kill -0 "${WEB_PID}" 2>/dev/null; then break; fi
+      sleep 0.25
+    done
+    kill -KILL "${WEB_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${WEB_OUT:-}" ]]; then rm -f "${WEB_OUT}"; fi
   # Restore any file the --watch scenario edited.
   if [[ -f site/index.html.bak ]]; then
     mv -f site/index.html.bak site/index.html
@@ -255,4 +270,96 @@ if [[ "${WARNED}" -ne 1 ]]; then
 fi
 rm -f "${WARN_OUT}"
 
-echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), a --watch reload, and the --cache-origin-without--from-cfn-stack no-op WARN."
+# ---------------------------------------------------------------------------
+# 8. WebDist: Lambda Web Function endpoint origins (go-to-k/cdkd#5516).
+#    start-cloudfront has no --platform, so the server runs at the runtime's
+#    cloud architecture (linux/arm64) as start-web-function does by default;
+#    on an amd64 host that container runs under emulation.
+# ---------------------------------------------------------------------------
+WEB_PORT=18364
+WEB_BASE="http://127.0.0.1:${WEB_PORT}"
+WEB_TARGET="CdkLocalStartCloudFrontFixture/WebDist"
+WEB_IMAGE="public.ecr.aws/lambda/nodejs:24"
+web_orphans() { docker ps -a --filter name=cdkl-webfn- --format '{{.Names}}' || true; }
+
+echo "==> WebDist: Docker available + ${WEB_IMAGE} (linux/arm64) present"
+docker version --format '{{.Server.Version}}' >/dev/null || fail "Docker is required for the WebDist phase"
+docker pull --platform linux/arm64 "${WEB_IMAGE}" >/dev/null || fail "docker pull ${WEB_IMAGE} failed"
+[[ -z "$(web_orphans)" ]] || fail "web function container(s) already running before WebDist: $(web_orphans)"
+if lsof -ti "tcp:${WEB_PORT}" >/dev/null 2>&1; then
+  lsof -ti "tcp:${WEB_PORT}" | xargs -r kill -9 || true
+fi
+
+echo "==> Booting: cdkl start-cloudfront ${WEB_TARGET} --port ${WEB_PORT} --no-pull"
+WEB_OUT=$(mktemp)
+${CDKL} start-cloudfront "${WEB_TARGET}" --port "${WEB_PORT}" --no-pull > "${WEB_OUT}" 2>&1 &
+WEB_PID=$!
+web_fail() {
+  echo "----- WebDist server output -----" >&2
+  cat "${WEB_OUT}" >&2 || true
+  fail "$*"
+}
+WEB_BOOTED=0
+for _ in $(seq 1 360); do
+  if grep -q "CloudFront distribution serving on" "${WEB_OUT}"; then WEB_BOOTED=1; break; fi
+  if ! kill -0 "${WEB_PID}" 2>/dev/null; then web_fail "WebDist server exited before it was ready"; fi
+  sleep 0.5
+done
+[[ "${WEB_BOOTED}" -eq 1 ]] || web_fail "WebDist server did not print its ready banner in time"
+if grep -q "custom (non-S3" "${WEB_OUT}"; then
+  web_fail "a Web Function endpoint origin was warn-and-skipped as a custom origin"
+fi
+grep -q "Booting Lambda Web Function endpoint origin server for WebEndpoint" "${WEB_OUT}" \
+  || web_fail "no Web Function origin server was booted for WebEndpoint"
+grep -q "weighted routing is not emulated" "${WEB_OUT}" \
+  || web_fail "the endpoint's weighted-split warning was not printed"
+grep -q "AuthType AWS_IAM; it is not enforced" "${WEB_OUT}" \
+  || web_fail "the endpoint's AuthType warning was not printed"
+
+echo "==> WebDist: POST /hello?q=1 (higher-weight revision, origin request forwarded)"
+WEB_HEADERS_FILE=$(mktemp)
+WEB_BODY=$(curl -fsS -D "${WEB_HEADERS_FILE}" -X POST -d 'ping' \
+  -H 'Origin: http://127.0.0.1:5050' "${WEB_BASE}/hello?q=1") || web_fail "POST /hello failed"
+echo "${WEB_BODY}" | grep -q '"revision":"main"' || web_fail "the higher-weight revision WebRevMain was not served: ${WEB_BODY}"
+echo "${WEB_BODY}" | grep -q '"greeting":"hi-main"' || web_fail "the revision's ServiceConfig env was not injected: ${WEB_BODY}"
+echo "${WEB_BODY}" | grep -q '"method":"POST"' || web_fail "the method was not forwarded: ${WEB_BODY}"
+echo "${WEB_BODY}" | grep -q '"path":"/hello?q=1"' || web_fail "the path + query were not forwarded: ${WEB_BODY}"
+echo "${WEB_BODY}" | grep -q '"body":"ping"' || web_fail "the request body was not forwarded: ${WEB_BODY}"
+echo "${WEB_BODY}" | grep -q '"forwardedFor":"127.0.0.1"' || web_fail "X-Forwarded-For was not set to the client address: ${WEB_BODY}"
+if echo "${WEB_BODY}" | grep -q "\"host\":\"127.0.0.1:${WEB_PORT}\""; then
+  web_fail "the origin request carried the viewer Host instead of the origin's: ${WEB_BODY}"
+fi
+grep -qi "x-cdkl-fixture: start-cloudfront" "${WEB_HEADERS_FILE}" \
+  || web_fail "the viewer-response function did not run over the Web Function response"
+grep -qi "access-control-allow-origin: http://127.0.0.1:5050" "${WEB_HEADERS_FILE}" \
+  || web_fail "the ResponseHeadersPolicy CORS header is missing on the Web Function response"
+grep -qi "set-cookie: web-session=1" "${WEB_HEADERS_FILE}" \
+  || web_fail "the origin's Set-Cookie did not reach the viewer"
+rm -f "${WEB_HEADERS_FILE}"
+
+echo "==> WebDist: OPTIONS / preflight answered at the edge by the policy"
+WEB_PRE=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS \
+  -H 'Origin: http://127.0.0.1:5050' -H 'Access-Control-Request-Method: GET' "${WEB_BASE}/") || true
+[[ "${WEB_PRE}" == "204" ]] || web_fail "the CORS preflight did not return 204 (got ${WEB_PRE})"
+
+echo "==> WebDist: GET /deploy/x (second endpoint, extract: false BucketDeployment code)"
+DEPLOY_BODY=$(curl -fsS "${WEB_BASE}/deploy/x") || web_fail "GET /deploy/x failed"
+echo "${DEPLOY_BODY}" | grep -q '"revision":"deploy"' || web_fail "/deploy/* did not reach WebRevDeploy: ${DEPLOY_BODY}"
+echo "${DEPLOY_BODY}" | grep -q '"path":"/deploy/x"' || web_fail "/deploy/x path not forwarded: ${DEPLOY_BODY}"
+[[ "$(docker ps --filter name=cdkl-webfn- --format '{{.Names}}' | wc -l | tr -d ' ')" == "2" ]] \
+  || web_fail "expected exactly two web function containers (one per endpoint): $(web_orphans)"
+
+echo "==> WebDist: SIGTERM removes every web function container"
+kill -TERM "${WEB_PID}" 2>/dev/null || true
+for _ in $(seq 1 80); do
+  if ! kill -0 "${WEB_PID}" 2>/dev/null; then break; fi
+  sleep 0.25
+done
+kill -0 "${WEB_PID}" 2>/dev/null && web_fail "WebDist server did not exit on SIGTERM"
+WEB_PID=""
+sleep 1
+[[ -z "$(web_orphans)" ]] || web_fail "leftover web function container(s) after SIGTERM: $(web_orphans)"
+if lsof -ti "tcp:${WEB_PORT}" >/dev/null 2>&1; then web_fail "port ${WEB_PORT} still bound after shutdown"; fi
+rm -f "${WEB_OUT}"
+
+echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), a --watch reload, the --cache-origin-without--from-cfn-stack no-op WARN, and Lambda Web Function endpoint origins (go-to-k/cdkd#5516: weighted revision, forwarded origin request, viewer-response + CORS over it, an extract: false BucketDeployment revision, containers removed on SIGTERM)."

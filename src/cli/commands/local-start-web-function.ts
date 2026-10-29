@@ -26,43 +26,12 @@ import {
   setEmbedConfig,
   type CdkLocalEmbedConfig,
 } from '../../local/embed-config.js';
-import {
-  ensureDockerAvailable,
-  pickFreePort,
-  pullImage,
-  removeContainer,
-  streamLogs,
-} from '../../local/docker-runner.js';
+import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { parseTimeoutMs } from './local-invoke-agentcore.js';
-import { resolveLambdaContainerEnv, type LambdaContainerEnvOptions } from './local-invoke.js';
+import type { LambdaContainerEnvOptions } from './local-invoke.js';
 import { resolveWebFunctionTarget } from '../../local/web-function-resolver.js';
-import {
-  disposeWebFunctionArtifact,
-  parseWebFunctionBuildConfig,
-  resolveWebFunctionArtifact,
-  type WebFunctionArtifact,
-} from '../../local/web-function-artifact.js';
-import {
-  defaultWebFunctionPlatform,
-  resolveWebFunctionRuntime,
-} from '../../local/web-function-runtime.js';
-import {
-  WEB_FUNCTION_HTTP_ENDPOINT_ENV,
-  buildWebFunctionLambdaView,
-  finalizeWebFunctionEnv,
-  readWebFunctionServiceConfig,
-  webFunctionAssumeRole,
-  webFunctionFidelityWarnings,
-} from '../../local/web-function-service-config.js';
-import {
-  RecentOutput,
-  WEB_FUNCTION_CONTAINER_PORT,
-  containerFailure,
-  planWebFunctionContainer,
-  startWebFunctionContainer,
-  waitForWebFunctionReady,
-  watchContainerExit,
-} from '../../local/web-function-runner.js';
+import { webFunctionFidelityWarnings } from '../../local/web-function-service-config.js';
+import { WebFunctionServe, prepareWebFunctionServe } from './web-function-serve.js';
 
 /** Options for `cdkl start-web-function`. */
 export interface LocalStartWebFunctionOptions extends LambdaContainerEnvOptions {
@@ -93,13 +62,6 @@ function parsePort(raw: string): number {
   return n;
 }
 
-/** The address a probe / the printed URL uses for a wildcard bind. */
-function connectHost(host: string): string {
-  if (host === '0.0.0.0') return '127.0.0.1';
-  if (host === '::' || host === '[::]') return '::1';
-  return host;
-}
-
 /**
  * `cdkl start-web-function <target>` — serve an AWS Lambda Web Function from
  * the CDK app on a local port (issue #831). Resolves the target to ONE revision
@@ -118,47 +80,7 @@ async function localStartWebFunctionCommand(
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
-  let containerId: string | undefined;
-  let stopLogs: (() => void) | undefined;
-  let exitWatch: ReturnType<typeof watchContainerExit> | undefined;
-  let artifact: WebFunctionArtifact | undefined;
-  // The `docker run -d` in flight, so a teardown that starts before it returns
-  // still finds (and removes) the container the docker CLI goes on to create.
-  let runInFlight: Promise<string> | undefined;
-  let teardownPromise: Promise<void> | undefined;
-  let shuttingDown = false;
-  // Teardown is blocked on the in-flight `docker run` (no container id yet).
-  let waitingOnRun = false;
-  // The in-flight run's container name, so an abandoned shutdown can name it.
-  let containerName: string | undefined;
   const forever = (): Promise<never> => new Promise<never>(() => undefined);
-
-  const doTeardown = async (): Promise<void> => {
-    exitWatch?.stop();
-    if (containerId === undefined && runInFlight !== undefined) {
-      waitingOnRun = true;
-      try {
-        containerId = await runInFlight;
-      } catch {
-        /* docker run failed: no container */
-      } finally {
-        waitingOnRun = false;
-      }
-    }
-    if (stopLogs) {
-      try {
-        stopLogs();
-      } catch (err) {
-        logger.debug(`streamLogs stop failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    // Not `--rm`, so this removal is the only one.
-    if (containerId) await removeContainer(containerId);
-    disposeWebFunctionArtifact(artifact);
-  };
-  // Memoized PROMISE: every caller (a failure path, a signal racing it) awaits
-  // the SAME teardown, so none can exit before the bundle is disposed.
-  const teardown = (): Promise<void> => (teardownPromise ??= doTeardown());
 
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
@@ -202,12 +124,7 @@ async function localStartWebFunctionCommand(
   });
 
   const resolved = resolveWebFunctionTarget(resolvedTarget, stacks, options.revision);
-  const code = parseWebFunctionBuildConfig(
-    resolved.revisionLogicalId,
-    resolved.revision.Properties?.['BuildConfig'],
-    resolved.stack.template
-  );
-  const spec = resolveWebFunctionRuntime(code.runtime);
+  const prepared = prepareWebFunctionServe(resolved);
   const selectionNote: Record<typeof resolved.selection, string> = {
     'target-revision': 'the target revision',
     'revision-flag': '--revision',
@@ -216,16 +133,26 @@ async function localStartWebFunctionCommand(
   };
   logger.info(
     `Target: ${displayStackName(`${resolved.stack.stackName}/${resolved.revisionLogicalId}`)} ` +
-      `(${spec.runtime}; revision chosen by ${selectionNote[resolved.selection]})`
+      `(${prepared.spec.runtime}; revision chosen by ${selectionNote[resolved.selection]})`
   );
+  for (const line of webFunctionFidelityWarnings(resolved, prepared.serviceConfig)) {
+    logger.warn(line);
+  }
 
-  const serviceConfig = readWebFunctionServiceConfig(resolved.revision);
-  for (const line of webFunctionFidelityWarnings(resolved, serviceConfig)) logger.warn(line);
+  const serve = new WebFunctionServe(prepared, {
+    envOptions: options,
+    ...(profileCredentials !== undefined && { profileCredentials }),
+    ...(extraStateProviders !== undefined && { extraStateProviders }),
+    host: options.host,
+    port: options.port,
+    ...(options.platform !== undefined && { platform: options.platform }),
+    skipPull: options.pull === false,
+    timeoutMs: options.timeout,
+  });
+  let shuttingDown = false;
 
-  artifact = await resolveWebFunctionArtifact(resolved.stack, resolved.revisionLogicalId, code);
-
-  // Armed as soon as there is anything on the host to clean up (an extracted
-  // bundle), so ^C during a long first pull still removes it.
+  // Armed before the first host-side effect (the extracted bundle), so ^C
+  // during the extraction or a long first pull still removes it.
   const shutdown = async (signal: 'SIGINT' | 'SIGTERM', exitCode: number): Promise<void> => {
     if (shuttingDown) {
       // A second signal. Abandon ONLY while teardown waits on an in-flight
@@ -233,119 +160,55 @@ async function localStartWebFunctionCommand(
       // container / bundle, finish: a double ^C reaches the whole process group,
       // so exiting here would also cut short the `docker rm -f` child and leave
       // a credential-bearing container running.
-      if (!waitingOnRun) {
+      if (!serve.waitingOnRun) {
         logger.info(`Received ${signal} again; still removing the container, please wait...`);
         return;
       }
       // The bundle is ours alone: remove it now, synchronously.
-      disposeWebFunctionArtifact(artifact);
+      serve.disposeArtifactNow();
       logger.warn(
         `Received ${signal} again; exiting without waiting for docker run to return. The ` +
           `container may still be starting, and its environment holds the forwarded AWS ` +
           `credentials. Remove it by its name (this works even if it is created after this ` +
-          `exit): docker rm -f ${containerName ?? '<name>'}`
+          `exit): docker rm -f ${serve.containerName ?? '<name>'}`
       );
       process.exit(signal === 'SIGINT' ? 130 : 143);
       return;
     }
     shuttingDown = true;
     logger.info(`Received ${signal}, shutting down...`);
-    await teardown();
+    await serve.teardown();
     process.exit(exitCode);
   };
   process.on('SIGINT', () => void shutdown('SIGINT', 130));
   process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
 
-  const recent = new RecentOutput();
   try {
-    const assumeRole = webFunctionAssumeRole(options.assumeRole, serviceConfig);
-    const containerEnv = await resolveLambdaContainerEnv(
-      buildWebFunctionLambdaView(resolved, serviceConfig, spec.runtime),
-      {
-        ...options,
-        ...(assumeRole !== undefined && { assumeRole }),
-        deployedFunctionLookups: false,
-      },
-      profileCredentials,
-      extraStateProviders
-    );
-    const { env, replacedHttpEndpoint } = finalizeWebFunctionEnv(containerEnv.env, {
-      functionName: resolved.functionName,
-      containerPort: WEB_FUNCTION_CONTAINER_PORT,
-      timeoutSeconds: serviceConfig.timeoutSeconds,
-      logGroup: serviceConfig.logGroup,
-    });
-    if (replacedHttpEndpoint) {
-      logger.warn(
-        `The revision's ${WEB_FUNCTION_HTTP_ENDPOINT_ENV} is replaced with 0.0.0.0:` +
-          `${WEB_FUNCTION_CONTAINER_PORT}: the runtime owns that variable, and the local port ` +
-          `is published to it.`
-      );
-    }
-    const plan = planWebFunctionContainer(artifact, spec, env);
-    const platform = options.platform ?? defaultWebFunctionPlatform(spec);
-
-    await pullImage(plan.image, options.pull === false, platform);
-    // A signal during the pull: its shutdown owns the exit.
-    if (teardownPromise) return await forever();
-    const hostPort = options.port === 0 ? await pickFreePort() : options.port;
-    const name =
-      (containerName = `${getEmbedConfig().resourceNamePrefix}-webfn-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
+    const address = await serve.start();
+    // A signal mid-start: its shutdown owns the teardown and the exit.
+    if (!address) return await forever();
     logger.info(
-      `Starting web function container (image=${plan.image}, start=${plan.label}, ` +
-        `port=${hostPort} -> ${WEB_FUNCTION_CONTAINER_PORT})...`
-    );
-    runInFlight = startWebFunctionContainer({
-      plan,
-      env,
-      sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
-      host: options.host,
-      hostPort,
-      platform,
-      name,
-    });
-    const id = await runInFlight;
-    // A signal while `docker run` was in flight: its teardown awaited the same
-    // promise and removes this container, then exits.
-    if (teardownPromise) return await forever();
-    containerId = id;
-    stopLogs = streamLogs(id, { onOutput: (chunk) => recent.push(chunk) });
-    exitWatch = watchContainerExit(id);
-
-    const probeHost = connectHost(options.host);
-    await waitForWebFunctionReady({
-      containerId: id,
-      host: probeHost,
-      port: hostPort,
-      timeoutMs: options.timeout,
-      recent,
-      label: plan.label,
-    });
-    logger.info(
-      `Server listening on http://${formatAuthority(probeHost, hostPort)}  ` +
+      `Server listening on http://${formatAuthority(address.host, address.port)}  ` +
         `(${displayIdent(resolved.functionName)} (Lambda web function))`
     );
     logger.info('Press ^C to shut down.');
   } catch (err) {
     if (shuttingDown) return await forever();
-    await teardown();
+    await serve.teardown();
     throw err;
   }
 
   // Serving. The `docker wait` child keeps the process alive; when the server
   // exits on its own, fail loudly (non-zero) with its last output instead of
   // exiting 0 with the container and the extracted bundle left behind.
-  if (!exitWatch || !containerId) return await forever();
-  const exitCode = await exitWatch.exited;
-  if (shuttingDown || teardownPromise) return await forever();
-  const failure = await containerFailure(
-    `The web function container exited (exit code ${exitCode ?? 'unknown'}) while serving.`,
-    containerId,
-    recent,
-    undefined,
-    'LOCAL_START_WEB_FUNCTION_EXITED'
+  const exited = serve.exited;
+  if (!exited) return await forever();
+  const exitCode = await exited;
+  if (shuttingDown || serve.tornDown) return await forever();
+  const failure = await serve.exitFailure(
+    `The web function container exited (exit code ${exitCode ?? 'unknown'}) while serving.`
   );
-  await teardown();
+  await serve.teardown();
   throw failure;
 }
 

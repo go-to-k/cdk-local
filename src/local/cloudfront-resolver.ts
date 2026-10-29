@@ -20,6 +20,7 @@ import {
 import type { ResolvedCustomErrorResponse } from './cloudfront-static-origin.js';
 import { resolveResponseHeadersPolicyCors, type CorsConfig } from './cors-handler.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
+import { WEB_FUNCTION_ENDPOINT_TYPE } from './web-function-resolver.js';
 
 /**
  * Resolve a synthesized `AWS::CloudFront::Distribution` into the in-memory
@@ -94,7 +95,7 @@ export interface ResolvedBehavior {
   cors?: CorsConfig;
 }
 
-/** A resolved origin: an S3 origin, a Lambda Function URL origin, or a custom origin. */
+/** A resolved origin: an S3 origin, a Lambda Function URL / Web Function endpoint origin, or a custom origin. */
 export type ResolvedOrigin =
   | {
       kind: 's3';
@@ -162,6 +163,20 @@ export type ResolvedOrigin =
       originId: string;
       functionLogicalId: string;
       functionUrlLogicalId: string;
+    }
+  | {
+      /**
+       * A Lambda Web Function endpoint origin: an `HttpOrigin` whose
+       * `DomainName` is `Fn::GetAtt[<WebFunctionEndpoint>, 'DomainName']`
+       * (go-to-k/cdkd#5516). Served by running the endpoint's revision the way
+       * `start-web-function` does and forwarding the origin request to it. The
+       * origin's OAC signing has no local counterpart and is not reproduced.
+       */
+      kind: 'web-function';
+      originId: string;
+      endpointLogicalId: string;
+      /** `CustomOriginConfig.OriginReadTimeout` when a literal number (CloudFront's default is 30). */
+      readTimeoutSeconds?: number;
     }
   | { kind: 'custom'; originId: string; domainName: string };
 
@@ -495,12 +510,33 @@ function resolveOrigins(
     const isS3 =
       origin['S3OriginConfig'] !== undefined || bucketLogicalId !== undefined || s3Domain.isS3;
     if (!isS3) {
-      // A Lambda Function URL custom origin (origins.FunctionUrlOrigin) is the
-      // one custom origin cdk-local serves: the backing Lambda is the user's
-      // own application compute, run locally via RIE (issue #376).
+      // A Lambda Function URL custom origin (origins.FunctionUrlOrigin): the
+      // backing Lambda is the user's own application compute, run locally via
+      // RIE (issue #376).
       const lambdaUrl = resolveLambdaUrlOrigin(origin, template, originId);
       if (lambdaUrl) {
         out.set(originId, lambdaUrl);
+        continue;
+      }
+      // A Lambda Web Function endpoint origin: the endpoint's revision is the
+      // user's own HTTP server, run locally like `start-web-function`.
+      const endpointLogicalId = pickWebFunctionEndpointLogicalIdFromOrigin(
+        origin['DomainName'],
+        template
+      );
+      if (endpointLogicalId) {
+        const customConfig = origin['CustomOriginConfig'];
+        const readTimeout =
+          customConfig && typeof customConfig === 'object'
+            ? (customConfig as Record<string, unknown>)['OriginReadTimeout']
+            : undefined;
+        out.set(originId, {
+          kind: 'web-function',
+          originId,
+          endpointLogicalId,
+          ...(typeof readTimeout === 'number' &&
+            readTimeout > 0 && { readTimeoutSeconds: readTimeout }),
+        });
         continue;
       }
       out.set(originId, {
@@ -725,6 +761,29 @@ function resolveLambdaUrlOrigin(
   const fnResource = (template.Resources ?? {})[functionLogicalId];
   if (!fnResource || fnResource.Type !== LAMBDA_FUNCTION_TYPE) return undefined;
   return { kind: 'lambda-url', originId, functionLogicalId, functionUrlLogicalId: urlLogicalId };
+}
+
+/**
+ * Unwrap a Web Function endpoint origin's `DomainName` —
+ * `{Fn::GetAtt: [<EndpointLogicalId>, 'DomainName']}` — to the
+ * `AWS::Lambda::WebFunctionEndpoint` logical id, or `undefined` when the value
+ * has another shape or names a resource of another type in this template.
+ */
+export function pickWebFunctionEndpointLogicalIdFromOrigin(
+  value: unknown,
+  template: CloudFormationTemplate
+): string | undefined {
+  const getAtt = asIntrinsic(value, 'Fn::GetAtt');
+  if (
+    !Array.isArray(getAtt) ||
+    getAtt.length !== 2 ||
+    typeof getAtt[0] !== 'string' ||
+    getAtt[1] !== 'DomainName'
+  ) {
+    return undefined;
+  }
+  const resource = (template.Resources ?? {})[getAtt[0]];
+  return resource?.Type === WEB_FUNCTION_ENDPOINT_TYPE ? getAtt[0] : undefined;
 }
 
 /**

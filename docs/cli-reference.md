@@ -1731,7 +1731,7 @@ runs it wired to the actual origin content (default root object, the
 real keys, index / error-page fallback), which is exactly the end-to-end
 connection a unit test of the function alone cannot exercise.
 
-Two origin kinds are served:
+Three origin kinds are served:
 
 - an **S3 origin** — the static-site / SPA shape; the functions run
   in-process and the origin content is served from local files (the
@@ -1746,11 +1746,21 @@ Two origin kinds are served:
   backing Lambda is your own application compute, run locally in a real
   RIE container (the same machinery `cdkl invoke` uses) and invoked with
   the Function URL request/response shape, so a CDN-fronted Lambda (SSR /
-  API behind CloudFront) is testable end to end. A pure-S3 distribution
-  needs no Docker; a Function URL origin boots one Lambda container.
+  API behind CloudFront) is testable end to end;
+- a **Lambda Web Function endpoint origin** (an `HttpOrigin` on a
+  `WebFunctionEndpoint`'s `DomainName`, usually behind an OAC of origin
+  type `lambda`) — the revision the endpoint weights pick runs locally
+  exactly as [`cdkl start-web-function`](#cdkl-start-web-function-serve-a-lambda-web-function-locally)
+  runs it (its code from cdk.out, its `ServiceConfig` environment) and the
+  origin request is forwarded to it over HTTP, so the distribution's own
+  behaviors — response headers policy CORS, path behaviors, CloudFront
+  Functions, Lambda@Edge — are testable in front of the web function.
+
+A pure-S3 distribution needs no Docker; a Function URL origin boots one
+Lambda container and a Web Function endpoint origin one server container.
 
 It does NOT emulate the managed CloudFront service: other custom (non-S3,
-non-Function-URL) origins and the 2.0 `cf.fetch` origin API are out of scope
+non-Lambda) origins and the 2.0 `cf.fetch` origin API are out of scope
 (warn-and-skip; a request routed to one returns 502). A behavior's
 **Lambda@Edge** functions (`LambdaFunctionAssociations`) ARE run — each is
 real Lambda code, booted in a real RIE container and invoked at its event
@@ -1894,6 +1904,24 @@ its `DistributionConfig`:
   function still runs over it. The container is boot-time only: a `--watch`
   reload re-synths the viewer functions + S3 origins but does NOT rebuild
   it (restart to pick up a new Function URL origin or a code change).
+- **Lambda Web Function endpoint origin → local server** — the origin's
+  `DomainName` (`{Fn::GetAtt: [<endpoint>, DomainName]}`) → the
+  `AWS::Lambda::WebFunctionEndpoint` → the revision its `RevisionWeights`
+  pick (the highest weight; weighted routing is not emulated, and the
+  endpoint's `AuthType` is not enforced — both warned at boot) → its code
+  (a cdk.out file asset, or the `BucketDeployment` `extract: false` object
+  key) and `ServiceConfig` environment, resolved as `start-web-function`
+  resolves them. One server container per endpoint is booted at start-up
+  on an OS-assigned port, at the runtime's cloud architecture
+  (`linux/arm64`; there is no `--platform` here), and removed on
+  shutdown; a server that fails to come up stops start-up. A request
+  routed there is forwarded as the origin request — method, path, query
+  string, body and headers, minus hop-by-hop ones, with `Host` naming the
+  origin and the client address appended to `X-Forwarded-For` — and the
+  buffered response becomes the origin response. An unreachable server
+  answers 502 and one slower than the origin's `OriginReadTimeout`
+  (default 30 s) 504. The OAC's SigV4 signing has no local counterpart and
+  is skipped. Boot-time only, like a Function URL origin.
 
 ### Target resolution
 
@@ -1916,12 +1944,12 @@ On top of the [common flags](#common-flags):
 | `--tls` | off | Terminate real HTTPS. Uses `--tls-cert` / `--tls-key` when supplied, else an auto-generated self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`; requires `openssl` on PATH). Implied by `--tls-cert` / `--tls-key`. |
 | `--tls-cert <path>` | unset | PEM server certificate. Implies `--tls`; must be set with `--tls-key`. |
 | `--tls-key <path>` | unset | PEM server private key matching `--tls-cert`. Implies `--tls`; must be set with `--tls-cert`. |
-| `--no-pull` | off | Skip `docker pull` for a Lambda Function URL origin's base image (use the locally cached image). No effect on a pure-S3 distribution. |
-| `--from-cfn-stack [name]` | off | Bind to a deployed CloudFormation stack (`ListStackResources`). Serves an S3 origin that has NO local BucketDeployment source from its deployed bucket, read from real S3 on demand (the front/back-split case — see the S3 origin → deployed bucket bullet above), AND resolves a Function URL origin / Lambda@Edge function's intrinsic env vars to the deployed physical IDs / exports. Bare form uses the resolved stack name; pass a value when the CFn stack name differs. Same semantics as `cdkl invoke --from-cfn-stack`. |
+| `--no-pull` | off | Skip `docker pull` for a Lambda Function URL / Web Function endpoint origin's base image (use the locally cached image). No effect on a pure-S3 distribution. |
+| `--from-cfn-stack [name]` | off | Bind to a deployed CloudFormation stack (`ListStackResources`). Serves an S3 origin that has NO local BucketDeployment source from its deployed bucket, read from real S3 on demand (the front/back-split case — see the S3 origin → deployed bucket bullet above), AND resolves a Function URL origin / Lambda@Edge function's or a Web Function origin revision's intrinsic env vars to the deployed physical IDs / exports. Bare form uses the resolved stack name; pass a value when the CFn stack name differs. Same semantics as `cdkl invoke --from-cfn-stack`. |
 | `--cache-origin` | off | For a deployed-S3 origin (served from real S3 under `--from-cfn-stack`): keep fetched objects in memory for the session as a read-through cache instead of re-`GetObject`-ing on every request — faster repeat reads / fewer S3 GETs. An out-of-band S3 content change is NOT reflected until a `--watch` reload (which clears the cache) or a restart. Off by default (every request re-reads, always current). Because it only feeds the deployed-S3 reader, it has no effect without `--from-cfn-stack` — passing it alone logs a boot-time WARN (it is harmless, just a no-op). This is the local object cache, NOT CloudFront CDN / TTL caching. |
 | `--stack-region <region>` | unset | Region of the state record to read; used with `--from-cfn-stack` as the CFn client region. |
-| `--assume-role [arn]` | off | Assume a Function URL origin Lambda's deployed execution role and forward STS temp credentials into its container. `--assume-role <arn>` (explicit); `--assume-role` (bare, auto-resolves from state — requires `--from-cfn-stack`); `--no-assume-role` (opt out). Same semantics as `cdkl invoke --assume-role`. |
-| `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container is NOT rebuilt on reload (boot-time only). |
+| `--assume-role [arn]` | off | Assume a Function URL origin Lambda's deployed execution role (or a Web Function origin revision's `ServiceConfig.ExecutionRoleArn`, as `start-web-function --assume-role` does) and forward STS temp credentials into its container. `--assume-role <arn>` (explicit); `--assume-role` (bare, auto-resolves from state — requires `--from-cfn-stack`); `--no-assume-role` (opt out). Same semantics as `cdkl invoke --assume-role`. |
+| `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container and a Web Function origin's server container are NOT rebuilt on reload (boot-time only). |
 
 ```bash
 # Serve a static-site distribution; pick interactively in a TTY
@@ -1945,6 +1973,11 @@ cdkl start-cloudfront MyStack/SiteDist --from-cfn-stack
 # container); --no-pull reuses the cached base image
 cdkl start-cloudfront MyStack/ApiDist --port 8080 --no-pull
 # then: curl http://127.0.0.1:8080/        (CloudFront -> Function URL -> your Lambda)
+
+# Serve a distribution fronting a Lambda Web Function endpoint (boots the
+# endpoint's revision in a server container)
+cdkl start-cloudfront MyStack/WebDist --port 8080
+# then: curl http://127.0.0.1:8080/        (CloudFront -> endpoint -> your web function)
 
 # Back a CloudFront Function's cf.kvs().get() reads with a local JSON map
 # (./routes.json is a flat { "key": "value" } file)
@@ -2005,6 +2038,8 @@ cloud — with the image's Runtime Interface Emulator entrypoint replaced by
 `node_modules`. Another runtime fails naming the supported set. The container's
 default platform is the runtime's cloud architecture (`linux/arm64` for
 `nodejs24.x`); `--platform linux/amd64` runs it natively on an x86 host.
+The same revision serve backs a [`start-cloudfront`](#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)
+Web Function endpoint origin, at the default platform.
 
 **Serving.** The server must listen on the `host:port` in
 `AWS_LAMBDA_HTTP_ENDPOINT` (`0.0.0.0:8080` in the container); `--port` (default:

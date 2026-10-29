@@ -94,11 +94,11 @@ describe('cloudfront-server origin-unavailable message (#761)', () => {
         origins: new Map([[originId, { kind: 'custom', originId, domainName }]]),
       });
     expect(await mk('api.example.com', 'c1')).toBe(
-      'Origin c1 is a custom (non-S3) origin (api.example.com). cdkl start-cloudfront serves S3 origins and Lambda Function URL origins only.\n'
+      'Origin c1 is a custom (non-S3) origin (api.example.com). cdkl start-cloudfront serves S3, Lambda Function URL and Lambda Web Function endpoint origins only.\n'
     );
     await server?.close();
     expect(await mk('evil.example.com) -- ok (', "a' b")).toBe(
-      'Origin "a\' b" is a custom (non-S3) origin ("evil.example.com) -- ok ("). cdkl start-cloudfront serves S3 origins and Lambda Function URL origins only.\n'
+      'Origin "a\' b" is a custom (non-S3) origin ("evil.example.com) -- ok ("). cdkl start-cloudfront serves S3, Lambda Function URL and Lambda Web Function endpoint origins only.\n'
     );
   });
 

@@ -50,10 +50,10 @@ AWS managed services.
 - CloudFront distributions — `cdkl start-cloudfront` serves the
   viewer-request → origin → viewer-response pipeline: CloudFront
   Functions in a `node:vm` sandbox (2.0 built-ins + KeyValueStore
-  reads), Lambda@Edge (all four event types), S3 origins (local
+  reads), Lambda@Edge (all four events), S3 origins (local
   BucketDeployment asset, or deployed-bucket read-through under
-  `--from-cfn-stack`), Lambda Function URL origins (warm RIE
-  container), per-behavior ResponseHeadersPolicy CORS; `--watch` /
+  `--from-cfn-stack`), Lambda Function URL / Web Function
+  endpoint origins, per-behavior ResponseHeadersPolicy CORS; `--watch` /
   `--tls` / `--origin` / `--kvs-file` / `--cache-origin`.
 - `cdkl studio` — the interactive web console over the same target
   enumeration: a control plane spawning the SAME invoke / serve runners

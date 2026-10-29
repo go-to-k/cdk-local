@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { request as httpRequest } from 'node:http';
+import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
@@ -207,6 +207,116 @@ describe('startCloudFrontServer — Lambda Function URL origin', () => {
       expect(await res.text()).toContain('was not booted');
     } finally {
       lambdaServer.update(lambdaDistribution());
+    }
+  });
+});
+
+describe('startCloudFrontServer — Lambda Web Function endpoint origin', () => {
+  let webServer: StartedCloudFrontServer;
+  let upstream: Server;
+  let upstreamPort: number;
+  const seen: { url?: string; host?: string; body: string }[] = [];
+
+  function webDistribution(endpointLogicalId = 'Endpoint'): ResolvedDistribution {
+    return {
+      logicalId: 'Dist',
+      stackName: 'Stack',
+      behaviors: [
+        {
+          targetOriginId: 'web',
+          viewerResponse: headerFn,
+          cors: {
+            AllowOrigins: ['http://app.local'],
+            AllowMethods: ['GET'],
+            AllowHeaders: [],
+            ExposeHeaders: [],
+          },
+        },
+      ],
+      origins: new Map([['web', { kind: 'web-function', originId: 'web', endpointLogicalId }]]),
+      customErrorResponses: [],
+    };
+  }
+
+  beforeAll(async () => {
+    upstream = createHttpServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        seen.push({ url: req.url, host: req.headers.host, body: Buffer.concat(chunks).toString() });
+        res.statusCode = 202;
+        res.setHeader('content-type', 'text/plain');
+        res.setHeader('set-cookie', 'sid=web; Path=/');
+        res.end(`web:${req.method}`);
+      });
+    });
+    await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', () => r()));
+    const addr = upstream.address();
+    upstreamPort = typeof addr === 'object' && addr ? addr.port : 0;
+    webServer = await startCloudFrontServer({
+      distribution: webDistribution(),
+      host: '127.0.0.1',
+      port: 0,
+      webFunctionOrigins: new Map([['Endpoint', { host: '127.0.0.1', port: upstreamPort }]]),
+    });
+  });
+
+  afterAll(async () => {
+    await webServer.close();
+    upstream.closeAllConnections();
+    await new Promise<void>((r) => upstream.close(() => r()));
+  });
+
+  it('forwards to the booted server; viewer-response and the policy CORS headers apply', async () => {
+    const u = new URL(`${webServer.url}/page?x=1`);
+    const res = await new Promise<{ status: number; headers: Record<string, unknown>; body: string }>(
+      (resolvePromise, rejectPromise) => {
+        const req = httpRequest(
+          {
+            hostname: u.hostname,
+            port: u.port,
+            path: u.pathname + u.search,
+            method: 'POST',
+            headers: { origin: 'http://app.local' },
+            agent: false,
+          },
+          (r) => {
+            const chunks: Buffer[] = [];
+            r.on('data', (c: Buffer) => chunks.push(c));
+            r.on('end', () =>
+              resolvePromise({
+                status: r.statusCode ?? 0,
+                headers: r.headers,
+                body: Buffer.concat(chunks).toString(),
+              })
+            );
+          }
+        );
+        req.on('error', rejectPromise);
+        req.end('hello');
+      }
+    );
+    expect(res.status).toBe(202);
+    expect(res.body).toBe('web:POST');
+    expect(res.headers['x-cdkl']).toBe('1');
+    expect(res.headers['access-control-allow-origin']).toBe('http://app.local');
+    expect(res.headers['set-cookie']).toEqual(['sid=web; Path=/']);
+    const last = seen.at(-1)!;
+    expect(last.url).toBe('/page?x=1');
+    expect(last.body).toBe('hello');
+    expect(last.host).toBe(`127.0.0.1:${upstreamPort}`);
+  });
+
+  it('returns 502 naming the endpoint when its server was not booted (added post-startup)', async () => {
+    webServer.update(webDistribution('LaterEndpoint'));
+    try {
+      const res = await fetch(`${webServer.url}/`);
+      expect(res.status).toBe(502);
+      const body = await res.text();
+      expect(body).toContain('Web Function endpoint origin');
+      expect(body).toContain('LaterEndpoint');
+    } finally {
+      webServer.update(webDistribution());
     }
   });
 });
