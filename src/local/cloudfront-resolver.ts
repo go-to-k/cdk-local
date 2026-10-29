@@ -1,11 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
-import type { AssetManifest, FileAsset } from '../types/assets.js';
+import type { AssetManifest } from '../types/assets.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { resolveAssetSourcePath } from '../assets/asset-source-path.js';
 import { assetPathDirs } from './lambda-resolver.js';
+import {
+  bucketDeploymentSourceObjectKeys,
+  findFileAssetForObjectKey,
+  isBucketDeploymentResource,
+} from './s3-object-asset.js';
 import { absoluteAssemblyPathEscape, displayUntrustedValue } from '../utils/assembly-path.js';
 import {
   compileCloudFrontFunction,
@@ -632,13 +637,12 @@ export function resolveBucketDeploymentDirs(
   const { manifestDir, assetOutdir } = assetPathDirs(stack);
   const dirs: string[] = [];
   for (const resource of Object.values(template.Resources ?? {})) {
-    if (!String(resource.Type).startsWith('Custom::CDKBucketDeployment')) continue;
+    if (!isBucketDeploymentResource(resource)) continue;
     const props = resource.Properties ?? {};
     if (refLogicalId(props['DestinationBucketName']) !== bucketLogicalId) continue;
-    const keys = Array.isArray(props['SourceObjectKeys']) ? props['SourceObjectKeys'] : [];
-    for (const key of keys) {
+    for (const key of bucketDeploymentSourceObjectKeys(resource)) {
       if (typeof key !== 'string') continue; // non-literal (intrinsic) -> unresolved
-      const asset = findFileAssetByObjectKey(manifest, key);
+      const asset = findFileAssetForObjectKey(manifest, key)?.asset;
       if (!asset) continue;
       // The directory `start-cloudfront` SERVES as this origin's content, so an
       // escaping `source.path` published host files over HTTP. The join is
@@ -666,26 +670,6 @@ export function resolveBucketDeploymentDirs(
     }
   }
   return dirs;
-}
-
-/**
- * Find the file asset whose published object key equals `objectKey`. The
- * BucketDeployment `SourceObjectKeys` carries the published key
- * (`<hash>.zip`); matching on the destination object key is more robust than
- * guessing how the hash maps to the manifest key.
- */
-function findFileAssetByObjectKey(
-  manifest: AssetManifest,
-  objectKey: string
-): FileAsset | undefined {
-  for (const asset of Object.values(manifest.files ?? {})) {
-    for (const dest of Object.values(asset.destinations ?? {})) {
-      if (dest.objectKey === objectKey) return asset;
-    }
-  }
-  // Fallback: the key is `<hash>.zip`; match the manifest entry by hash.
-  const hash = objectKey.replace(/\.zip$/, '');
-  return manifest.files?.[hash];
 }
 
 /**

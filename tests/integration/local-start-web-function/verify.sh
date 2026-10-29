@@ -19,13 +19,19 @@
 #   4. A server that exits while serving (`/crash`) ends the command non-zero.
 #   5. `--revision RevBoom` (an entry file that throws at load) fails boot with
 #      the app's stack trace. Both failure arms leave no container behind.
+#   6. `--revision RevDeploy`, whose S3Object.Key is
+#      `Fn.select(0, upload.objectKeys)` of a BucketDeployment with
+#      `extract: false`, serves that deployment's own source asset (web-deploy/,
+#      reporting entry "deploy-bundle"); `--revision RevExtracted` makes the same
+#      selection on a deployment that extracts, and is refused before any
+#      container starts (go-to-k/cdkd#5515).
 #
 # Fully local — nothing is deployed. Run via `/run-integ local-start-web-function`
 # (recommended) or directly:
 #
 #     bash tests/integration/local-start-web-function/verify.sh
 #
-# Requires Docker. Uses host ports 18460-18462.
+# Requires Docker. Uses host ports 18460-18465.
 
 set -euo pipefail
 
@@ -190,5 +196,27 @@ grep -q 'container exited before its server listened' "${OUT_FILE}" \
 awk '/Last [0-9]+ line\(s\) of container output:/ { h = 1 } h && /boom-at-boot/ { f = 1 } END { exit !f }' \
   "${OUT_FILE}" || fail "the boot failure error does not quote the app's stack trace"
 assert_no_orphans "the boot failure"
+
+echo "[verify] step 10: a BucketDeployment (extract: false) source key serves that source asset"
+boot_serve "${STACK}/WebFn" --revision RevDeploy --port "$((PORT + 5))" --no-pull
+BODY="$(curl -s "http://127.0.0.1:$((PORT + 5))/deployed")"
+echo "${BODY}" | grep -q '"entry":"deploy-bundle"' || fail "the deployment's source asset was not served: ${BODY}"
+echo "${BODY}" | grep -q '"revision":"deploy"' || fail "RevDeploy not served: ${BODY}"
+echo "${BODY}" | grep -q '"path":"/deployed"' || fail "path not echoed: ${BODY}"
+stop_server
+assert_no_orphans "the BucketDeployment serve"
+
+echo "[verify] step 11: the same selection on an extracting BucketDeployment is refused"
+: > "${OUT_FILE}"
+set +e
+${CLI} start-web-function "${STACK}/WebFn" --revision RevExtracted --port "$((PORT + 5))" --no-pull \
+  ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} > "${OUT_FILE}" 2>&1
+EXTRACT_RC=$?
+set -e
+[ "${EXTRACT_RC}" -ne 0 ] || fail "start-web-function exited 0 for an extracting BucketDeployment key"
+grep -q 'which does not set extract to a literal false' "${OUT_FILE}" \
+  || fail "the refusal does not explain that the deployment extracts its sources"
+grep -q 'Server listening on' "${OUT_FILE}" && fail "an extracting BucketDeployment key was served"
+assert_no_orphans "the extracting BucketDeployment refusal"
 
 echo "[verify] PASS"

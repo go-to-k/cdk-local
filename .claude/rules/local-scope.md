@@ -192,7 +192,8 @@ One distribution per invocation.
 
 ONE revision: `--revision`, a revision target, the endpoint's top weight, the
 only revision, the only endpoint's pick. Code: the `S3Object`'s cdk.out asset
-(no download), RIE entrypoint replaced, no `--rm`; ready = an HTTP answer,
+(no download; a `Fn.select(i, objectKeys)` key of an `extract: false`
+BucketDeployment = its i-th source asset), RIE entrypoint replaced, no `--rm`; ready = an HTTP answer,
 not TCP accept. Env: `resolveLambdaContainerEnv` sans Lambda-API fallbacks.
 WARNED only: egress connector, non-`HomeRegion`, weighted split,
 non-`ApplicationManaged` auth.
