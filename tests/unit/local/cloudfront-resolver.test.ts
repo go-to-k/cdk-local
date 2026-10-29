@@ -11,6 +11,7 @@ import {
   pickKvsLogicalIdFromArn,
   pickLambdaEdgeFunctionLogicalId,
   pickTargetFunctionLogicalId,
+  resolveBucketDeploymentDirs,
   resolveCloudFrontDistribution,
 } from '../../../src/local/cloudfront-resolver.js';
 import { serveFromStaticOrigin } from '../../../src/local/cloudfront-static-origin.js';
@@ -780,5 +781,50 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
     expect(origin?.kind === 's3' && origin.localDirs).toEqual([join(outDir, `asset.${HASH}`)]);
     // A staged (relative) source is not an accepted absolute folder.
     expect(origin?.kind === 's3' && origin.hideDotfilesIn).toBeUndefined();
+  });
+});
+
+describe('resolveBucketDeploymentDirs (shared s3-object-asset lookup)', () => {
+  const template = (keys: unknown[]): CloudFormationTemplate => ({
+    Resources: {
+      SiteBucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+      Deploy: {
+        Type: 'Custom::CDKBucketDeploymentABC',
+        Properties: { DestinationBucketName: { Ref: 'SiteBucket' }, SourceObjectKeys: keys },
+      },
+    },
+  });
+  const stack = (tpl: CloudFormationTemplate): StackInfo => ({
+    stackName: 'Stack',
+    displayName: 'Stack',
+    artifactId: 'Stack',
+    template: tpl,
+    assetManifestPath: join(outDir, 'Stack.assets.json'),
+    dependencyNames: [],
+  });
+
+  it('serves a source whose asset publishes under a key prefix', () => {
+    mkdirSync(join(outDir, 'asset.site'));
+    const manifest = {
+      version: '1',
+      files: {
+        site: {
+          displayName: 'Site',
+          source: { path: 'asset.site', packaging: 'zip' as const },
+          destinations: { d: { bucketName: 'b', objectKey: `pre/${HASH}.zip` } },
+        },
+      },
+      dockerImages: {},
+    };
+    const tpl = template([`${HASH}.zip`]);
+    expect(resolveBucketDeploymentDirs(tpl, manifest, stack(tpl), 'SiteBucket')).toEqual([
+      join(outDir, 'asset.site'),
+    ]);
+  });
+
+  it('skips a source key naming an inherited property instead of crashing', () => {
+    const tpl = template(['constructor.zip']);
+    const manifest = { version: '1', files: {}, dockerImages: {} };
+    expect(resolveBucketDeploymentDirs(tpl, manifest, stack(tpl), 'SiteBucket')).toEqual([]);
   });
 });

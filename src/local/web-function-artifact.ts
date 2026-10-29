@@ -127,8 +127,11 @@ export function parseWebFunctionBuildConfig(
         `${subject} has a CodeConfig.S3Object.Key that is not a literal string ` +
           `(${describeValue(rawKey)}). The code must come from a CDK asset in this app: an ` +
           `s3assets.Asset passing asset.s3BucketName / asset.s3ObjectKey, whose key synthesizes ` +
-          `as a literal, or a BucketDeployment with extract: false passing ` +
-          `Fn.select(<i>, deployment.objectKeys), which resolves to its i-th source asset.`,
+          `as a literal` +
+          (template
+            ? `, or a BucketDeployment with extract: false passing ` +
+              `Fn.select(<i>, deployment.objectKeys), which resolves to its i-th source asset.`
+            : '.'),
         'LOCAL_START_WEB_FUNCTION_CODE_KEY_NOT_LITERAL'
       );
     }
@@ -161,10 +164,17 @@ function bucketDeploymentSourceKey(
       return r.sourceObjectKey;
     case 'extracts':
       throw new CdkLocalError(
-        `${subject} ${named}, which does not set extract: false, so it unpacks its sources ` +
+        `${subject} ${named}, which does not set extract to a literal false, so it unpacks its sources ` +
           `and no object in the destination bucket holds that source's zip (Lambda could not ` +
           `read it either). Set extract: false on the BucketDeployment so it copies the zip as-is.`,
         'LOCAL_START_WEB_FUNCTION_CODE_KEY_DEPLOYMENT_EXTRACTS'
+      );
+    case 'prefixed-destination':
+      throw new CdkLocalError(
+        `${subject} ${named}, which sets a destinationKeyPrefix: the zip lands at ` +
+          `<prefix><key> while objectKeys returns <key>, so the selected key names no object ` +
+          `(Lambda could not read it either). Remove destinationKeyPrefix from the deployment.`,
+        'LOCAL_START_WEB_FUNCTION_CODE_KEY_DEPLOYMENT_SOURCE_UNRESOLVED'
       );
     case 'object-keys-not-output':
       throw new CdkLocalError(

@@ -54,6 +54,9 @@ export function bucketDeploymentSourceObjectKeys(resource: TemplateResource): un
  *   default), so no object holds the source zip and there is nothing to map.
  * - `object-keys-not-output`: `outputObjectKeys: false`, so the attribute is
  *   an empty list and the deployed `Fn::Select` fails.
+ * - `prefixed-destination`: a `destinationKeyPrefix` puts the zip at
+ *   `<prefix><key>` while the attribute still returns `<key>`, so the selected
+ *   key names no object in the destination bucket.
  * - `index-out-of-range` / `source-key-not-literal`: the selected source is
  *   missing, or is not a CDK asset whose key synthesizes as a literal.
  */
@@ -61,6 +64,7 @@ export type BucketDeploymentObjectKeyResolution =
   | { kind: 'resolved'; deploymentLogicalId: string; index: number; sourceObjectKey: string }
   | { kind: 'extracts'; deploymentLogicalId: string; index: number }
   | { kind: 'object-keys-not-output'; deploymentLogicalId: string; index: number }
+  | { kind: 'prefixed-destination'; deploymentLogicalId: string; index: number }
   | { kind: 'index-out-of-range'; deploymentLogicalId: string; index: number; sourceCount: number }
   | { kind: 'source-key-not-literal'; deploymentLogicalId: string; index: number };
 
@@ -94,6 +98,11 @@ export function resolveBucketDeploymentObjectKey(
   if (handlerFlag(props['Extract'])) return { kind: 'extracts', deploymentLogicalId, index };
   if (!handlerFlag(props['OutputObjectKeys'])) {
     return { kind: 'object-keys-not-output', deploymentLogicalId, index };
+  }
+  // The handler treats `/` like no prefix.
+  const prefix = props['DestinationBucketKeyPrefix'];
+  if (prefix !== undefined && prefix !== '' && prefix !== '/') {
+    return { kind: 'prefixed-destination', deploymentLogicalId, index };
   }
   const keys = bucketDeploymentSourceObjectKeys(deployment);
   if (index >= keys.length) {

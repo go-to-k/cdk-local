@@ -91,10 +91,15 @@ describe('parseWebFunctionBuildConfig', () => {
     expect(parsed.s3Object.bucket).toEqual(BOOTSTRAP_BUCKET);
   });
 
-  it('fails the same selection without the template, as a non-literal key', () => {
-    expect(() => parseWebFunctionBuildConfig('Rev', buildConfig(selectObjectKey(0)))).toThrow(
-      /not a literal string/
-    );
+  it('fails the same selection without the template, as a non-literal key, without offering it', () => {
+    let message = '';
+    try {
+      parseWebFunctionBuildConfig('Rev', buildConfig(selectObjectKey(0)));
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/not a literal string.*whose key synthesizes as a literal\.$/);
+    expect(message).not.toMatch(/BucketDeployment/);
   });
 
   it.each([
@@ -112,7 +117,7 @@ describe('parseWebFunctionBuildConfig', () => {
       expect.objectContaining({
         code: 'LOCAL_START_WEB_FUNCTION_CODE_KEY_DEPLOYMENT_EXTRACTS',
         message: expect.stringMatching(
-          /selects source 0 of BucketDeployment Upload, which does not set extract: false.*Set extract: false/
+          /selects source 0 of BucketDeployment Upload, which does not set extract to a literal false.*Set extract: false/
         ),
       })
     );
@@ -126,6 +131,13 @@ describe('parseWebFunctionBuildConfig', () => {
       [{ 'Fn::GetAtt': ['Other', 'Key'] }],
       {},
       /SourceObjectKeys entry is not a literal string/,
+    ],
+    [
+      'a destinationKeyPrefix',
+      selectObjectKey(0),
+      ['a.zip'],
+      { DestinationBucketKeyPrefix: 'site/' },
+      /sets a destinationKeyPrefix.*Remove destinationKeyPrefix/,
     ],
     [
       'outputObjectKeys: false',

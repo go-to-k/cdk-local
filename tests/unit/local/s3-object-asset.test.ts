@@ -50,6 +50,10 @@ describe('findFileAssetForObjectKey', () => {
     expect(findFileAssetForObjectKey(manifest('other.zip'), 'abc123.zip')?.hash).toBe('abc123');
   });
 
+  it('does not take an inherited property for a manifest entry', () => {
+    expect(findFileAssetForObjectKey(manifest('abc123.zip'), 'constructor.zip')).toBeUndefined();
+  });
+
   it('returns undefined for a key no asset carries', () => {
     expect(findFileAssetForObjectKey(manifest('abc123.zip'), 'zzz.zip')).toBeUndefined();
   });
@@ -118,6 +122,19 @@ describe('resolveBucketDeploymentObjectKey', () => {
       deploymentLogicalId: 'Upload',
       index: 0,
     });
+  });
+
+  it.each([
+    ['a prefix', 'site/', 'prefixed-destination'],
+    ["'/' (the handler's no-prefix)", '/', 'resolved'],
+    ['an empty prefix', '', 'resolved'],
+  ])('with destinationKeyPrefix %s reports %s', (_label, prefix, kind) => {
+    expect(
+      resolveBucketDeploymentObjectKey(
+        template({ Extract: false, DestinationBucketKeyPrefix: prefix }),
+        select(0)
+      )?.kind
+    ).toBe(kind);
   });
 
   it('reports the out-of-range, non-literal and no-output-keys cases', () => {

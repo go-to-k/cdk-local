@@ -214,7 +214,7 @@ ${CLI} start-web-function "${STACK}/WebFn" --revision RevExtracted --port "$((PO
 EXTRACT_RC=$?
 set -e
 [ "${EXTRACT_RC}" -ne 0 ] || fail "start-web-function exited 0 for an extracting BucketDeployment key"
-grep -q 'which does not set extract: false' "${OUT_FILE}" \
+grep -q 'which does not set extract to a literal false' "${OUT_FILE}" \
   || fail "the refusal does not explain that the deployment extracts its sources"
 grep -q 'Server listening on' "${OUT_FILE}" && fail "an extracting BucketDeployment key was served"
 assert_no_orphans "the extracting BucketDeployment refusal"

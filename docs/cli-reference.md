@@ -1989,8 +1989,10 @@ A `BucketDeployment` with `extract: false` that copies the bundle into a bucket
 of the app's own also works: a `Key` of `Fn.select(i, deployment.objectKeys)`
 resolves to that deployment's i-th source asset (`s3deploy.Source.asset(...)`),
 since the deployment copies the zip unchanged. The same selection on a
-deployment that extracts its sources (`extract` unset or `true`) is refused —
-no object holds the zip, so Lambda could not read it either. Deployed code is
+deployment that extracts its sources (`extract` unset or `true`), or that sets
+a `destinationKeyPrefix` (the zip lands under the prefix while `objectKeys`
+omits it), is refused — no object has that key, so Lambda could not read it
+either. Deployed code is
 never downloaded: an `S3Object` that matches no local asset fails naming the
 bucket and key, any other non-literal `Key` fails showing it, and a
 `CodeConfig` key other than `S3Object` fails naming the key.

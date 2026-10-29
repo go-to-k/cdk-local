@@ -299,7 +299,7 @@ describe('cdkl start-web-function', () => {
     expect(await runToFailure(['App:Ep'], assembly({ v2Key, resources: upload(undefined) }))).toBe(1);
     expect(h.pullImage).not.toHaveBeenCalled();
     expect(h.runDetached).not.toHaveBeenCalled();
-    expect(lines.join('\n')).toMatch(/BucketDeployment Upload, which does not set extract: false/);
+    expect(lines.join('\n')).toMatch(/BucketDeployment Upload, which does not set extract to a literal false/);
   });
 
   it('hands the readiness wait the picked port, the timeout and the label', async () => {
