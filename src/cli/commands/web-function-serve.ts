@@ -227,6 +227,8 @@ export class WebFunctionServe {
       recent: this.recent,
       label: plan.label,
     });
+    // A teardown during the readiness wait is removing this container.
+    if (this.tornDown) return undefined;
     return { host, port: hostPort };
   }
 

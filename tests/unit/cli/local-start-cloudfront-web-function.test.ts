@@ -60,7 +60,7 @@ vi.mock('../../../src/local/web-function-artifact.js', async (importActual) => {
   };
 });
 
-const { bootWebFunctionOrigins } = await import(
+const { bootWebFunctionOrigins, drainWebFunctionServes } = await import(
   '../../../src/cli/commands/local-start-cloudfront.js'
 );
 const { WebFunctionServe, prepareWebFunctionServe } = await import(
@@ -297,9 +297,14 @@ describe('bootWebFunctionOrigins — start-up signal seams', () => {
     });
     let exit!: (code: number) => void;
     h.exited = new Promise((r) => (exit = r));
-    await bootWebFunctionOrigins(distribution([web('a', 'Ep')]), [stackWith()], bootOpts);
+    const first = await bootWebFunctionOrigins(
+      distribution([web('a', 'Ep')]),
+      [stackWith()],
+      bootOpts
+    );
     exit(3);
     await tick();
+    await first.serves[0]!.teardown();
     expect(warns.some((w) => w.includes('exited (exit code 3)') && w.includes('return 502'))).toBe(
       true
     );
@@ -355,6 +360,34 @@ describe('WebFunctionServe — teardown racing start()', () => {
     g.open();
     expect(await started).toBeUndefined();
     expect(h.runDetached).not.toHaveBeenCalled();
+  });
+
+  it('during the readiness wait: start() resolves no address once teardown began', async () => {
+    let ready!: () => void;
+    h.ready.mockImplementationOnce(() => new Promise<undefined>((r) => (ready = () => r(undefined))));
+    const serve = serveOf();
+    const started = serve.start();
+    for (let i = 0; i < 100 && h.ready.mock.calls.length === 0; i++) await tick();
+    const teardown = serve.teardown();
+    ready();
+    await teardown;
+    expect(await started).toBeUndefined();
+    expect(h.removeContainer).toHaveBeenCalledWith('cid-web');
+  });
+
+  it('drainWebFunctionServes also tears down a serve appended while draining', async () => {
+    const a = serveOf();
+    const b = serveOf();
+    const serves = [a];
+    const orig = a.teardown.bind(a);
+    vi.spyOn(a, 'teardown').mockImplementation(async () => {
+      serves.push(b);
+      await orig();
+    });
+    const bTeardown = vi.spyOn(b, 'teardown');
+    await drainWebFunctionServes(serves);
+    expect(bTeardown).toHaveBeenCalledTimes(1);
+    expect(b.tornDown).toBe(true);
   });
 
   it('while docker run is in flight: the container it returns is removed', async () => {

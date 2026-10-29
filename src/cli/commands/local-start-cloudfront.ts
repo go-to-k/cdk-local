@@ -501,6 +501,20 @@ export async function bootLambdaUrlOrigins(
   return { invokers, runners };
 }
 
+/**
+ * Tear down every serve in `serves`, including any appended while the
+ * teardowns run (a boot loop that went on to the next endpoint), so a start-up
+ * signal leaves no web function container behind.
+ */
+export async function drainWebFunctionServes(serves: WebFunctionServe[]): Promise<void> {
+  let done = 0;
+  while (done < serves.length) {
+    const batch = serves.slice(done);
+    done = serves.length;
+    await Promise.all(batch.map((s) => s.teardown().catch(() => undefined)));
+  }
+}
+
 /** CloudFront's readiness deadline for a Web Function endpoint origin's server, in ms. */
 const WEB_FUNCTION_ORIGIN_READY_TIMEOUT_MS = 60_000;
 
@@ -1016,7 +1030,7 @@ async function localStartCloudFrontCommand(
     if (bootAborted) return;
     bootAborted = true;
     logger.info(`Received ${signal} during start-up; removing the web function containers...`);
-    void Promise.all(webFunctionServes.map((s) => s.teardown().catch(() => undefined))).then(() =>
+    void drainWebFunctionServes(webFunctionServes).then(() =>
       process.exit(signal === 'SIGINT' ? 130 : 0)
     );
   };

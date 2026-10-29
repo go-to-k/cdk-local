@@ -287,7 +287,8 @@ web_orphans() { docker ps -a --filter name=cdkl-webfn- --format '{{.Names}}'; }
 echo "==> WebDist: Docker available + ${WEB_IMAGE} (linux/arm64) present"
 docker version --format '{{.Server.Version}}' >/dev/null || fail "Docker is required for the WebDist phase"
 docker pull --platform linux/arm64 "${WEB_IMAGE}" >/dev/null || fail "docker pull ${WEB_IMAGE} failed"
-[[ -z "$(web_orphans)" ]] || fail "web function container(s) already running before WebDist: $(web_orphans)"
+ORPH=$(web_orphans) || fail "docker ps failed"
+[[ -z "${ORPH}" ]] || fail "web function container(s) already running before WebDist: ${ORPH}"
 if lsof -ti "tcp:${WEB_PORT}" >/dev/null 2>&1; then
   lsof -ti "tcp:${WEB_PORT}" | xargs -r kill -9 || true
 fi
@@ -360,7 +361,8 @@ done
 kill -0 "${WEB_PID}" 2>/dev/null && web_fail "WebDist server did not exit on SIGTERM"
 WEB_PID=""
 sleep 1
-[[ -z "$(web_orphans)" ]] || web_fail "leftover web function container(s) after SIGTERM: $(web_orphans)"
+ORPH=$(web_orphans) || web_fail "docker ps failed"
+[[ -z "${ORPH}" ]] || web_fail "leftover web function container(s) after SIGTERM: ${ORPH}"
 if lsof -ti "tcp:${WEB_PORT}" >/dev/null 2>&1; then web_fail "port ${WEB_PORT} still bound after shutdown"; fi
 
 # 8b. A signal DURING start-up (the server container is starting, not yet
@@ -390,7 +392,8 @@ WEB_PID=""
 grep -q "during start-up; removing the web function containers" "${WEB_OUT}" \
   || web_fail "the start-up signal handler did not run"
 sleep 1
-[[ -z "$(web_orphans)" ]] || web_fail "leftover web function container(s) after a start-up SIGTERM: $(web_orphans)"
+ORPH=$(web_orphans) || web_fail "docker ps failed"
+[[ -z "${ORPH}" ]] || web_fail "leftover web function container(s) after a start-up SIGTERM: ${ORPH}"
 rm -f "${WEB_OUT}"
 
 echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), a --watch reload, the --cache-origin-without--from-cfn-stack no-op WARN, and Lambda Web Function endpoint origins (go-to-k/cdkd#5516: weighted revision, forwarded origin request, viewer-response + CORS over it, an extract: false BucketDeployment revision, containers removed on SIGTERM)."
