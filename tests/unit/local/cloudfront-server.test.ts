@@ -474,6 +474,7 @@ describe('startCloudFrontServer — ResponseHeadersPolicy security / custom / re
       viewerResponse: originHeadersFn,
       responseHeaders: {
         remove: ['x-powered-by', 'x-replaced'],
+        skipped: [],
         set: [
           { name: 'strict-transport-security', value: 'max-age=63072000; includeSubDomains', override: true },
           { name: 'x-frame-options', value: 'DENY', override: true },

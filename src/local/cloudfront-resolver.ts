@@ -390,7 +390,14 @@ function resolveBehavior(
     template,
     behavior['ResponseHeadersPolicyId']
   );
-  if (responseHeaders) resolved.responseHeaders = responseHeaders;
+  if (responseHeaders) {
+    resolved.responseHeaders = responseHeaders;
+    if (responseHeaders.skipped.length > 0) {
+      getLogger().warn(
+        `Cache behavior ${displayIdent(pathPattern ?? 'default')} of distribution ${displayIdent(distLogicalId)}: response headers policy header(s) ${responseHeaders.skipped.map((h) => displayIdent(h)).join(', ')} have a value that is not a literal in the template (a CDK token); cdk-local does not send them.`
+      );
+    }
+  }
   if (typeof behavior['ViewerProtocolPolicy'] === 'string') {
     resolved.viewerProtocolPolicy = behavior['ViewerProtocolPolicy'] as string;
   }

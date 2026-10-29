@@ -550,6 +550,7 @@ describe('resolveCloudFrontDistribution — ResponseHeadersPolicy CORS', () => {
     expect(resolved.behaviors[0]!.cors).toBeDefined();
     expect(resolved.behaviors[0]!.responseHeaders).toEqual({
       remove: [],
+      skipped: [],
       set: [{ name: 'x-frame-options', value: 'DENY', override: true }],
     });
   });

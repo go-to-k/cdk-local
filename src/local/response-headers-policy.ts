@@ -32,6 +32,11 @@ export interface ResponseHeadersPolicyHeaders {
   /** Header names removed from the response before {@link set} is applied. */
   remove: string[];
   set: PolicyHeader[];
+  /**
+   * Headers left out because their value is not a literal in the template (a
+   * CDK token such as `Fn::GetAtt` / `Fn::Join`), so the caller can warn.
+   */
+  skipped: string[];
 }
 
 /** Minimal response surface the policy writes to (Node's `ServerResponse` satisfies it). */
@@ -61,13 +66,14 @@ export function resolveResponseHeadersPolicyHeaders(
   const rhpConfig = asRecord((rhpResource.Properties ?? {})['ResponseHeadersPolicyConfig']);
   if (!rhpConfig) return undefined;
 
+  const skipped: string[] = [];
   const set = [
-    ...parseSecurityHeaders(asRecord(rhpConfig['SecurityHeadersConfig'])),
-    ...parseCustomHeaders(asRecord(rhpConfig['CustomHeadersConfig'])),
+    ...parseSecurityHeaders(asRecord(rhpConfig['SecurityHeadersConfig']), skipped),
+    ...parseCustomHeaders(asRecord(rhpConfig['CustomHeadersConfig']), skipped),
   ];
-  const remove = parseRemoveHeaders(asRecord(rhpConfig['RemoveHeadersConfig']));
-  if (set.length === 0 && remove.length === 0) return undefined;
-  return { remove, set };
+  const remove = parseRemoveHeaders(asRecord(rhpConfig['RemoveHeadersConfig']), skipped);
+  if (set.length === 0 && remove.length === 0 && skipped.length === 0) return undefined;
+  return { remove, set, skipped };
 }
 
 /**
@@ -92,7 +98,10 @@ export function applyResponseHeadersPolicyHeaders(
   }
 }
 
-function parseSecurityHeaders(config: Record<string, unknown> | undefined): PolicyHeader[] {
+function parseSecurityHeaders(
+  config: Record<string, unknown> | undefined,
+  skipped: string[]
+): PolicyHeader[] {
   if (!config) return [];
   const out: PolicyHeader[] = [];
 
@@ -103,6 +112,8 @@ function parseSecurityHeaders(config: Record<string, unknown> | undefined): Poli
     if (toBool(hsts['IncludeSubdomains'])) value += '; includeSubDomains';
     if (toBool(hsts['Preload'])) value += '; preload';
     out.push({ name: 'strict-transport-security', value, override: toBool(hsts['Override']) });
+  } else if (hsts) {
+    skipped.push('strict-transport-security');
   }
 
   const csp = asRecord(config['ContentSecurityPolicy']);
@@ -112,6 +123,8 @@ function parseSecurityHeaders(config: Record<string, unknown> | undefined): Poli
       value: csp['ContentSecurityPolicy'],
       override: toBool(csp['Override']),
     });
+  } else if (csp) {
+    skipped.push('content-security-policy');
   }
 
   const cto = asRecord(config['ContentTypeOptions']);
@@ -130,6 +143,8 @@ function parseSecurityHeaders(config: Record<string, unknown> | undefined): Poli
       value: frame['FrameOption'],
       override: toBool(frame['Override']),
     });
+  } else if (frame) {
+    skipped.push('x-frame-options');
   }
 
   const referrer = asRecord(config['ReferrerPolicy']);
@@ -139,6 +154,8 @@ function parseSecurityHeaders(config: Record<string, unknown> | undefined): Poli
       value: referrer['ReferrerPolicy'],
       override: toBool(referrer['Override']),
     });
+  } else if (referrer) {
+    skipped.push('referrer-policy');
   }
 
   const xss = asRecord(config['XSSProtection']);
@@ -156,13 +173,24 @@ function parseSecurityHeaders(config: Record<string, unknown> | undefined): Poli
   return out;
 }
 
-function parseCustomHeaders(config: Record<string, unknown> | undefined): PolicyHeader[] {
+function parseCustomHeaders(
+  config: Record<string, unknown> | undefined,
+  skipped: string[]
+): PolicyHeader[] {
   const items = config?.['Items'];
   if (!Array.isArray(items)) return [];
   const out: PolicyHeader[] = [];
   for (const item of items) {
     const h = asRecord(item);
-    if (!h || typeof h['Header'] !== 'string' || h['Header'] === '') continue;
+    if (!h || typeof h['Header'] !== 'string' || h['Header'] === '') {
+      if (h && h['Header'] !== undefined) skipped.push('(unresolved custom header name)');
+      continue;
+    }
+    // An absent Value is a valueless header; a non-literal one cannot be resolved.
+    if (h['Value'] !== undefined && typeof h['Value'] !== 'string') {
+      skipped.push(h['Header'].toLowerCase());
+      continue;
+    }
     out.push({
       name: h['Header'].toLowerCase(),
       value: typeof h['Value'] === 'string' ? h['Value'] : '',
@@ -172,7 +200,10 @@ function parseCustomHeaders(config: Record<string, unknown> | undefined): Policy
   return out;
 }
 
-function parseRemoveHeaders(config: Record<string, unknown> | undefined): string[] {
+function parseRemoveHeaders(
+  config: Record<string, unknown> | undefined,
+  skipped: string[]
+): string[] {
   const items = config?.['Items'];
   if (!Array.isArray(items)) return [];
   const out: string[] = [];
@@ -180,6 +211,8 @@ function parseRemoveHeaders(config: Record<string, unknown> | undefined): string
     const h = asRecord(item);
     if (h && typeof h['Header'] === 'string' && h['Header'] !== '') {
       out.push(h['Header'].toLowerCase());
+    } else if (h && h['Header'] !== undefined) {
+      skipped.push('(unresolved remove header name)');
     }
   }
   return out;

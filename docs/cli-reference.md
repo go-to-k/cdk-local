@@ -1863,11 +1863,14 @@ its `DistributionConfig`:
   policy's `SecurityHeadersConfig` (`Strict-Transport-Security`,
   `Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`,
   `Referrer-Policy`, `X-XSS-Protection`), `CustomHeadersConfig` and
-  `RemoveHeadersConfig` are applied to every response sent to the viewer,
-  after the viewer-response function and Lambda@Edge stages, as CloudFront
-  does: the remove list first, then each header honoring its `Override`
-  (`true` replaces the origin's header, `false` adds it only when the origin
-  sent none). `Strict-Transport-Security` is sent over plain HTTP too, so a
+  `RemoveHeadersConfig` are applied to an origin response and to a
+  Lambda@Edge request-stage generated response (the same responses that get
+  the CORS headers), after the viewer-response function and Lambda@Edge
+  response stages: the remove list first, then each header honoring its
+  `Override` (`true` replaces the origin's header, `false` adds it only when
+  the origin sent none). A viewer-request CloudFront Function's generated
+  response and the CORS preflight `204` do not get them. A header whose value
+  is a CDK token (not a literal in the template) is skipped with a warning. `Strict-Transport-Security` is sent over plain HTTP too, so a
   test can assert on it (browsers ignore it there).
   `ServerTimingHeadersConfig` is not applied: its metrics describe the
   CloudFront edge and cache, which do not exist locally. An AWS-managed

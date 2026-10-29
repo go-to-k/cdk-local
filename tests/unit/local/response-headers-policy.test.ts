@@ -39,6 +39,7 @@ describe('resolveResponseHeadersPolicyHeaders', () => {
     );
     expect(policy).toEqual({
       remove: [],
+      skipped: [],
       set: [
         {
           name: 'strict-transport-security',
@@ -104,9 +105,39 @@ describe('resolveResponseHeadersPolicyHeaders', () => {
     );
     expect(policy).toEqual({
       remove: ['x-powered-by', 'vary'],
+      skipped: [],
       set: [
         { name: 'x-custom', value: 'v', override: true },
         { name: 'x-empty', value: '', override: false },
+      ],
+    });
+  });
+
+  it('skips a header whose value is a CDK token (not a literal), recording it', () => {
+    const policy = resolveResponseHeadersPolicyHeaders(
+      template({
+        SecurityHeadersConfig: {
+          ContentSecurityPolicy: {
+            ContentSecurityPolicy: { 'Fn::Join': ['', ["connect-src ", { Ref: 'Api' }]] },
+            Override: true,
+          },
+          FrameOptions: { FrameOption: 'DENY', Override: true },
+        },
+        CustomHeadersConfig: {
+          Items: [
+            { Header: 'X-Api', Value: { 'Fn::GetAtt': ['Api', 'Url'] }, Override: true },
+            { Header: 'X-Static', Value: 'v', Override: true },
+          ],
+        },
+      }),
+      { Ref: 'Rhp' }
+    );
+    expect(policy).toEqual({
+      remove: [],
+      skipped: ['content-security-policy', 'x-api'],
+      set: [
+        { name: 'x-frame-options', value: 'DENY', override: true },
+        { name: 'x-static', value: 'v', override: true },
       ],
     });
   });
@@ -151,6 +182,7 @@ describe('applyResponseHeadersPolicyHeaders', () => {
       res,
       {
         remove: ['x-gone', 'x-re'],
+        skipped: [],
         set: [
           { name: 'x-a', value: 'policy', override: true },
           { name: 'x-b', value: 'policy', override: false },
