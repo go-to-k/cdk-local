@@ -166,7 +166,9 @@ One distribution per invocation.
   matching `OPTIONS` preflight is answered `204` + CORS headers before the origin
   is hit, and a real response gets them added LAST (`OriginOverride: false` is
   NOT distinguished). Origin matching is literal-or-`*`; an AWS-managed policy
-  id is not fetchable, so its CORS is skipped. Non-CORS sections are not applied.
+  id is not fetchable, so its CORS is skipped. The policy's security / custom /
+  remove headers are applied to every viewer response (remove first, then each
+  header honoring `Override`); `ServerTimingHeadersConfig` is not.
 - **Lambda Function URL origins** resolve `DomainName` -> `AWS::Lambda::Url` ->
   the backing function in a warm RIE container (payload v2.0 event); a pure-S3
   distribution needs no Docker. **AWS_IAM auth is NOT enforced; streaming is

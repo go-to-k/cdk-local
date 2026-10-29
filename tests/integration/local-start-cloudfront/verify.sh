@@ -199,6 +199,17 @@ CORS_HEADERS=$(curl -fsS -D - -o /dev/null -H 'Origin: http://127.0.0.1:5050' "$
   || fail "GET / with Origin failed"
 echo "${CORS_HEADERS}" | grep -qi "access-control-allow-origin: http://127.0.0.1:5050" \
   || fail "actual GET response missing Access-Control-Allow-Origin"
+# go-to-k/cdk-local#843: the rest of the ResponseHeadersPolicy over an S3 response.
+echo "${CORS_HEADERS}" | grep -qi "strict-transport-security: max-age=63072000; includeSubDomains" \
+  || fail "the ResponseHeadersPolicy Strict-Transport-Security header is missing"
+echo "${CORS_HEADERS}" | grep -qi "x-content-type-options: nosniff" \
+  || fail "the ResponseHeadersPolicy X-Content-Type-Options header is missing"
+echo "${CORS_HEADERS}" | grep -qi "x-frame-options: DENY" \
+  || fail "the ResponseHeadersPolicy X-Frame-Options header is missing"
+echo "${CORS_HEADERS}" | grep -qi "referrer-policy: no-referrer" \
+  || fail "the ResponseHeadersPolicy Referrer-Policy header is missing"
+echo "${CORS_HEADERS}" | grep -qi "x-cdkl-policy: applied" \
+  || fail "the ResponseHeadersPolicy custom header is missing"
 
 echo "==> OPTIONS / preflight from a disallowed origin (no ACAO smuggled through)"
 curl -s -o /dev/null -D /tmp/cdkl-cf-bad.$$ \
@@ -336,6 +347,19 @@ grep -qi "x-cdkl-fixture: start-cloudfront" "${WEB_HEADERS_FILE}" \
   || web_fail "the viewer-response function did not run over the Web Function response"
 grep -qi "access-control-allow-origin: http://127.0.0.1:5050" "${WEB_HEADERS_FILE}" \
   || web_fail "the ResponseHeadersPolicy CORS header is missing on the Web Function response"
+# go-to-k/cdk-local#843: Override true replaces the origin's header, Override
+# false keeps it, and the remove list drops one.
+grep -qi "x-frame-options: DENY" "${WEB_HEADERS_FILE}" \
+  || web_fail "X-Frame-Options (Override: true) did not replace the origin's SAMEORIGIN"
+grep -qi "referrer-policy: origin" "${WEB_HEADERS_FILE}" \
+  || web_fail "Referrer-Policy (Override: false) did not keep the origin's value"
+grep -qi "strict-transport-security: max-age=63072000; includeSubDomains" "${WEB_HEADERS_FILE}" \
+  || web_fail "the ResponseHeadersPolicy Strict-Transport-Security header is missing on the Web Function response"
+grep -qi "x-cdkl-policy: applied" "${WEB_HEADERS_FILE}" \
+  || web_fail "the ResponseHeadersPolicy custom header is missing on the Web Function response"
+if grep -qi "x-powered-by" "${WEB_HEADERS_FILE}"; then
+  web_fail "X-Powered-By was not removed by the ResponseHeadersPolicy"
+fi
 grep -qi "set-cookie: web-session=1" "${WEB_HEADERS_FILE}" \
   || web_fail "the origin's Set-Cookie did not reach the viewer"
 rm -f "${WEB_HEADERS_FILE}"
@@ -396,4 +420,4 @@ ORPH=$(web_orphans) || web_fail "docker ps failed"
 [[ -z "${ORPH}" ]] || web_fail "leftover web function container(s) after a start-up SIGTERM: ${ORPH}"
 rm -f "${WEB_OUT}"
 
-echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), a --watch reload, the --cache-origin-without--from-cfn-stack no-op WARN, and Lambda Web Function endpoint origins (go-to-k/cdkd#5516: weighted revision, forwarded origin request, viewer-response + CORS over it, an extract: false BucketDeployment revision, containers removed on SIGTERM)."
+echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response) and security / custom / remove headers (go-to-k/cdk-local#843), a --watch reload, the --cache-origin-without--from-cfn-stack no-op WARN, and Lambda Web Function endpoint origins (go-to-k/cdkd#5516: weighted revision, forwarded origin request, viewer-response + CORS over it, an extract: false BucketDeployment revision, containers removed on SIGTERM)."

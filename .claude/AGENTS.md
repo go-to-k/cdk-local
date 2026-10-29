@@ -53,7 +53,8 @@ AWS managed services.
   reads), Lambda@Edge (all four events), S3 origins (local
   BucketDeployment asset, or deployed-bucket read-through under
   `--from-cfn-stack`), Lambda Function URL / Web Function
-  endpoint origins, per-behavior ResponseHeadersPolicy CORS; `--watch` /
+  endpoint origins, per-behavior ResponseHeadersPolicy (CORS, security / custom / remove
+  headers); `--watch` /
   `--tls` / `--origin` / `--kvs-file` / `--cache-origin`.
 - `cdkl studio` — the interactive web console over the same target
   enumeration: a control plane spawning the SAME invoke / serve runners

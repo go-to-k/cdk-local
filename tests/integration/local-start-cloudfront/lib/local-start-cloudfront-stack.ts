@@ -35,6 +35,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     `Authorization`) so the integ can assert `cdkl start-cloudfront`
  *     reproduces CloudFront's edge CORS: an OPTIONS preflight answered with
  *     `Access-Control-Allow-Origin` + a `GET` actual response carrying it.
+ *     The same policy carries security, custom and remove headers, applied
+ *     over every response (go-to-k/cdk-local#843).
  *   - A second distribution, `WebDist`, in front of a Lambda Web Function
  *     (go-to-k/cdkd#5516): its default behavior is an `HttpOrigin` on a
  *     `WebFunctionEndpoint`'s `DomainName` with a lambda-type OAC, the same
@@ -96,6 +98,26 @@ export class LocalStartCloudFrontStack extends cdk.Stack {
         accessControlAllowOrigins: ['http://127.0.0.1:5050'],
         originOverride: true,
       },
+      // go-to-k/cdk-local#843: the rest of the policy, applied over every
+      // response. The Web Function origin sends X-Frame-Options (replaced),
+      // Referrer-Policy (kept) and X-Powered-By (removed).
+      securityHeadersBehavior: {
+        strictTransportSecurity: {
+          accessControlMaxAge: cdk.Duration.days(730),
+          includeSubdomains: true,
+          override: true,
+        },
+        contentTypeOptions: { override: true },
+        frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
+        referrerPolicy: {
+          referrerPolicy: cloudfront.HeadersReferrerPolicy.NO_REFERRER,
+          override: false,
+        },
+      },
+      customHeadersBehavior: {
+        customHeaders: [{ header: 'X-Cdkl-Policy', value: 'applied', override: true }],
+      },
+      removeHeaders: ['X-Powered-By'],
     });
 
     // A KeyValueStore-backed viewer-request function on a /kv/* behavior: it

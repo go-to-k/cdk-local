@@ -1754,7 +1754,7 @@ Three origin kinds are served:
   exactly as [`cdkl start-web-function`](#cdkl-start-web-function-serve-a-lambda-web-function-locally)
   runs it (its code from cdk.out, its `ServiceConfig` environment) and the
   origin request is forwarded to it over HTTP, so the distribution's own
-  behaviors — response headers policy CORS, path behaviors, CloudFront
+  behaviors — the response headers policy, path behaviors, CloudFront
   Functions, Lambda@Edge — are testable in front of the web function.
 
 A pure-S3 distribution needs no Docker; a Function URL origin boots one
@@ -1858,9 +1858,20 @@ its `DistributionConfig`:
   CORS is skipped. The CORS headers are always applied last, so
   `CorsConfig.OriginOverride: false` is not distinguished from `true`
   (an origin that emits its own `Access-Control-Allow-Origin` is still
-  overridden locally). The policy's non-CORS sections
-  (`SecurityHeadersConfig` / `CustomHeadersConfig` / `RemoveHeadersConfig` /
-  `ServerTimingHeadersConfig`) are not applied.
+  overridden locally).
+- **Security, custom and remove headers (ResponseHeadersPolicy)** — the same
+  policy's `SecurityHeadersConfig` (`Strict-Transport-Security`,
+  `Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy`, `X-XSS-Protection`), `CustomHeadersConfig` and
+  `RemoveHeadersConfig` are applied to every response sent to the viewer,
+  after the viewer-response function and Lambda@Edge stages, as CloudFront
+  does: the remove list first, then each header honoring its `Override`
+  (`true` replaces the origin's header, `false` adds it only when the origin
+  sent none). `Strict-Transport-Security` is sent over plain HTTP too, so a
+  test can assert on it (browsers ignore it there).
+  `ServerTimingHeadersConfig` is not applied: its metrics describe the
+  CloudFront edge and cache, which do not exist locally. An AWS-managed
+  policy id is not fetchable, so none of its headers are applied.
 - **S3 origin → local content** — the behavior's `TargetOriginId` → the
   origin's bucket (`{Fn::GetAtt: [<bucket>, RegionalDomainName]}`) → the
   `Custom::CDKBucketDeployment` custom resource whose

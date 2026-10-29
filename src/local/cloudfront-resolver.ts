@@ -19,6 +19,10 @@ import {
 } from './cloudfront-function-runtime.js';
 import type { ResolvedCustomErrorResponse } from './cloudfront-static-origin.js';
 import { resolveResponseHeadersPolicyCors, type CorsConfig } from './cors-handler.js';
+import {
+  resolveResponseHeadersPolicyHeaders,
+  type ResponseHeadersPolicyHeaders,
+} from './response-headers-policy.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { WEB_FUNCTION_ENDPOINT_TYPE } from './web-function-resolver.js';
 
@@ -93,6 +97,12 @@ export interface ResolvedBehavior {
    * not fetchable) or a policy with no CORS block.
    */
   cors?: CorsConfig;
+  /**
+   * The same policy's security, custom and remove headers, applied to every
+   * viewer response. Absent for an AWS-managed policy id or a policy that
+   * declares none of them.
+   */
+  responseHeaders?: ResponseHeadersPolicyHeaders;
 }
 
 /** A resolved origin: an S3 origin, a Lambda Function URL / Web Function endpoint origin, or a custom origin. */
@@ -376,6 +386,11 @@ function resolveBehavior(
   // actual-response ACAO). Per behavior, so CacheBehaviors[] keep their own.
   const cors = resolveResponseHeadersPolicyCors(template, behavior['ResponseHeadersPolicyId']);
   if (cors) resolved.cors = cors;
+  const responseHeaders = resolveResponseHeadersPolicyHeaders(
+    template,
+    behavior['ResponseHeadersPolicyId']
+  );
+  if (responseHeaders) resolved.responseHeaders = responseHeaders;
   if (typeof behavior['ViewerProtocolPolicy'] === 'string') {
     resolved.viewerProtocolPolicy = behavior['ViewerProtocolPolicy'] as string;
   }
