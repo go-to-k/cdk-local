@@ -175,11 +175,11 @@ a log line, and a served HTTP response body.
   **web-function-runner** (`planWebFunctionContainer`, the ONE per-kind switch;
   boot without `--rm`; HTTP readiness; exit watch). A new runtime or code source
   is a row / union member there, never a branch in the command.
-- **cli/commands/web-function-serve** — `WebFunctionServe`, the ONE boot ->
-  ready -> teardown sequence `start-web-function` and `start-cloudfront`'s
-  endpoint origins share. Its teardown may start at any point of `start()`: it
-  awaits an in-flight extraction / `docker run` so the container is still
-  removed, and `start()` then resolves `undefined`.
+- **`WebFunctionServe`** (`src/cli/commands/web-function-serve.ts`) — the ONE
+  boot -> ready -> teardown sequence `start-web-function` and
+  `start-cloudfront`'s endpoint origins share. Its teardown may start at any
+  point of `start()`: it awaits an in-flight extraction / `docker run` so the
+  container is still removed, and `start()` then resolves `undefined`.
 - **s3-object-asset** — a template's S3 object -> its cdk.out file asset,
   SHARED by web-function-artifact, cloudfront-resolver (BucketDeployment origin
   dirs) and microvm-image: `findFileAssetForObjectKey`, the BucketDeployment

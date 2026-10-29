@@ -1768,7 +1768,8 @@ point (see the Lambda@Edge resolution bullet below). A CloudFront Function's
 **KeyValueStore** reads (`cf.kvs().get(key)`) ARE reproduced — backed by the
 deployed store (`--from-cfn-stack`) or a local JSON map (`--kvs-file`); see the
 KeyValueStore resolution bullet below. A Function URL origin
-Lambda gets the **same container environment as a direct `cdkl invoke`**:
+Lambda (and a Web Function origin revision, as under `start-web-function`)
+gets the **same container environment as a direct `cdkl invoke`**:
 its declared `Environment.Variables` are injected, `--from-cfn-stack [name]`
 substitutes intrinsic env values against a deployed stack, and
 `--assume-role [arn]` injects the deployed execution role's STS credentials

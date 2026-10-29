@@ -45,7 +45,7 @@ when they pass conflicting flags.
 A registered flag reaches every state-backed path of the command it is
 passed to, exactly where `--from-cfn-stack` would: on `start-cloudfront` that
 is the deployed-S3 origin, KeyValueStore reads, and the Function URL origin /
-Lambda@Edge container environment; on `start-alb` it is the Lambda target
+Lambda@Edge / Web Function origin container environment; on `start-alb` it is the Lambda target
 groups as well as the ECS services. Your factory receives the full parsed
 options bag, so it can read its own companion flags (a bucket, a prefix)
 alongside the activating one.

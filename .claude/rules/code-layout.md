@@ -8,14 +8,14 @@ not break. Read before adding, moving or splitting a module.
 Commander command factories — one `createLocal*Command` per verb in
 `commands/local-<verb>.ts` — plus shared option helpers.
 
-- **`start-cloudfront`** bypasses the ECS/Docker `runEcsServiceEmulator` (no
-  Cloud Map): synth, resolve one distribution into an in-memory routing model,
-  serve in-process. Pure-local for an S3-origin distribution; a Function URL
-  origin boots ONE warm RIE container per backing function via
-  `createFrontDoorLambdaRunner`, at boot only — NOT rebuilt on reload. Under
-  `--from-cfn-stack`, `resolveDeployedS3Origins` promotes a source-less S3 origin
-  to a deployed-S3 read-through origin at boot; `annotateDeployedS3Origins`
-  re-annotates per `--watch` reload.
+- **`start-cloudfront`** skips `runEcsServiceEmulator`: synth, resolve one
+  distribution into an in-memory routing model, serve in-process. Pure-local
+  for an S3-origin distribution; a Function URL origin boots ONE warm RIE
+  container per function (`createFrontDoorLambdaRunner`), a Web Function
+  endpoint origin ONE `WebFunctionServe` per endpoint, at boot only — NOT
+  rebuilt on reload. `resolveDeployedS3Origins` (`--from-cfn-stack`) promotes a
+  source-less S3 origin to deployed-S3 at boot; `annotateDeployedS3Origins`
+  re-annotates per reload.
 - **A target's stack is chosen by ONE rule**, `selectTargetStack` /
   `candidateTargetStack` (`stack-matcher.ts`) over `stackForConstructPath`
   (`cdk-path.ts`): a path-form target's LONGEST display-path prefix, else
