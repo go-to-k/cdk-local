@@ -159,7 +159,10 @@ function parseSecurityHeaders(
   }
 
   const xss = asRecord(config['XSSProtection']);
-  if (xss && xss['Protection'] !== undefined) {
+  const reportUri = xss?.['ReportUri'];
+  if (xss && reportUri !== undefined && typeof reportUri !== 'string') {
+    skipped.push('x-xss-protection');
+  } else if (xss && xss['Protection'] !== undefined) {
     let value = toBool(xss['Protection']) ? '1' : '0';
     if (value === '1') {
       if (toBool(xss['ModeBlock'])) value += '; mode=block';

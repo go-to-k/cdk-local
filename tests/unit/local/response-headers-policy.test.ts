@@ -70,6 +70,15 @@ describe('resolveResponseHeadersPolicyHeaders', () => {
       { Ref: 'Rhp' }
     );
     expect(off?.set[0]?.value).toBe('0');
+    const tokenReport = resolveResponseHeadersPolicyHeaders(
+      template({
+        SecurityHeadersConfig: {
+          XSSProtection: { Protection: true, ReportUri: { Ref: 'Uri' }, Override: true },
+        },
+      }),
+      { Ref: 'Rhp' }
+    );
+    expect(tokenReport).toEqual({ remove: [], set: [], skipped: ['x-xss-protection'] });
   });
 
   it('accepts string-typed booleans and numbers', () => {

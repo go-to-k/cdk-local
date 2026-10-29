@@ -394,7 +394,7 @@ function resolveBehavior(
     resolved.responseHeaders = responseHeaders;
     if (responseHeaders.skipped.length > 0) {
       getLogger().warn(
-        `Cache behavior ${displayIdent(pathPattern ?? 'default')} of distribution ${displayIdent(distLogicalId)}: response headers policy header(s) ${responseHeaders.skipped.map((h) => displayIdent(h)).join(', ')} have a value that is not a literal in the template (a CDK token); cdk-local does not send them.`
+        `Cache behavior ${displayIdent(pathPattern ?? 'default')} of distribution ${displayIdent(distLogicalId)}: response headers policy entr(y/ies) ${responseHeaders.skipped.map((h) => displayIdent(h)).join(', ')} are not literals in the template (a CDK token); cdk-local does not apply them (the header is neither sent nor removed).`
       );
     }
   }
