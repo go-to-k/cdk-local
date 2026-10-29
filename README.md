@@ -176,7 +176,7 @@ Three boundaries: the Docker daemon pulls images through its own egress (configu
 
 ## Environment variables — `--env-vars`
 
-Every command except `start-cloudfront` (whose CloudFront Functions and Lambda@Edge have no env vars) accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
+Every command except `start-cloudfront` (whose CloudFront Functions and Lambda@Edge have no env vars, and whose Function URL / Web Function origins take their environment from the template as-is) accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
 
 ```bash
 cdkl invoke --env-vars ./env.json
