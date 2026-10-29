@@ -8,8 +8,9 @@ import { formatAuthority } from '../utils/url-authority.js';
  * running revision server (booted by the command, the way `start-web-function`
  * runs it). A web function is a plain HTTP server, so the origin request is the
  * viewer request after the edge stages: same method, path, query string, body
- * and headers, minus the hop-by-hop ones, with `Host` naming the origin and the
- * client address appended to `X-Forwarded-For`, as CloudFront does.
+ * and headers, minus the hop-by-hop ones, with `Host` set to the local server's
+ * address and the client address appended to `X-Forwarded-For`. The origin
+ * request policy, origin custom headers and `OriginPath` are not applied.
  *
  * The response is buffered — the viewer-response stages run over it — and an
  * origin that cannot be reached answers 502, one that does not answer within
@@ -103,7 +104,7 @@ export function serveWebFunctionOrigin(args: {
 /**
  * The headers the origin request carries: the viewer's, without the hop-by-hop
  * set (and `content-length`, re-derived from the buffered body), `Host`
- * naming the origin, and the client address appended to `X-Forwarded-For`.
+ * set to the server's address, and the client address appended to `X-Forwarded-For`.
  * Exported for unit testing.
  */
 export function buildOriginRequestHeaders(

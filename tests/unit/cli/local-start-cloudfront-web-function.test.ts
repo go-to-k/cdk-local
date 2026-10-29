@@ -19,12 +19,19 @@ const h = vi.hoisted(() => ({
   ready: vi.fn(async (_args: Record<string, unknown>) => undefined),
   ports: [40123, 40124],
   tmpDirs: [] as string[],
+  /** When set, artifact extraction / pickFreePort wait on it (a teardown-race seam). */
+  artifactGate: undefined as Promise<void> | undefined,
+  portGate: undefined as Promise<void> | undefined,
+  exited: undefined as Promise<number | undefined> | undefined,
 }));
 
 vi.mock('../../../src/local/docker-runner.js', async (importActual) => ({
   ...(await importActual<object>()),
   ensureDockerAvailable: h.ensureDocker,
-  pickFreePort: vi.fn(async () => h.ports.shift() ?? 40199),
+  pickFreePort: vi.fn(async () => {
+    if (h.portGate) await h.portGate;
+    return h.ports.shift() ?? 40199;
+  }),
   pullImage: h.pullImage,
   runDetached: h.runDetached,
   streamLogs: vi.fn(() => () => undefined),
@@ -34,7 +41,7 @@ vi.mock('../../../src/local/web-function-runner.js', async (importActual) => ({
   ...(await importActual<object>()),
   waitForWebFunctionReady: h.ready,
   watchContainerExit: vi.fn(() => ({
-    exited: new Promise<number | undefined>(() => undefined),
+    exited: h.exited ?? new Promise<number | undefined>(() => undefined),
     stop: () => undefined,
   })),
 }));
@@ -46,6 +53,7 @@ vi.mock('../../../src/local/web-function-artifact.js', async (importActual) => {
       async (...a: Parameters<typeof actual.resolveWebFunctionArtifact>) => {
         const art = await actual.resolveWebFunctionArtifact(...a);
         if (art.kind === 'zip' && art.tmpDir) h.tmpDirs.push(art.tmpDir);
+        if (h.artifactGate) await h.artifactGate;
         return art;
       }
     ),
@@ -55,6 +63,10 @@ vi.mock('../../../src/local/web-function-artifact.js', async (importActual) => {
 const { bootWebFunctionOrigins } = await import(
   '../../../src/cli/commands/local-start-cloudfront.js'
 );
+const { WebFunctionServe, prepareWebFunctionServe } = await import(
+  '../../../src/cli/commands/web-function-serve.js'
+);
+const { resolveWebFunctionTarget } = await import('../../../src/local/web-function-resolver.js');
 
 let outdir: string;
 let savedEnv: NodeJS.ProcessEnv;
@@ -162,7 +174,19 @@ beforeEach(() => {
   h.ensureDocker.mockReset().mockResolvedValue(undefined);
   h.ports = [40123, 40124];
   h.tmpDirs = [];
+  h.artifactGate = undefined;
+  h.portGate = undefined;
+  h.exited = undefined;
 });
+
+/** A gate the test opens by hand. */
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open!: () => void;
+  const promise = new Promise<void>((r) => (open = r));
+  return { promise, open };
+}
+
+const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
 
 afterEach(() => {
   process.env = savedEnv;
@@ -243,5 +267,109 @@ describe('bootWebFunctionOrigins', () => {
     expect((err as { code?: string }).code).toBe('LOCAL_START_CLOUDFRONT_ERROR');
     expect((err as Error).message).toContain('Missing');
     expect(h.runDetached).not.toHaveBeenCalled();
+  });
+});
+
+describe('bootWebFunctionOrigins — start-up signal seams', () => {
+  it('hands each serve to the sink before it starts, so a mid-boot teardown removes it', async () => {
+    const g = gate();
+    h.artifactGate = g.promise;
+    const sink: InstanceType<typeof WebFunctionServe>[] = [];
+    const boot = bootWebFunctionOrigins(distribution([web('a', 'Ep')]), [stackWith()], {
+      ...bootOpts,
+      sink,
+    }).catch((e: unknown) => e);
+    for (let i = 0; i < 100 && sink.length === 0; i++) await tick();
+    expect(sink).toHaveLength(1);
+    const teardown = sink[0]!.teardown();
+    g.open();
+    await teardown;
+    const err = await boot;
+    expect((err as { code?: string }).code).toBe('LOCAL_START_CLOUDFRONT_ERROR');
+    expect(h.runDetached).not.toHaveBeenCalled();
+    for (const dir of h.tmpDirs) expect(existsSync(dir)).toBe(false);
+  });
+
+  it('warns when a booted server exits on its own, but not after a teardown', async () => {
+    const warns: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
+      warns.push(a.map(String).join(' '));
+    });
+    let exit!: (code: number) => void;
+    h.exited = new Promise((r) => (exit = r));
+    await bootWebFunctionOrigins(distribution([web('a', 'Ep')]), [stackWith()], bootOpts);
+    exit(3);
+    await tick();
+    expect(warns.some((w) => w.includes('exited (exit code 3)') && w.includes('return 502'))).toBe(
+      true
+    );
+
+    warns.length = 0;
+    let exit2!: (code: number) => void;
+    h.exited = new Promise((r) => (exit2 = r));
+    const { serves } = await bootWebFunctionOrigins(
+      distribution([web('a', 'Ep')]),
+      [stackWith()],
+      bootOpts
+    );
+    await serves[0]!.teardown();
+    exit2(0);
+    await tick();
+    expect(warns.some((w) => w.includes('exited (exit code'))).toBe(false);
+  });
+});
+
+describe('WebFunctionServe — teardown racing start()', () => {
+  const serveOf = () => {
+    const stack = stackWith();
+    return new WebFunctionServe(
+      prepareWebFunctionServe(resolveWebFunctionTarget('App:Ep', [stack])),
+      { envOptions: {}, host: '127.0.0.1', port: 0, skipPull: false, timeoutMs: 1000 }
+    );
+  };
+
+  it('during the artifact extraction: no pull or run, the bundle is removed', async () => {
+    const g = gate();
+    h.artifactGate = g.promise;
+    const serve = serveOf();
+    const started = serve.start();
+    for (let i = 0; i < 100 && h.tmpDirs.length === 0; i++) await tick();
+    const teardown = serve.teardown();
+    g.open();
+    await teardown;
+    expect(await started).toBeUndefined();
+    expect(h.pullImage).not.toHaveBeenCalled();
+    expect(h.runDetached).not.toHaveBeenCalled();
+    expect(h.tmpDirs).toHaveLength(1);
+    expect(existsSync(h.tmpDirs[0]!)).toBe(false);
+  });
+
+  it('while picking the port: no docker run is issued', async () => {
+    const g = gate();
+    h.portGate = g.promise;
+    const serve = serveOf();
+    const started = serve.start();
+    for (let i = 0; i < 100 && h.pullImage.mock.calls.length === 0; i++) await tick();
+    await tick();
+    await serve.teardown();
+    g.open();
+    expect(await started).toBeUndefined();
+    expect(h.runDetached).not.toHaveBeenCalled();
+  });
+
+  it('while docker run is in flight: the container it returns is removed', async () => {
+    let finishRun!: (id: string) => void;
+    h.runDetached.mockImplementationOnce(() => new Promise<string>((r) => (finishRun = r)));
+    const serve = serveOf();
+    const started = serve.start();
+    for (let i = 0; i < 100 && h.runDetached.mock.calls.length === 0; i++) await tick();
+    const teardown = serve.teardown();
+    await tick();
+    expect(serve.waitingOnRun).toBe(true);
+    finishRun('cid-late');
+    await teardown;
+    expect(await started).toBeUndefined();
+    expect(h.removeContainer).toHaveBeenCalledWith('cid-late');
+    expect(h.ready).not.toHaveBeenCalled();
   });
 });

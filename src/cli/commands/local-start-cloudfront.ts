@@ -526,11 +526,16 @@ export async function bootWebFunctionOrigins(
     extraStateProviders?: ExtraStateProviders;
     /** Readiness deadline per server; default 60s. */
     timeoutMs?: number;
+    /**
+     * Receives each serve BEFORE it starts, so a caller's signal handler can
+     * tear down a boot still in progress (the container is not `--rm`).
+     */
+    sink?: WebFunctionServe[];
   }
 ): Promise<{ targets: Map<string, WebFunctionOriginTarget>; serves: WebFunctionServe[] }> {
   const logger = getLogger();
   const targets = new Map<string, WebFunctionOriginTarget>();
-  const serves: WebFunctionServe[] = [];
+  const serves: WebFunctionServe[] = opts.sink ?? [];
   const endpointLogicalIds = new Set<string>();
   for (const origin of distribution.origins.values()) {
     if (origin.kind === 'web-function') endpointLogicalIds.add(origin.endpointLogicalId);
@@ -999,6 +1004,33 @@ async function localStartCloudFrontCommand(
   // resolver so a Function URL origin Lambda gets its env vars + deployed
   // values + execution role, exactly like `cdkl invoke` (issue #380).
   const bootOpts = buildLambdaBootOptions(options, profileCredentials, extraStateProviders);
+
+  // A Web Function origin's server container is not `--rm` and its env holds
+  // the forwarded credentials, so a signal during start-up must remove the
+  // ones booted so far (and any `docker run` in flight) before exiting. Armed
+  // only when the distribution has such an origin; replaced by the serving
+  // shutdown handler below.
+  const webFunctionServes: WebFunctionServe[] = [];
+  let bootAborted = false;
+  const onBootSignal = (signal: 'SIGINT' | 'SIGTERM'): void => {
+    if (bootAborted) return;
+    bootAborted = true;
+    logger.info(`Received ${signal} during start-up; removing the web function containers...`);
+    void Promise.all(webFunctionServes.map((s) => s.teardown().catch(() => undefined))).then(() =>
+      process.exit(signal === 'SIGINT' ? 130 : 0)
+    );
+  };
+  const bootSigint = (): void => onBootSignal('SIGINT');
+  const bootSigterm = (): void => onBootSignal('SIGTERM');
+  const disarmBootSignals = (): void => {
+    process.off('SIGINT', bootSigint);
+    process.off('SIGTERM', bootSigterm);
+  };
+  if ([...initial.distribution.origins.values()].some((o) => o.kind === 'web-function')) {
+    process.on('SIGINT', bootSigint);
+    process.on('SIGTERM', bootSigterm);
+  }
+
   const { invokers: lambdaInvokers, runners: lambdaRunners } = await bootLambdaUrlOrigins(
     initial.distribution,
     initial.stacks,
@@ -1017,16 +1049,13 @@ async function localStartCloudFrontCommand(
   // would otherwise strand every booted Lambda container. Stop them all before
   // rethrowing.
   let server: StartedCloudFrontServer;
-  let webFunctionServes: WebFunctionServe[] = [];
   try {
     // Boot a server container per Lambda Web Function endpoint origin
     // (go-to-k/cdkd#5516), run as `start-web-function` runs it.
-    const webFunctions = await bootWebFunctionOrigins(
-      initial.distribution,
-      initial.stacks,
-      bootOpts
-    );
-    webFunctionServes = webFunctions.serves;
+    const webFunctions = await bootWebFunctionOrigins(initial.distribution, initial.stacks, {
+      ...bootOpts,
+      sink: webFunctionServes,
+    });
 
     // TLS resolution (real termination opt-in). Resolved once at boot.
     let tls: FrontDoorTlsMaterials | undefined;
@@ -1052,8 +1081,15 @@ async function localStartCloudFrontCommand(
       ...[...lambdaRunners, ...edgeRunners].map((r) => r.stop().catch(() => undefined)),
       ...webFunctionServes.map((s) => s.teardown().catch(() => undefined)),
     ]);
+    // A start-up signal: its handler owns the teardown and the exit code.
+    if (bootAborted) return await new Promise<never>(() => undefined);
+    disarmBootSignals();
     throw err;
   }
+
+  // The serving shutdown handler below takes over from the start-up one.
+  disarmBootSignals();
+  if (bootAborted) return await new Promise<never>(() => undefined);
 
   // D8.4-style load-bearing banner: verify.sh greps for this exact prefix.
   process.stdout.write(

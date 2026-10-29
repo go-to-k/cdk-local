@@ -192,6 +192,9 @@ export class WebFunctionServe {
     await pullImage(plan.image, opts.skipPull, platform);
     if (this.tornDown) return undefined;
     const hostPort = opts.port === 0 ? await pickFreePort() : opts.port;
+    // Re-checked after the await: a teardown that began meanwhile has nothing
+    // in flight to wait on, so a `docker run` issued now would never be removed.
+    if (this.tornDown) return undefined;
     const name =
       (this.name = `${getEmbedConfig().resourceNamePrefix}-webfn-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
     logger.info(

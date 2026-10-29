@@ -61,6 +61,7 @@ cleanup() {
     kill -KILL "${WEB_PID}" 2>/dev/null || true
   fi
   if [[ -n "${WEB_OUT:-}" ]]; then rm -f "${WEB_OUT}"; fi
+  if [[ -n "${WEB_HEADERS_FILE:-}" ]]; then rm -f "${WEB_HEADERS_FILE}"; fi
   # Restore any file the --watch scenario edited.
   if [[ -f site/index.html.bak ]]; then
     mv -f site/index.html.bak site/index.html
@@ -280,7 +281,8 @@ WEB_PORT=18364
 WEB_BASE="http://127.0.0.1:${WEB_PORT}"
 WEB_TARGET="CdkLocalStartCloudFrontFixture/WebDist"
 WEB_IMAGE="public.ecr.aws/lambda/nodejs:24"
-web_orphans() { docker ps -a --filter name=cdkl-webfn- --format '{{.Names}}' || true; }
+# No `|| true`: a failing `docker ps` must fail the run, not read as "no orphans".
+web_orphans() { docker ps -a --filter name=cdkl-webfn- --format '{{.Names}}'; }
 
 echo "==> WebDist: Docker available + ${WEB_IMAGE} (linux/arm64) present"
 docker version --format '{{.Server.Version}}' >/dev/null || fail "Docker is required for the WebDist phase"
@@ -326,9 +328,9 @@ echo "${WEB_BODY}" | grep -q '"method":"POST"' || web_fail "the method was not f
 echo "${WEB_BODY}" | grep -q '"path":"/hello?q=1"' || web_fail "the path + query were not forwarded: ${WEB_BODY}"
 echo "${WEB_BODY}" | grep -q '"body":"ping"' || web_fail "the request body was not forwarded: ${WEB_BODY}"
 echo "${WEB_BODY}" | grep -q '"forwardedFor":"127.0.0.1"' || web_fail "X-Forwarded-For was not set to the client address: ${WEB_BODY}"
-if echo "${WEB_BODY}" | grep -q "\"host\":\"127.0.0.1:${WEB_PORT}\""; then
-  web_fail "the origin request carried the viewer Host instead of the origin's: ${WEB_BODY}"
-fi
+WEB_HOST=$(echo "${WEB_BODY}" | sed -n 's/.*"host":"\([^"]*\)".*/\1/p')
+[[ "${WEB_HOST}" =~ ^127\.0\.0\.1:[0-9]+$ && "${WEB_HOST}" != "127.0.0.1:${WEB_PORT}" ]] \
+  || web_fail "the origin request's Host is not the web function server's address: ${WEB_BODY}"
 grep -qi "x-cdkl-fixture: start-cloudfront" "${WEB_HEADERS_FILE}" \
   || web_fail "the viewer-response function did not run over the Web Function response"
 grep -qi "access-control-allow-origin: http://127.0.0.1:5050" "${WEB_HEADERS_FILE}" \
@@ -360,6 +362,35 @@ WEB_PID=""
 sleep 1
 [[ -z "$(web_orphans)" ]] || web_fail "leftover web function container(s) after SIGTERM: $(web_orphans)"
 if lsof -ti "tcp:${WEB_PORT}" >/dev/null 2>&1; then web_fail "port ${WEB_PORT} still bound after shutdown"; fi
+
+# 8b. A signal DURING start-up (the server container is starting, not yet
+#     serving) must still remove every web function container: they are not
+#     --rm and hold the forwarded credentials. Not reachable on the happy path
+#     above, where SIGTERM arrives after the serving handler is armed.
+echo "==> WebDist: SIGTERM during start-up removes the containers booted so far"
+: > "${WEB_OUT}"
+${CDKL} start-cloudfront "${WEB_TARGET}" --port "${WEB_PORT}" --no-pull > "${WEB_OUT}" 2>&1 &
+WEB_PID=$!
+STARTING=0
+for _ in $(seq 1 360); do
+  if grep -q "Starting web function container" "${WEB_OUT}"; then STARTING=1; break; fi
+  if ! kill -0 "${WEB_PID}" 2>/dev/null; then web_fail "WebDist server exited before starting a container"; fi
+  sleep 0.1
+done
+[[ "${STARTING}" -eq 1 ]] || web_fail "WebDist server never started a web function container"
+grep -q "CloudFront distribution serving on" "${WEB_OUT}" \
+  && web_fail "the server was already serving; the start-up window was not exercised"
+kill -TERM "${WEB_PID}" 2>/dev/null || true
+for _ in $(seq 1 120); do
+  if ! kill -0 "${WEB_PID}" 2>/dev/null; then break; fi
+  sleep 0.25
+done
+kill -0 "${WEB_PID}" 2>/dev/null && web_fail "WebDist server did not exit on SIGTERM during start-up"
+WEB_PID=""
+grep -q "during start-up; removing the web function containers" "${WEB_OUT}" \
+  || web_fail "the start-up signal handler did not run"
+sleep 1
+[[ -z "$(web_orphans)" ]] || web_fail "leftover web function container(s) after a start-up SIGTERM: $(web_orphans)"
 rm -f "${WEB_OUT}"
 
 echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), a --watch reload, the --cache-origin-without--from-cfn-stack no-op WARN, and Lambda Web Function endpoint origins (go-to-k/cdkd#5516: weighted revision, forwarded origin request, viewer-response + CORS over it, an extract: false BucketDeployment revision, containers removed on SIGTERM)."

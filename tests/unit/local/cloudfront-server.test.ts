@@ -244,6 +244,7 @@ describe('startCloudFrontServer — Lambda Web Function endpoint origin', () => 
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
         seen.push({ url: req.url, host: req.headers.host, body: Buffer.concat(chunks).toString() });
+        if (req.url === '/slow') return; // never answers
         res.statusCode = 202;
         res.setHeader('content-type', 'text/plain');
         res.setHeader('set-cookie', 'sid=web; Path=/');
@@ -305,6 +306,24 @@ describe('startCloudFrontServer — Lambda Web Function endpoint origin', () => 
     expect(last.url).toBe('/page?x=1');
     expect(last.body).toBe('hello');
     expect(last.host).toBe(`127.0.0.1:${upstreamPort}`);
+  });
+
+  it("applies the origin's OriginReadTimeout (504 past it)", async () => {
+    const next = webDistribution();
+    next.origins = new Map([
+      [
+        'web',
+        { kind: 'web-function', originId: 'web', endpointLogicalId: 'Endpoint', readTimeoutSeconds: 0.2 },
+      ],
+    ]);
+    webServer.update(next);
+    try {
+      const res = await fetch(`${webServer.url}/slow`);
+      expect(res.status).toBe(504);
+      expect(await res.text()).toContain('origin read timeout (0.2s)');
+    } finally {
+      webServer.update(webDistribution());
+    }
   });
 
   it('returns 502 naming the endpoint when its server was not booted (added post-startup)', async () => {

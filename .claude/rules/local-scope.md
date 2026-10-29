@@ -8,7 +8,7 @@ command's emulation surface. Flag spellings live in README.md.
 
 **Container env is one shared rule.** `resolveLambdaContainerEnv` resolves the
 env of EVERY locally booted Lambda container — direct `cdkl invoke`, ALB Lambda
-targets, CloudFront Function URL origins, Lambda@Edge — once per backing Lambda
+targets, CloudFront Lambda origins, Lambda@Edge, web functions — once each
 at BOOT: `Environment.Variables`, `--from-cfn-stack` intrinsic substitution,
 `--assume-role` STS / `--profile` creds. Decrypted `SecureString` values stay OFF
 the `docker run` argv — except under finch on macOS / Windows, which rewrites

@@ -1917,9 +1917,11 @@ its `DistributionConfig`:
   (`linux/arm64`; there is no `--platform` here), and removed on
   shutdown; a server that fails to come up stops start-up. A request
   routed there is forwarded as the origin request — method, path, query
-  string, body and headers, minus hop-by-hop ones, with `Host` naming the
-  origin and the client address appended to `X-Forwarded-For` — and the
-  buffered response becomes the origin response. An unreachable server
+  string, body and every viewer header, minus hop-by-hop ones, with `Host`
+  set to the local server's address and the client address appended to
+  `X-Forwarded-For` — and the buffered response becomes the origin response.
+  The behavior's origin request policy, the origin's custom headers and its
+  `OriginPath` are not applied. An unreachable server
   answers 502 and one slower than the origin's `OriginReadTimeout`
   (default 30 s) 504. The OAC's SigV4 signing has no local counterpart and
   is skipped. Boot-time only, like a Function URL origin.

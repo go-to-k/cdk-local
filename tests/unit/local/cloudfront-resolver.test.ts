@@ -431,6 +431,16 @@ describe('resolveCloudFrontDistribution — Lambda Web Function endpoint origin'
     });
   });
 
+  it('drops a non-literal or non-positive OriginReadTimeout', () => {
+    for (const value of [{ Ref: 'Timeout' }, 0, -1, '30']) {
+      const stack = buildStack(
+        webFunctionDistributionTemplate({ OriginProtocolPolicy: 'https-only', OriginReadTimeout: value })
+      );
+      const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get('web');
+      expect(origin).toEqual({ kind: 'web-function', originId: 'web', endpointLogicalId: 'Endpoint' });
+    }
+  });
+
   it('stays custom when the DomainName GetAtt names a resource of another type', () => {
     const stack = buildStack(
       webFunctionDistributionTemplate(undefined, 'AWS::ElasticLoadBalancingV2::LoadBalancer')
