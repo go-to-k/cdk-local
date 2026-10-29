@@ -172,6 +172,12 @@ a log line, and a served HTTP response body.
   **web-function-runner** (`planWebFunctionContainer`, the ONE per-kind switch;
   boot without `--rm`; HTTP readiness; exit watch). A new runtime or code source
   is a row / union member there, never a branch in the command.
+- **s3-object-asset** — a template's S3 object -> its cdk.out file asset,
+  SHARED by web-function-artifact, cloudfront-resolver (BucketDeployment origin
+  dirs) and microvm-image: `findFileAssetForObjectKey`, the BucketDeployment
+  predicates, and `resolveBucketDeploymentObjectKey`
+  (`Fn.select(i, deployment.objectKeys)` of an `extract: false` deployment ->
+  its i-th source key; an extracting one is reported, never guessed).
 
 ## Lambda MicroVMs
 
