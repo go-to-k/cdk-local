@@ -128,7 +128,8 @@ a log line, and a served HTTP response body.
   `DomainName` + `AWS::Lambda::Url` `TargetFunctionArn`; a Web Function
   endpoint origin -> its `GetAtt[<endpoint>, DomainName]`; custom / unresolved
   flagged); per-behavior CORS via `resolveResponseHeadersPolicyCors`, SHARED with
-  the `start-api` chain.
+  the `start-api` chain, and the policy's security / custom / remove headers via
+  `response-headers-policy` (`start-cloudfront` only).
 - **cloudfront-function-runtime** — compiles and runs an inline function in a
   `node:vm` sandbox. `cloudFrontRuntimeGlobals` merges the 2.0 built-ins a bare
   vm lacks into BOTH the compile probe and the invoke sandbox;

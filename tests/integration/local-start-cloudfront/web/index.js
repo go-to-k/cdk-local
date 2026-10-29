@@ -19,6 +19,11 @@ http
       res.writeHead(200, {
         'content-type': 'application/json',
         'set-cookie': 'web-session=1; Path=/',
+        // Origin headers the ResponseHeadersPolicy replaces (Override: true),
+        // keeps (Override: false) and removes.
+        'x-frame-options': 'SAMEORIGIN',
+        'referrer-policy': 'origin',
+        'x-powered-by': 'cdkl-web',
       });
       res.end(
         JSON.stringify({

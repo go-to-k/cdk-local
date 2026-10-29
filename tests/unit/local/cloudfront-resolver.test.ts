@@ -537,6 +537,29 @@ describe('resolveCloudFrontDistribution — ResponseHeadersPolicy CORS', () => {
     const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
     expect(resolved.behaviors[0]!.cors).toBeUndefined();
   });
+
+  it('resolves the same policy security headers alongside its CORS', () => {
+    const template = corsTemplate();
+    const rhp = (template.Resources as Record<string, { Properties: Record<string, unknown> }>)[
+      'Rhp'
+    ]!;
+    (rhp.Properties['ResponseHeadersPolicyConfig'] as Record<string, unknown>)[
+      'SecurityHeadersConfig'
+    ] = { FrameOptions: { FrameOption: 'DENY', Override: true } };
+    const resolved = resolveCloudFrontDistribution({ stack: buildStack(template, HASH), logicalId: 'Dist' });
+    expect(resolved.behaviors[0]!.cors).toBeDefined();
+    expect(resolved.behaviors[0]!.responseHeaders).toEqual({
+      remove: [],
+      skipped: [],
+      set: [{ name: 'x-frame-options', value: 'DENY', override: true }],
+    });
+  });
+
+  it('leaves responseHeaders undefined for a CORS-only policy', () => {
+    const stack = buildStack(corsTemplate(), HASH);
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    expect(resolved.behaviors[0]!.responseHeaders).toBeUndefined();
+  });
 });
 
 describe('intrinsic helpers', () => {

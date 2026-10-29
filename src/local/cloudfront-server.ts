@@ -38,6 +38,7 @@ import { serveFromStaticOrigin } from './cloudfront-static-origin.js';
 import type { S3OriginReader } from './cloudfront-s3-origin.js';
 import type { FrontDoorTlsMaterials } from './front-door-tls.js';
 import { applyCorsResponseHeadersFromConfig, matchPreflight } from './cors-handler.js';
+import { applyResponseHeadersPolicyHeaders } from './response-headers-policy.js';
 import { formatAuthority } from '../utils/url-authority.js';
 import { displayIdent } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -387,8 +388,30 @@ async function handleRequest(
       );
     }
   }
-  // The behavior's ResponseHeadersPolicy CORS headers, applied last (the policy
-  // wins, mirroring CorsConfig.OriginOverride). No-op without an allowed Origin.
+  applyResponseHeadersPolicy(res, behavior, req, logger);
+  res.end(finalBody);
+}
+
+/**
+ * Apply the behavior's ResponseHeadersPolicy to a response whose headers are
+ * already set, last, as CloudFront does on the way to the viewer: the remove
+ * list first, then the security / custom headers (each honoring its Override),
+ * then the CORS headers (the policy wins, mirroring CorsConfig.OriginOverride;
+ * a no-op without an allowed Origin).
+ */
+function applyResponseHeadersPolicy(
+  res: ServerResponse,
+  behavior: ResolvedBehavior,
+  req: IncomingMessage,
+  logger: ReturnType<typeof getLogger>
+): void {
+  if (behavior.responseHeaders) {
+    applyResponseHeadersPolicyHeaders(res, behavior.responseHeaders, (name, err) =>
+      logger.warn(
+        `Skipping invalid response headers policy header ${displayUntrustedValue(name)}: ${flattenToOneLine(err instanceof Error ? err.message : String(err))}`
+      )
+    );
+  }
   if (behavior.cors) {
     const origin = req.headers.origin;
     applyCorsResponseHeadersFromConfig(
@@ -397,7 +420,6 @@ async function handleRequest(
       typeof origin === 'string' ? origin : undefined
     );
   }
-  res.end(finalBody);
 }
 
 /** Run a Lambda@Edge response-stage function, returning the modified response (or undefined when no invoker). */
@@ -455,14 +477,7 @@ function writeEdgeResponse(
       /* best-effort */
     }
   }
-  if (behavior.cors) {
-    const origin = req.headers.origin;
-    applyCorsResponseHeadersFromConfig(
-      res,
-      behavior.cors,
-      typeof origin === 'string' ? origin : undefined
-    );
-  }
+  applyResponseHeadersPolicy(res, behavior, req, logger);
   res.end(result.body);
 }
 

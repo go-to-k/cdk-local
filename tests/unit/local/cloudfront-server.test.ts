@@ -458,6 +458,72 @@ describe('startCloudFrontServer — ResponseHeadersPolicy CORS', () => {
   });
 });
 
+describe('startCloudFrontServer — ResponseHeadersPolicy security / custom / remove headers', () => {
+  let policyServer: StartedCloudFrontServer;
+
+  // Stands in for the origin's own headers: the policy is applied after it.
+  const originHeadersFn = compileCloudFrontFunction(
+    'OriginHeadersFn',
+    "function handler(event){var r=event.response; r.headers['x-frame-options']={value:'SAMEORIGIN'}; r.headers['referrer-policy']={value:'origin'}; r.headers['x-powered-by']={value:'Express'}; r.headers['x-replaced']={value:'origin'}; return r;}",
+    'cloudfront-js-2.0'
+  );
+
+  function policyDistribution(): ResolvedDistribution {
+    const def: ResolvedBehavior = {
+      targetOriginId: 'o1',
+      viewerResponse: originHeadersFn,
+      responseHeaders: {
+        remove: ['x-powered-by', 'x-replaced'],
+        skipped: [],
+        set: [
+          { name: 'strict-transport-security', value: 'max-age=63072000; includeSubDomains', override: true },
+          { name: 'x-frame-options', value: 'DENY', override: true },
+          { name: 'referrer-policy', value: 'no-referrer', override: false },
+          { name: 'x-replaced', value: 'policy', override: false },
+          { name: 'x-custom', value: 'hello', override: false },
+          { name: 'bad header', value: 'x', override: true },
+        ],
+      },
+    };
+    return {
+      logicalId: 'Dist',
+      stackName: 'Stack',
+      defaultRootObject: 'index.html',
+      behaviors: [def],
+      origins: new Map([['o1', { kind: 's3', originId: 'o1', localDirs: [dir] }]]),
+      customErrorResponses: [],
+    };
+  }
+
+  beforeAll(async () => {
+    policyServer = await startCloudFrontServer({
+      distribution: policyDistribution(),
+      host: '127.0.0.1',
+      port: 0,
+    });
+  });
+
+  afterAll(async () => {
+    await policyServer.close();
+  });
+
+  it('applies the policy over the origin headers, honoring Override and the remove list', async () => {
+    const res = await fetch(`${policyServer.url}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('strict-transport-security')).toBe('max-age=63072000; includeSubDomains');
+    // Override: true replaces the origin's header.
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    // Override: false keeps the origin's header.
+    expect(res.headers.get('referrer-policy')).toBe('origin');
+    // Removed first, then added: the policy's value is sent even with Override: false.
+    expect(res.headers.get('x-replaced')).toBe('policy');
+    expect(res.headers.get('x-powered-by')).toBeNull();
+    expect(res.headers.get('x-custom')).toBe('hello');
+    // An invalid header is skipped without failing the response.
+    expect(await res.text()).toBe('<h1>root</h1>');
+  });
+});
+
 describe('startCloudFrontServer — ResponseHeadersPolicy CORS (credentials + expose + Vary append)', () => {
   let credsServer: StartedCloudFrontServer;
 
