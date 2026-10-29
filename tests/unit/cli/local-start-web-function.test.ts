@@ -76,7 +76,14 @@ let savedEnv: NodeJS.ProcessEnv;
 let lines: string[];
 
 function assembly(
-  opts: { endpoint?: Record<string, unknown>; v2Env?: Record<string, string>; runtime?: string } = {}
+  opts: {
+    endpoint?: Record<string, unknown>;
+    v2Env?: Record<string, string>;
+    runtime?: string;
+    /** RevV2's S3Object.Key, plus extra template resources (a BucketDeployment). */
+    v2Key?: unknown;
+    resources?: Record<string, unknown>;
+  } = {}
 ): { stacks: unknown[] } {
   writeFileSync(
     join(outdir, 'asset.abc123.zip'),
@@ -96,7 +103,7 @@ function assembly(
       dockerImages: {},
     })
   );
-  const revision = (env: Record<string, string>) => ({
+  const revision = (env: Record<string, string>, key: unknown = 'abc123.zip') => ({
     Type: 'AWS::Lambda::WebFunctionRevision',
     Properties: {
       FunctionName: { Ref: 'WebFn' },
@@ -104,7 +111,7 @@ function assembly(
         CodeConfig: {
           S3Object: {
             Bucket: { 'Fn::Sub': 'cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}' },
-            Key: 'abc123.zip',
+            Key: key,
           },
         },
         RuntimeConfig: { Runtime: opts.runtime ?? 'nodejs24.x' },
@@ -130,7 +137,8 @@ function assembly(
             Role: { Type: 'AWS::IAM::Role', Properties: {} },
             WebFn: { Type: 'AWS::Lambda::WebFunction', Properties: { FunctionName: 'my-web' } },
             RevV1: revision({ GREETING: 'from-v1', AWS_LAMBDA_NODEJS_ENTRYPOINT: 'alt.js' }),
-            RevV2: revision({ GREETING: 'from-v2', ...opts.v2Env }),
+            RevV2: revision({ GREETING: 'from-v2', ...opts.v2Env }, opts.v2Key),
+            ...opts.resources,
             Ep: {
               Type: 'AWS::Lambda::WebFunctionEndpoint',
               Properties: {
@@ -265,6 +273,33 @@ describe('cdkl start-web-function', () => {
     expect(opts.containerPort).toBe(8080);
     expect(h.pullImage).toHaveBeenCalledWith('public.ecr.aws/lambda/nodejs:24', false, 'linux/arm64');
     expect(lines.filter((l) => l.includes('weighted routing is not emulated'))).toHaveLength(1);
+  });
+
+  const upload = (extract: unknown) => ({
+      Upload: {
+        Type: 'Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C',
+        Properties: {
+          SourceObjectKeys: ['abc123.zip'],
+          DestinationBucketName: { Ref: 'Bucket' },
+          OutputObjectKeys: true,
+          ...(extract !== undefined && { Extract: extract }),
+        },
+      },
+  });
+  const v2Key = { 'Fn::Select': [0, { 'Fn::GetAtt': ['Upload', 'SourceObjectKeys'] }] };
+
+  it('serves a revision whose key selects an extract: false BucketDeployment source', async () => {
+    await boot(['App:Ep'], assembly({ v2Key, resources: upload(false) }));
+    expect(lines.some((l) => l.includes('Server listening on http://127.0.0.1:40123'))).toBe(true);
+    expect(h.artifacts[0]).toMatchObject({ kind: 'zip', assetHash: 'abc123' });
+    expect(runOpts().mounts[0]!.hostPath).toBe(h.artifacts[0]!.tmpDir);
+  });
+
+  it('refuses the same selection on a deployment that extracts, before any pull or run', async () => {
+    expect(await runToFailure(['App:Ep'], assembly({ v2Key, resources: upload(undefined) }))).toBe(1);
+    expect(h.pullImage).not.toHaveBeenCalled();
+    expect(h.runDetached).not.toHaveBeenCalled();
+    expect(lines.join('\n')).toMatch(/BucketDeployment Upload, which does not set extract: false/);
   });
 
   it('hands the readiness wait the picked port, the timeout and the label', async () => {

@@ -11,7 +11,7 @@ import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { getEmbedConfig } from './embed-config.js';
 import { assetPathDirs, materializeAssetCodeDir, parseTarget } from './lambda-resolver.js';
-import { findFileAssetForObjectKey } from './web-function-artifact.js';
+import { findFileAssetForObjectKey } from './s3-object-asset.js';
 
 /** `AWS::Lambda::MicrovmImage` — a Dockerfile-built image MicroVMs run from. */
 export const MICROVM_IMAGE_TYPE = 'AWS::Lambda::MicrovmImage';

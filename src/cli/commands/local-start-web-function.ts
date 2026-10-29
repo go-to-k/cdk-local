@@ -204,7 +204,8 @@ async function localStartWebFunctionCommand(
   const resolved = resolveWebFunctionTarget(resolvedTarget, stacks, options.revision);
   const code = parseWebFunctionBuildConfig(
     resolved.revisionLogicalId,
-    resolved.revision.Properties?.['BuildConfig']
+    resolved.revision.Properties?.['BuildConfig'],
+    resolved.stack.template
   );
   const spec = resolveWebFunctionRuntime(code.runtime);
   const selectionNote: Record<typeof resolved.selection, string> = {

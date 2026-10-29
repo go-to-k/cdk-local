@@ -4,14 +4,40 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync, strToU8 } from 'fflate';
 import {
-  findFileAssetForObjectKey,
   parseWebFunctionBuildConfig,
   resolveWebFunctionArtifact,
 } from '../../../src/local/web-function-artifact.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { AssetManifest } from '../../../src/types/assets.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 const BOOTSTRAP_BUCKET = { 'Fn::Sub': 'cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}' };
+
+/** `Fn.select(index, upload.objectKeys)` as CDK synthesizes it. */
+const selectObjectKey = (index: unknown, deployment = 'Upload'): unknown => ({
+  'Fn::Select': [index, { 'Fn::GetAtt': [deployment, 'SourceObjectKeys'] }],
+});
+
+/** A stack with one BucketDeployment `Upload` of the given sources. */
+const deploymentTemplate = (
+  sourceObjectKeys: unknown[],
+  extra: Record<string, unknown> = {}
+): CloudFormationTemplate => ({
+  Resources: {
+    Upload: {
+      Type: 'Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C',
+      Properties: {
+        ServiceToken: { 'Fn::GetAtt': ['Handler', 'Arn'] },
+        SourceBucketNames: sourceObjectKeys.map(() => BOOTSTRAP_BUCKET),
+        SourceObjectKeys: sourceObjectKeys,
+        DestinationBucketName: { Ref: 'Bucket' },
+        Prune: false,
+        OutputObjectKeys: true,
+        ...extra,
+      },
+    },
+  },
+});
 
 const buildConfig = (key: unknown, extraCode: Record<string, unknown> = {}): unknown => ({
   CodeConfig: { S3Object: { Bucket: BOOTSTRAP_BUCKET, Key: key }, ...extraCode },
@@ -47,6 +73,82 @@ describe('parseWebFunctionBuildConfig', () => {
     ).toThrow(/not a literal string.*must come from a CDK asset in this app/);
   });
 
+  it('names the BucketDeployment extract: false shape as supported in that error', () => {
+    expect(() =>
+      parseWebFunctionBuildConfig(
+        'Rev',
+        buildConfig({ 'Fn::ImportValue': 'KeyExport' }),
+        deploymentTemplate(['abc123.zip'], { Extract: false })
+      )
+    ).toThrow(/BucketDeployment with extract: false passing Fn\.select\(<i>, deployment\.objectKeys\)/);
+  });
+
+  it("resolves Fn.select(i, deployment.objectKeys) of an extract: false deployment to its i-th source", () => {
+    const template = deploymentTemplate(['first111.zip', 'second22.zip'], { Extract: false });
+    const parsed = parseWebFunctionBuildConfig('Rev', buildConfig(selectObjectKey(1)), template);
+    expect(parsed.s3Object.key).toBe('second22.zip');
+    expect(parsed.s3Object.deployment).toEqual({ logicalId: 'Upload', index: 1 });
+    expect(parsed.s3Object.bucket).toEqual(BOOTSTRAP_BUCKET);
+  });
+
+  it('fails the same selection without the template, as a non-literal key', () => {
+    expect(() => parseWebFunctionBuildConfig('Rev', buildConfig(selectObjectKey(0)))).toThrow(
+      /not a literal string/
+    );
+  });
+
+  it.each([
+    ['absent (the default)', {}],
+    ['true', { Extract: true }],
+    ["'true'", { Extract: 'true' }],
+  ])('refuses a deployment whose Extract is %s, which unpacks the zip', (_label, extra) => {
+    expect(() =>
+      parseWebFunctionBuildConfig(
+        'Rev',
+        buildConfig(selectObjectKey(0)),
+        deploymentTemplate(['abc123.zip'], extra)
+      )
+    ).toThrow(
+      expect.objectContaining({
+        code: 'LOCAL_START_WEB_FUNCTION_CODE_KEY_DEPLOYMENT_EXTRACTS',
+        message: expect.stringMatching(
+          /selects source 0 of BucketDeployment Upload, which does not set extract: false.*Set extract: false/
+        ),
+      })
+    );
+  });
+
+  it.each([
+    ['an index past the sources', selectObjectKey(2), ['a.zip'], {}, /has only 1 source\(s\)/],
+    [
+      'a source that is not a literal asset key',
+      selectObjectKey(0),
+      [{ 'Fn::GetAtt': ['Other', 'Key'] }],
+      {},
+      /SourceObjectKeys entry is not a literal string/,
+    ],
+    [
+      'outputObjectKeys: false',
+      selectObjectKey(0),
+      ['a.zip'],
+      { OutputObjectKeys: false },
+      /sets outputObjectKeys: false/,
+    ],
+  ])('refuses %s', (_label, key, sources, extra, message) => {
+    expect(() =>
+      parseWebFunctionBuildConfig(
+        'Rev',
+        buildConfig(key),
+        deploymentTemplate(sources, { Extract: false, ...extra })
+      )
+    ).toThrow(
+      expect.objectContaining({
+        code: 'LOCAL_START_WEB_FUNCTION_CODE_KEY_DEPLOYMENT_SOURCE_UNRESOLVED',
+        message: expect.stringMatching(message),
+      })
+    );
+  });
+
   it('fails without a CodeConfig, and without an S3Object', () => {
     expect(() =>
       parseWebFunctionBuildConfig('Rev', { RuntimeConfig: { Runtime: 'nodejs24.x' } })
@@ -71,53 +173,6 @@ describe('parseWebFunctionBuildConfig', () => {
     expect(() =>
       parseWebFunctionBuildConfig('Rev', { CodeConfig: { S3Object: { Key: 'k' } } })
     ).toThrow(/no literal BuildConfig\.RuntimeConfig\.Runtime/);
-  });
-});
-
-describe('findFileAssetForObjectKey', () => {
-  const manifest = (objectKey: string): AssetManifest => ({
-    version: '52.0.0',
-    files: {
-      abc123: {
-        displayName: 'Code',
-        source: { path: 'asset.abc123', packaging: 'zip' },
-        destinations: { d: { bucketName: 'b', objectKey } },
-      },
-    },
-    dockerImages: {},
-  });
-
-  it('matches the destination objectKey exactly', () => {
-    expect(findFileAssetForObjectKey(manifest('abc123.zip'), 'abc123.zip')?.hash).toBe('abc123');
-  });
-
-  it('matches a prefixed destination objectKey by its last segment', () => {
-    expect(findFileAssetForObjectKey(manifest('pre/abc123.zip'), 'abc123.zip')?.hash).toBe(
-      'abc123'
-    );
-  });
-
-  it('matches a prefixed key only at a segment boundary', () => {
-    const other: AssetManifest = {
-      version: '52.0.0',
-      files: {
-        zzz: {
-          displayName: 'Other',
-          source: { path: 'asset.zzz', packaging: 'zip' },
-          destinations: { d: { bucketName: 'b', objectKey: 'xkey.zip' } },
-        },
-      },
-      dockerImages: {},
-    };
-    expect(findFileAssetForObjectKey(other, 'key.zip')).toBeUndefined();
-  });
-
-  it('falls back to the manifest entry keyed by the hash', () => {
-    expect(findFileAssetForObjectKey(manifest('other.zip'), 'abc123.zip')?.hash).toBe('abc123');
-  });
-
-  it('returns undefined for a key no asset carries', () => {
-    expect(findFileAssetForObjectKey(manifest('abc123.zip'), 'zzz.zip')).toBeUndefined();
   });
 });
 
@@ -262,6 +317,42 @@ describe('resolveWebFunctionArtifact', () => {
     await expect(
       resolveWebFunctionArtifact(stack, 'Rev', parseWebFunctionBuildConfig('Rev', buildConfig('abc123.zip')))
     ).rejects.toThrow(/is neither a directory nor a \.zip archive/);
+  });
+
+  it('resolves a BucketDeployment (extract: false) source to that asset\'s staged directory', async () => {
+    mkdirSync(join(outdir, 'asset.abc123'));
+    writeFileSync(join(outdir, 'asset.abc123', 'index.js'), '// deployed server');
+    writeManifest({
+      abc123: {
+        displayName: 'Upload/Asset1',
+        source: { path: 'asset.abc123', packaging: 'zip' },
+        destinations: { d: { bucketName: 'b', objectKey: 'abc123.zip' } },
+      },
+    });
+    const template = deploymentTemplate(['abc123.zip'], { Extract: false });
+    const art = await resolveWebFunctionArtifact(
+      { ...stack, template },
+      'Rev',
+      parseWebFunctionBuildConfig('Rev', buildConfig(selectObjectKey(0)), template)
+    );
+    expect(art).toEqual({
+      kind: 'zip',
+      runtime: 'nodejs24.x',
+      codeDir: join(outdir, 'asset.abc123'),
+      assetHash: 'abc123',
+    });
+  });
+
+  it('names the deployment source when its key matches no asset', async () => {
+    writeManifest({});
+    const template = deploymentTemplate(['zzz999.zip'], { Extract: false });
+    await expect(
+      resolveWebFunctionArtifact(
+        { ...stack, template },
+        'Rev',
+        parseWebFunctionBuildConfig('Rev', buildConfig(selectObjectKey(0)), template)
+      )
+    ).rejects.toThrow(/key zzz999\.zip \(source 0 of BucketDeployment Upload\)\) matches no file asset/);
   });
 
   it('refuses an asset source that climbs out of the assembly', async () => {

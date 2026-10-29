@@ -776,13 +776,23 @@ export {
 export {
   parseWebFunctionBuildConfig,
   resolveWebFunctionArtifact,
-  findFileAssetForObjectKey,
   disposeWebFunctionArtifact,
   type WebFunctionArtifact,
   type WebFunctionZipArtifact,
   type WebFunctionImageArtifact,
   type WebFunctionCodeConfig,
 } from './local/web-function-artifact.js';
+// Map a template's S3 object reference to its cdk.out file asset: the literal
+// key lookup, and `Fn.select(i, deployment.objectKeys)` of a BucketDeployment.
+// A host resolving a Web Function revision's code calls
+// `parseWebFunctionBuildConfig(id, buildConfig, stack.template)`, which uses these.
+export {
+  findFileAssetForObjectKey,
+  isBucketDeploymentResource,
+  bucketDeploymentSourceObjectKeys,
+  resolveBucketDeploymentObjectKey,
+  type BucketDeploymentObjectKeyResolution,
+} from './local/s3-object-asset.js';
 export {
   resolveWebFunctionRuntime,
   supportedWebFunctionRuntimes,

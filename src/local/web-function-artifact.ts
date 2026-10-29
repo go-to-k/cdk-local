@@ -2,13 +2,18 @@ import { existsSync, rmSync, statSync } from 'fs';
 import { dirname } from 'path';
 import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
 import { resolveAssetSourcePath } from '../assets/asset-source-path.js';
-import type { AssetManifest, FileAsset } from '../types/assets.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
+import type { CloudFormationTemplate } from '../types/resource.js';
 import { CdkLocalError } from '../utils/error-handler.js';
 import { displayIdent } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { getEmbedConfig } from './embed-config.js';
 import { assetPathDirs, materializeAssetCodeDir } from './lambda-resolver.js';
+import {
+  findFileAssetForObjectKey,
+  resolveBucketDeploymentObjectKey,
+  type BucketDeploymentObjectKeyResolution,
+} from './s3-object-asset.js';
 
 /**
  * A web function revision's code, as `cdkl start-web-function` runs it — seam 1
@@ -47,7 +52,14 @@ export interface WebFunctionImageArtifact {
 /** The `BuildConfig` of a revision, parsed before any file is touched. */
 export interface WebFunctionCodeConfig {
   runtime: string;
-  s3Object: { bucket: unknown; key: string; versionId?: string };
+  s3Object: {
+    bucket: unknown;
+    /** The asset object key: the literal `Key`, or the selected BucketDeployment source's key. */
+    key: string;
+    versionId?: string;
+    /** Set when `Key` was `Fn.select(index, <deployment>.objectKeys)` of an `extract: false` deployment. */
+    deployment?: { logicalId: string; index: number };
+  };
 }
 
 /** The `CodeConfig` keys this version resolves. Anything else fails naming the key. */
@@ -57,11 +69,17 @@ const SUPPORTED_CODE_CONFIG_KEYS: readonly string[] = ['S3Object'];
  * Parse a revision's `BuildConfig` into its runtime and code source. Fails on a
  * `CodeConfig` key cdk-local does not know — naming it, never ignoring it — and
  * on an `S3Object.Key` that is not a literal string (a CDK asset's key always
- * is, so that is a bucket/key from outside this app).
+ * is, so that is a bucket/key from outside this app), with one exception: given
+ * the revision's stack `template`, a key of
+ * `Fn::Select [i, Fn::GetAtt [<BucketDeployment>, SourceObjectKeys]]` on an
+ * `extract: false` deployment resolves to that deployment's i-th source asset
+ * key, since the deployment copies that zip unchanged (go-to-k/cdkd#5515).
+ * Without `template` such a key fails like any other non-literal one.
  */
 export function parseWebFunctionBuildConfig(
   revisionLogicalId: string,
-  buildConfig: unknown
+  buildConfig: unknown,
+  template?: CloudFormationTemplate
 ): WebFunctionCodeConfig {
   const subject = `Web function revision ${displayIdent(revisionLogicalId)}`;
   const build = asObject(buildConfig);
@@ -97,15 +115,25 @@ export function parseWebFunctionBuildConfig(
       'LOCAL_START_WEB_FUNCTION_NO_CODE_CONFIG'
     );
   }
-  const key = s3['Key'];
-  if (typeof key !== 'string' || key.length === 0) {
-    throw new CdkLocalError(
-      `${subject} has a CodeConfig.S3Object.Key that is not a literal string ` +
-        `(${describeValue(key)}). The code must come from a CDK asset in this app ` +
-        `(for example an s3assets.Asset passing asset.s3BucketName / asset.s3ObjectKey), ` +
-        `whose key synthesizes as a literal.`,
-      'LOCAL_START_WEB_FUNCTION_CODE_KEY_NOT_LITERAL'
-    );
+  const rawKey = s3['Key'];
+  let key: string;
+  let deployment: WebFunctionCodeConfig['s3Object']['deployment'];
+  if (typeof rawKey === 'string' && rawKey.length > 0) {
+    key = rawKey;
+  } else {
+    const viaDeployment = template ? resolveBucketDeploymentObjectKey(template, rawKey) : undefined;
+    if (viaDeployment === undefined) {
+      throw new CdkLocalError(
+        `${subject} has a CodeConfig.S3Object.Key that is not a literal string ` +
+          `(${describeValue(rawKey)}). The code must come from a CDK asset in this app: an ` +
+          `s3assets.Asset passing asset.s3BucketName / asset.s3ObjectKey, whose key synthesizes ` +
+          `as a literal, or a BucketDeployment with extract: false passing ` +
+          `Fn.select(<i>, deployment.objectKeys), which resolves to its i-th source asset.`,
+        'LOCAL_START_WEB_FUNCTION_CODE_KEY_NOT_LITERAL'
+      );
+    }
+    key = bucketDeploymentSourceKey(subject, viaDeployment);
+    deployment = { logicalId: viaDeployment.deploymentLogicalId, index: viaDeployment.index };
   }
   const versionId = s3['VersionId'];
   return {
@@ -114,28 +142,48 @@ export function parseWebFunctionBuildConfig(
       bucket: s3['Bucket'],
       key,
       ...(typeof versionId === 'string' && { versionId }),
+      ...(deployment !== undefined && { deployment }),
     },
   };
 }
 
 /**
- * Find the file asset in a stack's cdk.out manifest whose S3 destination is
- * `key` (exactly, or as the last segment of a prefixed key), falling back to
- * the manifest entry keyed by the key's hash (`<hash>.zip`). Exported for
- * unit testing.
+ * The asset key behind `Fn.select(i, deployment.objectKeys)`, or the refusal
+ * naming why that source has no single local bundle.
  */
-export function findFileAssetForObjectKey(
-  manifest: AssetManifest,
-  key: string
-): { hash: string; asset: FileAsset } | undefined {
-  for (const [hash, asset] of Object.entries(manifest.files ?? {})) {
-    for (const dest of Object.values(asset.destinations ?? {})) {
-      if (dest.objectKey === key || dest.objectKey.endsWith(`/${key}`)) return { hash, asset };
-    }
+function bucketDeploymentSourceKey(
+  subject: string,
+  r: BucketDeploymentObjectKeyResolution
+): string {
+  const named = `CodeConfig.S3Object.Key selects source ${r.index} of BucketDeployment ${displayIdent(r.deploymentLogicalId)}`;
+  switch (r.kind) {
+    case 'resolved':
+      return r.sourceObjectKey;
+    case 'extracts':
+      throw new CdkLocalError(
+        `${subject} ${named}, which does not set extract: false, so it unpacks its sources ` +
+          `and no object in the destination bucket holds that source's zip (Lambda could not ` +
+          `read it either). Set extract: false on the BucketDeployment so it copies the zip as-is.`,
+        'LOCAL_START_WEB_FUNCTION_CODE_KEY_DEPLOYMENT_EXTRACTS'
+      );
+    case 'object-keys-not-output':
+      throw new CdkLocalError(
+        `${subject} ${named}, which sets outputObjectKeys: false, so its SourceObjectKeys ` +
+          `attribute is empty and the selection has no value. Remove outputObjectKeys: false.`,
+        'LOCAL_START_WEB_FUNCTION_CODE_KEY_DEPLOYMENT_SOURCE_UNRESOLVED'
+      );
+    case 'index-out-of-range':
+      throw new CdkLocalError(
+        `${subject} ${named}, which has only ${r.sourceCount} source(s).`,
+        'LOCAL_START_WEB_FUNCTION_CODE_KEY_DEPLOYMENT_SOURCE_UNRESOLVED'
+      );
+    case 'source-key-not-literal':
+      throw new CdkLocalError(
+        `${subject} ${named}, whose SourceObjectKeys entry is not a literal string, so it is not ` +
+          `a CDK asset of this app. Deploy the code with s3deploy.Source.asset(...).`,
+        'LOCAL_START_WEB_FUNCTION_CODE_KEY_DEPLOYMENT_SOURCE_UNRESOLVED'
+      );
   }
-  const hash = key.replace(/^.*\//, '').replace(/\.zip$/, '');
-  const byHash = Object.hasOwn(manifest.files ?? {}, hash) ? manifest.files[hash] : undefined;
-  return byHash ? { hash, asset: byHash } : undefined;
 }
 
 /**
@@ -153,10 +201,14 @@ export async function resolveWebFunctionArtifact(
   loader: AssetManifestLoader = new AssetManifestLoader()
 ): Promise<WebFunctionArtifact> {
   const subject = `Web function revision ${displayUntrustedValue(revisionLogicalId)} code bundle`;
+  const { deployment } = code.s3Object;
+  const keyOrigin = deployment
+    ? ` (source ${deployment.index} of BucketDeployment ${displayIdent(deployment.logicalId)})`
+    : '';
   const notFound = (): CdkLocalError =>
     new CdkLocalError(
       `${subject} (S3Object bucket ${describeValue(code.s3Object.bucket)}, key ` +
-        `${displayUntrustedValue(code.s3Object.key)}) matches no file asset in this app's cdk.out. ` +
+        `${displayUntrustedValue(code.s3Object.key)}${keyOrigin}) matches no file asset in this app's cdk.out. ` +
         `${getEmbedConfig().cliName} start-web-function runs code that comes from a CDK asset in ` +
         `this app (for example an s3assets.Asset of a directory); it does not download deployed ` +
         `code. Re-synthesize the app, or point the revision at an asset.`,
