@@ -65,12 +65,10 @@ export interface BuildSharedChildArgsOptions {
    * When true, do NOT forward the session's `--from-cfn-stack` /
    * `--assume-role` bindings to the child (issue #367). These bind a child to
    * deployed CloudFormation state / an IAM role for the containers it runs;
-   * `cdkl start-cloudfront` runs no container and makes no AWS call (it serves
-   * the distribution's local BucketDeployment source + CloudFront Functions),
-   * so it does NOT declare those flags — forwarding them would make Commander
-   * reject the child with "unknown option". The serve-manager sets this for
-   * the `cloudfront` kind. Defaults to false (forward them — every other
-   * child command accepts both forms).
+   * a child command that declares neither flag would reject them with
+   * "unknown option". Every serve kind declares both today (start-cloudfront
+   * since issue #380), so no caller sets this; it stays for a future
+   * pure-local kind. Defaults to false (forward them).
    */
   omitStateBindings?: boolean;
 }

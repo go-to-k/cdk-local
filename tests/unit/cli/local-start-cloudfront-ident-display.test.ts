@@ -58,10 +58,10 @@ describe('start-cloudfront renders origin ids and function logical ids (#761)', 
     warnUnsupported(mk('o1'));
     warnUnsupported(mk("o' 1"));
     expect(warns[0]).toMatch(
-      /^Origin o1 is a custom \(non-S3, non-Lambda-Function-URL\) origin \(api\.example\.com\); /
+      /^Origin o1 is a custom \(non-S3, non-Lambda\) origin \(api\.example\.com\); /
     );
     expect(warns[1]).toMatch(
-      /^Origin "o' 1" is a custom \(non-S3, non-Lambda-Function-URL\) origin \(api\.example\.com\); /
+      /^Origin "o' 1" is a custom \(non-S3, non-Lambda\) origin \(api\.example\.com\); /
     );
   });
 

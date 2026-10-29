@@ -74,6 +74,11 @@ import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { CLOUDFRONT_DISTRIBUTION_TYPE } from '../../local/cloudfront-resolver.js';
 import { createWatchPredicates } from './local-start-api.js';
+import { ensureDockerAvailable } from '../../local/docker-runner.js';
+import { resolveWebFunctionTarget } from '../../local/web-function-resolver.js';
+import { webFunctionFidelityWarnings } from '../../local/web-function-service-config.js';
+import type { WebFunctionOriginTarget } from '../../local/cloudfront-web-function-origin.js';
+import { WebFunctionServe, prepareWebFunctionServe } from './web-function-serve.js';
 
 /** Error thrown by `cdkl start-cloudfront` for target / option problems. */
 export class LocalStartCloudFrontError extends CdkLocalError {
@@ -497,6 +502,115 @@ export async function bootLambdaUrlOrigins(
 }
 
 /**
+ * Tear down every serve in `serves`, including any appended while the
+ * teardowns run (a boot loop that went on to the next endpoint), so a start-up
+ * signal leaves no web function container behind.
+ */
+export async function drainWebFunctionServes(serves: WebFunctionServe[]): Promise<void> {
+  let done = 0;
+  while (done < serves.length) {
+    const batch = serves.slice(done);
+    done = serves.length;
+    await Promise.all(batch.map((s) => s.teardown().catch(() => undefined)));
+  }
+}
+
+/** CloudFront's readiness deadline for a Web Function endpoint origin's server, in ms. */
+const WEB_FUNCTION_ORIGIN_READY_TIMEOUT_MS = 60_000;
+
+/**
+ * Boot one server container per unique Lambda Web Function endpoint origin in
+ * the distribution (go-to-k/cdkd#5516): the revision the endpoint's weights
+ * pick, run exactly as `start-web-function` runs it (its `ServiceConfig`
+ * environment, its code from cdk.out, the same credential / state-source env
+ * resolution) on an OS-assigned port. Returns the serves + a target map keyed
+ * by endpoint logical id for {@link startCloudFrontServer}; empty when the
+ * distribution has no such origin. A server that cannot be booted stops the
+ * ones already started and fails start-up, like a Function URL origin. Booted
+ * once at start-up; NOT re-run on a `--watch` reload.
+ */
+export async function bootWebFunctionOrigins(
+  distribution: ResolvedDistribution,
+  stacks: StackInfo[],
+  opts: {
+    containerHost: string;
+    skipPull: boolean;
+    envOptions: LambdaContainerEnvOptions;
+    profileCredentials?: ResolvedProfileCredentials;
+    extraStateProviders?: ExtraStateProviders;
+    /** Readiness deadline per server; default 60s. */
+    timeoutMs?: number;
+    /**
+     * Receives each serve BEFORE it starts, so a caller's signal handler can
+     * tear down a boot still in progress (the container is not `--rm`).
+     */
+    sink?: WebFunctionServe[];
+  }
+): Promise<{ targets: Map<string, WebFunctionOriginTarget>; serves: WebFunctionServe[] }> {
+  const logger = getLogger();
+  const targets = new Map<string, WebFunctionOriginTarget>();
+  const serves: WebFunctionServe[] = opts.sink ?? [];
+  const endpointLogicalIds = new Set<string>();
+  for (const origin of distribution.origins.values()) {
+    if (origin.kind === 'web-function') endpointLogicalIds.add(origin.endpointLogicalId);
+  }
+  if (endpointLogicalIds.size === 0) return { targets, serves };
+  for (const endpointLogicalId of endpointLogicalIds) {
+    try {
+      if (serves.length === 0) await ensureDockerAvailable();
+      // Qualify with the distribution's own stack, as for a Function URL origin (#798).
+      const resolved = resolveWebFunctionTarget(
+        `${distribution.stackName}:${endpointLogicalId}`,
+        stacks
+      );
+      const prepared = prepareWebFunctionServe(resolved);
+      for (const line of webFunctionFidelityWarnings(resolved, prepared.serviceConfig)) {
+        logger.warn(line);
+      }
+      logger.info(
+        `Booting Lambda Web Function endpoint origin server for ${displayIdent(endpointLogicalId)} ` +
+          `(revision ${displayIdent(resolved.revisionLogicalId)}, ${prepared.spec.runtime})...`
+      );
+      const serve = new WebFunctionServe(prepared, {
+        envOptions: opts.envOptions,
+        ...(opts.profileCredentials !== undefined && {
+          profileCredentials: opts.profileCredentials,
+        }),
+        ...(opts.extraStateProviders !== undefined && {
+          extraStateProviders: opts.extraStateProviders,
+        }),
+        host: opts.containerHost,
+        port: 0,
+        skipPull: opts.skipPull,
+        timeoutMs: opts.timeoutMs ?? WEB_FUNCTION_ORIGIN_READY_TIMEOUT_MS,
+      });
+      serves.push(serve);
+      const address = await serve.start();
+      if (!address) throw new Error('the server was stopped while starting');
+      targets.set(endpointLogicalId, address);
+      // A server that exits on its own leaves its routes answering 502; say why.
+      void serve.exited?.then((code) => {
+        if (serve.tornDown) return;
+        logger.warn(
+          `The Lambda Web Function endpoint origin server for ${displayIdent(endpointLogicalId)} ` +
+            `exited (exit code ${code ?? 'unknown'}); requests routed to it return 502. Restart start-cloudfront.`
+        );
+      });
+    } catch (err) {
+      // An endpoint origin is essential to the distribution, as a Function URL
+      // origin is: stop the servers already started and fail.
+      await Promise.all(serves.map((s) => s.teardown().catch(() => undefined)));
+      throw new LocalStartCloudFrontError(
+        `Failed to boot the Lambda Web Function endpoint origin ${displayIdent(endpointLogicalId)}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        err instanceof Error ? err : undefined
+      );
+    }
+  }
+  return { targets, serves };
+}
+
+/**
  * Boot one warm RIE container per unique Lambda@Edge function across the
  * distribution's behaviors (issue #400), returning the runners + an invoker map
  * keyed by backing-function logical id for {@link startCloudFrontServer}. Each
@@ -629,8 +743,8 @@ export function warnUnsupported(
   for (const origin of distribution.origins.values()) {
     if (origin.kind === 'custom') {
       logger.warn(
-        `Origin ${displayIdent(origin.originId)} is a custom (non-S3, non-Lambda-Function-URL) origin (${displayUntrustedValue(String(origin.domainName))}); ` +
-          `${getEmbedConfig().cliName} start-cloudfront serves S3 origins and Lambda Function URL origins only. Requests routed to it return 502.`
+        `Origin ${displayIdent(origin.originId)} is a custom (non-S3, non-Lambda) origin (${displayUntrustedValue(String(origin.domainName))}); ` +
+          `${getEmbedConfig().cliName} start-cloudfront serves S3, Lambda Function URL and Lambda Web Function endpoint origins only. Requests routed to it return 502.`
       );
     } else if (origin.kind === 's3-unresolved') {
       logger.warn(
@@ -904,6 +1018,33 @@ async function localStartCloudFrontCommand(
   // resolver so a Function URL origin Lambda gets its env vars + deployed
   // values + execution role, exactly like `cdkl invoke` (issue #380).
   const bootOpts = buildLambdaBootOptions(options, profileCredentials, extraStateProviders);
+
+  // A Web Function origin's server container is not `--rm` and its env holds
+  // the forwarded credentials, so a signal during start-up must remove the
+  // ones booted so far (and any `docker run` in flight) before exiting. Armed
+  // only when the distribution has such an origin; replaced by the serving
+  // shutdown handler below.
+  const webFunctionServes: WebFunctionServe[] = [];
+  let bootAborted = false;
+  const onBootSignal = (signal: 'SIGINT' | 'SIGTERM'): void => {
+    if (bootAborted) return;
+    bootAborted = true;
+    logger.info(`Received ${signal} during start-up; removing the web function containers...`);
+    void drainWebFunctionServes(webFunctionServes).then(() =>
+      process.exit(signal === 'SIGINT' ? 130 : 0)
+    );
+  };
+  const bootSigint = (): void => onBootSignal('SIGINT');
+  const bootSigterm = (): void => onBootSignal('SIGTERM');
+  const disarmBootSignals = (): void => {
+    process.off('SIGINT', bootSigint);
+    process.off('SIGTERM', bootSigterm);
+  };
+  if ([...initial.distribution.origins.values()].some((o) => o.kind === 'web-function')) {
+    process.on('SIGINT', bootSigint);
+    process.on('SIGTERM', bootSigterm);
+  }
+
   const { invokers: lambdaInvokers, runners: lambdaRunners } = await bootLambdaUrlOrigins(
     initial.distribution,
     initial.stacks,
@@ -918,10 +1059,18 @@ async function localStartCloudFrontCommand(
   );
 
   // From here, the booted RIE containers are live but the shutdown handler is
-  // not yet wired — a TLS-material or port-bind failure would otherwise strand
-  // every booted Lambda container. Stop them all before rethrowing.
+  // not yet wired — a Web Function origin, TLS-material or port-bind failure
+  // would otherwise strand every booted Lambda container. Stop them all before
+  // rethrowing.
   let server: StartedCloudFrontServer;
   try {
+    // Boot a server container per Lambda Web Function endpoint origin
+    // (go-to-k/cdkd#5516), run as `start-web-function` runs it.
+    const webFunctions = await bootWebFunctionOrigins(initial.distribution, initial.stacks, {
+      ...bootOpts,
+      sink: webFunctionServes,
+    });
+
     // TLS resolution (real termination opt-in). Resolved once at boot.
     let tls: FrontDoorTlsMaterials | undefined;
     if (tlsRequested) {
@@ -939,13 +1088,22 @@ async function localStartCloudFrontCommand(
       ...(lambdaInvokers.size > 0 && { lambdaInvokers }),
       ...(edgeInvokers.size > 0 && { edgeInvokers }),
       ...(deployedS3.readers.size > 0 && { s3OriginReaders: deployedS3.readers }),
+      ...(webFunctions.targets.size > 0 && { webFunctionOrigins: webFunctions.targets }),
     });
   } catch (err) {
-    await Promise.all(
-      [...lambdaRunners, ...edgeRunners].map((r) => r.stop().catch(() => undefined))
-    );
+    await Promise.all([
+      ...[...lambdaRunners, ...edgeRunners].map((r) => r.stop().catch(() => undefined)),
+      ...webFunctionServes.map((s) => s.teardown().catch(() => undefined)),
+    ]);
+    // A start-up signal: its handler owns the teardown and the exit code.
+    if (bootAborted) return await new Promise<never>(() => undefined);
+    disarmBootSignals();
     throw err;
   }
+
+  // The serving shutdown handler below takes over from the start-up one.
+  disarmBootSignals();
+  if (bootAborted) return await new Promise<never>(() => undefined);
 
   // D8.4-style load-bearing banner: verify.sh greps for this exact prefix.
   process.stdout.write(
@@ -1026,16 +1184,24 @@ async function localStartCloudFrontCommand(
     } catch {
       /* best-effort */
     }
-    // Tear down any Lambda Function URL origin + Lambda@Edge containers.
-    await Promise.all(
-      [...lambdaRunners, ...edgeRunners].map((r) =>
+    // Tear down any Lambda Function URL origin + Lambda@Edge containers, and
+    // any Web Function endpoint origin server (container + extracted bundle).
+    await Promise.all([
+      ...[...lambdaRunners, ...edgeRunners].map((r) =>
         r.stop().catch((err) => {
           logger.debug(
             `Lambda runner stop failed: ${err instanceof Error ? err.message : String(err)}`
           );
         })
-      )
-    );
+      ),
+      ...webFunctionServes.map((s) =>
+        s.teardown().catch((err) => {
+          logger.debug(
+            `Web function server teardown failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        })
+      ),
+    ]);
     // Release any deployed-S3 origin reader's S3 client socket pool.
     await Promise.all([...deployedS3.readers.values()].map((reader) => reader.close()));
     process.exit(exitCode);
@@ -1054,11 +1220,12 @@ export function createLocalStartCloudFrontCommand(
   const cmd = new Command('start-cloudfront')
     .description(
       'Run a long-running local server that serves a CloudFront distribution: its S3 origin content (resolved ' +
-        'from the BucketDeployment source in the cloud assembly) and its Lambda Function URL origins (the backing ' +
-        'Lambda is run locally via RIE), plus its viewer-request / viewer-response CloudFront Functions, ' +
+        'from the BucketDeployment source in the cloud assembly), its Lambda Function URL origins (the backing ' +
+        'Lambda is run locally via RIE) and its Lambda Web Function endpoint origins (the revision the endpoint ' +
+        'weights pick, run as start-web-function runs it), plus its viewer-request / viewer-response CloudFront Functions, ' +
         'reproducing the distribution routing locally so a rewrite / routing change is verifiable in seconds. ' +
-        'Serves S3 and Lambda Function URL origins, and runs Lambda@Edge functions in local RIE containers. Both ' +
-        'Lambda kinds need Docker: a Function URL origin that fails to boot stops start-up, while a Lambda@Edge ' +
+        'Serves S3, Lambda Function URL and Web Function endpoint origins, and runs Lambda@Edge functions in local ' +
+        'RIE containers. The Lambda kinds need Docker: a Function URL origin that fails to boot stops start-up (as does a Web Function origin), while a Lambda@Edge ' +
         'function that fails to boot is warn-and-skipped (its stage does not run). ' +
         'Other custom origins are not run (warn-and-skip; requests routed to one return 502). ' +
         'Tip: omit the target in a terminal to pick interactively.'
@@ -1129,7 +1296,7 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--no-pull',
-        "Skip 'docker pull' for a Lambda Function URL origin's base image (use the locally cached image)."
+        "Skip 'docker pull' for a Lambda Function URL / Web Function origin's base image (use the locally cached image)."
       )
     )
     .addOption(
@@ -1138,7 +1305,7 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
         'Bind to a deployed CloudFormation stack (ListStackResources). Resolves an S3 origin that has no local ' +
           'BucketDeployment source to its deployed bucket and serves it from real S3 on demand (the ' +
           'front/back-split case: files uploaded out of band), and resolves a Lambda Function URL / Lambda@Edge ' +
-          "function's env vars to the deployed physical IDs / exports. Use for CDK apps deployed via the upstream " +
+          "function's or a Web Function origin revision's env vars to the deployed physical IDs / exports. Use for CDK apps deployed via the upstream " +
           'CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass a value when the CFn stack name differs.'
       )
     )
@@ -1160,7 +1327,7 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--assume-role [arn]',
-        "Assume a Lambda Function URL origin's deployed execution role and forward STS-issued temp " +
+        "Assume a Lambda Function URL origin's (or a Web Function origin revision's) execution role and forward STS-issued temp " +
           'credentials into its container so the handler runs with the deployed permissions. Three forms: ' +
           '`--assume-role <arn>` (explicit ARN); `--assume-role` (bare, auto-resolves from state — requires ' +
           '--from-cfn-stack); `--no-assume-role` (opt out). Off by default (the dev shell credentials are forwarded).'

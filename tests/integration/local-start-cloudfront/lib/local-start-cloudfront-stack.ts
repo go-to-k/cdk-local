@@ -3,7 +3,14 @@ import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import {
+  CfnWebFunction,
+  CfnWebFunctionEndpoint,
+  CfnWebFunctionRevision,
+} from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import type { Construct } from 'constructs';
 
@@ -28,6 +35,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     `Authorization`) so the integ can assert `cdkl start-cloudfront`
  *     reproduces CloudFront's edge CORS: an OPTIONS preflight answered with
  *     `Access-Control-Allow-Origin` + a `GET` actual response carrying it.
+ *   - A second distribution, `WebDist`, in front of a Lambda Web Function
+ *     (go-to-k/cdkd#5516): its default behavior is an `HttpOrigin` on a
+ *     `WebFunctionEndpoint`'s `DomainName` with a lambda-type OAC, the same
+ *     CORS policy and the stamp function; a `/deploy/*` behavior targets a
+ *     second endpoint whose revision's code is a `BucketDeployment` with
+ *     `extract: false` (`Fn.select(0, upload.objectKeys)`). `SiteDist` stays
+ *     Docker-free; only `WebDist` runs containers.
  */
 export class LocalStartCloudFrontStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -163,6 +177,88 @@ export class LocalStartCloudFrontStack extends cdk.Stack {
       errorResponses: [
         { httpStatus: 403, responseHttpStatus: 200, responsePagePath: '/404.html' },
       ],
+    });
+
+    // --- WebDist: CloudFront in front of a Lambda Web Function (cdkd#5516) ---
+    const webCode = new s3assets.Asset(this, 'WebCode', { path: path.join(__dirname, '..', 'web') });
+    const webRole = new iam.Role(this, 'WebRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+    });
+    const webFn = new CfnWebFunction(this, 'WebFn', { functionName: 'cdkl-integ-cf-web-fn' });
+    const webRevision = (
+      id: string,
+      env: Record<string, string>,
+      s3Object: CfnWebFunctionRevision.S3ObjectProperty
+    ): CfnWebFunctionRevision =>
+      new CfnWebFunctionRevision(this, id, {
+        functionName: webFn.ref,
+        buildConfig: {
+          codeConfig: { s3Object },
+          runtimeConfig: { runtime: 'nodejs24.x' },
+        },
+        serviceConfig: { executionRoleArn: webRole.roleArn, environmentVariables: env },
+      });
+    const assetObject = { bucket: webCode.s3BucketName, key: webCode.s3ObjectKey };
+    const revOld = webRevision('WebRevOld', { REVISION_LABEL: 'old', GREETING: 'hi-old' }, assetObject);
+    const revMain = webRevision('WebRevMain', { REVISION_LABEL: 'main', GREETING: 'hi-main' }, assetObject);
+    const endpoint = new CfnWebFunctionEndpoint(this, 'WebEndpoint', {
+      functionName: webFn.ref,
+      endpointName: 'main',
+      endpointType: 'HomeRegion',
+      authType: 'AWS_IAM',
+      revisionWeights: [
+        { revisionId: revOld.attrRevisionId, weight: 10 },
+        { revisionId: revMain.attrRevisionId, weight: 90 },
+      ],
+    });
+
+    // The code shipped the other way: a BucketDeployment that does not extract.
+    const codeBucket = new s3.Bucket(this, 'WebCodeBucket', {
+      versioned: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+    const upload = new s3deploy.BucketDeployment(this, 'WebUpload', {
+      sources: [s3deploy.Source.asset(path.join(__dirname, '..', 'web'))],
+      destinationBucket: codeBucket,
+      extract: false,
+      prune: false,
+    });
+    const revDeploy = webRevision(
+      'WebRevDeploy',
+      { REVISION_LABEL: 'deploy', GREETING: 'hi-deploy' },
+      { bucket: codeBucket.bucketName, key: cdk.Fn.select(0, upload.objectKeys) }
+    );
+    const deployEndpoint = new CfnWebFunctionEndpoint(this, 'WebDeployEndpoint', {
+      functionName: webFn.ref,
+      endpointName: 'deploy',
+      endpointType: 'HomeRegion',
+      authType: 'AWS_IAM',
+      revisionWeights: [{ revisionId: revDeploy.attrRevisionId, weight: 100 }],
+    });
+
+    const oac = new cloudfront.FunctionUrlOriginAccessControl(this, 'WebOac');
+    const webOrigin = (ep: CfnWebFunctionEndpoint): origins.HttpOrigin =>
+      new origins.HttpOrigin(ep.attrDomainName, {
+        originAccessControlId: oac.originAccessControlId,
+      });
+
+    new cloudfront.Distribution(this, 'WebDist', {
+      defaultBehavior: {
+        origin: webOrigin(endpoint),
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        responseHeadersPolicy: corsPolicy,
+        functionAssociations: [
+          { function: stampHeader, eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE },
+        ],
+      },
+      additionalBehaviors: {
+        '/deploy/*': {
+          origin: webOrigin(deployEndpoint),
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        },
+      },
     });
   }
 }

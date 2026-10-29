@@ -83,7 +83,7 @@ Per-command notes — full capabilities are in [Supported resources](#supported-
 - **`run-task`** runs one ECS task to completion; declared container ports publish on the host (a privileged port like 80 auto-remaps to a free high port with a WARN, or `--host-port <container>=<host>` pins one).
 - **`start-service`** runs the service's replicas with no load balancer; a single-replica run publishes host ports the same way. Both `start-service` and `start-alb` print each host URL in a `Service endpoints:` banner after boot.
 - **`start-alb`** stands up the ECS service(s) behind an ALB with full listener-rule routing, auth, and WebSocket proxying ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
-- **`start-cloudfront`** serves the `viewer-request` -> origin -> `viewer-response` pipeline over S3 / Lambda Function URL origins, running CloudFront Functions and Lambda@Edge locally ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)).
+- **`start-cloudfront`** serves the `viewer-request` -> origin -> `viewer-response` pipeline over S3 / Lambda Function URL / Lambda Web Function endpoint origins, running CloudFront Functions and Lambda@Edge locally ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)).
 - **`invoke-agentcore`** runs a Bedrock AgentCore Runtime agent once ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
 - **`start-agentcore`** serves an AgentCore Runtime warm — one container you hit repeatedly until `^C` ([details](docs/cli-reference.md#cdkl-start-agentcore-serve-an-agentcore-runtimes-http-contract--ws-locally)).
 - **`start-web-function`** serves a Lambda Web Function: one revision's code bundle in a container listening on `AWS_LAMBDA_HTTP_ENDPOINT`, on a local port ([details](docs/cli-reference.md#cdkl-start-web-function-serve-a-lambda-web-function-locally)).
@@ -99,7 +99,7 @@ cdkl run-task           # ECS task, run once
 cdkl start-service      # ECS service replicas (no load balancer)
 cdkl start-alb          # ECS behind an ALB (front-door per listener)
 cdkl start-api          # API Gateway REST v1 / HTTP v2 / WebSocket + Function URLs
-cdkl start-cloudfront   # CloudFront: S3 / Lambda Function URL origins + Functions (static site / SPA / SSR)
+cdkl start-cloudfront   # CloudFront: S3 / Function URL / Web Function origins + Functions (static site / SPA / SSR)
 cdkl invoke-agentcore   # Bedrock AgentCore Runtime (HTTP / MCP / A2A / AGUI)
 cdkl start-agentcore    # serve an AgentCore Runtime warm: HTTP (POST /invocations + /ws) / MCP (POST /mcp) / A2A (POST /), repeatable
 cdkl start-web-function # Lambda Web Function: one revision's HTTP server on a local port
@@ -176,7 +176,7 @@ Three boundaries: the Docker daemon pulls images through its own egress (configu
 
 ## Environment variables — `--env-vars`
 
-Every command except `start-cloudfront` (whose CloudFront Functions and Lambda@Edge have no env vars) accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
+Every command except `start-cloudfront` (whose CloudFront Functions and Lambda@Edge have no env vars, and whose Function URL / Web Function origins take their environment from the template as-is) accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
 
 ```bash
 cdkl invoke --env-vars ./env.json
@@ -296,7 +296,7 @@ Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each l
 | ECS services | `start-service` |
 | Cloud Map / Service Connect registry | `start-service` / `start-alb` — service discovery between local replicas |
 | ALB-fronted ECS / Lambda services | `start-alb` — HTTP / HTTPS listeners, all six listener-rule conditions, weighted forwards, redirect / fixed-response, mixed ECS + Lambda targets, authenticate-cognito / authenticate-oidc (local Bearer-JWT enforcement), WebSocket Upgrade |
-| CloudFront distributions (S3 + Lambda Function URL origins + CloudFront Functions + Lambda@Edge) | `start-cloudfront` — **CloudFront Functions** (viewer-request / viewer-response) and **Lambda@Edge** (real RIE container, all four event types) over an S3 origin served from **local files** — the **BucketDeployment** source or a `--origin <id>=<dir>` dir — or from **real S3** on demand (`--from-cfn-stack`); plus Lambda Function URL origins, **KeyValueStore** reads, `ResponseHeadersPolicy` CORS, `--tls`, `--watch` ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)) |
+| CloudFront distributions (S3 + Lambda Function URL + Lambda Web Function endpoint origins + CloudFront Functions + Lambda@Edge) | `start-cloudfront` — **CloudFront Functions** (viewer-request / viewer-response) and **Lambda@Edge** (real RIE container, all four event types) over an S3 origin served from **local files** — the **BucketDeployment** source or a `--origin <id>=<dir>` dir — or from **real S3** on demand (`--from-cfn-stack`); plus Lambda Function URL origins, Lambda Web Function endpoint origins (the endpoint's revision run as `start-web-function` runs it), **KeyValueStore** reads, `ResponseHeadersPolicy` CORS, `--tls`, `--watch` ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)) |
 | Lambda Web Functions (`WebFunction` / `WebFunctionRevision` / `WebFunctionEndpoint`) | `start-web-function` — one revision (the endpoint's highest weight, or `--revision`) from its cdk.out code asset (an `s3assets.Asset`, or an `extract: false` `BucketDeployment` source), `nodejs24.x` |
 | Lambda MicroVM images (`MicrovmImage`) | `start-microvm` — the Dockerfile from its cdk.out code asset, `/ready` / `/validate` / `/run` / `/suspend` / `/resume` / `/terminate` hooks, `--count` MicroVMs each with its own URL, port routing and header stripping |
 | Bedrock AgentCore Runtime agents | `invoke-agentcore` — single-shot (boot, invoke, tear down); `start-agentcore` — long-running warm serve, one container kept warm to hit repeatedly until `^C` |

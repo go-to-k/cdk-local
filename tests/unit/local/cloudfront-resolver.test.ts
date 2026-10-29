@@ -11,6 +11,7 @@ import {
   pickKvsLogicalIdFromArn,
   pickLambdaEdgeFunctionLogicalId,
   pickTargetFunctionLogicalId,
+  pickWebFunctionEndpointLogicalIdFromOrigin,
   resolveBucketDeploymentDirs,
   resolveCloudFrontDistribution,
 } from '../../../src/local/cloudfront-resolver.js';
@@ -360,6 +361,111 @@ describe('resolveCloudFrontDistribution — Lambda Function URL origin', () => {
     const stack = buildStack(template);
     const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
     expect(resolved.origins.get('lambda')?.kind).toBe('custom');
+  });
+});
+
+/** A distribution whose default origin is an HttpOrigin on a Web Function endpoint's DomainName. */
+function webFunctionDistributionTemplate(
+  customOriginConfig: Record<string, unknown> = { OriginProtocolPolicy: 'https-only' },
+  endpointType = 'AWS::Lambda::WebFunctionEndpoint'
+): CloudFormationTemplate {
+  return {
+    Resources: {
+      WebFn: { Type: 'AWS::Lambda::WebFunction', Properties: { FunctionName: 'web' } },
+      Endpoint: {
+        Type: endpointType,
+        Properties: { FunctionName: { Ref: 'WebFn' }, RevisionWeights: [] },
+      },
+      Oac: {
+        Type: 'AWS::CloudFront::OriginAccessControl',
+        Properties: {
+          OriginAccessControlConfig: {
+            Name: 'oac',
+            OriginAccessControlOriginType: 'lambda',
+            SigningBehavior: 'always',
+            SigningProtocol: 'sigv4',
+          },
+        },
+      },
+      Dist: {
+        Type: 'AWS::CloudFront::Distribution',
+        Properties: {
+          DistributionConfig: {
+            Origins: [
+              {
+                Id: 'web',
+                DomainName: { 'Fn::GetAtt': ['Endpoint', 'DomainName'] },
+                OriginAccessControlId: { 'Fn::GetAtt': ['Oac', 'Id'] },
+                CustomOriginConfig: customOriginConfig,
+              },
+            ],
+            DefaultCacheBehavior: { TargetOriginId: 'web' },
+          },
+        },
+      },
+    },
+  };
+}
+
+describe('resolveCloudFrontDistribution — Lambda Web Function endpoint origin', () => {
+  it('resolves an HttpOrigin on the endpoint DomainName to web-function', () => {
+    const stack = buildStack(webFunctionDistributionTemplate());
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    expect(resolved.origins.get('web')).toEqual({
+      kind: 'web-function',
+      originId: 'web',
+      endpointLogicalId: 'Endpoint',
+    });
+  });
+
+  it('carries a literal OriginReadTimeout', () => {
+    const stack = buildStack(
+      webFunctionDistributionTemplate({ OriginProtocolPolicy: 'https-only', OriginReadTimeout: 90 })
+    );
+    const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get('web');
+    expect(origin).toEqual({
+      kind: 'web-function',
+      originId: 'web',
+      endpointLogicalId: 'Endpoint',
+      readTimeoutSeconds: 90,
+    });
+  });
+
+  it('drops a non-literal or non-positive OriginReadTimeout', () => {
+    for (const value of [{ Ref: 'Timeout' }, 0, -1, '30']) {
+      const stack = buildStack(
+        webFunctionDistributionTemplate({ OriginProtocolPolicy: 'https-only', OriginReadTimeout: value })
+      );
+      const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get('web');
+      expect(origin).toEqual({ kind: 'web-function', originId: 'web', endpointLogicalId: 'Endpoint' });
+    }
+  });
+
+  it('stays custom when the DomainName GetAtt names a resource of another type', () => {
+    const stack = buildStack(
+      webFunctionDistributionTemplate(undefined, 'AWS::ElasticLoadBalancingV2::LoadBalancer')
+    );
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    expect(resolved.origins.get('web')?.kind).toBe('custom');
+  });
+
+  it('pickWebFunctionEndpointLogicalIdFromOrigin reads only GetAtt DomainName on an endpoint', () => {
+    const template = webFunctionDistributionTemplate();
+    expect(
+      pickWebFunctionEndpointLogicalIdFromOrigin(
+        { 'Fn::GetAtt': ['Endpoint', 'DomainName'] },
+        template
+      )
+    ).toBe('Endpoint');
+    for (const value of [
+      { 'Fn::GetAtt': ['Endpoint', 'EndpointArn'] },
+      { 'Fn::GetAtt': ['Missing', 'DomainName'] },
+      { 'Fn::GetAtt': ['WebFn', 'DomainName'] },
+      { Ref: 'Endpoint' },
+      'abc.lambda-url.us-east-1.on.aws',
+    ]) {
+      expect(pickWebFunctionEndpointLogicalIdFromOrigin(value, template)).toBeUndefined();
+    }
   });
 });
 

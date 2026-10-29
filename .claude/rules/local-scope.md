@@ -8,7 +8,7 @@ command's emulation surface. Flag spellings live in README.md.
 
 **Container env is one shared rule.** `resolveLambdaContainerEnv` resolves the
 env of EVERY locally booted Lambda container — direct `cdkl invoke`, ALB Lambda
-targets, CloudFront Function URL origins, Lambda@Edge — once per backing Lambda
+targets, CloudFront Lambda origins, Lambda@Edge, web functions — once each
 at BOOT: `Environment.Variables`, `--from-cfn-stack` intrinsic substitution,
 `--assume-role` STS / `--profile` creds. Decrypted `SecureString` values stay OFF
 the `docker run` argv — except under finch on macOS / Windows, which rewrites
@@ -158,35 +158,34 @@ One distribution per invocation.
   (`ListStackResources`), a literal `DomainName`, else
   `cloudfront:GetDistributionConfig`. `AccessDenied` warns with the `--origin`
   hatch.
-- `--cache-origin` caches that reader only (a no-op, WARNED, without
+- `--cache-origin` caches that reader only (a WARNED no-op without
   `--from-cfn-stack`).
 - Path patterns route across `DefaultCacheBehavior` + `CacheBehaviors[]`; a
   viewer-request function returning a `statusCode` short-circuits.
 - **ResponseHeadersPolicy CORS** (`CorsConfig`) is reproduced per behavior: a
   matching `OPTIONS` preflight is answered `204` + CORS headers before the origin
-  is hit, and a real response gets them added LAST — so
-  `CorsConfig.OriginOverride: false` is NOT distinguished from `true`. Origin
-  matching is literal-or-`*` (no wildcard subdomains; an AWS-managed policy id is
-  not fetchable, so its CORS is skipped). Non-CORS sections are not applied.
+  is hit, and a real response gets them added LAST (`OriginOverride: false` is
+  NOT distinguished). Origin matching is literal-or-`*`; an AWS-managed policy
+  id is not fetchable, so its CORS is skipped. Non-CORS sections are not applied.
 - **Lambda Function URL origins** resolve `DomainName` -> `AWS::Lambda::Url` ->
   the backing function in a warm RIE container (payload v2.0 event); a pure-S3
-  distribution needs no Docker. **AWS_IAM auth on the Function URL is NOT enforced, and response
-  streaming is buffered.**
-- **KeyValueStore reads** (`cf.kvs().get` / `exists`): the
-  `import cf from 'cloudfront'` line is stripped and a `cf` module injected,
-  backed by the deployed store (resolved by NAME via `ListKeyValueStores`, read
-  through the SigV4A-signed `GetKey` API) or a local JSON map (`--kvs-file`). A
-  read with NO binding fails naming both flags. `meta()` / `count()` and writes
-  are NOT reproduced.
-- **Lambda@Edge** functions ARE run, each in a warm RIE container, with all four
-  event types wired — `viewer-request` / `origin-request` (either may
-  short-circuit or rewrite) -> origin -> `origin-response` / `viewer-response`.
-  The `request.origin` rewrite block and the edge tiers are out of scope.
-- **Origins: S3 + Lambda Function URL ONLY.** A generic custom origin and the 2.0
-  `cf.fetch` API are WARN-and-skip; unresolved origins return 502.
-- `--watch` atomically swaps the in-memory routing model under the live socket:
-  viewer functions and S3 origins reload, but a Function URL origin's warm
-  container is BOOT-TIME ONLY.
+  distribution needs no Docker. **AWS_IAM auth is NOT enforced; streaming is
+  buffered.**
+- **Web Function endpoint origins** (`GetAtt[<endpoint>, DomainName]`) run the
+  endpoint's pick as `start-web-function` does (shared `WebFunctionServe`) and
+  forward the origin request to it (502 unreachable, 504 past
+  `OriginReadTimeout`). OAC signing and `AuthType` are NOT reproduced.
+- **KeyValueStore reads** (`cf.kvs().get` / `exists`) are backed by the deployed
+  store (by NAME via `ListKeyValueStores`, then the SigV4A `GetKey`) or a local
+  JSON map (`--kvs-file`); a read with NO binding fails naming both flags.
+  `meta()` / `count()` and writes are NOT reproduced.
+- **Lambda@Edge** functions ARE run in warm RIE containers at all four event
+  types (`viewer-request` / `origin-request` may short-circuit or rewrite). The
+  `request.origin` rewrite block and the edge tiers are out of scope.
+- **Any other custom origin** and the 2.0 `cf.fetch` API are WARN-and-skip;
+  unresolved origins return 502.
+- `--watch` swaps the routing model under the live socket: viewer functions and
+  S3 origins reload; Lambda / Web Function origin containers are BOOT-TIME ONLY.
 
 ## Lambda Web Functions: `start-web-function`
 
