@@ -435,6 +435,7 @@ describe('fallbackSubnetOctets / isSubnetTakenError', () => {
     expect(
       isSubnetTakenError('subnet 169.254.171.0/24 is already used on the host or by another config')
     ).toBe(true);
+    expect(isSubnetTakenError('cannot create network: networks have overlapping IPv4')).toBe(true);
     expect(isSubnetTakenError('Cannot connect to the Docker daemon')).toBe(false);
     expect(isSubnetTakenError('network with name cdkl-svc-1 already exists')).toBe(false);
   });

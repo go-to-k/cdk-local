@@ -183,7 +183,7 @@ export function fallbackSubnetOctets(preferred: number): number[] {
  * next candidate subnet may succeed. Any other failure is not retried.
  */
 export function isSubnetTakenError(message: string): boolean {
-  return /pool overlaps|overlaps with|is already used|already in use/i.test(message);
+  return /pool overlaps|overlaps with|overlapping|is already used|already in use/i.test(message);
 }
 
 /**
@@ -342,6 +342,12 @@ export async function sweepOrphanedSvcNetworks(prefix: string): Promise<string[]
     }
     if (owner.pid !== '' && ownerIsAlive(owner.pid, owner.host)) {
       // A concurrent run that has not attached its first replica yet.
+      if (owner.host !== hostname()) {
+        logger.info(
+          `Keeping shared network ${name}: it was created on host ${displayToolOutput(owner.host)}, ` +
+            'whose processes cannot be checked from here; `docker network rm` it if it is stale.'
+        );
+      }
       continue;
     }
 
@@ -384,10 +390,11 @@ async function createNetworkAndSidecar(args: {
   let sidecarIp: string | undefined;
   let lastCidr = '';
   let lastDetail = '';
+  logger.info(`Creating docker network ${networkName}...`);
   for (const octet of subnetOctets) {
     const subnet = buildEndpointSubnet(octet);
     lastCidr = subnet.cidr;
-    logger.info(`Creating docker network ${networkName} (subnet ${subnet.cidr})...`);
+    logger.debug(`Trying subnet ${subnet.cidr} for ${networkName}`);
     try {
       await execFileAsync(getDockerCmd(), [
         'network',
@@ -400,6 +407,7 @@ async function createNetworkAndSidecar(args: {
         networkName,
       ]);
       sidecarIp = subnet.sidecarIp;
+      logger.info(`Created docker network ${networkName} (subnet ${subnet.cidr})`);
       break;
     } catch (err) {
       const e = err as { stderr?: string; message?: string };

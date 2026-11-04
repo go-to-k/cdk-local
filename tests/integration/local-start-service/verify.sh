@@ -169,8 +169,19 @@ echo "    OK: 1 shared network on 169.254.171.0/24"
 # to die with "Pool overlaps with other one on this address space" because
 # both created their shared network on 169.254.171.0/24. It must come up on
 # another /24, its replicas' metadata URI must follow that /24, and its
-# startup sweep must leave the first run's network alone. The service runs
+# startup sweep must leave a live peer's network alone. The service runs
 # 2 replicas, so neither run publishes a host port and the two can coexist.
+#
+# The first run already has replicas attached, which the sweep has always
+# kept. A peer still building its images has NO replica yet; stand one in
+# with an empty network labelled as owned by this (live) script, which only
+# the owner-label check keeps.
+LIVE_PEER_NET="cdkl-svc-livepeer849"
+HOST_NAME=$(node -p 'require("os").hostname()')
+docker network create --driver bridge \
+  --label "cdk-local.owner-pid=$$" --label "cdk-local.owner-host=${HOST_NAME}" \
+  "${LIVE_PEER_NET}" >/dev/null
+LIVE_PEER_ID=$(docker network inspect "${LIVE_PEER_NET}" --format '{{.Id}}' | cut -c1-12)
 echo "==> Booting a concurrent second start-service (issue #849)"
 ${CDKL} start-service CdkLocalStartServiceFixture:WebService \
   --no-pull --container-host 127.0.0.1 \
@@ -196,7 +207,13 @@ if ! docker network inspect "${NET_ID}" >/dev/null 2>&1; then
   echo "FAIL: the second run's startup sweep reclaimed the first run's live network"
   exit 1
 fi
-NET2_ID=$(docker network ls --filter "name=cdkl-" --format '{{.ID}}' | grep -v "^${NET_ID}" || true)
+if ! docker network inspect "${LIVE_PEER_NET}" >/dev/null 2>&1; then
+  echo "FAIL: the second run's startup sweep reclaimed a live peer's replica-less network"
+  exit 1
+fi
+docker network rm "${LIVE_PEER_NET}" >/dev/null
+NET2_ID=$(docker network ls --filter "name=cdkl-" --format '{{.ID}}' \
+  | grep -v -e "^${NET_ID}" -e "^${LIVE_PEER_ID}" || true)
 if [[ $(printf '%s\n' "${NET2_ID}" | grep -c .) -ne 1 ]]; then
   echo "FAIL: expected exactly 1 more cdkl-* network for the second run, found: ${NET2_ID}"
   docker network ls --filter "name=cdkl-"
@@ -211,13 +228,13 @@ fi
 OCTET2="${BASH_REMATCH[1]}"
 NET2_NAME=$(docker network inspect "${NET2_ID}" --format '{{.Name}}')
 REPLICA2=$(docker network inspect "${NET2_ID}" --format '{{range .Containers}}{{.Name}} {{end}}' \
-  | tr ' ' '\n' | grep -v -e '^$' -e "^${NET2_NAME}-metadata\$" | head -1)
+  | tr ' ' '\n' | grep -v -e '^$' -e "^${NET2_NAME}-metadata\$" | head -1 || true)
 if [[ -z "${REPLICA2}" ]]; then
   echo "FAIL: no replica container attached to the second run's network ${NET2_NAME}"
   exit 1
 fi
 SIDECAR2_IP=$(docker inspect "${NET2_NAME}-metadata" \
-  --format "{{(index .NetworkSettings.Networks \"${NET2_NAME}\").IPAddress}}")
+  --format "{{(index .NetworkSettings.Networks \"${NET2_NAME}\").IPAddress}}" || true)
 META_URI2=$(docker inspect "${REPLICA2}" --format '{{range .Config.Env}}{{println .}}{{end}}' \
   | grep '^ECS_CONTAINER_METADATA_URI_V4=' || true)
 if [[ "${SIDECAR2_IP}" != "169.254.${OCTET2}.2" ]] \
@@ -227,7 +244,11 @@ if [[ "${SIDECAR2_IP}" != "169.254.${OCTET2}.2" ]] \
   exit 1
 fi
 echo "    OK: second run on ${SUBNET2}, sidecar ${SIDECAR2_IP}, ${META_URI2}"
-kill -TERM "${CDKL2_PID}"
+kill -TERM "${CDKL2_PID}" || {
+  echo "FAIL: the second start-service had already exited"
+  cat "${OUT_FILE2}"
+  exit 1
+}
 for i in $(seq 1 60); do
   if ! kill -0 "${CDKL2_PID}" 2>/dev/null; then break; fi
   sleep 1
