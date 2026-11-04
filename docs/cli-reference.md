@@ -1403,8 +1403,12 @@ Every replica booted in one CLI invocation joins ONE shared docker
 network (`<cluster>-svc-<rand>`, subnet `169.254.171.0/24`, with the
 metadata-endpoint sidecar at `169.254.171.2`) so peer services reach
 each other by container IP / network alias without `docker network
-connect` choreography. (`cdkl run-task` differs — it uses a per-task
-network on `169.254.170.0/24`.)
+connect` choreography. When another `start-service` / `start-alb` process
+already holds that /24, the run takes the next free link-local /24
+instead, and the sidecar address and every container's
+`ECS_CONTAINER_METADATA_URI_V4` follow it — so several processes can run
+side by side. (`cdkl run-task` differs — it uses a per-task network on
+`169.254.170.0/24`.)
 
 When two or more `<targets>` are supplied, every service is booted into
 a shared Cloud Map / Service Connect registry on that one network so peer

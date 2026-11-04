@@ -1616,14 +1616,13 @@ published — Cloud Map, the front-door pool, and its Service Connect
 aliases unless it publishes a host port — only once its app listens
 (the same readiness probe and budget as a `--watch` reload).
 
-Each replica gets its own per-task docker network on a UNIQUE
-`169.254.<N>.0/24` subnet (170, 171, 172, ...; see
+Every replica of one CLI invocation joins ONE shared docker network on
+`169.254.171.0/24`, with the metadata-endpoint sidecar at
+`169.254.171.2`. A concurrent `start-service` / `start-alb` process that
+finds that /24 taken walks on to the next free `169.254.<N>.0/24` (see
 [src/local/ecs-network.ts](../src/local/ecs-network.ts)
-`buildEndpointSubnet`) so concurrent replicas don't collide on a
-single /24 — the same metadata-endpoint sidecar starts at
-`169.254.<N>.2` per replica and every container's
-`ECS_CONTAINER_METADATA_URI_V4` is rewritten to point at its own
-replica's sidecar.
+`createSharedSvcNetwork`); its sidecar starts at `169.254.<N>.2` and
+every container's `ECS_CONTAINER_METADATA_URI_V4` points at it.
 
 > **Host-port publishing and multi-replica services.** A
 > **single-replica** service publishes its container `PortMappings` to

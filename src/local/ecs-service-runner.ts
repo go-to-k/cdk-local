@@ -386,8 +386,8 @@ export function backoffDelayMs(restartCount: number): number {
  * Maximum number of replica indices the per-replica subnet allocator
  * can serve without modulo-wrap collision. The allocator below walks
  * the link-local /24 range `169.254.170.0..169.254.253.0` (84 octets)
- * and **skips 171** because that octet is owned by the shared-service
- * network in design § 5 Option A (see `SHARED_SVC_SUBNET_OCTET`), so
+ * and **skips 171** because that octet is the shared-service network's
+ * preferred /24 in design § 5 Option A (see `SHARED_SVC_SUBNET_OCTET`), so
  * the usable count is 83. The CLI's `--max-tasks` parser enforces this
  * cap before any boot work fires.
  */
@@ -402,8 +402,10 @@ export const SUBNET_ALLOCATOR_RANGE = 83;
  * runs always go through the shared network (design § 5 Option A) so
  * this allocator is unreachable in the standard path.
  *
- * Returns the second-from-last octet of the per-replica /24 (170 →
- * `169.254.170.0/24`). Walks the 83-slot output range
+ * Returns the PREFERRED second-from-last octet of the per-replica /24
+ * (170 → `169.254.170.0/24`); `createTaskNetwork` walks on to the next
+ * free /24 when another network holds it (issue #849), and the replica's
+ * sidecar IP follows the /24 it got. Walks the 83-slot output range
  * `[170, 172, 173, ..., 253]` — 171 is intentionally **skipped**
  * because it's reserved for the shared-service network sidecar
  * (`SHARED_SVC_SUBNET_OCTET`), and assigning a per-replica network
