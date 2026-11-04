@@ -357,6 +357,16 @@ export { buildCloudMapIndex, type CloudMapIndex } from './local/cloud-map-resolv
 export { EcsTaskResolutionError } from './local/ecs-task-resolver.js';
 
 /**
+ * Issue #847 — refuse a resolved ECS task whose container image is still an
+ * unresolvable same-stack ECR repository (`ResolvedEcsImage` kind
+ * `same-stack-ecr`) that no `--image-override` covers. A host that resolves a
+ * task / service itself and runs it through `runEcsTask` calls this after its
+ * own override pass, so the needs-state error lands before any network or
+ * container exists (the runner otherwise refuses the image at prepare time).
+ */
+export { assertEcsTaskImagesResolvable } from './local/ecs-task-resolver.js';
+
+/**
  * `invoke-agentcore` Bedrock AgentCore Runtime resolution + protocol clients.
  * `resolveAgentCoreTarget` maps a target argument to a runnable container
  * runtime; `waitForAgentCorePing` / `invokeAgentCore` speak the HTTP
