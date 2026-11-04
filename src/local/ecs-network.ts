@@ -662,9 +662,11 @@ export async function serveTaskRoleFromSharedSidecar(
   if (net.taskRoleArn !== undefined) {
     throw new DockerRunnerError(
       `This run's services resolve to different task roles (${displayToolOutput(net.taskRoleArn)} ` +
-        `and ${displayToolOutput(args.roleArn)}), but the shared metadata sidecar at ` +
+        `and ${displayToolOutput(args.roleArn)}; on a --watch reload, the task role changed ` +
+        `since startup), but the shared metadata sidecar at ` +
         `${METADATA_ENDPOINT_IP} can serve only one. Pass one role for every service with ` +
-        '`--assume-role <arn>`, or start the services in separate runs one at a time.'
+        '`--assume-role <arn>`, start the services in separate runs one at a time, or restart ' +
+        'the run after changing the role.'
     );
   }
   if (net.sidecarIp !== METADATA_ENDPOINT_IP) {

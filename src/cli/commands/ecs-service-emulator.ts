@@ -705,22 +705,25 @@ export async function runEcsServiceEmulator(
     }
 
     const registry = new CloudMapRegistry();
-    const sidecarCredentials = await resolveSharedSidecarCredentials(options);
     // A task role puts the shared network on 169.254.170.0/24, the only
     // place SDKs read task-role credentials from (issue #854). Its sidecar
     // starts with NO credentials — not even `--profile`'s, which no
     // container under a task role needs — and is restarted with the
     // assumed role's credentials when the first service resolves its role
-    // (`serveTaskRoleFromSharedSidecar`).
+    // (`serveTaskRoleFromSharedSidecar`). The `--profile` credentials are
+    // then not resolved at all, so they never reach the sidecar or the
+    // on-disk profile file either.
     const taskRoleMode = isTaskRoleInEffect(options);
+    const sidecarCredentials = taskRoleMode
+      ? undefined
+      : await resolveSharedSidecarCredentials(options);
     try {
       sharedNetwork = await createSharedSvcNetwork({
         prefix: options.cluster,
         skipPull,
         cluster: options.cluster,
         ...(taskRoleMode && { taskRole: true }),
-        ...(sidecarCredentials !== undefined &&
-          !taskRoleMode && { credentials: sidecarCredentials }),
+        ...(sidecarCredentials !== undefined && { credentials: sidecarCredentials }),
       });
     } catch (err) {
       throw new LocalStartServiceError(

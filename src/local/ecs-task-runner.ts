@@ -36,7 +36,7 @@ import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
 import {
   buildMetadataEnv,
   createTaskNetwork,
-  TASK_ROLE_SUBNET_OCTET,
+  SHARED_SVC_SUBNET_OCTET,
   destroyTaskNetwork,
   type TaskNetwork,
 } from './ecs-network.js';
@@ -215,7 +215,7 @@ export interface RunEcsTaskOptions {
   imageOverrideByContainer?: ReadonlyMap<string, string>;
   /**
    * Optional second-from-last octet of the link-local /24 subnet for this
-   * task's docker network (1..254). Default 170 (AWS-documented). It is a
+   * task's docker network (1..254). Default 171 without a task role. It is a
    * preference: the create walks on to a free /24 when another network
    * holds it. Ignored when {@link taskRoleArn} is set (pinned to 170). See
    * `buildEndpointSubnet` in `ecs-network.ts`.
@@ -625,10 +625,10 @@ export async function runEcsTask(
     // SDKs read `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` only from
     // 169.254.170.2, so a run that holds that /24 is a conflict, not a
     // reason to move. Without a role nothing needs that address, so the
-    // create prefers it and walks on to a free /24 when a concurrent run
-    // holds it (issue #850).
+    // create walks the free /24s from 171 (the walk skips 170), leaving
+    // 170 to task-role runs (issue #850).
     if (!options.taskRoleArn) {
-      netCreateOpts.subnetOctet = options.subnetOctet ?? TASK_ROLE_SUBNET_OCTET;
+      netCreateOpts.subnetOctet = options.subnetOctet ?? SHARED_SVC_SUBNET_OCTET;
     }
     state.network = await createTaskNetwork(netCreateOpts);
   }

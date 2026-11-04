@@ -428,11 +428,11 @@ describe('createTaskNetwork subnet selection (issue #849)', () => {
     );
   });
 
-  it('walks from 170 when given octet 170 (a run-task without a task role, issue #850)', async () => {
-    installFakeDaemon(new Set(['169.254.170.0/24']));
-    const net = await createTaskNetwork({ prefix: 'cdkl', skipPull: true, subnetOctet: 170 });
-    expect(createdSubnets()).toEqual(['169.254.170.0/24', '169.254.171.0/24']);
-    expect(net.sidecarIp).toBe('169.254.171.2');
+  it('walks past a taken 171 without touching 170 (a run-task without a task role, issue #850)', async () => {
+    installFakeDaemon(new Set(['169.254.171.0/24']));
+    const net = await createTaskNetwork({ prefix: 'cdkl', skipPull: true, subnetOctet: 171 });
+    expect(createdSubnets()).toEqual(['169.254.171.0/24', '169.254.172.0/24']);
+    expect(net.sidecarIp).toBe('169.254.172.2');
   });
 
   it('treats an explicit octet as a preference and walks on when it is taken', async () => {

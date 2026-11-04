@@ -1431,10 +1431,12 @@ Plus the standard shared options: `-a/--app`, `-c/--context`, `--profile`,
 For every task invocation cdk-local:
 
 1. Creates a fresh docker network `cdkl-task-<random>` (or
-   `--cluster <name>-task-<random>`) with subnet `169.254.170.0/24`.
+   `--cluster <name>-task-<random>`) with subnet `169.254.170.0/24` with a task role,
+   else `169.254.171.0/24` or the next free `169.254.<N>.0/24` (see below).
 2. Starts the AWS-published
    `amazon/amazon-ecs-local-container-endpoints:latest-amd64` sidecar
-   on the network at the well-known IP `169.254.170.2`.
+   on the network at `.2` of that subnet (the well-known `169.254.170.2`
+   with a task role).
 3. Starts every user container on the same network with
    `--network-alias <container-name>` so siblings resolve each other by
    their CFn `ContainerDefinitions[].Name`.
@@ -1448,9 +1450,10 @@ only from the fixed address `169.254.170.2`, so a run with a task role always
 uses `169.254.170.0/24`, and only one run with a task role (`run-task`, or
 `start-service` / `start-alb` with `--assume-role`) can be active per host. A
 second one fails with an error naming the docker network that holds the subnet.
-A `run-task` without a task role prefers `169.254.170.0/24` too, but walks on to
-the next free `169.254.<N>.0/24` when another run holds it, and its containers'
-`ECS_CONTAINER_METADATA_URI_V4` follows the sidecar there.
+A `run-task` without a task role never takes `169.254.170.0/24`: it uses
+`169.254.171.0/24`, or the next free `169.254.<N>.0/24` when another run holds
+that, and its containers' `ECS_CONTAINER_METADATA_URI_V4` follows the sidecar
+there.
 
 `awsvpc` network mode is mapped to `bridge` locally with a warn line —
 docker cannot emulate ENI-per-task. AWS SDK calls from inside the

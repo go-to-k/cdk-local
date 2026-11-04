@@ -81,7 +81,7 @@ describe('runEcsTask network subnet (issues #850 / #854)', () => {
     stubs.createTaskNetwork.mockReset();
   });
 
-  it('asks for 170 as a preference (walkable) when no task role is set', async () => {
+  it('asks for 171 as a preference (walkable, never 170) when no task role is set', async () => {
     stubs.createTaskNetwork.mockResolvedValue({
       networkName: 'cdkl-task-x',
       sidecarContainerId: 'sc',
@@ -89,7 +89,7 @@ describe('runEcsTask network subnet (issues #850 / #854)', () => {
     });
     await runEcsTask(makeTask(), baseOptions(), createEcsRunState());
     expect(stubs.createTaskNetwork).toHaveBeenCalledTimes(1);
-    expect(stubs.createTaskNetwork.mock.calls[0]![0]).toMatchObject({ subnetOctet: 170 });
+    expect(stubs.createTaskNetwork.mock.calls[0]![0]).toMatchObject({ subnetOctet: 171 });
     expect(dockerRunEnv().join(' ')).not.toContain('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI');
   });
 
