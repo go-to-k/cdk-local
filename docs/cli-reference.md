@@ -1209,7 +1209,7 @@ Path matching is prefix-based: an L2 path like
 | `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names (`ContainerDefinitions[].Name`); `Parameters` is a global overlay. Overrides ECS `Secrets[]`-sourced values too: a secret whose key the file gives for that container (or under `Parameters`) is not fetched at all, so it needs no AWS access, and its value still stays off the `docker run` argv (issue #848). When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster reached via a local port forward), use `host.docker.internal` instead of `127.0.0.1` — `127.0.0.1` inside the container is the container itself, not the host. Same shape as `cdkl invoke --env-vars`. |
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
 | `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. |
-| `--assume-task-role [<arn>]` | unset | **Deprecated alias of `--assume-role`** (both forms accepted; `--assume-role` wins when both are passed and emits a one-time deprecation warn when only the legacy form is set). Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the account id of the identity the CLI resolved (via STS `GetCallerIdentity`: the `--profile` account when one is selected, otherwise the `--role-arn` role's account when one is given) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
+| `--assume-task-role [<arn>]` | unset | **Deprecated alias of `--assume-role`** (both forms accepted; `--assume-role` wins when both are passed and emits a one-time deprecation warn when only the legacy form is set). Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the account id of the identity the CLI resolved (via STS `GetCallerIdentity`: the `--profile` account when one is selected, otherwise the `--role-arn` role's account when one is given) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds (valid for one hour) are served by the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`. |
 | `--assume-role [<arn>]` | unset | Cross-command alias for `--assume-task-role` matching the same flag on `invoke` / `invoke-agentcore` / `start-api`. Same three-form grammar and the same `sts:AssumeRole`-via-metadata-sidecar semantic. Issue #249 / C6 — non-breaking superset of the legacy name. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1. See [Env / Secrets substitution](#env--secrets-substitution---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
@@ -1243,9 +1243,20 @@ For every task invocation cdk-local:
    `--network-alias <container-name>` so siblings resolve each other by
    their CFn `ContainerDefinitions[].Name`.
 4. Injects per-container env vars:
-   `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<container-name>`
-   and (when `--assume-task-role` is set)
-   `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<task-role-arn>`.
+   `ECS_CONTAINER_METADATA_URI_V4=http://<sidecar-ip>/v4/<container-name>`
+   and (when `--assume-role` / `--assume-task-role` is set)
+   `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`. The sidecar holds the
+   assumed role's credentials and serves them at `/creds`, so an AWS SDK in
+   the container runs as the task role.
+
+AWS SDKs read `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` only from the fixed
+address `169.254.170.2`, so a run with a task role always uses
+`169.254.170.0/24`, and only one run with a task role (`run-task`, or
+`start-service` / `start-alb` with `--assume-role`) can be active per host; a
+second one fails with an error naming the docker network that holds the
+subnet. A `run-task` without a task role prefers `169.254.170.0/24` too, but
+walks on to the next free `169.254.<N>.0/24` when another run holds it, so
+several can run side by side.
 
 `awsvpc` network mode is mapped to `bridge` locally with a warn line —
 docker cannot emulate ENI-per-task. AWS SDK calls from inside the
@@ -1411,8 +1422,20 @@ connect` choreography. When another `start-service` / `start-alb` process
 already holds that /24, the run takes the next free link-local /24
 instead, and the sidecar address and every container's
 `ECS_CONTAINER_METADATA_URI_V4` follow it — so several processes can run
-side by side. (`cdkl run-task` differs — it uses a per-task network on
-`169.254.170.0/24`.)
+side by side. (`cdkl run-task` differs — it uses a per-task network that
+prefers `169.254.170.0/24`.)
+
+With `--assume-role` / `--assume-task-role`, the shared network uses
+`169.254.170.0/24` instead, with the sidecar at `169.254.170.2`, the only
+address AWS SDKs read task-role credentials from. The sidecar serves the
+assumed role's credentials at `/creds` (every container gets
+`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`). One sidecar holds one set of
+credentials, so every service in the run must resolve to the SAME task role —
+when the bare flag resolves different roles for different services, the run
+fails and names both; pass one with `--assume-role <arn>`. Only one run with a
+task role can be active per host, and a second fails naming the docker network
+that holds the subnet. The role is assumed once at startup, so its credentials
+expire after one hour; restart the run to refresh them.
 
 When two or more `<targets>` are supplied, every service is booted into
 a shared Cloud Map / Service Connect registry on that one network so peer
@@ -1469,7 +1492,7 @@ error.
 | `--env-vars <file>` | — | SAM-shape JSON env-var overrides; same format as `cdkl run-task`. |
 | `--container-host <ip>` | `127.0.0.1` | Host IP to bind published container ports to. Must be a numeric IP. |
 | `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. Single-replica services only. |
-| `--assume-task-role [arn]` | unset | **Deprecated alias of `--assume-role`** (both forms accepted; `--assume-role` wins when both are passed and emits a one-time deprecation warn when only the legacy form is set). Assume the task definition's `TaskRoleArn` (or the supplied ARN) and forward STS-issued temp credentials via the metadata sidecar so every replica's containers run with the deployed task role. Same three-form grammar as `cdkl run-task`. |
+| `--assume-task-role [arn]` | unset | **Deprecated alias of `--assume-role`** (both forms accepted; `--assume-role` wins when both are passed and emits a one-time deprecation warn when only the legacy form is set). Assume the task definition's `TaskRoleArn` (or the supplied ARN) and forward STS-issued temp credentials via the metadata sidecar so every replica's containers run with the deployed task role. Same three-form grammar as `cdkl run-task`. Every service in the run must resolve to the same role, and only one run with a task role can be active per host (see the shared-network note above). |
 | `--assume-role [arn]` | unset | Cross-command alias for `--assume-task-role` matching the same flag on `invoke` / `invoke-agentcore` / `start-api`. Same three-form grammar and the same `sts:AssumeRole`-via-metadata-sidecar semantic. Issue #249 / C6 — non-breaking superset of the legacy name. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before ECR `docker pull` for cross-account / centralized registries. Same shape as `cdkl run-task`. |
 | `--platform <platform>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |

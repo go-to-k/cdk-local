@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "local-assume-role",
+    "local-ecs-service"
+  ]
+}

@@ -36,6 +36,7 @@ const {
   buildMetadataEnv,
   fallbackSubnetOctets,
   isSubnetTakenError,
+  serveTaskRoleFromSharedSidecar,
 } = await import('../../../src/local/ecs-network.js');
 const { hostname } = await import('node:os');
 const { resetFinchArgvWarningsForTest } = await import('../../../src/utils/docker-cmd.js');
@@ -404,12 +405,34 @@ describe('createSharedSvcNetwork subnet selection (issue #849)', () => {
 describe('createTaskNetwork subnet selection (issue #849)', () => {
   beforeEach(() => execFileMock.mockReset());
 
-  it('keeps run-task pinned to 169.254.170.0/24 (no fallback)', async () => {
+  it('keeps the no-octet (task-role) create pinned to 169.254.170.0/24 (no fallback)', async () => {
     installFakeDaemon(new Set(['169.254.170.0/24']));
     await expect(createTaskNetwork({ prefix: 'cdkl', skipPull: true })).rejects.toThrow(
-      /Pool overlaps.*may already own subnet 169\.254\.170\.0\/24/
+      /Pool overlaps.*another network already holds 169\.254\.170\.0\/24\. A task role needs that subnet/
     );
     expect(createdSubnets()).toEqual(['169.254.170.0/24']);
+  });
+
+  it('names the docker network that holds 169.254.170.0/24 in the conflict error', async () => {
+    execFileMock.mockImplementation((_cmd: string, args: string[] = []) => {
+      if (args[0] === 'network' && args[1] === 'ls') return 'bridge\ncdkl-task-held\n';
+      if (args[0] === 'network' && args[1] === 'inspect') {
+        expect(args.slice(-2)).toEqual(['bridge', 'cdkl-task-held']);
+        return 'bridge 172.17.0.0/16 \ncdkl-task-held 169.254.170.0/24 \n';
+      }
+      if (args[0] === 'network' && args[1] === 'create') throw dockerError(POOL_OVERLAPS);
+      return '';
+    });
+    await expect(createTaskNetwork({ prefix: 'cdkl', skipPull: true })).rejects.toThrow(
+      /docker network cdkl-task-held already holds 169\.254\.170\.0\/24.*`docker network rm cdkl-task-held`/
+    );
+  });
+
+  it('walks from 170 when given octet 170 (a run-task without a task role, issue #850)', async () => {
+    installFakeDaemon(new Set(['169.254.170.0/24']));
+    const net = await createTaskNetwork({ prefix: 'cdkl', skipPull: true, subnetOctet: 170 });
+    expect(createdSubnets()).toEqual(['169.254.170.0/24', '169.254.171.0/24']);
+    expect(net.sidecarIp).toBe('169.254.171.2');
   });
 
   it('treats an explicit octet as a preference and walks on when it is taken', async () => {
@@ -417,6 +440,132 @@ describe('createTaskNetwork subnet selection (issue #849)', () => {
     const net = await createTaskNetwork({ prefix: 'cdkl', skipPull: true, subnetOctet: 173 });
     expect(createdSubnets()).toEqual(['169.254.173.0/24', '169.254.171.0/24']);
     expect(net.sidecarIp).toBe('169.254.171.2');
+  });
+});
+
+describe('createSharedSvcNetwork with a task role (issue #854)', () => {
+  beforeEach(() => execFileMock.mockReset());
+
+  it('pins the shared network to 169.254.170.0/24 so the sidecar is at 169.254.170.2', async () => {
+    installFakeDaemon(new Set());
+    const net = await createSharedSvcNetwork({ prefix: 'cdkl', skipPull: true, taskRole: true });
+    expect(createdSubnets()).toEqual(['169.254.170.0/24']);
+    expect(net.sidecarIp).toBe('169.254.170.2');
+  });
+
+  it('fails instead of walking when another run holds 169.254.170.0/24', async () => {
+    installFakeDaemon(new Set(['169.254.170.0/24']));
+    await expect(
+      createSharedSvcNetwork({ prefix: 'cdkl', skipPull: true, taskRole: true })
+    ).rejects.toThrow(/Pool overlaps.*already holds 169\.254\.170\.0\/24\. A task role needs/);
+    expect(createdSubnets()).toEqual(['169.254.170.0/24']);
+  });
+});
+
+describe('buildMetadataEnv task-role credentials path (issues #853 / #854)', () => {
+  it('points the task role at the sidecar route that serves the credentials it holds', () => {
+    const env = buildMetadataEnv({
+      containerName: 'web',
+      roleArn: 'arn:aws:iam::123456789012:role/app',
+    });
+    expect(env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI']).toBe('/creds');
+    expect(env['ECS_CONTAINER_METADATA_URI_V4']).toBe('http://169.254.170.2/v4/web');
+  });
+
+  it('sets no credentials URI without a role', () => {
+    const env = buildMetadataEnv({ containerName: 'web', sidecarIp: '169.254.172.2' });
+    expect(env).not.toHaveProperty('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI');
+  });
+
+  it('refuses a role on a network whose sidecar is not at 169.254.170.2', () => {
+    expect(() =>
+      buildMetadataEnv({
+        containerName: 'web',
+        roleArn: 'arn:aws:iam::123456789012:role/app',
+        sidecarIp: '169.254.171.2',
+      })
+    ).toThrow(/needs the metadata sidecar at 169\.254\.170\.2.*169\.254\.171\.2/);
+  });
+});
+
+describe('serveTaskRoleFromSharedSidecar (issue #854)', () => {
+  const ROLE_A = 'arn:aws:iam::123456789012:role/a';
+  const ROLE_B = 'arn:aws:iam::123456789012:role/b';
+  const CREDS = { accessKeyId: 'AKIDTEST', secretAccessKey: 'SECRETTEST', sessionToken: 'TOKENTEST' };
+  const runs: Array<{ args: string[]; env: NodeJS.ProcessEnv | undefined }> = [];
+
+  beforeEach(() => {
+    execFileMock.mockReset();
+    runs.length = 0;
+    execFileMock.mockImplementation(
+      (_cmd: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+        if (kindOf(args) === 'sidecar-run') {
+          runs.push({ args, env: options?.env });
+          return 'new-sidecar-id\n';
+        }
+        return '';
+      }
+    );
+  });
+
+  function sharedNet(sidecarIp = '169.254.170.2') {
+    return {
+      networkName: 'cdkl-svc-abcd',
+      sidecarContainerId: 'old-sidecar-id',
+      sidecarIp,
+      ownedByCaller: true,
+    } as Parameters<typeof serveTaskRoleFromSharedSidecar>[0];
+  }
+
+  it('replaces the sidecar with one holding the role credentials, same name and IP', async () => {
+    const net = sharedNet();
+    await serveTaskRoleFromSharedSidecar(net, { roleArn: ROLE_A, credentials: CREDS, cluster: 'c1' });
+
+    const kinds = execFileMock.mock.calls.map((c) => kindOf(c[1] as string[]));
+    expect(kinds.indexOf('container-rm:old-sidecar-id')).toBeGreaterThan(-1);
+    expect(kinds.indexOf('container-rm:old-sidecar-id')).toBeLessThan(kinds.indexOf('sidecar-run'));
+    expect(runs).toHaveLength(1);
+    const { args, env } = runs[0]!;
+    expect(flagValue(args, '--name')).toBe('cdkl-svc-abcd-metadata');
+    expect(flagValue(args, '--network')).toBe('cdkl-svc-abcd');
+    expect(flagValue(args, '--ip')).toBe('169.254.170.2');
+    // Credentials ride the process env, never argv.
+    expect(args.join(' ')).not.toMatch(/AKIDTEST|SECRETTEST|TOKENTEST/);
+    expect(args).toContain('AWS_ACCESS_KEY_ID');
+    expect(env?.['AWS_ACCESS_KEY_ID']).toBe('AKIDTEST');
+    expect(env?.['AWS_SECRET_ACCESS_KEY']).toBe('SECRETTEST');
+    expect(env?.['AWS_SESSION_TOKEN']).toBe('TOKENTEST');
+    expect(args).toContain('CLUSTER=c1');
+    expect(net.sidecarContainerId).toBe('new-sidecar-id');
+    expect(net.taskRoleArn).toBe(ROLE_A);
+  });
+
+  it('keeps the running sidecar when the same role is served again (a --watch reload)', async () => {
+    const net = sharedNet();
+    await serveTaskRoleFromSharedSidecar(net, { roleArn: ROLE_A, credentials: CREDS });
+    execFileMock.mockClear();
+    await serveTaskRoleFromSharedSidecar(net, { roleArn: ROLE_A, credentials: CREDS });
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(net.sidecarContainerId).toBe('new-sidecar-id');
+  });
+
+  it('refuses a second, different role and leaves the sidecar alone', async () => {
+    const net = sharedNet();
+    await serveTaskRoleFromSharedSidecar(net, { roleArn: ROLE_A, credentials: CREDS });
+    execFileMock.mockClear();
+    await expect(
+      serveTaskRoleFromSharedSidecar(net, { roleArn: ROLE_B, credentials: CREDS })
+    ).rejects.toThrow(/different task roles .*role\/a.*role\/b.*--assume-role <arn>/);
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(net.taskRoleArn).toBe(ROLE_A);
+  });
+
+  it('refuses a network whose sidecar is not at 169.254.170.2', async () => {
+    const net = sharedNet('169.254.171.2');
+    await expect(
+      serveTaskRoleFromSharedSidecar(net, { roleArn: ROLE_A, credentials: CREDS })
+    ).rejects.toThrow(/needs the metadata sidecar at 169\.254\.170\.2/);
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 });
 
