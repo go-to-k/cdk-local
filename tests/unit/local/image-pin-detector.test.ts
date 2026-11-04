@@ -268,3 +268,36 @@ describe('imageOverrideKeyAliases (issue #659)', () => {
     ]);
   });
 });
+
+// Issue #847 — a same-stack ECR repository image with no deployed state is a
+// pinned target (so `--image-override` can replace it), labelled by the
+// repository since there is no URI.
+describe('same-stack ECR image without state (issue #847)', () => {
+  const service = fakeService(
+    [
+      {
+        essential: true,
+        image: {
+          kind: 'same-stack-ecr',
+          repoLogicalId: 'ApiRepository1A2B3C4D',
+          unresolvedReason: 'needs state',
+        },
+      },
+    ],
+    { stackName: 'App', serviceLogicalId: 'ApiService' }
+  );
+
+  it('is not a local CDK asset', () => {
+    expect(isLocalCdkAssetImage(service)).toBe(false);
+  });
+
+  it('enters the pinned set labelled by the repository logical id', () => {
+    expect(listPinnedTargets([{ target: 'App/ApiService', service }])).toEqual([
+      {
+        target: 'App/ApiService',
+        label: 'same-stack ECR repository ApiRepository1A2B3C4D',
+        aliases: ['ApiService', 'App:ApiService'],
+      },
+    ]);
+  });
+});

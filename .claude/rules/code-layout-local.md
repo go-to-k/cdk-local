@@ -55,7 +55,8 @@ a log line, and a served HTTP response body.
 - The boundary reports a resolution through `onDynamicReferenceResolved`, never through
   `onSensitiveParameterConsumed`, whose argument is a logical ID.
 - `--env-vars` overrides are removed from the template env BEFORE state substitution, so
-  they skip the boundary lookup too. A token in an argv field (ECS `Command` /
+  they skip the boundary lookup too. `runEcsTask` likewise never fetches an ECS
+  `Secrets` entry the override names (#848); the key stays in the sensitive set. A token in an argv field (ECS `Command` /
   `EntryPoint` / health check) is refused, never resolved onto the `docker run` argv.
 
 ## AgentCore

@@ -143,3 +143,52 @@ describe('ecs-task-runner prepareImages --image-override short-circuit (issue #2
     );
   });
 });
+
+// Issue #847 — a same-stack ECR image has no URI: an override replaces it, and
+// an uncovered one is refused with the resolver's reason instead of a pull.
+describe('ecs-task-runner prepareImages same-stack ECR image (issue #847)', () => {
+  function sameStackEcr(name: string): ResolvedEcsContainer {
+    return {
+      ...publicImageContainer(name, 'unused'),
+      image: {
+        kind: 'same-stack-ecr',
+        repoLogicalId: 'Repo',
+        unresolvedReason: `Container ${name} references same-stack ECR repository Repo.`,
+      },
+    } as unknown as ResolvedEcsContainer;
+  }
+  const opts = (overrides: Map<string, string>) =>
+    ({
+      imageOverrideByContainer: overrides,
+      keepRunning: false,
+      detach: false,
+      skipPull: false,
+    }) as unknown as Parameters<typeof prepareImages>[2];
+
+  beforeEach(() => {
+    pullImageMock.mockReset();
+    pullEcrImageMock.mockReset();
+  });
+
+  it('uses the override tag for a covered container', async () => {
+    const out = new Map<string, string>();
+    await prepareImages(
+      { containers: [sameStackEcr('app')] } as unknown as ResolvedEcsTask,
+      out,
+      opts(new Map([['app', 'cdkl-override-app-1:local']]))
+    );
+    expect(out.get('app')).toBe('cdkl-override-app-1:local');
+  });
+
+  it('refuses an uncovered container with its unresolved reason, pulling nothing', async () => {
+    await expect(
+      prepareImages(
+        { containers: [sameStackEcr('worker')] } as unknown as ResolvedEcsTask,
+        new Map(),
+        opts(new Map())
+      )
+    ).rejects.toThrow('Container worker references same-stack ECR repository Repo.');
+    expect(pullImageMock).not.toHaveBeenCalled();
+    expect(pullEcrImageMock).not.toHaveBeenCalled();
+  });
+});

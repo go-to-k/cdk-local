@@ -1206,7 +1206,7 @@ Path matching is prefix-based: an L2 path like
 | Flag | Default | Behavior |
 | --- | --- | --- |
 | `--cluster <name>` | `cdkl` | Surfaced as `ECS_CONTAINER_METADATA_URI_V4`'s `Cluster` field and used as the docker network prefix (`<name>-task-<rand>`). |
-| `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names (`ContainerDefinitions[].Name`); `Parameters` is a global overlay. Overrides ECS `Secrets[]`-sourced values too (the secret is still fetched first, then replaced). When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster reached via a local port forward), use `host.docker.internal` instead of `127.0.0.1` — `127.0.0.1` inside the container is the container itself, not the host. Same shape as `cdkl invoke --env-vars`. |
+| `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names (`ContainerDefinitions[].Name`); `Parameters` is a global overlay. Overrides ECS `Secrets[]`-sourced values too: a secret whose key the file gives for that container (or under `Parameters`) is not fetched at all, so it needs no AWS access, and its value still stays off the `docker run` argv (issue #848). When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster reached via a local port forward), use `host.docker.internal` instead of `127.0.0.1` — `127.0.0.1` inside the container is the container itself, not the host. Same shape as `cdkl invoke --env-vars`. |
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
 | `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. |
 | `--assume-task-role [<arn>]` | unset | **Deprecated alias of `--assume-role`** (both forms accepted; `--assume-role` wins when both are passed and emits a one-time deprecation warn when only the legacy form is set). Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the account id of the identity the CLI resolved (via STS `GetCallerIdentity`: the `--profile` account when one is selected, otherwise the `--role-arn` role's account when one is given) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
@@ -1223,6 +1223,7 @@ Path matching is prefix-based: an L2 path like
 | `--image-build-arg <KEY=VAL>` | — | `docker build --build-arg KEY=VAL` applied to the `--image-override` build (repeatable). |
 | `--image-build-secret <id=src>` | — | `docker build --secret id=<id>,src=<src>` applied to the `--image-override` build (repeatable); enables `RUN --mount=type=secret,id=<id>` in the Dockerfile. |
 | `--image-target <stage>` | — | `docker build --target <stage>` for the `--image-override` build (stop at an intermediate multi-stage stage). |
+| `--image-context <dir>` | Dockerfile's directory | `docker build` context for the `--image-override` build, for a Dockerfile below it (a monorepo: `--image-override <target>=apps/api/Dockerfile --image-context .`). Also `<target>=<dir>`. Resolved against cwd; must be an existing directory. |
 | `--no-interactive-overrides` | off | Suppress the interactive boot prompt that asks for a Dockerfile when the image is pinned (use in CI / scripted runs). |
 | `--strict-overrides` | off | Fail fast when the pinned image stays uncovered after `--image-override` resolves. |
 
@@ -1287,7 +1288,10 @@ resolution tiers fire **before** the URI is fed to tier 2:
   [<Repo>, 'RepositoryUri']`, cdk-local needs the deployed physical
   repo name. Pass `--from-cfn-stack` (the stack must have been deployed
   via `cdk deploy`); cdk-local loads state, substitutes the physical
-  name, then routes through tier 2.
+  name, then routes through tier 2. Without state the image is a
+  pinned target `--image-override` (with `--image-context` for a
+  monorepo Dockerfile) can replace with a local build (issue #847);
+  left uncovered, the run stops before any container starts.
 
 ### Env / Secrets substitution (`--from-cfn-stack`)
 

@@ -438,3 +438,29 @@ describe('ecs-service-emulator --image-override key canonicalization (issue #659
     );
   });
 });
+
+// Issue #847 — the service boot refuses a same-stack ECR image no override
+// covered (before any replica network exists), checking the SAME per-container
+// map the runner consumes, and `--image-context` reaches the flag parser.
+describe('same-stack ECR image + --image-context wiring (issue #847)', () => {
+  const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+
+  it('bootOneTarget asserts image resolvability against taskOpts.imageOverrideByContainer', () => {
+    const assertIdx = source.indexOf(
+      'assertEcsTaskImagesResolvable(service.task, taskOpts.imageOverrideByContainer)'
+    );
+    const mapSetIdx = source.indexOf('taskOpts.imageOverrideByContainer = new Map(');
+    const runnerOptsIdx = source.indexOf('const runnerOpts: ServiceRunnerOptions = {');
+    expect(assertIdx, 'assertion call missing').toBeGreaterThan(-1);
+    expect(mapSetIdx).toBeGreaterThan(-1);
+    // After the override map is filled, before the replicas' runner options.
+    expect(mapSetIdx).toBeLessThan(assertIdx);
+    expect(assertIdx).toBeLessThan(runnerOptsIdx);
+  });
+
+  it('threads options.imageContext into parseImageOverrideFlags', () => {
+    expect(source).toMatch(
+      /parseImageOverrideFlags\(\{[\s\S]*?imageContext:\s*options\.imageContext[\s\S]*?\}\)/
+    );
+  });
+});

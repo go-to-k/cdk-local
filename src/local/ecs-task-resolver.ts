@@ -143,7 +143,16 @@ export interface ResolvedEcsContainer {
 export type ResolvedEcsImage =
   | { kind: 'cdk-asset'; assetHash?: string }
   | { kind: 'ecr'; uri: string; account: string; region: string }
-  | { kind: 'public'; uri: string };
+  | { kind: 'public'; uri: string }
+  /**
+   * Issue #847 — the image names a same-stack `AWS::ECR::Repository` whose
+   * URI cannot be resolved without deployed state (no state source, or the
+   * repository is absent from it). It is a deployed-registry pin like `ecr`,
+   * so `--image-override` can replace it with a local build; a container
+   * left uncovered fails with `unresolvedReason` before anything starts
+   * (`assertEcsTaskImagesResolvable`).
+   */
+  | { kind: 'same-stack-ecr'; repoLogicalId: string; unresolvedReason: string };
 
 export interface ResolvedEcsVolume {
   name: string;
@@ -169,6 +178,29 @@ export class EcsTaskResolutionError extends Error {
     this.name = 'EcsTaskResolutionError';
     Object.setPrototypeOf(this, EcsTaskResolutionError.prototype);
   }
+}
+
+/**
+ * Issue #847 — refuse a task whose container image is still a
+ * {@link ResolvedEcsImage} `same-stack-ecr` that no `--image-override` covers.
+ * `coveredContainers` names the containers whose image an override replaces.
+ * Throws {@link EcsTaskResolutionError} carrying each uncovered container's
+ * reason (the "needs deployed state" message the resolver used to throw
+ * directly), so the failure lands before any network or container exists.
+ *
+ * Host-side use case: a host that resolves a task / service itself and runs
+ * it through `runEcsTask` calls this after its own `--image-override` pass.
+ */
+export function assertEcsTaskImagesResolvable(
+  task: Pick<ResolvedEcsTask, 'containers'>,
+  coveredContainers: ReadonlySet<string> | ReadonlyMap<string, unknown> = new Set()
+): void {
+  const reasons: string[] = [];
+  for (const c of task.containers) {
+    if (c.image.kind !== 'same-stack-ecr' || coveredContainers.has(c.name)) continue;
+    reasons.push(c.image.unresolvedReason);
+  }
+  if (reasons.length > 0) throw new EcsTaskResolutionError(reasons.join('\n'));
 }
 
 /**
@@ -1044,8 +1076,11 @@ function parseContainerImage(
   // template provides; for the bare GetAtt shape there is none, which is
   // unusual but we surface the resulting tagless URI rather than guess.
   const getAttImage = tryResolveImageGetAtt(raw, resources, context);
-  if (getAttImage) {
-    return classifyResolvedImage(getAttImage);
+  if (getAttImage?.kind === 'resolved') {
+    return classifyResolvedImage(getAttImage.uri);
+  }
+  if (getAttImage?.kind === 'needs-state') {
+    return sameStackEcrImage(containerName, taskLogicalId, getAttImage.repoLogicalId, context);
   }
 
   // Issue #271: CDK 2.x synthesizes `ContainerImage.fromEcrRepository(repo)`
@@ -1060,11 +1095,12 @@ function parseContainerImage(
     return classifyResolvedImage(joinResolved.uri);
   }
   if (joinResolved.kind === 'needs-state') {
-    throw new EcsTaskResolutionError(
-      `Container ${displayIdent(containerName)} in task ${displayIdent(taskLogicalId)} references same-stack ECR repository ${displayIdent(joinResolved.repoLogicalId)} via Fn::Join. ` +
-        `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
-        formatStateRemedy(context) +
-        ', build via ContainerImage.fromAsset, or pin a public image.'
+    return sameStackEcrImage(
+      containerName,
+      taskLogicalId,
+      joinResolved.repoLogicalId,
+      context,
+      ' via Fn::Join'
     );
   }
   if (joinResolved.kind === 'unsupported-join') {
@@ -1106,12 +1142,7 @@ function parseContainerImage(
   if (substituted.includes('${')) {
     const unresolvedRepoRef = findUnresolvedEcrRepositoryRef(substituted, resources);
     if (unresolvedRepoRef) {
-      throw new EcsTaskResolutionError(
-        `Container ${displayIdent(containerName)} in task ${displayIdent(taskLogicalId)} references same-stack ECR repository ${displayIdent(unresolvedRepoRef)}. ` +
-          `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
-          formatStateRemedy(context) +
-          ', build via ContainerImage.fromAsset, or pin a public image.'
-      );
+      return sameStackEcrImage(containerName, taskLogicalId, unresolvedRepoRef, context);
     }
     if (substituted.includes('AWS::')) {
       throw new EcsTaskResolutionError(
@@ -1138,6 +1169,30 @@ function parseContainerImage(
   }
 
   return { kind: 'public', uri: substituted };
+}
+
+/**
+ * Issue #847 — the image for a same-stack ECR repository the resolver cannot
+ * turn into a URI. Returned rather than thrown so `--image-override` can
+ * replace it; {@link assertEcsTaskImagesResolvable} raises `unresolvedReason`
+ * for a container no override covers.
+ */
+function sameStackEcrImage(
+  containerName: string,
+  taskLogicalId: string,
+  repoLogicalId: string,
+  context: EcsImageResolutionContext | undefined,
+  via = ''
+): ResolvedEcsImage {
+  return {
+    kind: 'same-stack-ecr',
+    repoLogicalId,
+    unresolvedReason:
+      `Container ${displayIdent(containerName)} in task ${displayIdent(taskLogicalId)} references same-stack ECR repository ${displayIdent(repoLogicalId)}${via}. ` +
+      `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
+      formatStateRemedy(context) +
+      ', build via ContainerImage.fromAsset, pin a public image, or pass --image-override to build it from a local Dockerfile.',
+  };
 }
 
 /**
@@ -1193,7 +1248,7 @@ function tryResolveImageGetAtt(
   raw: unknown,
   resources: Record<string, TemplateResource>,
   context: EcsImageResolutionContext | undefined
-): string | undefined {
+): { kind: 'resolved'; uri: string } | { kind: 'needs-state'; repoLogicalId: string } | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const obj = raw as Record<string, unknown>;
   const arg = obj['Fn::GetAtt'];
@@ -1223,7 +1278,11 @@ function tryResolveImageGetAtt(
   if (attr !== 'RepositoryUri' && attr !== 'Arn') return undefined;
 
   const cached = context?.stateResources?.[logicalId]?.attributes?.[attr];
-  if (typeof cached === 'string' && cached.length > 0) return cached;
+  if (typeof cached === 'string' && cached.length > 0) return { kind: 'resolved', uri: cached };
+  // Issue #847 — a `RepositoryUri` GetAtt with no state-recorded value is the
+  // same unresolvable same-stack pin as the `Fn::Join` shape. (`Arn` is not an
+  // image URI, so it keeps falling through to the unparseable-Image error.)
+  if (attr === 'RepositoryUri') return { kind: 'needs-state', repoLogicalId: logicalId };
   return undefined;
 }
 

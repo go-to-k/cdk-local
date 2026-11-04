@@ -24,6 +24,11 @@
 #   4. SIGTERM tears every cdkl-* container + network down with no
 #      orphans.
 #
+# Phases 3-4 (issues #847 / #848): a same-stack ECR repository image is
+# overridden from a monorepo Dockerfile with `--image-context`, and an
+# `--env-vars` value replaces a literal-ARN secret with no AWS call; without
+# the override the service is refused before any replica boots.
+#
 # Bonus second invocation: `--strict-overrides --image-override
 # BadService=./webapp/Dockerfile`. `BadService` is NOT a real target
 # so the engine's Stage 1 WARN ignores it; the real `AppService`
@@ -317,6 +322,134 @@ if grep -q "Booting replica" "${LOG_FILE_STRICT}"; then
 fi
 echo "    [strict-overrides refused before any replica booted] OK"
 rm -f "${LOG_FILE_STRICT}"
+
+# -----------------------------------------------------------------------
+# PHASE 3 — issues #847 / #848. `SameStackService` runs an image from a
+# SAME-STACK `AWS::ECR::Repository` (no URI without deployed state) and
+# declares a Secrets entry whose ValueFrom is a literal Secrets Manager ARN in
+# an unreachable account. `--image-override` + `--image-context` build it from
+# a monorepo Dockerfile below its context, and `--env-vars` gives the
+# secret's key, so the service boots with no state and no AWS call. The
+# response `<shared payload>|<DB_USER>` proves all three: the build context
+# was the monorepo root, the override image booted, and the override value
+# (not a fetched secret) reached the container.
+# -----------------------------------------------------------------------
+
+echo ""
+echo "==> Phase 3: same-stack ECR image + --image-context + --env-vars over a secret (#847/#848)"
+SAME_STACK_PORT=$((HOST_PORT + 2))
+SAME_STACK_EXPECTED="SAME_STACK_ECR_847|local-848"
+ENV_FILE="$(mktemp)"
+printf '{"api":{"DB_USER":"local-848"}}\n' >"${ENV_FILE}"
+: >"${LOG_FILE}"
+${CDKL} start-service CdkLocalStartServiceImageOverrideFixture:SameStackService \
+  --image-override SameStackService=./monorepo/apps/api/Dockerfile \
+  --image-context SameStackService=./monorepo \
+  --env-vars "${ENV_FILE}" \
+  --no-interactive-overrides \
+  --no-pull \
+  --host-port "8080=${SAME_STACK_PORT}" \
+  --container-host 127.0.0.1 \
+  >"${LOG_FILE}" 2>&1 &
+CDKL_PID=$!
+
+BOOTED=0
+for _ in $(seq 1 240); do
+  if grep -q "Service(s) running:" "${LOG_FILE}" 2>/dev/null; then
+    BOOTED=1
+    break
+  fi
+  if ! kill -0 "${CDKL_PID}" 2>/dev/null; then
+    echo "FAIL: cdk-local exited before the same-stack ECR service booted"
+    echo "----- service output -----"
+    cat "${LOG_FILE}"
+    echo "--------------------------"
+    rm -f "${ENV_FILE}"
+    exit 1
+  fi
+  sleep 1
+done
+if [[ "${BOOTED}" -ne 1 ]]; then
+  echo "FAIL: same-stack ECR service did not reach the boot banner within 240s"
+  cat "${LOG_FILE}"
+  rm -f "${ENV_FILE}"
+  exit 1
+fi
+
+if grep -qE "is not in the pinned-target set|EcsTaskResolutionError|Secrets Manager" "${LOG_FILE}"; then
+  echo "FAIL: the same-stack ECR override was dropped, or the secret was resolved against AWS"
+  cat "${LOG_FILE}"
+  rm -f "${ENV_FILE}"
+  exit 1
+fi
+if grep -q "references a same-stack AWS::ECR::Repository" "${LOG_FILE}"; then
+  echo "FAIL: the needs-state WARN fired although --image-override covers the service"
+  cat "${LOG_FILE}"
+  rm -f "${ENV_FILE}"
+  exit 1
+fi
+echo "    [same-stack ECR pinned + covered, no secret lookup] OK"
+
+PHASE3_OK=0
+PHASE3_RESP=""
+for _ in $(seq 1 90); do
+  if PHASE3_RESP=$(curl -sf --max-time 3 "http://127.0.0.1:${SAME_STACK_PORT}/" 2>&1); then
+    if [[ "${PHASE3_RESP}" == "${SAME_STACK_EXPECTED}" ]]; then
+      PHASE3_OK=1
+      break
+    fi
+  fi
+  sleep 1
+done
+if [[ "${PHASE3_OK}" -ne 1 ]]; then
+  echo "FAIL: same-stack ECR service never returned '${SAME_STACK_EXPECTED}' (last: '${PHASE3_RESP}')"
+  cat "${LOG_FILE}"
+  rm -f "${ENV_FILE}"
+  exit 1
+fi
+echo "    [GET / -> ${SAME_STACK_EXPECTED}] OK"
+term_server
+
+# -----------------------------------------------------------------------
+# PHASE 4 — the same service WITHOUT an override is refused with the
+# needs-state remedy (now naming --image-override) before any replica boots.
+# -----------------------------------------------------------------------
+
+echo ""
+echo "==> Phase 4: same-stack ECR image without --image-override -> refused before boot"
+LOG_FILE_NOOV="$(mktemp)"
+set +e
+${CDKL} start-service CdkLocalStartServiceImageOverrideFixture:SameStackService \
+  --env-vars "${ENV_FILE}" \
+  --no-interactive-overrides \
+  --no-pull \
+  --host-port "8080=${SAME_STACK_PORT}" \
+  --container-host 127.0.0.1 \
+  >"${LOG_FILE_NOOV}" 2>&1
+NOOV_EXIT=$?
+set -e
+rm -f "${ENV_FILE}"
+if [[ "${NOOV_EXIT}" -eq 0 ]]; then
+  echo "FAIL: expected the uncovered same-stack ECR service to exit non-zero"
+  cat "${LOG_FILE_NOOV}"
+  rm -f "${LOG_FILE_NOOV}"
+  exit 1
+fi
+if ! grep -q "references same-stack ECR repository" "${LOG_FILE_NOOV}" \
+  || ! grep -q "pass --image-override" "${LOG_FILE_NOOV}"; then
+  echo "FAIL: the refusal did not name the same-stack repository and the --image-override remedy"
+  cat "${LOG_FILE_NOOV}"
+  rm -f "${LOG_FILE_NOOV}"
+  exit 1
+fi
+if grep -q "Booting replica" "${LOG_FILE_NOOV}"; then
+  echo "FAIL: a replica booted before the uncovered same-stack ECR image was refused"
+  cat "${LOG_FILE_NOOV}"
+  rm -f "${LOG_FILE_NOOV}"
+  exit 1
+fi
+rm -f "${LOG_FILE_NOOV}"
+echo "    [uncovered same-stack ECR refused before boot, remedy names --image-override] OK"
 
 # Defense-in-depth: a non-zero boot exit shouldn't leave orphans, but
 # sweep just in case.

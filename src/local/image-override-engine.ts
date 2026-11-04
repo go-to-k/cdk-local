@@ -86,7 +86,11 @@ export function expandTilde(p: string): string {
 export interface ImageOverrideEntry {
   /** Absolute path to the Dockerfile to build from. */
   dockerfile: string;
-  /** Absolute path to the build context directory (Dockerfile's parent for v1). */
+  /**
+   * Absolute path to the build context directory: the `--image-context` value
+   * for this target when one is given (issue #847 — a monorepo Dockerfile
+   * below the context), else the Dockerfile's parent directory.
+   */
   contextDir: string;
   /**
    * Effective build args for this target — global + per-service merged
@@ -135,6 +139,11 @@ export interface ImageOverrideGlobals {
   buildArgs: Map<string, string>;
   buildSecrets: Map<string, string>;
   targetStage?: string;
+  /**
+   * Issue #847 — global `--image-context <dir>`: the build context for every
+   * overridden target, as typed (resolved against cwd when the entry is made).
+   */
+  contextDir?: string;
 }
 
 /**
@@ -155,6 +164,8 @@ export interface PerServiceBuildInputs {
   buildArgs: Map<string, string>;
   buildSecrets: Map<string, string>;
   targetStage?: string;
+  /** Issue #847 — per-service `--image-context <svc>=<dir>`, as typed. */
+  contextDir?: string;
 }
 
 /**
@@ -207,6 +218,8 @@ export interface RawImageOverrideFlags {
  * - `--image-build-secret <svc>:id=src` -> `perService(svc).buildSecrets.set('id', 'src')` (issue #240)
  * - `--image-target <stage>` -> `globals.targetStage = '<stage>'`
  * - `--image-target <svc>=<stage>` -> `perService(svc).targetStage = '<stage>'` (issue #240)
+ * - `--image-context <dir>` -> `globals.contextDir = '<dir>'` (issue #847)
+ * - `--image-context <svc>=<dir>` -> `perService(svc).contextDir = '<dir>'` (issue #847)
  *
  * Per-service syntax convention (issue #240):
  * - Flags whose payload already contains `=` (build-arg, build-secret)
@@ -255,6 +268,12 @@ export function parseImageOverrideFlags(input: {
    * so existing call sites that pass a scalar don't break.
    */
   imageTarget?: string | string[];
+  /**
+   * Issue #847 — `--image-context <dir>` (global) or `<svc>=<dir>`
+   * (per-service): the `docker build` context, for a Dockerfile that lives
+   * below it (a monorepo whose apps share code). Same shape as `imageTarget`.
+   */
+  imageContext?: string | string[];
 }): RawImageOverrideFlags {
   const explicit = new Map<string, string>();
   const pickerPaths: string[] = [];
@@ -454,6 +473,39 @@ export function parseImageOverrideFlags(input: {
     getPerSvc(svc).targetStage = stage;
   }
 
+  // Issue #847 — `--image-context`: same `<dir>` / `<svc>=<dir>` shape as
+  // `--image-target`. A global directory whose name contains `=` must use the
+  // per-service form. Existence is checked when the entry is made.
+  const imageContextList: string[] =
+    input.imageContext === undefined
+      ? []
+      : Array.isArray(input.imageContext)
+        ? input.imageContext
+        : [input.imageContext];
+  for (const raw of imageContextList) {
+    if (!raw || !raw.trim()) {
+      throw new ImageOverrideError('Invalid --image-context value: empty string.');
+    }
+    const eq = raw.indexOf('=');
+    if (eq < 0) {
+      globals.contextDir = raw.trim();
+      continue;
+    }
+    const svc = raw.slice(0, eq).trim();
+    const dir = raw.slice(eq + 1).trim();
+    if (!svc) {
+      throw new ImageOverrideError(
+        `Invalid --image-context value "${raw}": left side (service target) is empty.`
+      );
+    }
+    if (!dir) {
+      throw new ImageOverrideError(
+        `Invalid --image-context value "${raw}": right side (build context directory) is empty.`
+      );
+    }
+    getPerSvc(svc).contextDir = dir;
+  }
+
   return { explicit, pickerPaths, globals, perService };
 }
 
@@ -552,6 +604,7 @@ export function canonicalizeImageOverrideKeys(
         buildArgs: new Map(overlay.buildArgs),
         buildSecrets: new Map(overlay.buildSecrets),
         ...(overlay.targetStage !== undefined && { targetStage: overlay.targetStage }),
+        ...(overlay.contextDir !== undefined && { contextDir: overlay.contextDir }),
       });
       continue;
     }
@@ -576,6 +629,12 @@ export function canonicalizeImageOverrideKeys(
         conflict('the target stage');
       }
       into.targetStage = overlay.targetStage;
+    }
+    if (overlay.contextDir !== undefined) {
+      if (into.contextDir !== undefined && into.contextDir !== overlay.contextDir) {
+        conflict('the build context');
+      }
+      into.contextDir = overlay.contextDir;
     }
   }
 
@@ -948,20 +1007,28 @@ export function mergeForService(
   serviceTarget: string,
   globals: ImageOverrideGlobals,
   perService: ReadonlyMap<string, PerServiceBuildInputs>
-): { buildArgs: Map<string, string>; buildSecrets: Map<string, string>; targetStage?: string } {
+): {
+  buildArgs: Map<string, string>;
+  buildSecrets: Map<string, string>;
+  targetStage?: string;
+  contextDir?: string;
+} {
   const buildArgs = new Map<string, string>(globals.buildArgs);
   const buildSecrets = new Map<string, string>(globals.buildSecrets);
   let targetStage = globals.targetStage;
+  let contextDir = globals.contextDir;
   const overlay = perService.get(serviceTarget);
   if (overlay) {
     for (const [k, v] of overlay.buildArgs.entries()) buildArgs.set(k, v);
     for (const [k, v] of overlay.buildSecrets.entries()) buildSecrets.set(k, v);
     if (overlay.targetStage !== undefined) targetStage = overlay.targetStage;
+    if (overlay.contextDir !== undefined) contextDir = overlay.contextDir;
   }
   return {
     buildArgs,
     buildSecrets,
     ...(targetStage !== undefined && { targetStage }),
+    ...(contextDir !== undefined && { contextDir }),
   };
 }
 
@@ -970,8 +1037,9 @@ export function mergeForService(
  * {@link ImageOverrideEntry}. Resolves the path against `cwd`, asserts
  * the Dockerfile exists and is a regular file (so the user sees
  * "file not found" up-front rather than mid-`docker build`), and
- * derives the build context as the Dockerfile's parent directory
- * (the v1 simplification — custom contexts are tracked separately).
+ * derives the build context: the target's `--image-context` directory when
+ * one is given (issue #847; resolved against `cwd` and asserted to be an
+ * existing directory), else the Dockerfile's parent directory.
  *
  * Issue #240 — `serviceTarget` is now part of the entry-construction
  * input so the global + per-service merge runs per target.
@@ -1000,9 +1068,19 @@ function makeEntryFromPath(
     );
   }
   const merged = mergeForService(serviceTarget, rawFlags.globals, rawFlags.perService);
+  let contextDir = dirname(abs);
+  if (merged.contextDir !== undefined) {
+    const expandedCtx = expandTilde(merged.contextDir);
+    contextDir = isAbsolute(expandedCtx) ? expandedCtx : resolvePath(cwd, expandedCtx);
+    if (!existsSync(contextDir) || !statSync(contextDir).isDirectory()) {
+      throw new ImageOverrideError(
+        `--image-context: '${merged.contextDir}' is not an existing directory (resolved to '${contextDir}').`
+      );
+    }
+  }
   return {
     dockerfile: abs,
-    contextDir: dirname(abs),
+    contextDir,
     buildArgs: merged.buildArgs,
     buildSecrets: merged.buildSecrets,
     ...(merged.targetStage !== undefined && { targetStage: merged.targetStage }),
@@ -1061,6 +1139,13 @@ export function buildImageOverrideTag(serviceTarget: string, entry: ImageOverrid
     hash.update(';');
   }
   hash.update('}');
+  // Issue #847 — a non-default build context changes what is built. Hashed
+  // only when it differs from the Dockerfile's parent, so every tag built
+  // before `--image-context` existed stays the same.
+  if (entry.contextDir !== dirname(entry.dockerfile)) {
+    hash.update('\0context=');
+    hash.update(entry.contextDir);
+  }
   const svcSlug = serviceTarget
     .replace(/[^A-Za-z0-9]+/g, '-')
     .slice(0, 24)
@@ -1215,6 +1300,11 @@ export function enforceImageOverrideOrphans(
     if (overlay.targetStage !== undefined) {
       offenders.push(
         `--image-target ${svc}=${overlay.targetStage} references a service with no --image-override mapping.`
+      );
+    }
+    if (overlay.contextDir !== undefined) {
+      offenders.push(
+        `--image-context ${svc}=${overlay.contextDir} references a service with no --image-override mapping.`
       );
     }
   }

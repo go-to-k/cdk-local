@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -1677,5 +1678,137 @@ describe('Stage 3 boot prompt source-level binding (issues #258 + #259)', () => 
     // or (Skip — use ECR pin) options is caught here.
     expect(source).toMatch(/Enter custom path/);
     expect(source).toMatch(/Skip — use ECR pin/);
+  });
+});
+
+// Issue #847 — `--image-context [<service>=]<dir>`: the `docker build` context
+// for a Dockerfile that lives below it (a monorepo whose apps share code).
+describe('--image-context build context (issue #847)', () => {
+  let repoRoot: string;
+  let dockerfile: string;
+  beforeEach(() => {
+    runDockerStreamingMock.mockReset();
+    runDockerStreamingMock.mockResolvedValue(undefined);
+    repoRoot = mkdtempSync(path.join(tmpdir(), 'cdkl-override-context-'));
+    mkdirSync(path.join(repoRoot, 'apps', 'api'), { recursive: true });
+    dockerfile = path.join(repoRoot, 'apps', 'api', 'Dockerfile');
+    writeFileSync(dockerfile, 'FROM scratch\nCOPY shared /shared\n');
+  });
+  afterEach(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  async function resolveFor(
+    flags: Parameters<typeof parseImageOverrideFlags>[0]
+  ): Promise<Map<string, { dockerfile: string; contextDir: string }>> {
+    return resolveImageOverrides({
+      rawFlags: parseImageOverrideFlags(flags),
+      pinnedTargets: ['Svc', 'Other'],
+      noInteractive: true,
+      cwd: repoRoot,
+    });
+  }
+
+  it('parses the global and per-service forms like --image-target', () => {
+    const out = parseImageOverrideFlags({ imageContext: ['.', 'Svc=./packages'] });
+    expect(out.globals.contextDir).toBe('.');
+    expect(out.perService.get('Svc')?.contextDir).toBe('./packages');
+  });
+
+  it.each([[''], ['  '], ['=dir'], ['Svc=']])('rejects the malformed value %j', (raw) => {
+    expect(() => parseImageOverrideFlags({ imageContext: [raw] })).toThrow(ImageOverrideError);
+  });
+
+  it('defaults the context to the Dockerfile directory when no --image-context is given', async () => {
+    const out = await resolveFor({ imageOverride: ['Svc=apps/api/Dockerfile'] });
+    expect(out.get('Svc')).toMatchObject({
+      dockerfile,
+      contextDir: path.join(repoRoot, 'apps', 'api'),
+    });
+  });
+
+  it('resolves a per-service context against cwd and builds from it with -f <Dockerfile>', async () => {
+    const out = await resolveFor({
+      imageOverride: ['Svc=apps/api/Dockerfile'],
+      imageContext: ['Svc=.'],
+    });
+    expect(out.get('Svc')!.contextDir).toBe(repoRoot);
+    await runImageOverrideBuilds(out as never);
+    const [args, opts] = runDockerStreamingMock.mock.calls[0]! as [string[], { cwd: string }];
+    expect(opts.cwd).toBe(repoRoot);
+    expect(args[args.indexOf('--file') + 1]).toBe(dockerfile);
+    expect(args[args.length - 1]).toBe('.');
+  });
+
+  it('a per-service context wins over the global one; the global applies to the rest', async () => {
+    mkdirSync(path.join(repoRoot, 'apps', 'other'), { recursive: true });
+    writeFileSync(path.join(repoRoot, 'apps', 'other', 'Dockerfile'), 'FROM scratch\n');
+    const out = await resolveFor({
+      imageOverride: ['Svc=apps/api/Dockerfile', 'Other=apps/other/Dockerfile'],
+      imageContext: ['apps', 'Svc=.'],
+    });
+    expect(out.get('Svc')!.contextDir).toBe(repoRoot);
+    expect(out.get('Other')!.contextDir).toBe(path.join(repoRoot, 'apps'));
+  });
+
+  it('refuses a context that is not an existing directory, before any build', async () => {
+    await expect(
+      resolveFor({ imageOverride: ['Svc=apps/api/Dockerfile'], imageContext: ['Svc=missing'] })
+    ).rejects.toThrow(/--image-context: 'missing' is not an existing directory/);
+    await expect(
+      resolveFor({
+        imageOverride: ['Svc=apps/api/Dockerfile'],
+        imageContext: ['Svc=apps/api/Dockerfile'],
+      })
+    ).rejects.toThrow(/is not an existing directory/);
+    expect(runDockerStreamingMock).not.toHaveBeenCalled();
+  });
+
+  it('a non-default context changes the tag; the default context keeps the pre-#847 tag', () => {
+    const base = {
+      dockerfile,
+      buildArgs: new Map<string, string>(),
+      buildSecrets: new Map<string, string>(),
+    };
+    const atParent = buildImageOverrideTag('Svc', {
+      ...base,
+      contextDir: path.dirname(dockerfile),
+    });
+    const atRoot = buildImageOverrideTag('Svc', { ...base, contextDir: repoRoot });
+    expect(atRoot).not.toBe(atParent);
+    // Independent derivation of the pre-#847 tag shape (no context component).
+    const h = createHash('sha256');
+    h.update('dockerfile=');
+    h.update(dockerfile);
+    h.update('\0dockerfile-bytes-sha256=');
+    h.update(createHash('sha256').update('FROM scratch\nCOPY shared /shared\n').digest('hex'));
+    h.update('\0target=Svc\0stage=\0args={}\0secrets={}');
+    expect(atParent).toBe(`cdkl-override-svc-${h.digest('hex').slice(0, 16)}:local`);
+  });
+
+  it('canonicalization merges a context keyed by alias and refuses two different ones', () => {
+    const aliases = new Map([['App:Svc', ['Svc', 'SvcLogical']]]);
+    const merged = canonicalizeImageOverrideKeys(
+      parseImageOverrideFlags({
+        imageOverride: ['Svc=apps/api/Dockerfile'],
+        imageContext: ['Svc=.', 'SvcLogical=.'],
+      }),
+      aliases
+    );
+    expect(merged.perService.get('App:Svc')?.contextDir).toBe('.');
+    expect(() =>
+      canonicalizeImageOverrideKeys(
+        parseImageOverrideFlags({ imageContext: ['Svc=.', 'SvcLogical=apps'] }),
+        aliases
+      )
+    ).toThrow(/the build context two different values/);
+  });
+
+  it('an --image-context naming a service with no override is an orphan error', () => {
+    const raw = parseImageOverrideFlags({ imageContext: ['Ghost=.'] });
+    expect(() => enforceImageOverrideOrphans(raw, new Map())).toThrow(LocalStartServiceError);
+    expect(() => enforceImageOverrideOrphans(raw, new Map())).toThrow(
+      /--image-context Ghost=\. references a service with no --image-override mapping/
+    );
   });
 });

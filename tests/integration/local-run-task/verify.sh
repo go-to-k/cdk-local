@@ -75,7 +75,7 @@ if [[ ! -d node_modules ]]; then
 fi
 
 
-echo "==> [1/3] Starting task via --detach"
+echo "==> [1/5] Starting task via --detach"
 # Capture the run output: the fixture's image is a public-registry pin, so a
 # run WITHOUT --image-override must WARN that local source edits will not take
 # effect (issue #388 — this locks the command-level pinned-uncovered WARN
@@ -89,7 +89,7 @@ fi
 rm -f "${PINNED_RUN_LOG}"
 echo "    OK: pinned-image WARN surfaced (suggests --image-override)"
 
-echo "==> [2/3] Curling http://127.0.0.1:18080/"
+echo "==> [2/5] Curling http://127.0.0.1:18080/"
 # Give nginx ~5s to listen.
 sleep 5
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/ || true)
@@ -114,7 +114,7 @@ fi
 echo "==> Tearing down the pinned run to free host port 18080"
 teardown_runs
 
-echo "==> [3/3] run-task --image-override rebuilds the pinned task-def image from a local Dockerfile"
+echo "==> [3/5] run-task --image-override rebuilds the pinned task-def image from a local Dockerfile"
 ${CDKL} run-task CdkLocalRunTaskFixture/NginxTask \
   --image-override 'CdkLocalRunTaskFixture/NginxTask=Dockerfile.override' \
   --no-interactive-overrides --detach --no-pull --container-host 127.0.0.1
@@ -127,5 +127,49 @@ if ! grep -qF 'run-task-image-override-sentinel-388' <<<"${OV_BODY}"; then
 fi
 echo "    OK: the pinned task-def image was rebuilt from the local Dockerfile (sentinel served)"
 
+# Issue #847 — SameStackTask's image comes from a SAME-STACK
+# AWS::ECR::Repository, which has no URI without deployed state. It is still a
+# pin `--image-override` replaces, here from a Dockerfile BELOW its build
+# context (`--image-context`); the sentinel can only come from that context.
+echo "==> Tearing down the override run"
+teardown_runs
+
+echo "==> [4/5] run-task --image-override + --image-context on a same-stack ECR repository image"
+SAME_STACK_LOG=$(mktemp)
+${CDKL} run-task CdkLocalRunTaskFixture/SameStackTask \
+  --image-override 'CdkLocalRunTaskFixture/SameStackTask=context-app/docker/Dockerfile' \
+  --image-context 'CdkLocalRunTaskFixture/SameStackTask=context-app' \
+  --no-interactive-overrides --detach --no-pull --container-host 127.0.0.1 2>&1 | tee "${SAME_STACK_LOG}"
+if grep -qF 'references a same-stack AWS::ECR::Repository' "${SAME_STACK_LOG}"; then
+  echo "FAIL: the needs-state WARN fired although --image-override was passed"
+  rm -f "${SAME_STACK_LOG}"; exit 1
+fi
+rm -f "${SAME_STACK_LOG}"
+sleep 5
+SS_BODY=$(curl -s http://127.0.0.1:18081/ || true)
+if ! grep -qF 'run-task-image-context-sentinel-847' <<<"${SS_BODY}"; then
+  echo "FAIL: the same-stack ECR task did not serve the --image-context build (sentinel absent)"
+  echo "----- body -----"; echo "${SS_BODY}" | head -c 500; echo; echo "----------------"
+  exit 1
+fi
+echo "    OK: same-stack ECR image rebuilt from a Dockerfile below its --image-context"
+teardown_runs
+
+echo "==> [5/5] run-task on the same-stack ECR image WITHOUT an override is refused"
+set +e
+NOOV_OUT=$(${CDKL} run-task CdkLocalRunTaskFixture/SameStackTask \
+  --no-interactive-overrides --detach --no-pull --container-host 127.0.0.1 2>&1)
+NOOV_RC=$?
+set -e
+if [[ "${NOOV_RC}" -eq 0 ]]; then
+  echo "FAIL: the uncovered same-stack ECR task exited 0"; echo "${NOOV_OUT}"; exit 1
+fi
+if ! grep -qF 'references same-stack ECR repository' <<<"${NOOV_OUT}" \
+  || ! grep -qF 'pass --image-override' <<<"${NOOV_OUT}"; then
+  echo "FAIL: the refusal did not name the repository and the --image-override remedy"
+  echo "${NOOV_OUT}"; exit 1
+fi
+echo "    OK: refused, remedy names --image-override"
+
 echo ""
-echo "==> All local-run-task tests passed (run + image-override rebuild)"
+echo "==> All local-run-task tests passed (run + image-override rebuild + same-stack ECR)"

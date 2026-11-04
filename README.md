@@ -202,7 +202,7 @@ Each top-level JSON key picks which target to overlay:
 | Lambda / AgentCore Runtime | CloudFormation logical ID (e.g. `MyStackFn1A2B3C`) | Top-level resource key in the synthesized template; exact match |
 | ECS container | Container Name (e.g. `AppContainer`) | `ContainerDefinitions[].Name` in the synthesized TaskDefinition — explicitly set via the `containerName` option of `taskDef.addContainer(id, { containerName, ... })`, or defaults to the construct id (first arg of `addContainer`) when omitted. The TaskDefinition's CDK path / logical ID is NOT accepted as a key — it would identify the TaskDef but not which container's env block to overlay |
 
-`--env-vars` overlays the env block after the template's literals and any resolved ECS `Secrets[]` have been applied. A per-target key (from the table above) wins over `Parameters`. A `null` value clears the key — use the JSON literal `null`, not the string `"null"`.
+`--env-vars` overlays the env block after the template's literals and any resolved ECS `Secrets[]` have been applied; an ECS secret whose key the file gives is not fetched from AWS at all. A per-target key (from the table above) wins over `Parameters`. A `null` value clears the key — use the JSON literal `null`, not the string `"null"`.
 
 CloudFormation dynamic references in a container's env — `{{resolve:secretsmanager:...}}`, `{{resolve:ssm:...}}`, `{{resolve:ssm-secure:...}}` — are resolved with your credentials before the container starts, as CloudFormation resolves them for the deployed resource. A lookup that fails stops the command with an error naming the reference and the IAM permission instead of passing the token through, and an `--env-vars` override of the variable skips the lookup. Rules: [docs/cli-reference.md#environment-variables](docs/cli-reference.md#environment-variables).
 
@@ -243,7 +243,7 @@ Reload classifier (interpreted-language fast path vs Dockerfile rebuild), shadow
 
 ## Local build override — `--image-override`
 
-When a service's image is pinned to a deployed registry — `ContainerImage.fromEcrRepository(...)`, typical under `--from-cfn-stack` — `cdkl start-service` / `cdkl start-alb` run those deployed image bytes locally, so your source edits never take effect, even with `--watch`. `--image-override` rebuilds the image locally with `docker build` instead, so iteration works while real DynamoDB / Secrets / SSM stay wired in.
+When a service's image is pinned to a deployed registry — `ContainerImage.fromEcrRepository(...)`, typical under `--from-cfn-stack` — `cdkl start-service` / `cdkl start-alb` / `cdkl run-task` run those deployed image bytes locally, so your source edits never take effect, even with `--watch`. `--image-override` rebuilds the image locally with `docker build` instead, so iteration works while real DynamoDB / Secrets / SSM stay wired in. It also covers an image from an ECR repository the same stack creates, which has no URI to pull without deployed state.
 
 Boot in a TTY and the command walks each detected pinned target with an interactive Dockerfile picker:
 
@@ -266,8 +266,9 @@ The build inputs feed the `docker build` that `--image-override` runs, so each o
 - **`--image-build-arg KEY=VAL`** — a `docker build --build-arg`, e.g. to flip `NODE_ENV` or pass a base-image tag.
 - **`--image-build-secret id=src`** — a `docker build --secret`, the safe way to thread a private-registry `.npmrc`, an SSH key, or any credential a `RUN --mount=type=secret` step consumes (never baked into a layer).
 - **`--image-target <stage>`** — a `docker build --target`, to build a specific stage of a multi-stage Dockerfile (e.g. stop at `builder` instead of the production stage).
+- **`--image-context <dir>`** — the `docker build` context, for a Dockerfile that lives below it (a monorepo: `--image-override Api=apps/api/Dockerfile --image-context .`). Default: the Dockerfile's directory.
 
-Per-service build inputs (`<svc>:KEY=VAL` for build-arg / build-secret, `<svc>=stage` for target), monorepo recipes, private-registry npmrc threading, `--no-interactive-overrides` / `--strict-overrides`, and the `--watch` rebuild loop: [docs/local-emulation.md#local-build-override---image-override](docs/local-emulation.md#local-build-override---image-override).
+Per-service build inputs (`<svc>:KEY=VAL` for build-arg / build-secret, `<svc>=stage` for target, `<svc>=dir` for context), monorepo recipes, private-registry npmrc threading, `--no-interactive-overrides` / `--strict-overrides`, and the `--watch` rebuild loop: [docs/local-emulation.md#local-build-override---image-override](docs/local-emulation.md#local-build-override---image-override).
 
 ## start-service vs start-alb — which one?
 

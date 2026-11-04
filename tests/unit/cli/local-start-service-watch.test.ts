@@ -41,6 +41,7 @@ describe('start-service option surface contract (addStartServiceSpecificOptions)
       // addition.
       '--image-build-arg',
       '--image-build-secret',
+      '--image-context',
       '--image-override',
       '--image-target',
       '--no-interactive-overrides',

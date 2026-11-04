@@ -79,6 +79,8 @@ export function describePinnedImageUri(service: ResolvedEcsService): string | un
   const image = representativeImage(service);
   if (!image) return undefined;
   if (image.kind === 'cdk-asset') return undefined;
+  // Issue #847 — no URI without deployed state; name the repository instead.
+  if (image.kind === 'same-stack-ecr') return `same-stack ECR repository ${image.repoLogicalId}`;
   return image.uri;
 }
 

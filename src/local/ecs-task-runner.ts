@@ -538,9 +538,23 @@ export async function runEcsTask(
   // Resolve every container's secrets in parallel BEFORE network /
   // container boot — any failure short-circuits the whole task. Mirrors
   // the ECS Agent's "fail-fast on missing secret" UX.
+  //
+  // A secret whose env key `--env-vars` names for this container (or under
+  // `Parameters`; a `null` clear included) is NOT fetched (issue #848): the
+  // override replaces the value in the container anyway, so the AWS call buys
+  // nothing and fails the boot when the caller holds no credentials for the
+  // secret's account. The key stays off the `docker run` argv — see
+  // `buildDockerRunArgs`.
   const allSecrets: { containerName: string; name: string; valueFrom: string }[] = [];
   for (const c of task.containers) {
+    const overridden = new Set(overriddenEnvKeys(options.envOverrides, c.name));
     for (const s of c.secrets) {
+      if (overridden.has(s.name)) {
+        logger.debug(
+          `Secret ${displayIdent(c.name)}.${displayIdent(s.name)} not fetched: --env-vars gives this key.`
+        );
+        continue;
+      }
       allSecrets.push({ containerName: c.name, name: s.name, valueFrom: s.valueFrom });
     }
   }
@@ -992,6 +1006,11 @@ async function prepareOneImage(
 ): Promise<string> {
   const image: ResolvedEcsImage = container.image;
   switch (image.kind) {
+    case 'same-stack-ecr':
+      // Issue #847 — no URI to pull. The CLI paths refuse this before any
+      // resource exists (`assertEcsTaskImagesResolvable`); this covers a host
+      // that calls the runner directly.
+      throw new EcsTaskRunnerError(image.unresolvedReason);
     case 'public': {
       await pullImage(image.uri, options.skipPull);
       return image.uri;
@@ -1592,6 +1611,10 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // appear in `docker run`'s argv. Non-secret config keeps `-e KEY=VALUE`.
   const sensitiveEnvKeys = new Set<string>(SENSITIVE_ENV_KEYS);
   for (const s of secrets) sensitiveEnvKeys.add(s.name);
+  // A declared secret that `--env-vars` overrode was never fetched (issue
+  // #848), so it is absent from `secrets`; the value the override supplies
+  // for it is still treated as a secret and kept off the argv.
+  for (const s of container.secrets) sensitiveEnvKeys.add(s.name);
   // Env keys that resolved to a decrypted SecureString SSM parameter
   // (issue #99) — same off-argv treatment as secrets.
   for (const k of container.sensitiveEnvKeys) sensitiveEnvKeys.add(k);
