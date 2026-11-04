@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import type { Construct } from 'constructs';
 
@@ -29,6 +30,16 @@ import type { Construct } from 'constructs';
  * container port (8080) is published on an ephemeral host port; the
  * verify.sh remaps it via `--host-port`.
  *
+ * `SameStackService` (issues #847 / #848) runs an image from an
+ * `AWS::ECR::Repository` IN THE SAME STACK — the canonical
+ * `ContainerImage.fromEcrRepository(repo, tag)` `Fn::Join` — which has no
+ * URI without deployed state. Its container also declares a Secrets entry
+ * whose `ValueFrom` is a LITERAL Secrets Manager ARN in an account no test
+ * host can read. verify.sh boots it with `--image-override` +
+ * `--image-context` (a monorepo Dockerfile below its context) and an
+ * `--env-vars` value for the secret's key, so the boot needs neither the
+ * repository URI nor the secret.
+ *
  * `covers: AWS::ECS::Service` (start-service `--image-override`).
  */
 // A clearly-fake ECR URI. The override engine's pinned-image
@@ -38,6 +49,11 @@ import type { Construct } from 'constructs';
 // being pulled.
 const PLACEHOLDER_ECR_IMAGE =
   '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdkl-integ-placeholder:v1';
+
+// Issue #848 — an existing secret referenced by its complete ARN in an
+// account that does not exist; resolving it would fail the boot.
+const UNREACHABLE_SECRET_ARN =
+  'arn:aws:secretsmanager:us-east-1:000000000000:secret:cdkl-integ-848-AbCdEf';
 
 export class LocalStartServiceImageOverrideStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -64,6 +80,31 @@ export class LocalStartServiceImageOverrideStack extends cdk.Stack {
     new ecs.CfnService(this, 'AppService', {
       cluster: cluster.ref,
       taskDefinition: appTask.ref,
+      desiredCount: 1,
+      launchType: 'EC2',
+    });
+
+    // Issue #847 — `repositoryUriForTag` synthesizes the same `Fn::Join` over
+    // the repository's Arn GetAtt + Ref that `fromEcrRepository` does.
+    const repo = new ecr.Repository(this, 'AppRepository');
+    const sameStackTask = new ecs.CfnTaskDefinition(this, 'SameStackTask', {
+      family: 'cdkl-start-service-image-override-same-stack',
+      networkMode: 'bridge',
+      containerDefinitions: [
+        {
+          name: 'api',
+          image: repo.repositoryUriForTag('v1'),
+          essential: true,
+          memoryReservation: 32,
+          portMappings: [{ containerPort: 8080, protocol: 'tcp' }],
+          secrets: [{ name: 'DB_USER', valueFrom: `${UNREACHABLE_SECRET_ARN}:username::` }],
+        },
+      ],
+    });
+
+    new ecs.CfnService(this, 'SameStackService', {
+      cluster: cluster.ref,
+      taskDefinition: sameStackTask.ref,
       desiredCount: 1,
       launchType: 'EC2',
     });

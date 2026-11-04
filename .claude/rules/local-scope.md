@@ -58,9 +58,8 @@ Invariants:
 
 ### `--image-override` family
 
-Rebuilds a registry-pinned target from a local Dockerfile under the
-deterministic tag `cdkl-override-<svc>-<hash>:local`, threaded through the
-rebuild primitive. Engine: `src/local/image-override-engine.ts` (#238).
+Rebuilds a pinned target from a local Dockerfile under the deterministic tag
+`cdkl-override-<svc>-<hash>:local`. Engine: `image-override-engine.ts` (#238).
 
 - A per-service build-input form overrides the global per-key on that target;
   `enforceImageOverrideOrphans` FAILS the boot when one names a service the map
@@ -71,6 +70,10 @@ rebuild primitive. Engine: `src/local/image-override-engine.ts` (#238).
   keeps the old replica serving; siblings keep rolling.
 - A `run-task` task def has ONE override target, its representative essential
   container; a pinned but uncovered image WARNs.
+- A same-stack ECR repository image with no state resolves to a `same-stack-ecr`
+  pin (#847), never a throw; `assertEcsTaskImagesResolvable` refuses an
+  uncovered one before any network exists. `--image-context` sets the build
+  context.
 
 ### `start-alb`
 

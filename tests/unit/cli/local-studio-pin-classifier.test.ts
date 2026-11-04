@@ -536,6 +536,16 @@ describe('makeTaskPinClassifier (issue #388)', () => {
     expect(classify('dev/Task')).toBe(true);
   });
 
+  // Issue #847 — a same-stack ECR image with no state is a pin the
+  // image-override picker can replace, not an unclassifiable target.
+  it('marks a same-stack ECR task definition (no state) as pinned, without a WARN', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsTaskTarget.mockReturnValue(taskWith('same-stack-ecr'));
+    const classify = makeTaskPinClassifier({ stacks: [stack('dev')], contextByStack: new Map(), logger });
+    expect(classify('dev/Task')).toBe(true);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
   it('does NOT mark a local-asset task definition', () => {
     const logger = fakeLogger();
     hoisted.resolveEcsTaskTarget.mockReturnValue(taskWith('cdk-asset'));

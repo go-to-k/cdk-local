@@ -27,6 +27,7 @@ import {
 } from './local-profile-credentials-file.js';
 import {
   applyCrossStackResolverToTask,
+  assertEcsTaskImagesResolvable,
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
   parseEcsTarget,
@@ -151,6 +152,8 @@ interface LocalRunTaskOptions {
   imageBuildArg?: string[];
   imageBuildSecret?: string[];
   imageTarget?: string | string[];
+  /** Issue #847 — `--image-context <dir>` / `<target>=<dir>` build context. */
+  imageContext?: string | string[];
   interactiveOverrides?: boolean;
   strictOverrides?: boolean;
   /** Host-injected extra state-source flag fields. */
@@ -464,7 +467,12 @@ async function localRunTaskCommand(
     });
     if (imageOverrideResult.imageOverrideByContainer) {
       runOpts.imageOverrideByContainer = imageOverrideResult.imageOverrideByContainer;
-    } else if (imageOverrideResult.pinnedUncovered) {
+    }
+    // Issue #847 — a same-stack ECR image no override covered has no URI to
+    // pull: refuse it before the task network or any container exists (and
+    // before the "local edits will not take effect" WARN, which would mislead).
+    assertEcsTaskImagesResolvable(task, runOpts.imageOverrideByContainer);
+    if (!imageOverrideResult.imageOverrideByContainer && imageOverrideResult.pinnedUncovered) {
       logger.warn(
         'Task definition image is pinned to a deployed registry; local source edits will not take ' +
           'effect. Pass --image-override <dockerfile> to rebuild it from local source.'
@@ -717,11 +725,17 @@ export async function buildEcsImageResolutionContext(
       }
     }
   } else if (!stateProvider && needs.needsStateResources) {
-    logger.warn(
-      'Container Image references a same-stack AWS::ECR::Repository. Pass a state-source flag ' +
-        '(e.g. --from-cfn-stack or a host-provided extension) to substitute the deployed repository URI. ' +
-        'Otherwise the resolver will surface its existing error.'
-    );
+    // Issue #847 — `--image-override` can replace a same-stack ECR image, so
+    // the WARN is noise when one is passed; an uncovered image still fails
+    // with the full remedy (`assertEcsTaskImagesResolvable`).
+    if (!options.imageOverride?.length) {
+      logger.warn(
+        'Container Image references a same-stack AWS::ECR::Repository. Pass a state-source flag ' +
+          '(e.g. --from-cfn-stack or a host-provided extension) to substitute the deployed repository URI, ' +
+          'or --image-override to build it from a local Dockerfile. ' +
+          'Otherwise the resolver will surface its existing error.'
+      );
+    }
   } else if (!stateProvider && needs.needsEnvOrSecretSubstitution) {
     logger.warn(
       'Container Environment / Secrets entries contain CloudFormation intrinsics (Ref / Fn::GetAtt / Fn::Sub / Fn::Join). ' +
@@ -942,6 +956,7 @@ export async function resolveRunTaskImageOverride(args: {
     | 'imageBuildArg'
     | 'imageBuildSecret'
     | 'imageTarget'
+    | 'imageContext'
     | 'interactiveOverrides'
     | 'strictOverrides'
   >;
@@ -965,6 +980,7 @@ export async function resolveRunTaskImageOverride(args: {
       ...(options.imageBuildArg && { imageBuildArg: options.imageBuildArg }),
       ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
       ...(options.imageTarget && { imageTarget: options.imageTarget }),
+      ...(options.imageContext && { imageContext: options.imageContext }),
     }),
     pinnedAliases,
     [target]

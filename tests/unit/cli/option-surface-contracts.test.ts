@@ -120,6 +120,7 @@ describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
       '--host-port',
       '--image-build-arg',
       '--image-build-secret',
+      '--image-context',
       '--image-override',
       '--image-target',
       '--keep-running',

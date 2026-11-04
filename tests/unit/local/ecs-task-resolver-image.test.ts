@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  assertEcsTaskImagesResolvable,
   resolveEcsTaskTarget,
   EcsTaskResolutionError,
 } from '../../../src/local/ecs-task-resolver.js';
@@ -75,20 +76,28 @@ function buildEcsResources(repoLogicalId: string): Record<string, TemplateResour
 }
 
 describe('resolveEcsTaskTarget — same-stack ECR Fn::Join needs deployed state', () => {
+  /** Resolve, then refuse uncovered images the way every CLI path does. */
+  function resolveAndAssert(
+    stack: StackInfo,
+    ctx?: Parameters<typeof resolveEcsTaskTarget>[2]
+  ): () => void {
+    return () => assertEcsTaskImagesResolvable(resolveEcsTaskTarget('App:Task', [stack], ctx));
+  }
+
   it('throws the generic --from-cfn-stack hint when no state context is supplied', () => {
     const stack = buildStack('App', buildEcsResources('MyRepo'));
-    expect(() => resolveEcsTaskTarget('App:Task', [stack])).toThrow(EcsTaskResolutionError);
-    expect(() => resolveEcsTaskTarget('App:Task', [stack])).toThrow(
-      /references same-stack ECR repository MyRepo/
-    );
-    expect(() => resolveEcsTaskTarget('App:Task', [stack])).toThrow(
+    expect(resolveAndAssert(stack)).toThrow(EcsTaskResolutionError);
+    expect(resolveAndAssert(stack)).toThrow(/references same-stack ECR repository MyRepo/);
+    expect(resolveAndAssert(stack)).toThrow(
       /pass --from-cfn-stack to load the deployed stack state/
     );
+    // Issue #847 — the remedy names the override that can replace it.
+    expect(resolveAndAssert(stack)).toThrow(/--image-override/);
     // The original message used to be hardcoded to `cdkl run-task`,
     // but the resolver is shared by start-alb / start-service /
     // run-task, so the command name is dropped — only the binary
     // name remains.
-    expect(() => resolveEcsTaskTarget('App:Task', [stack])).not.toThrow(/cdkl run-task/);
+    expect(resolveAndAssert(stack)).not.toThrow(/cdkl run-task/);
   });
 
   it('flips the remedy to "the state-source attempt failed: ..." when the context records a load failure', () => {
@@ -97,18 +106,113 @@ describe('resolveEcsTaskTarget — same-stack ECR Fn::Join needs deployed state'
       stateLoadFailureMessage:
         "ListStackResources(dev-goto-Reco-App) failed: ValidationError HTTP 400: Stack with id dev-goto-Reco-App does not exist (region='ap-northeast-1')",
     };
-    expect(() => resolveEcsTaskTarget('App:Task', [stack], ctx)).toThrow(
+    expect(resolveAndAssert(stack, ctx)).toThrow(
       /the state-source attempt failed: ListStackResources\(dev-goto-Reco-App\) failed:/
     );
-    expect(() => resolveEcsTaskTarget('App:Task', [stack], ctx)).toThrow(
-      /--from-cfn-stack <deployed-name>/
-    );
-    expect(() => resolveEcsTaskTarget('App:Task', [stack], ctx)).toThrow(/--region \/ --profile/);
+    expect(resolveAndAssert(stack, ctx)).toThrow(/--from-cfn-stack <deployed-name>/);
+    expect(resolveAndAssert(stack, ctx)).toThrow(/--region \/ --profile/);
     // Should NOT re-suggest passing --from-cfn-stack as the primary
     // remedy: the user already passed it.
-    expect(() => resolveEcsTaskTarget('App:Task', [stack], ctx)).not.toThrow(
+    expect(resolveAndAssert(stack, ctx)).not.toThrow(
       /pass --from-cfn-stack to load the deployed stack state/
     );
+  });
+});
+
+// Issue #847 — a same-stack ECR image with no deployed state resolves to a
+// `same-stack-ecr` pin (so `--image-override` can replace it) instead of
+// throwing; `assertEcsTaskImagesResolvable` refuses only uncovered containers.
+describe('resolveEcsTaskTarget — same-stack ECR image without state (issue #847)', () => {
+  function stackWithImages(images: Array<[string, unknown]>): StackInfo {
+    return buildStack('App', {
+      MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+      Task: {
+        Type: 'AWS::ECS::TaskDefinition',
+        Properties: {
+          Family: 'demo',
+          ContainerDefinitions: images.map(([Name, Image], i) => ({
+            Name,
+            Image,
+            Essential: i === 0,
+          })),
+        },
+      },
+    });
+  }
+
+  it.each([
+    ['the CDK fromEcrRepository Fn::Join', canonicalFromEcrJoin('MyRepo', 'v1')],
+    [
+      'an Fn::Sub ${Repo} placeholder',
+      { 'Fn::Sub': '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${MyRepo}:v1' },
+    ],
+    ['an Fn::GetAtt RepositoryUri', { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] }],
+  ])('resolves %s to a same-stack-ecr pin naming the repository', (_shape, image) => {
+    const task = resolveEcsTaskTarget('App:Task', [stackWithImages([['App', image]])], {
+      pseudoParameters: { accountId: '111111111111', region: 'us-east-1' },
+    });
+    const resolved = task.containers[0]!.image;
+    expect(resolved.kind).toBe('same-stack-ecr');
+    expect(resolved.kind === 'same-stack-ecr' && resolved.repoLogicalId).toBe('MyRepo');
+    expect(() => assertEcsTaskImagesResolvable(task)).toThrow(
+      /Container App in task Task references same-stack ECR repository MyRepo/
+    );
+  });
+
+  it('passes when every same-stack-ecr container is covered by an override', () => {
+    const task = resolveEcsTaskTarget(
+      'App:Task',
+      [stackWithImages([['App', canonicalFromEcrJoin('MyRepo', 'v1')]])]
+    );
+    expect(() => assertEcsTaskImagesResolvable(task, new Map([['App', 'tag:local']]))).not.toThrow();
+    expect(() => assertEcsTaskImagesResolvable(task, new Set(['App']))).not.toThrow();
+  });
+
+  it('still refuses an uncovered sibling container, naming only that one', () => {
+    const task = resolveEcsTaskTarget(
+      'App:Task',
+      [
+        stackWithImages([
+          ['App', canonicalFromEcrJoin('MyRepo', 'v1')],
+          ['Worker', canonicalFromEcrJoin('MyRepo', 'v2')],
+        ]),
+      ]
+    );
+    const err = (() => {
+      try {
+        assertEcsTaskImagesResolvable(task, new Set(['App']));
+      } catch (e) {
+        return e as Error;
+      }
+      return undefined;
+    })();
+    expect(err).toBeInstanceOf(EcsTaskResolutionError);
+    expect(err!.message).toContain('Container Worker');
+    expect(err!.message).not.toContain('Container App');
+  });
+
+  it('a state-recorded RepositoryUri still resolves to a pullable ECR image', () => {
+    const uri = '111111111111.dkr.ecr.us-east-1.amazonaws.com/my-repo';
+    const task = resolveEcsTaskTarget(
+      'App:Task',
+      [stackWithImages([['App', { 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] }]])],
+      {
+        stateResources: {
+          MyRepo: {
+            physicalId: 'my-repo',
+            resourceType: 'AWS::ECR::Repository',
+            properties: {},
+            attributes: { RepositoryUri: uri },
+          },
+        } as never,
+      }
+    );
+    expect(task.containers[0]!.image).toStrictEqual({
+      kind: 'ecr',
+      uri,
+      account: '111111111111',
+      region: 'us-east-1',
+    });
   });
 });
 

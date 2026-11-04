@@ -988,6 +988,7 @@ describe('start-alb option surface contract (addCommonEcsServiceOptions + addAlb
       // via `addImageOverrideOptions`. A semver-relevant surface addition.
       '--image-build-arg',
       '--image-build-secret',
+      '--image-context',
       '--image-override',
       '--image-target',
       '--lb-port',

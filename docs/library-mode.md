@@ -540,7 +540,8 @@ no duplicate `.addOption(...)` block on the host side.
 - `addStartServiceSpecificOptions(cmd)` — `cdkl start-service`
   flags (`--host-port`, `--watch`, plus the `--image-override` family:
   `--image-override`, `--image-build-arg`, `--image-build-secret`,
-  `--image-target`, `--no-interactive-overrides`, `--strict-overrides`).
+  `--image-target`, `--image-context`, `--no-interactive-overrides`,
+  `--strict-overrides`).
   Compose with `addCommonEcsServiceOptions` (no `addAlbSpecificOptions` —
   `start-service` runs replicas only, no load balancer).
 - `addListSpecificOptions(cmd)` — `cdkl list` flag (`-l, --long`).

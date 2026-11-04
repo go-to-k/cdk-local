@@ -204,4 +204,55 @@ describe('resolveRunTaskImageOverride (issue #388)', () => {
     };
     expect([...passed.rawFlags.explicit.keys()]).toEqual(['OtherTask']);
   });
+  // Issue #847 — a same-stack ECR image with no deployed state is a pin the
+  // override can replace, and `--image-context` reaches the flag parser.
+  it('treats a same-stack ECR image (no state) as pinned and covers it with the override', async () => {
+    hoisted.parseImageOverrideFlags.mockReturnValue(
+      rawFlags({ explicit: new Map([['MyStack/MyTaskDef', './apps/api/Dockerfile']]) })
+    );
+    hoisted.resolveImageOverrides.mockResolvedValue(new Map([['MyStack/MyTaskDef', {}]]));
+    hoisted.runImageOverrideBuilds.mockResolvedValue(new Map([['MyStack/MyTaskDef', 'tag:local']]));
+    const app = {
+      name: 'app',
+      essential: true,
+      image: { kind: 'same-stack-ecr', repoLogicalId: 'Repo', unresolvedReason: 'needs state' },
+    } as unknown as ResolvedEcsContainer;
+    const result = await resolveRunTaskImageOverride({
+      task: task([app]),
+      target: 'MyStack/MyTaskDef',
+      options: {
+        imageOverride: ['MyStack/MyTaskDef=./apps/api/Dockerfile'],
+        imageContext: ['MyStack/MyTaskDef=.'],
+        interactiveOverrides: false,
+      },
+    });
+    expect(hoisted.resolveImageOverrides).toHaveBeenCalledWith(
+      expect.objectContaining({ pinnedTargets: ['MyStack/MyTaskDef'] })
+    );
+    expect(hoisted.parseImageOverrideFlags).toHaveBeenCalledWith(
+      expect.objectContaining({ imageContext: ['MyStack/MyTaskDef=.'] })
+    );
+    expect(result.imageOverrideByContainer).toEqual(new Map([['app', 'tag:local']]));
+  });
+});
+
+// Issue #847 — `cdkl run-task` refuses a same-stack ECR image no override
+// covered, after the override pass and before the task runs.
+describe('run-task same-stack ECR refusal wiring (issue #847)', () => {
+  it('asserts image resolvability against runOpts.imageOverrideByContainer before runEcsTask', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(
+      fileURLToPath(new URL('../../../src/cli/commands/local-run-task.ts', import.meta.url)),
+      'utf-8'
+    );
+    const overrideIdx = source.indexOf('await resolveRunTaskImageOverride({');
+    const assertIdx = source.indexOf(
+      'assertEcsTaskImagesResolvable(task, runOpts.imageOverrideByContainer)'
+    );
+    const runIdx = source.indexOf('await runEcsTask(');
+    expect(overrideIdx).toBeGreaterThan(-1);
+    expect(assertIdx).toBeGreaterThan(overrideIdx);
+    expect(runIdx).toBeGreaterThan(assertIdx);
+  });
 });

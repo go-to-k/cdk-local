@@ -38,6 +38,7 @@ import {
 } from './local-profile-credentials-file.js';
 import {
   applyCrossStackResolverToTask,
+  assertEcsTaskImagesResolvable,
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
   parseEcsTarget,
@@ -304,6 +305,13 @@ export interface EcsServiceEmulatorOptions {
    * is used).
    */
   imageTarget?: string[];
+  /**
+   * Issue #847 — `--image-context <dir>` (global) or `<svc>=<dir>`
+   * (per-service), repeatable. The `docker build` context for an overridden
+   * target whose Dockerfile lives below it (a monorepo); the default stays
+   * the Dockerfile's parent directory.
+   */
+  imageContext?: string[];
   /**
    * Issue #238 — `--no-interactive-overrides`. Suppresses the boot
    * prompt + the picker-form prompt; the override map is whatever
@@ -1760,10 +1768,29 @@ async function resolveServiceAndRunnerOpts(
   const target = boot.target;
   const quiet = opts.quiet === true;
 
-  const imageContext = await buildEcsImageResolutionContext(target, stacks, options, stateProvider);
+  // An `--image-override` covering this target replaces its same-stack ECR
+  // image (issue #847), so the "pass a state-source flag" WARN would be noise;
+  // an uncovered sibling container still fails below with the full remedy.
+  const imageContext = await buildEcsImageResolutionContext(
+    target,
+    stacks,
+    options,
+    stateProvider,
+    opts.imageOverrideTag !== undefined ? { imageOverridden: true } : {}
+  );
   const service = resolveEcsServiceTarget(target, stacks, imageContext, {
     suppressLoadBalancerWarning,
   });
+  // Issue #847 — a same-stack ECR image the override does not cover has no
+  // URI to pull: refuse it now, before any AWS call or replica network. The
+  // override covers the representative container (first essential, else
+  // first) — the same anchor the per-container map below is keyed on.
+  const representative =
+    service.task.containers.find((c) => c.essential) ?? service.task.containers[0];
+  assertEcsTaskImagesResolvable(
+    service.task,
+    new Set(opts.imageOverrideTag !== undefined && representative ? [representative.name] : [])
+  );
   if (!quiet) {
     logger.info(
       `Target: ${displayStackName(`${service.stack.stackName}/${service.serviceLogicalId}`)} ` +
@@ -2531,7 +2558,15 @@ export async function buildEcsImageResolutionContext(
   stacks: StackInfo[],
   options: EcsServiceEmulatorOptions,
   stateProvider: LocalStateProvider | undefined,
-  opts: { suppressStateWarning?: boolean } = {}
+  opts: {
+    suppressStateWarning?: boolean;
+    /**
+     * Issue #847 — an `--image-override` covers the target, replacing its
+     * same-stack ECR image, so only the "same-stack ECR needs state" WARN is
+     * dropped (the env / secret intrinsics WARN still fires).
+     */
+    imageOverridden?: boolean;
+  } = {}
 ): Promise<EcsImageResolutionContext | undefined> {
   const logger = getLogger();
   const candidate = pickCandidateStack(target, stacks);
@@ -2611,10 +2646,11 @@ export async function buildEcsImageResolutionContext(
     // classify each target's image kind and handles its OWN resolution errors
     // as DEBUG. Without the guard the peek + the real boot both emit this WARN
     // for the same target, so the user sees it twice (once per call site).
-    if (!opts.suppressStateWarning) {
+    if (!opts.suppressStateWarning && !opts.imageOverridden) {
       logger.warn(
         'Container Image references a same-stack AWS::ECR::Repository. Pass a state-source flag ' +
-          '(e.g. --from-cfn-stack or a host-provided extension) to substitute the deployed repository URI.'
+          '(e.g. --from-cfn-stack or a host-provided extension) to substitute the deployed repository URI, ' +
+          'or --image-override to build it from a local Dockerfile.'
       );
     }
   } else if (!stateProvider && needs.needsEnvOrSecretSubstitution) {
@@ -2927,6 +2963,7 @@ async function resolveAndBuildImageOverrides(args: {
       ...(options.imageBuildArg && { imageBuildArg: options.imageBuildArg }),
       ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
       ...(options.imageTarget && { imageTarget: options.imageTarget }),
+      ...(options.imageContext && { imageContext: options.imageContext }),
     }),
     pinnedAliases,
     perTarget
@@ -3241,7 +3278,7 @@ export function addCommonEcsServiceOptions(cmd: Command): Command {
 /**
  * Issue #238 — register the `--image-override` flag family shared by
  * `cdkl start-service` and `cdkl start-alb`. Both commands accept the
- * same six flags; this helper keeps the wording in one place so a
+ * same seven flags; this helper keeps the wording in one place so a
  * future copy edit lands in both surfaces simultaneously.
  *
  * `--image-override` is repeatable (accumulator); `--image-build-arg`
@@ -3290,6 +3327,16 @@ export function addImageOverrideOptions(cmd: Command): Command {
           '`<service>=<stage>` (issue #240) scopes the --target to one overridden target so a ' +
           'monorepo with different multi-stage Dockerfiles per service can stop each at its own ' +
           'intermediate stage. Per-service form overrides the global on the named target.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--image-context <dir or svc=dir...>',
+        'Repeatable. The `docker build` context for --image-override builds whose Dockerfile lives ' +
+          'below it (a monorepo whose apps share code: --image-override Svc=apps/api/Dockerfile ' +
+          '--image-context Svc=.). Bare `<dir>` applies to every overridden target; ' +
+          '`<service>=<dir>` scopes it to one and overrides the global. Default: the ' +
+          "Dockerfile's directory."
       )
     )
     .addOption(

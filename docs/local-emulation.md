@@ -1472,8 +1472,10 @@ resolution tiers fire **before** the URI is fed to tier 2:
   deployed physical repo name. Pass `--from-cfn-stack` (the stack must
   have been deployed via `cdk deploy`); cdk-local calls
   `ListStackResources`, substitutes the physical name, then routes
-  through tier 2. Without `--from-cfn-stack` the error message points
-  back at this flag as the resolution path.
+  through tier 2. Without `--from-cfn-stack` the image is a pinned
+  target `--image-override` can replace with a local build (issue
+  #847); left uncovered, the run stops before any container starts
+  with an error pointing at both flags.
 
 ### Env / Secrets substitution (`--from-cfn-stack`)
 
@@ -1848,7 +1850,15 @@ orphan validator is NOT re-run (the `ImageOverrideMap` shape is
 stable post-boot); a per-target rebuild failure logs a warn and
 keeps the OLD replica serving while sibling targets continue
 rolling. The reload-skip above only fires for targets that remain
-UNCOVERED by the override map. Six flags compose:
+UNCOVERED by the override map.
+
+An image from an `AWS::ECR::Repository` in the SAME stack
+(`ContainerImage.fromEcrRepository(repo, tag)` on a repository the
+app creates) is a pinned target too, with or without
+`--from-cfn-stack`: without deployed state it has no URI to pull, so
+`--image-override` is how it runs locally (issue #847). Left
+uncovered, the boot stops before any replica starts with the
+needs-state error. Seven flags compose:
 
 - `--image-override <svc>=<dockerfile>` (explicit) or
   `<dockerfile>` (picker-form) — repeatable. The picker-form opens
@@ -1870,6 +1880,13 @@ UNCOVERED by the override map. Six flags compose:
   fetches during build).
 - `--image-target <stage>` — global. Forwarded to
   `docker build --target=<stage>` for multi-stage builds.
+- `--image-context <dir>` — global. The `docker build` context for
+  every overridden target (issue #847), for a Dockerfile that lives
+  below it — a monorepo whose apps share code
+  (`--image-override Api=apps/api/Dockerfile --image-context .`).
+  Resolved against the directory you ran `cdkl` from (`~/` expanded);
+  a path that is not an existing directory fails the boot. Default:
+  the Dockerfile's own directory.
 - `--no-interactive-overrides` — suppress the boot prompt + the
   picker-form multi-select. The override map is whatever the
   explicit `--image-override <svc>=<dockerfile>` flags resolved to.
@@ -1943,6 +1960,9 @@ to every OTHER overridden target:
 - `--image-target <service>=<stage>` — per-service target stage.
   Single-token payload, so uses `=` (matches
   `--image-override <service>=<dockerfile>`).
+- `--image-context <service>=<dir>` — per-service build context, same
+  `=` convention (a global `<dir>` whose name contains `=` must use
+  this form).
 
 A per-service flag whose service name is NOT covered by
 `--image-override` (or the boot prompt's in-memory injection)
@@ -1957,11 +1977,10 @@ cdkl start-alb --from-cfn-stack \
   --image-build-secret AppService:npmrc=./.npmrc-private \
   --image-build-secret Reporting:npmrc=./.npmrc-public \
   --image-target AppService=builder \
-  --image-target Reporting=runtime
+  --image-target Reporting=runtime \
+  --image-context AppService=.
 ```
 
-Custom build-context directories distinct from the Dockerfile's
-parent dir are still deferred (also tracked under #240's siblings).
 
 Known fast-path limitations (Phase 4 trade-offs):
 

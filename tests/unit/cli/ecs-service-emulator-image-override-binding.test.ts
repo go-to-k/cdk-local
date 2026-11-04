@@ -438,3 +438,33 @@ describe('ecs-service-emulator --image-override key canonicalization (issue #659
     );
   });
 });
+
+// Issue #847 — the service boot refuses a same-stack ECR image no override
+// covered (before any replica network exists), checking the SAME per-container
+// map the runner consumes, and `--image-context` reaches the flag parser.
+describe('same-stack ECR image + --image-context wiring (issue #847)', () => {
+  const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+
+  it('bootOneTarget asserts image resolvability right after resolving, before any AWS call', () => {
+    const resolveIdx = source.indexOf(
+      'const service = resolveEcsServiceTarget(target, stacks, imageContext, {'
+    );
+    const assertIdx = source.indexOf('assertEcsTaskImagesResolvable(\n    service.task,');
+    const assumeIdx = source.indexOf('const effectiveAssumeRole = resolveEcsAssumeRoleOption(options);');
+    const crossStackIdx = source.indexOf('await stateProvider.buildCrossStackResolver(consumerRegion)');
+    expect(resolveIdx).toBeGreaterThan(-1);
+    expect(assertIdx, 'assertion call missing').toBeGreaterThan(resolveIdx);
+    expect(assertIdx).toBeLessThan(crossStackIdx);
+    expect(assertIdx).toBeLessThan(assumeIdx);
+    // Covered set keyed on the same representative container as the override map.
+    expect(source.slice(assertIdx - 400, assertIdx)).toMatch(
+      /find\(\(c\) => c\.essential\) \?\? service\.task\.containers\[0\]/
+    );
+  });
+
+  it('threads options.imageContext into parseImageOverrideFlags', () => {
+    expect(source).toMatch(
+      /parseImageOverrideFlags\(\{[\s\S]*?imageContext:\s*options\.imageContext[\s\S]*?\}\)/
+    );
+  });
+});
