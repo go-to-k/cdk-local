@@ -170,6 +170,28 @@ describe('runEcsTask under finch on macOS (issue #749)', () => {
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
+  // Issue #848 — a dropped (intrinsic, no state) secret reaches the container
+  // only through an `--env-vars` override, and then as a value-less `-e KEY`.
+  it('refuses a dropped secret only when --env-vars supplies it', async () => {
+    const opts = { cluster: 'cdkl', containerHost: '127.0.0.1', skipPull: true, keepRunning: false, detach: true };
+    const withDropped = () =>
+      makeTask([makeContainer({ droppedSecretNames: ['DB_PASS'] } as never)]);
+    const refused = await runEcsTask(
+      withDropped(),
+      { ...opts, envOverrides: { app: { DB_PASS: 'pw' } } },
+      createEcsRunState()
+    ).catch((e: unknown) => e as Error);
+    expect(refused).toBeInstanceOf(Error);
+    expect(refused!.message).toMatch(/refusing to forward secret\(s\) DB_PASS/);
+
+    const notOverridden = await runEcsTask(withDropped(), opts, createEcsRunState()).catch(
+      (e: unknown) => e as Error
+    );
+    expect(notOverridden instanceof Error ? notOverridden.message : '').not.toMatch(
+      /refusing to forward/
+    );
+  });
+
   it('refuses a decrypted SecureString env key (sensitiveEnvKeys) the same way', async () => {
     const task = makeTask([
       makeContainer({ environment: { API_KEY: 's3cr3t' }, sensitiveEnvKeys: ['API_KEY'] }),

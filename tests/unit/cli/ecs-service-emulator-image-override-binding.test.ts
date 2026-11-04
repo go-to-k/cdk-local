@@ -445,17 +445,21 @@ describe('ecs-service-emulator --image-override key canonicalization (issue #659
 describe('same-stack ECR image + --image-context wiring (issue #847)', () => {
   const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
 
-  it('bootOneTarget asserts image resolvability against taskOpts.imageOverrideByContainer', () => {
-    const assertIdx = source.indexOf(
-      'assertEcsTaskImagesResolvable(service.task, taskOpts.imageOverrideByContainer)'
+  it('bootOneTarget asserts image resolvability right after resolving, before any AWS call', () => {
+    const resolveIdx = source.indexOf(
+      'const service = resolveEcsServiceTarget(target, stacks, imageContext, {'
     );
-    const mapSetIdx = source.indexOf('taskOpts.imageOverrideByContainer = new Map(');
-    const runnerOptsIdx = source.indexOf('const runnerOpts: ServiceRunnerOptions = {');
-    expect(assertIdx, 'assertion call missing').toBeGreaterThan(-1);
-    expect(mapSetIdx).toBeGreaterThan(-1);
-    // After the override map is filled, before the replicas' runner options.
-    expect(mapSetIdx).toBeLessThan(assertIdx);
-    expect(assertIdx).toBeLessThan(runnerOptsIdx);
+    const assertIdx = source.indexOf('assertEcsTaskImagesResolvable(\n    service.task,');
+    const assumeIdx = source.indexOf('const effectiveAssumeRole = resolveEcsAssumeRoleOption(options);');
+    const crossStackIdx = source.indexOf('await stateProvider.buildCrossStackResolver(consumerRegion)');
+    expect(resolveIdx).toBeGreaterThan(-1);
+    expect(assertIdx, 'assertion call missing').toBeGreaterThan(resolveIdx);
+    expect(assertIdx).toBeLessThan(crossStackIdx);
+    expect(assertIdx).toBeLessThan(assumeIdx);
+    // Covered set keyed on the same representative container as the override map.
+    expect(source.slice(assertIdx - 400, assertIdx)).toMatch(
+      /find\(\(c\) => c\.essential\) \?\? service\.task\.containers\[0\]/
+    );
   });
 
   it('threads options.imageContext into parseImageOverrideFlags', () => {

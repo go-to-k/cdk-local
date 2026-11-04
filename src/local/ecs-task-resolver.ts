@@ -104,6 +104,13 @@ export interface ResolvedEcsContainer {
   /** SecretArn entries. Resolved to real values by `ecs-secrets-resolver.ts`. */
   secrets: { name: string; valueFrom: string }[];
   /**
+   * Names of `Secrets` entries dropped because their intrinsic `ValueFrom`
+   * could not be resolved (no state source). Not fetched, but a value
+   * `--env-vars` supplies for one is still a secret: the runner keeps it off
+   * the `docker run` argv (issue #848). Absent when nothing was dropped.
+   */
+  droppedSecretNames?: string[];
+  /**
    * Container port mappings. `name` (mirrors the CFn `Name` field) is
    * surfaced for Service Connect resolution (Phase 3 of #262 / Issue
    * #460) — the resolver matches `ServiceConnectConfiguration.Services[].PortName`
@@ -997,6 +1004,7 @@ function parseContainerDefinition(
     ulimits,
     warnings,
   };
+  if (droppedSecretKeys.length > 0) out.droppedSecretNames = droppedSecretKeys.map((d) => d.key);
   if (command !== undefined) out.command = command;
   if (entryPoint !== undefined) out.entryPoint = entryPoint;
   if (workingDirectory !== undefined) out.workingDirectory = workingDirectory;

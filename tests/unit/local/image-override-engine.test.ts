@@ -1751,6 +1751,14 @@ describe('--image-context build context (issue #847)', () => {
     expect(out.get('Other')!.contextDir).toBe(path.join(repoRoot, 'apps'));
   });
 
+  it('normalizes an absolute context, so the Dockerfile directory spelled oddly keeps the default', async () => {
+    const out = await resolveFor({
+      imageOverride: ['Svc=apps/api/Dockerfile'],
+      imageContext: [`Svc=${path.join(repoRoot, 'apps', 'x', '..', 'api')}/`],
+    });
+    expect(out.get('Svc')!.contextDir).toBe(path.join(repoRoot, 'apps', 'api'));
+  });
+
   it('refuses a context that is not an existing directory, before any build', async () => {
     await expect(
       resolveFor({ imageOverride: ['Svc=apps/api/Dockerfile'], imageContext: ['Svc=missing'] })
@@ -1796,6 +1804,13 @@ describe('--image-context build context (issue #847)', () => {
       aliases
     );
     expect(merged.perService.get('App:Svc')?.contextDir).toBe('.');
+    // Two spellings of one directory are not a conflict.
+    expect(() =>
+      canonicalizeImageOverrideKeys(
+        parseImageOverrideFlags({ imageContext: ['Svc=./apps', 'SvcLogical=apps'] }),
+        aliases
+      )
+    ).not.toThrow();
     expect(() =>
       canonicalizeImageOverrideKeys(
         parseImageOverrideFlags({ imageContext: ['Svc=.', 'SvcLogical=apps'] }),

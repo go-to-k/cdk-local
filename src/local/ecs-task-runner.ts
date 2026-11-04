@@ -495,6 +495,10 @@ export async function runEcsTask(
     const refusal = finchSecretArgvRefusal(
       [
         ...c.secrets.map((s) => s.name),
+        // A dropped secret reaches the container only through an override.
+        ...(c.droppedSecretNames ?? []).filter((n) =>
+          overriddenEnvKeys(options.envOverrides, c.name).includes(n)
+        ),
         ...c.sensitiveEnvKeys,
         ...dynamicReferenceEnvKeys(c, options.envOverrides),
       ].filter((n) => !isMalformedEnvKey(n) && !isDockerClientEnvKey(n)),
@@ -1615,6 +1619,9 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // #848), so it is absent from `secrets`; the value the override supplies
   // for it is still treated as a secret and kept off the argv.
   for (const s of container.secrets) sensitiveEnvKeys.add(s.name);
+  // Same for a declared secret the resolver dropped (intrinsic ValueFrom, no
+  // state source): an `--env-vars` value for it is still a secret.
+  for (const n of container.droppedSecretNames ?? []) sensitiveEnvKeys.add(n);
   // Env keys that resolved to a decrypted SecureString SSM parameter
   // (issue #99) — same off-argv treatment as secrets.
   for (const k of container.sensitiveEnvKeys) sensitiveEnvKeys.add(k);

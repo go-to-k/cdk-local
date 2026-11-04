@@ -1781,6 +1781,16 @@ async function resolveServiceAndRunnerOpts(
   const service = resolveEcsServiceTarget(target, stacks, imageContext, {
     suppressLoadBalancerWarning,
   });
+  // Issue #847 — a same-stack ECR image the override does not cover has no
+  // URI to pull: refuse it now, before any AWS call or replica network. The
+  // override covers the representative container (first essential, else
+  // first) — the same anchor the per-container map below is keyed on.
+  const representative =
+    service.task.containers.find((c) => c.essential) ?? service.task.containers[0];
+  assertEcsTaskImagesResolvable(
+    service.task,
+    new Set(opts.imageOverrideTag !== undefined && representative ? [representative.name] : [])
+  );
   if (!quiet) {
     logger.info(
       `Target: ${displayStackName(`${service.stack.stackName}/${service.serviceLogicalId}`)} ` +
@@ -1926,9 +1936,6 @@ async function resolveServiceAndRunnerOpts(
       // unaffected.
     }
   }
-  // Issue #847 — a same-stack ECR image the override did not cover has no
-  // URI to pull: refuse it now, before any replica's network exists.
-  assertEcsTaskImagesResolvable(service.task, taskOpts.imageOverrideByContainer);
 
   // Front-door pools for THIS service (built once at the emulator level and
   // shared with the listener servers). Each replica publishes + registers its

@@ -631,7 +631,10 @@ export function canonicalizeImageOverrideKeys(
       into.targetStage = overlay.targetStage;
     }
     if (overlay.contextDir !== undefined) {
-      if (into.contextDir !== undefined && into.contextDir !== overlay.contextDir) {
+      if (
+        into.contextDir !== undefined &&
+        resolvePath(expandTilde(into.contextDir)) !== resolvePath(expandTilde(overlay.contextDir))
+      ) {
         conflict('the build context');
       }
       into.contextDir = overlay.contextDir;
@@ -1071,7 +1074,9 @@ function makeEntryFromPath(
   let contextDir = dirname(abs);
   if (merged.contextDir !== undefined) {
     const expandedCtx = expandTilde(merged.contextDir);
-    contextDir = isAbsolute(expandedCtx) ? expandedCtx : resolvePath(cwd, expandedCtx);
+    // `resolvePath` also normalizes an absolute value (`/a/../b`, a trailing
+    // `/`), so a context equal to the Dockerfile's directory keeps its tag.
+    contextDir = resolvePath(cwd, expandedCtx);
     if (!existsSync(contextDir) || !statSync(contextDir).isDirectory()) {
       throw new ImageOverrideError(
         `--image-context: '${merged.contextDir}' is not an existing directory (resolved to '${contextDir}').`

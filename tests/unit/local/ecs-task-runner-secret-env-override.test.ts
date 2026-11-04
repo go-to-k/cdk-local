@@ -191,4 +191,20 @@ describe('runEcsTask — --env-vars override of a Secrets entry (#848)', () => {
     expect(err.message).toContain('AccessDeniedException');
     expect(dockerRuns()).toHaveLength(0);
   });
+
+  it('keeps an override for a DROPPED (intrinsic, no state) secret off the argv', async () => {
+    const c = makeContainer('learning-api', []);
+    c.droppedSecretNames = ['DB_PASSWORD'];
+    const task = makeTask([c]);
+    await runEcsTask(
+      task,
+      { ...runnableOptions(task), envOverrides: { 'learning-api': { DB_PASSWORD: 'pw-848' } } },
+      createEcsRunState()
+    );
+    expect(smSend).not.toHaveBeenCalled();
+    const run = dockerRuns()[0]!;
+    expect(run.argv.join(' ')).not.toContain('pw-848');
+    expect(run.argv[run.argv.indexOf('DB_PASSWORD') - 1]).toBe('-e');
+    expect(run.env?.['DB_PASSWORD']).toBe('pw-848');
+  });
 });
