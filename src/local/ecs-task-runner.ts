@@ -36,6 +36,7 @@ import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
 import {
   buildMetadataEnv,
   createTaskNetwork,
+  SHARED_SVC_SUBNET_OCTET,
   destroyTaskNetwork,
   type TaskNetwork,
 } from './ecs-network.js';
@@ -139,7 +140,12 @@ export interface RunEcsTaskOptions {
     secretAccessKey: string;
     sessionToken?: string;
   };
-  /** ARN of the task role being assumed (forwarded to AWS_CONTAINER_CREDENTIALS_RELATIVE_URI). */
+  /**
+   * ARN of the task role being assumed. When set, containers get
+   * `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds` and a runner-created
+   * network is pinned to `169.254.170.0/24` (ignoring {@link subnetOctet}),
+   * the only place SDKs read task-role credentials from.
+   */
   taskRoleArn?: string;
   /** Force a `--platform` (default: inferred from task `RuntimePlatform.CpuArchitecture`). */
   platformOverride?: string;
@@ -209,9 +215,10 @@ export interface RunEcsTaskOptions {
   imageOverrideByContainer?: ReadonlyMap<string, string>;
   /**
    * Optional second-from-last octet of the link-local /24 subnet for this
-   * task's docker network (1..254). Default 170 (AWS-documented). `cdkl start-service` walks this per replica so concurrent replicas
-   * don't collide on the same /24. See `buildEndpointSubnet` in
-   * `ecs-network.ts`.
+   * task's docker network (1..254). Default 171 without a task role. It is a
+   * preference: the create walks on to a free /24 when another network
+   * holds it. Ignored when {@link taskRoleArn} is set (pinned to 170). See
+   * `buildEndpointSubnet` in `ecs-network.ts`.
    */
   subnetOctet?: number;
   /**
@@ -614,7 +621,15 @@ export async function runEcsTask(
     };
     if (options.taskCredentials) netCreateOpts.credentials = options.taskCredentials;
     if (options.cluster) netCreateOpts.cluster = options.cluster;
-    if (options.subnetOctet !== undefined) netCreateOpts.subnetOctet = options.subnetOctet;
+    // A task role pins the AWS-documented 169.254.170.0/24 (no octet):
+    // SDKs read `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` only from
+    // 169.254.170.2, so a run that holds that /24 is a conflict, not a
+    // reason to move. Without a role nothing needs that address, so the
+    // create walks the free /24s from 171 (the walk skips 170), leaving
+    // 170 to task-role runs (issue #850).
+    if (!options.taskRoleArn) {
+      netCreateOpts.subnetOctet = options.subnetOctet ?? SHARED_SVC_SUBNET_OCTET;
+    }
     state.network = await createTaskNetwork(netCreateOpts);
   }
 

@@ -1414,7 +1414,7 @@ resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
 | `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names; `Parameters` is a global overlay. Same shape as `cdkl invoke --env-vars`. |
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
 | `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. |
-| `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the account id of the identity the CLI resolved (via STS `GetCallerIdentity`: the `--profile` account when one is selected, otherwise the `--role-arn` role's account when one is given) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
+| `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the account id of the identity the CLI resolved (via STS `GetCallerIdentity`: the `--profile` account when one is selected, otherwise the `--role-arn` role's account when one is given) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds (valid for one hour) are served by the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` in container `Environment[].Value` is warn-and-dropped (CFn `ListStackResources` does not return per-attribute values, and unlike Lambda there is no ECS-side equivalent of `lambda:GetFunctionConfiguration`). See "Env / Secrets substitution" below. |
 | `--stack-region <region>` | unset | Region used to construct the CloudFormation client for `--from-cfn-stack`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
@@ -1431,15 +1431,29 @@ Plus the standard shared options: `-a/--app`, `-c/--context`, `--profile`,
 For every task invocation cdk-local:
 
 1. Creates a fresh docker network `cdkl-task-<random>` (or
-   `--cluster <name>-task-<random>`) with subnet `169.254.170.0/24`.
+   `--cluster <name>-task-<random>`) with subnet `169.254.170.0/24` with a task role,
+   else `169.254.171.0/24` or the next free `169.254.<N>.0/24` (see below).
 2. Starts the AWS-published
    `amazon/amazon-ecs-local-container-endpoints:latest-amd64` sidecar
-   on the network at the well-known IP `169.254.170.2`.
+   on the network at `.2` of that subnet (the well-known `169.254.170.2`
+   with a task role).
 3. Starts every user container on the same network with
    `--network-alias <container-name>` so siblings resolve each other by
    their CFn `ContainerDefinitions[].Name`.
-4. Injects per-container env vars: `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<container-name>`
-   and (when `--assume-task-role` is set) `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<task-role-arn>`.
+4. Injects per-container env vars: `ECS_CONTAINER_METADATA_URI_V4=http://<sidecar-ip>/v4/<container-name>`
+   and (when `--assume-role` / `--assume-task-role` is set) `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`.
+   The sidecar holds the assumed role's credentials and serves them at `/creds`,
+   so an AWS SDK in the container runs as the task role.
+
+**Concurrent runs.** AWS SDKs read `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`
+only from the fixed address `169.254.170.2`, so a run with a task role always
+uses `169.254.170.0/24`, and only one run with a task role (`run-task`, or
+`start-service` / `start-alb` with `--assume-role`) can be active per host. A
+second one fails with an error naming the docker network that holds the subnet.
+A `run-task` without a task role never takes `169.254.170.0/24`: it uses
+`169.254.171.0/24`, or the next free `169.254.<N>.0/24` when another run holds
+that, and its containers' `ECS_CONTAINER_METADATA_URI_V4` follows the sidecar
+there.
 
 `awsvpc` network mode is mapped to `bridge` locally with a warn line —
 docker cannot emulate ENI-per-task. AWS SDK calls from inside the
@@ -1626,6 +1640,19 @@ finds that /24 taken walks on to the next free `169.254.<N>.0/24` (see
 `createSharedSvcNetwork`); its sidecar starts at `169.254.<N>.2` and
 every container's `ECS_CONTAINER_METADATA_URI_V4` points at it.
 
+With `--assume-role` / `--assume-task-role`, the shared network uses
+`169.254.170.0/24` instead, with the sidecar at `169.254.170.2`: AWS SDKs read
+task-role credentials only from that address. The sidecar serves the assumed
+role's credentials at `/creds`, and every container gets
+`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`. One sidecar holds one set of
+credentials, so every service in the run must resolve to the SAME task role;
+when the bare flag resolves different task roles for different services, the
+run fails and names both — pass one role with `--assume-role <arn>`. Only one
+run with a task role (this, or a `run-task` with one) can be active per host; a
+second fails with an error naming the docker network that holds
+`169.254.170.0/24`. The role is assumed once at startup, so its credentials
+expire after one hour; restart the run to refresh them.
+
 > **Host-port publishing and multi-replica services.** A
 > **single-replica** service publishes its container `PortMappings` to
 > the host (`-p <container-host>:<hostPort>:<containerPort>`) so you can
@@ -1667,13 +1694,13 @@ error.
 
 | Flag | Default | Behavior |
 | --- | --- | --- |
-| `--cluster <name>` | `cdkl` | Cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` and reported in the local task ARN. All replicas attach to one shared `cdkl-svc-<rand>` docker network for the lifetime of the CLI invocation; each replica's metadata sidecar binds its own 169.254.&lt;N&gt;.2 IP so per-replica metadata stays distinguishable in `docker ps`. |
+| `--cluster <name>` | `cdkl` | Cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` and reported in the local task ARN. All replicas attach to one shared `cdkl-svc-<rand>` docker network for the lifetime of the CLI invocation, served by one metadata sidecar at `169.254.<N>.2` (`169.254.170.2` with `--assume-role`). |
 | `--max-tasks <n>` | `3` | Hard cap on local replica count regardless of template `DesiredCount`. Local dev machines should not run an unbounded number of containers; raise this for production-shape workloads only when warranted. |
 | `--restart-policy <p>` | `on-failure` | Restart-on-exit behavior. `on-failure` restarts only on non-zero exit; `always` restarts on every exit (mirrors ECS Service deployment semantics more closely); `none` shuts the affected replica down and runs the service degraded. |
 | `--env-vars <file>` | — | SAM-shape JSON env-var overrides; same format as `run-task`. |
 | `--container-host <ip>` | `127.0.0.1` | Host IP to bind published container ports to. Must be a numeric IP. |
 | `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. Single-replica services only. |
-| `--assume-task-role [arn]` | unset | Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp credentials via the metadata sidecar so every replica's containers run with the deployed task role. Same three-form grammar as `run-task`. |
+| `--assume-task-role [arn]` | unset | Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp credentials via the metadata sidecar so every replica's containers run with the deployed task role. Same three-form grammar as `run-task`. Every service in the run must resolve to the same role, and only one run with a task role can be active per host (see the shared-network note above). |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before ECR `docker pull` for cross-account / centralized registries. Same shape as `run-task`. |
 | `--platform <p>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
 | `--no-pull` | off | Skip `docker pull` on every container image and the metadata sidecar. |

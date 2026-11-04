@@ -24,8 +24,10 @@ const execFileAsync = promisify(execFile);
  * `cdkl run-task`. The sidecar (a small Go binary maintained by
  * awslabs) is started at `169.254.170.2` on the per-task docker network so
  * containers can hit `http://169.254.170.2/v4/<container-id>` for task
- * metadata AND `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<role-arn>`
- * for IAM task-role credentials. cdk-local does NOT re-implement the sidecar
+ * metadata AND `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds` for IAM
+ * task-role credentials (the sidecar is handed the already-assumed role's
+ * credentials, so its `/creds` route serves exactly those; issue #853).
+ * cdk-local does NOT re-implement the sidecar
  * — pulling the AWS-published image keeps cdk-local in lock-step with whatever
  * ECS-Agent fidelity AWS chooses to provide.
  */
@@ -46,8 +48,26 @@ export const METADATA_ENDPOINT_IMAGE = 'amazon/amazon-ecs-local-container-endpoi
  */
 export const METADATA_ENDPOINT_IP = '169.254.170.2';
 
-/** Default subnet octet (`169.254.170.0/24`) — used when no `subnetOctet` override is supplied. */
-const DEFAULT_METADATA_ENDPOINT_OCTET = 170;
+/**
+ * Subnet octet of the AWS-documented `169.254.170.0/24`. Pinned whenever a
+ * task role is in effect: every AWS SDK resolves
+ * `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` against the fixed host
+ * `169.254.170.2`, and over plain http the SDKs refuse a `FULL_URI` on any
+ * other link-local address — so task-role credentials work only from a
+ * sidecar at exactly that IP (issues #850 / #854). One task-role run per
+ * host can hold it at a time.
+ */
+export const TASK_ROLE_SUBNET_OCTET = 170;
+
+/**
+ * Path of the sidecar's credentials route that serves the credentials the
+ * sidecar was STARTED with. cdk-local hands the sidecar the already-assumed
+ * task-role credentials, so this is the task role. `/role/<name>` and
+ * `/role-arn/<arn>` would make the sidecar call `sts:AssumeRole` again with
+ * those credentials (denied), and the url-encoded `/role/<arn>` form is not
+ * routed at all (404, issue #853).
+ */
+export const TASK_ROLE_CREDENTIALS_PATH = '/creds';
 
 /**
  * Pure-functional subnet derivation. `cdkl run-task` uses the
@@ -102,6 +122,14 @@ export interface TaskNetwork {
    * with the task).
    */
   ownedByCaller?: boolean;
+  /**
+   * ARN of the task role whose credentials this network's sidecar serves at
+   * {@link TASK_ROLE_CREDENTIALS_PATH}. Set by
+   * {@link serveTaskRoleFromSharedSidecar} on the shared `start-service` /
+   * `start-alb` network; one sidecar holds one credential set, so a second,
+   * different role is refused.
+   */
+  taskRoleArn?: string;
 }
 
 export interface CreateTaskNetworkOptions {
@@ -113,7 +141,7 @@ export interface CreateTaskNetworkOptions {
   /**
    * When set, the sidecar receives `AWS_ACCESS_KEY_ID` /
    * `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` env vars so its
-   * `/role/<role-arn>` endpoint serves these creds to the user
+   * `/creds` endpoint serves these creds to the user
    * containers. When unset, the sidecar falls back to its default
    * credential chain (typically empty — the user containers will get
    * 4xx from the credentials endpoint, mimicking IAM-misconfigured prod).
@@ -130,7 +158,8 @@ export interface CreateTaskNetworkOptions {
   /**
    * Optional second-from-last octet of the link-local /24 subnet
    * (1..254). Default 170 (the AWS-documented metadata-endpoint subnet),
-   * which is pinned. An explicit value is the FIRST candidate only: when
+   * which is pinned — the shape a task role needs. An explicit value is
+   * the FIRST candidate only: when
    * that /24 is taken the create walks {@link fallbackSubnetOctets}, and
    * the returned `sidecarIp` follows the /24 it got.
    */
@@ -162,9 +191,10 @@ export const OWNER_HOST_LABEL = 'cdk-local.owner-host';
 /**
  * Candidate octets for a network whose /24 may be ANY free link-local
  * subnet: `preferred` first, then 171..254, then 1..168. Skips 169
- * (`169.254.169.254`, the instance metadata service), 170 (`cdkl run-task`'s
- * AWS-documented `169.254.170.0/24`), and 0 / 255 (RFC 3927 reserves the
- * first and last /24 of 169.254.0.0/16).
+ * (`169.254.169.254`, the instance metadata service), 170 (the
+ * AWS-documented `169.254.170.0/24`, which a task-role run needs; see
+ * {@link TASK_ROLE_SUBNET_OCTET}) unless it is `preferred`, and 0 / 255
+ * (RFC 3927 reserves the first and last /24 of 169.254.0.0/16).
  */
 export function fallbackSubnetOctets(preferred: number): number[] {
   const out = [preferred];
@@ -199,7 +229,16 @@ export function isSubnetTakenError(message: string): boolean {
  * CLI tears down ONCE at the end of the run.
  */
 export async function createSharedSvcNetwork(
-  options: Omit<CreateTaskNetworkOptions, 'subnetOctet'> = {}
+  options: Omit<CreateTaskNetworkOptions, 'subnetOctet'> & {
+    /**
+     * A task role is in effect (`--assume-role` / `--assume-task-role`):
+     * pin the network to `169.254.170.0/24` so the sidecar sits at
+     * `169.254.170.2`, the only address SDKs read task-role credentials
+     * from. Fails with a conflict error naming the holder when another run
+     * owns that /24 (issue #854). Unset keeps the free-/24 walk from 171.
+     */
+    taskRole?: boolean;
+  } = {}
 ): Promise<TaskNetwork> {
   const prefix = options.prefix ?? getEmbedConfig().resourceNamePrefix;
   // Reclaim any `<prefix>-svc-*` network left behind by a previous
@@ -212,7 +251,9 @@ export async function createSharedSvcNetwork(
   const networkName = `${prefix}-svc-${suffix}`;
   const { sidecarContainerId, sidecarIp } = await createNetworkAndSidecar({
     networkName,
-    subnetOctets: fallbackSubnetOctets(SHARED_SVC_SUBNET_OCTET),
+    subnetOctets: options.taskRole
+      ? [TASK_ROLE_SUBNET_OCTET]
+      : fallbackSubnetOctets(SHARED_SVC_SUBNET_OCTET),
     labels: {
       [OWNER_PID_LABEL]: String(process.pid),
       [OWNER_HOST_LABEL]: hostname(),
@@ -420,23 +461,50 @@ async function createNetworkAndSidecar(args: {
     }
   }
   if (sidecarIp === undefined) {
-    const productName = getEmbedConfig().productName;
-    const cliName = getEmbedConfig().cliName;
-    const hint =
-      subnetOctets.length > 1
-        ? isSubnetTakenError(lastDetail)
-          ? 'Hint: every candidate link-local /24 subnet is taken; remove leftover networks ' +
-            'with `docker network ls` + `docker network rm`.'
-          : 'Hint: check that the docker daemon is running and can create bridge networks.'
-        : `Hint: another ${productName} run may already own subnet ${lastCidr}; wait for it to ` +
-          'finish, or remove the leftover network with `docker network ls` + ' +
-          `\`docker network rm\`. Bare \`${cliName} run-task\` uses the AWS-documented ` +
-          'per-task subnet, so only one run can be active at a time.';
+    let hint: string;
+    if (subnetOctets.length > 1) {
+      hint = isSubnetTakenError(lastDetail)
+        ? 'Hint: every candidate link-local /24 subnet is taken; remove leftover networks ' +
+          'with `docker network ls` + `docker network rm`.'
+        : 'Hint: check that the docker daemon is running and can create bridge networks.';
+    } else if (isSubnetTakenError(lastDetail)) {
+      hint = pinnedSubnetConflictHint(lastCidr, await findNetworkHoldingSubnet(lastCidr));
+    } else {
+      hint = 'Hint: check that the docker daemon is running and can create bridge networks.';
+    }
     throw new DockerRunnerError(
       `docker network create failed: ${displayToolOutput(lastDetail)}. ${hint}`
     );
   }
 
+  try {
+    const sidecarContainerId = await startSidecar({
+      networkName,
+      sidecarIp,
+      ...(credentials !== undefined ? { credentials } : {}),
+      ...(cluster !== undefined ? { cluster } : {}),
+    });
+    return { sidecarContainerId, sidecarIp };
+  } catch (err) {
+    await destroyNetworkOnly(networkName);
+    throw err;
+  }
+}
+
+/**
+ * `docker run` the metadata-endpoints sidecar as `<networkName>-metadata` at
+ * `sidecarIp`. Credentials reach it through docker's value-from-process-env
+ * form, never argv. Throws `DockerRunnerError` on failure; the caller owns
+ * any network cleanup.
+ */
+async function startSidecar(args: {
+  networkName: string;
+  sidecarIp: string;
+  credentials?: CreateTaskNetworkOptions['credentials'];
+  cluster?: string;
+}): Promise<string> {
+  const logger = getLogger().child('ecs-network');
+  const { networkName, sidecarIp, credentials, cluster } = args;
   const sidecarArgs: string[] = [
     'run',
     '-d',
@@ -482,9 +550,8 @@ async function createNetworkAndSidecar(args: {
       maxBuffer: 10 * 1024 * 1024,
       ...execEnvForSecrets(sidecarPassthroughEnv),
     });
-    return { sidecarContainerId: stdout.trim(), sidecarIp };
+    return stdout.trim();
   } catch (err) {
-    await destroyNetworkOnly(networkName);
     const e = err as { stderr?: string; message?: string };
     throw new DockerRunnerError(
       `Failed to start metadata-endpoints sidecar: ${displayToolOutput(e.stderr?.trim() || describeExitWithoutArgv(err))}`
@@ -506,13 +573,14 @@ export async function createTaskNetwork(
   const networkName = `${prefix}-task-${suffix}`;
   // No octet: pinned to the AWS-documented 169.254.170.0/24, because SDKs
   // resolve `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` against the fixed host
-  // 169.254.170.2. An explicit octet is a preference: the sidecar IP is
-  // returned, so the create may walk on to a free /24 (issue #849).
+  // 169.254.170.2 — the shape a task role needs. An explicit octet is a
+  // preference: the sidecar IP is returned, so the create may walk on to a
+  // free /24 (issues #849 / #850).
   const { sidecarContainerId, sidecarIp } = await createNetworkAndSidecar({
     networkName,
     subnetOctets:
       options.subnetOctet === undefined
-        ? [DEFAULT_METADATA_ENDPOINT_OCTET]
+        ? [TASK_ROLE_SUBNET_OCTET]
         : fallbackSubnetOctets(options.subnetOctet),
     skipPull: options.skipPull ?? false,
     ...(options.credentials !== undefined ? { credentials: options.credentials } : {}),
@@ -527,10 +595,14 @@ export async function createTaskNetwork(
  * id post-`run` — at this point we use the container name as a stable
  * proxy since the metadata endpoint accepts a name lookup.
  *
- * `roleArn` is the optional task role ARN. When set, the credentials
- * endpoint path bakes it in so AWS SDK clients pull the assumed creds
- * automatically; when unset, the path is omitted (containers fall back
- * to whichever credentials AWS SDK chains find).
+ * `roleArn` is the optional task role ARN. When set, the container gets
+ * `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`, the sidecar route that
+ * serves the assumed role's credentials it was started with (issue #853).
+ * SDKs resolve that path against the fixed `169.254.170.2`, so the caller
+ * must have put the network on {@link TASK_ROLE_SUBNET_OCTET}; a role with
+ * any other `sidecarIp` throws rather than hand out a URI nothing answers.
+ * When unset, the variable is omitted (containers fall back to whichever
+ * credentials AWS SDK chains find).
  */
 export function buildMetadataEnv(opts: {
   containerName: string;
@@ -551,10 +623,129 @@ export function buildMetadataEnv(opts: {
     ECS_CONTAINER_METADATA_URI: `http://${ip}/v3/${opts.containerName}`,
   };
   if (opts.roleArn) {
-    env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = `/role/${encodeURIComponent(opts.roleArn)}`;
+    if (ip !== METADATA_ENDPOINT_IP) {
+      throw new DockerRunnerError(
+        `A task role needs the metadata sidecar at ${METADATA_ENDPOINT_IP} (SDKs read task-role ` +
+          `credentials only from there), but this task's network put it at ${ip}.`
+      );
+    }
+    env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = TASK_ROLE_CREDENTIALS_PATH;
   }
   if (opts.region) env['AWS_REGION'] = opts.region;
   return env;
+}
+
+/**
+ * Make the shared `start-service` / `start-alb` sidecar serve one task
+ * role's credentials (issue #854). The sidecar takes credentials only as
+ * env at start, so the first call replaces it — same name, same IP — with
+ * one started with `credentials`, and records the role on `net`. A repeat
+ * call for the same role keeps the running sidecar (the credentials were
+ * assumed once, at startup). A different role is refused: one sidecar at
+ * `169.254.170.2` holds one credential set, and handing it the caller's
+ * own credentials so it could assume each role itself would expose those
+ * credentials to every container at its `/creds` route.
+ *
+ * `net` must sit on {@link TASK_ROLE_SUBNET_OCTET}
+ * (`createSharedSvcNetwork({ taskRole: true })`). Mutates `net` in place,
+ * so the caller's teardown removes the replacement sidecar.
+ */
+export async function serveTaskRoleFromSharedSidecar(
+  net: TaskNetwork,
+  args: {
+    roleArn: string;
+    credentials: NonNullable<CreateTaskNetworkOptions['credentials']>;
+    cluster?: string;
+  }
+): Promise<void> {
+  if (net.taskRoleArn === args.roleArn) return;
+  if (net.taskRoleArn !== undefined) {
+    throw new DockerRunnerError(
+      `This run's services resolve to different task roles (${displayToolOutput(net.taskRoleArn)} ` +
+        `and ${displayToolOutput(args.roleArn)}; on a --watch reload, the task role changed ` +
+        `since startup), but the shared metadata sidecar at ` +
+        `${METADATA_ENDPOINT_IP} can serve only one. Pass one role for every service with ` +
+        '`--assume-role <arn>`, start the services in separate runs one at a time, or restart ' +
+        'the run after changing the role.'
+    );
+  }
+  if (net.sidecarIp !== METADATA_ENDPOINT_IP) {
+    throw new DockerRunnerError(
+      `A task role needs the metadata sidecar at ${METADATA_ENDPOINT_IP}, but network ` +
+        `${net.networkName} put it at ${net.sidecarIp}.`
+    );
+  }
+  getLogger()
+    .child('ecs-network')
+    .info(
+      `Restarting the metadata sidecar to serve task role ${displayToolOutput(args.roleArn)}...`
+    );
+  await removeContainer(net.sidecarContainerId);
+  net.sidecarContainerId = await startSidecar({
+    networkName: net.networkName,
+    sidecarIp: net.sidecarIp,
+    credentials: args.credentials,
+    ...(args.cluster !== undefined ? { cluster: args.cluster } : {}),
+  });
+  net.taskRoleArn = args.roleArn;
+}
+
+/**
+ * Best-effort: the name of the docker network whose IPAM config holds
+ * `cidr`, for a conflict message. `undefined` when docker cannot be asked
+ * or no network matches.
+ */
+async function findNetworkHoldingSubnet(cidr: string): Promise<string | undefined> {
+  try {
+    const { stdout: ls } = await execFileAsync(getDockerCmd(), [
+      'network',
+      'ls',
+      '--format',
+      '{{.Name}}',
+    ]);
+    const names = ls
+      .split('\n')
+      .map((n) => n.trim())
+      .filter((n) => n.length > 0);
+    if (names.length === 0) return undefined;
+    const { stdout } = await execFileAsync(getDockerCmd(), [
+      'network',
+      'inspect',
+      '--format',
+      '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}',
+      ...names,
+    ]);
+    for (const line of stdout.split('\n')) {
+      const [name, ...subnets] = line.trim().split(/\s+/);
+      if (name && subnets.includes(cidr)) return name;
+    }
+  } catch {
+    // A conflict message without the holder's name is still correct.
+  }
+  return undefined;
+}
+
+/**
+ * Hint for a PINNED subnet that another network holds. Only a task-role run
+ * pins (to `169.254.170.0/24`), so the hint explains why it cannot move.
+ */
+function pinnedSubnetConflictHint(cidr: string, holder: string | undefined): string {
+  const { productName, cliName } = getEmbedConfig();
+  const who =
+    holder !== undefined
+      ? `docker network ${displayToolOutput(holder)} already holds ${cidr}`
+      : `another network already holds ${cidr}`;
+  const remove =
+    holder !== undefined
+      ? `\`docker network rm ${displayToolOutput(holder)}\``
+      : '`docker network ls` + `docker network rm`';
+  return (
+    `Hint: ${who}. A task role needs that subnet: AWS SDKs read task-role credentials only ` +
+    `from the metadata sidecar at ${METADATA_ENDPOINT_IP}, so a ${productName} run with a task ` +
+    `role (\`${cliName} run-task\` / \`start-service\` / \`start-alb\` with \`--assume-role\`) ` +
+    `cannot move to another subnet, and only one can be active per host. Stop the run that ` +
+    `owns it, or remove a leftover network with ${remove}, then retry.`
+  );
 }
 
 /**

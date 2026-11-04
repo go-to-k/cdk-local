@@ -402,8 +402,8 @@ async function localRunTaskCommand(
     // role-assumption) and forward the resulting `{AKID, SAK,
     // sessionToken?}` to the metadata-endpoints sidecar. Without this,
     // the sidecar starts inside a fresh container with no SSO config and
-    // no `~/.aws/credentials`, so every user container that hits
-    // `169.254.170.2/role/<role>` gets a credential-provider failure.
+    // no `~/.aws/credentials`, so every user container that reads the
+    // sidecar's credentials route gets a credential-provider failure.
     // Same gap class as the equivalent forward for `cdkl start-api`'s
     // Lambda container path.
     const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
@@ -420,7 +420,7 @@ async function localRunTaskCommand(
     //
     // Gating `!assumedCredentials` preserves the documented
     // precedence (assume-task-role > profile-file > sidecar): when
-    // `--assume-task-role` won, the sidecar's `/role/<arn>` endpoint
+    // `--assume-task-role` won, the sidecar's `/creds` endpoint
     // already serves the assumed creds and the file env vars must
     // NOT override them.
     if (options.profile && sidecarCredentials && !assumedCredentials) {

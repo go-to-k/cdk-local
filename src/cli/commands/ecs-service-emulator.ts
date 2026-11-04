@@ -89,6 +89,7 @@ import { buildCloudMapIndex, type CloudMapIndex } from '../../local/cloud-map-re
 import {
   createSharedSvcNetwork,
   destroyTaskNetwork,
+  serveTaskRoleFromSharedSidecar,
   type TaskNetwork,
 } from '../../local/ecs-network.js';
 import { FrontDoorEndpointPool } from '../../local/front-door-pool.js';
@@ -704,12 +705,24 @@ export async function runEcsServiceEmulator(
     }
 
     const registry = new CloudMapRegistry();
-    const sidecarCredentials = await resolveSharedSidecarCredentials(options);
+    // A task role puts the shared network on 169.254.170.0/24, the only
+    // place SDKs read task-role credentials from (issue #854). Its sidecar
+    // starts with NO credentials — not even `--profile`'s, which no
+    // container under a task role needs — and is restarted with the
+    // assumed role's credentials when the first service resolves its role
+    // (`serveTaskRoleFromSharedSidecar`). The `--profile` credentials are
+    // then not resolved at all, so they never reach the sidecar or the
+    // on-disk profile file either.
+    const taskRoleMode = isTaskRoleInEffect(options);
+    const sidecarCredentials = taskRoleMode
+      ? undefined
+      : await resolveSharedSidecarCredentials(options);
     try {
       sharedNetwork = await createSharedSvcNetwork({
         prefix: options.cluster,
         skipPull,
         cluster: options.cluster,
+        ...(taskRoleMode && { taskRole: true }),
         ...(sidecarCredentials !== undefined && { credentials: sidecarCredentials }),
       });
     } catch (err) {
@@ -1878,6 +1891,20 @@ async function resolveServiceAndRunnerOpts(
   } else if (typeof effectiveAssumeRole === 'string') {
     resolvedRoleArn = effectiveAssumeRole;
     assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
+  }
+  // The shared sidecar is what containers read their task-role credentials
+  // from; `runEcsTask` ignores `taskCredentials` for an existing network,
+  // so hand them to the sidecar here (issue #854).
+  if (discovery.sharedNetwork && resolvedRoleArn !== undefined && assumedCredentials) {
+    try {
+      await serveTaskRoleFromSharedSidecar(discovery.sharedNetwork, {
+        roleArn: resolvedRoleArn,
+        credentials: assumedCredentials,
+        ...(options.cluster !== undefined && { cluster: options.cluster }),
+      });
+    } catch (err) {
+      throw new LocalStartServiceError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   const envOverrides = readEnvOverridesFile(options.envVars);
@@ -3127,6 +3154,19 @@ let assumeTaskRoleDeprecationWarned = false;
 /** @internal — test-only. */
 export function __resetAssumeTaskRoleDeprecationLatch(): void {
   assumeTaskRoleDeprecationWarned = false;
+}
+
+/**
+ * True when `--assume-role` / `--assume-task-role` asks for a task role (an
+ * ARN, or the bare flag), so every container's credentials come from the
+ * metadata sidecar at `169.254.170.2`.
+ */
+function isTaskRoleInEffect(options: {
+  assumeTaskRole?: string | boolean;
+  assumeRole?: string | boolean;
+}): boolean {
+  const effective = resolveEcsAssumeRoleOption(options);
+  return effective === true || typeof effective === 'string';
 }
 
 /**
