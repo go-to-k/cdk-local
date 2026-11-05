@@ -952,7 +952,7 @@ async function localStartCloudFrontCommand(
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
     };
-    const { stacks } = await synthesizer.synthesize(synthOpts);
+    const { stacks, checkSelectedStacks } = await synthesizer.synthesize(synthOpts);
 
     const chosen = await resolveSingleTarget(target, {
       entries: listTargets(stacks).cloudFrontDistributions,
@@ -968,6 +968,8 @@ async function localStartCloudFrontCommand(
     target = chosen;
 
     const { stack, logicalId } = resolveCloudFrontTarget(chosen, stacks);
+    // Boot and every reload; the origins resolved below come from this stack.
+    checkSelectedStacks?.([stack.stackName]);
     return {
       distribution: resolveCloudFrontDistribution({ stack, logicalId, originOverrides }),
       stacks,

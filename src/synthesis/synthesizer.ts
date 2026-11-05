@@ -34,6 +34,17 @@ export interface SynthesisOptions {
 export interface SynthesisResult {
   /** All stacks in the assembly. */
   stacks: StackInfo[];
+  /**
+   * Set by an embedding host's synthesizer that defers a refusal until the
+   * command knows which stacks it serves (cdkd: a failed context lookup blocks
+   * only the stacks that asked for it, as the AWS CDK CLI validates only the
+   * selected stacks). A command that takes a host synthesizer calls it with the
+   * names of the stacks its target resolved to — after every synthesis,
+   * reloads included, and before it reads state or starts anything. A throw
+   * aborts the command (on a reload, fails the reload) as a synth error does.
+   * The built-in {@link Synthesizer} never sets it.
+   */
+  checkSelectedStacks?: (stackNames: readonly string[]) => void;
 }
 
 /**

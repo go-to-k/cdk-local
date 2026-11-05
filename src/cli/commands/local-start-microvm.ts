@@ -340,7 +340,7 @@ async function localStartMicrovmCommand(
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
   };
-  const { stacks } = await synthesizer.synthesize(synthOpts);
+  const { stacks, checkSelectedStacks } = await synthesizer.synthesize(synthOpts);
 
   const resolvedTarget = await resolveSingleTarget(target, {
     entries: listTargets(stacks).microvmImages,
@@ -356,6 +356,7 @@ async function localStartMicrovmCommand(
   });
 
   const resolved = resolveMicrovmImageTarget(resolvedTarget, stacks);
+  checkSelectedStacks?.([resolved.stack.stackName]);
   const config = readMicrovmImageConfig(resolved.logicalId, resolved.resource);
   const platform =
     options.platform ??
