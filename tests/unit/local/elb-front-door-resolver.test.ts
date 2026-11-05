@@ -299,6 +299,53 @@ describe('resolveAlbFrontDoor', () => {
     }
   );
 
+  it('keeps the path constraint of an own-DNSName host rule', () => {
+    const stack = stackWith(
+      ruleWithConditions([
+        { Field: 'path-pattern', PathPatternConfig: { Values: ['/own/*'] } },
+        { Field: 'host-header', HostHeaderConfig: { Values: [{ 'Fn::GetAtt': [ALB, 'DNSName'] }] } },
+      ])
+    );
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.rules[0]!.pathPatterns).toEqual(['/own/*']);
+    expect(listeners[0]!.rules[0]!.hostPatterns).toEqual(['*']);
+  });
+
+  it.each([
+    ['host-header', { HostHeaderConfig: { Values: { 'Fn::Split': [',', { Ref: 'Hosts' }] } } }],
+    ['host-header', { HostHeaderConfig: { 'Fn::If': ['Cond', { Values: ['a'] }, { Values: ['b'] }] } }],
+    ['host-header', { Values: { Ref: 'Hosts' } }],
+    ['query-string', { QueryStringConfig: { Values: [{ Key: { Ref: 'KeyParam' }, Value: 'x' }] } }],
+    [
+      'query-string',
+      {
+        QueryStringConfig: {
+          Values: [
+            { Key: 'a', Value: '1' },
+            { Key: 'env', Value: { Ref: 'EnvParam' } },
+          ],
+        },
+      },
+    ],
+    ['query-string', { QueryStringConfig: { Values: { 'Fn::Split': [',', { Ref: 'Qs' }] } } }],
+  ])(
+    'skips (with a warning) a rule whose %s value list %j is not literal, instead of widening it',
+    (field, config) => {
+      const stack = stackWith(
+        ruleWithConditions([
+          { Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } },
+          { Field: field, ...config },
+        ])
+      );
+      const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+      expect(listeners[0]!.rules).toEqual([]);
+      expect(warnings).toEqual([
+        expect.stringContaining(`has a ${field} condition value that is not a literal string`),
+      ]);
+    }
+  );
+
   it('skips (with a warning) a rule whose path-pattern value cannot be resolved', () => {
     const stack = stackWith(
       ruleWithConditions([
