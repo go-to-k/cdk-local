@@ -1655,6 +1655,17 @@ request — `#{protocol}` defaults to the listener's own scheme), and
 request becomes the ALB `requestContext.elb` event, runs through the Lambda RIE,
 and the response is translated back (a malformed response → 502).
 
+Condition values must be literal strings, with one exception: a `host-header`
+value of `Fn::GetAtt [<Alb>, DNSName]` naming the ALB the listener belongs to
+(CDK's `ListenerCondition.hostHeaders([alb.loadBalancerDnsName])`) matches
+any `Host`, since every request that reaches the local front door is
+addressed to it. This is the one difference from AWS: there a request by IP
+(`Host` is an IP) misses that rule and gets the default action; locally it
+matches. Any other value that cannot be resolved locally (`Ref` to a
+parameter, another ALB's `DNSName`, `Fn::Join`, `Fn::ImportValue`, …) skips
+the whole rule with a warning rather than dropping the condition, which would
+widen the rule.
+
 Cloud-HTTPS listeners are served over plain HTTP locally by default. The
 listener-rule pipeline (path / host / header / method / query / source-ip
 matching, weighted forwards, redirect / fixed-response, `authenticate-*`

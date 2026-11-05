@@ -11,6 +11,10 @@
 #   - GET /            -> reaches the web service AND round-robins >= 2 replicas.
 #   - GET /api/ping    -> path-routed to the api service ("api ...").
 #   - GET /            and GET /api/ping reach DIFFERENT services.
+#   - GET /own/x       -> api via a host-header rule on the ALB's own DNSName,
+#     with Host 127.0.0.1 and localhost alike (#857).
+#   - A host-header rule on a Ref parameter is skipped with a warning and
+#     GET /param/x falls through to the default (web) action.
 #   - SIGTERM tears every container + network + front-door socket down.
 #
 #     bash tests/integration/local-start-alb-routing/verify.sh
@@ -164,6 +168,32 @@ if [[ "${API_RESP}" != api\ * ]]; then
 fi
 echo "    OK: /api/ping path-routed to the api service"
 
+echo "==> Asserting the own-DNSName host-header rule matches by IP and by localhost (#857)"
+for HOST_HDR in "127.0.0.1:${LB_HOST_PORT}" "localhost:${LB_HOST_PORT}"; do
+  OWN_RESP=$(curl -fsS -H "Host: ${HOST_HDR}" "http://127.0.0.1:${LB_HOST_PORT}/own/x" 2>/dev/null || true)
+  echo "    /own/x (Host: ${HOST_HDR}) response: ${OWN_RESP}"
+  if [[ "${OWN_RESP}" != api\ * ]]; then
+    echo "FAIL: /own/x with Host ${HOST_HDR} did not reach the api service via the own-DNSName rule"
+    echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+    exit 1
+  fi
+done
+echo "    OK: own-DNSName rule matches any Host"
+
+echo "==> Asserting the Ref-valued host-header rule is skipped with a warning, not widened"
+if ! grep -q "ParamHostRule.*has a host-header condition value that is not a literal string" "${OUT_FILE}"; then
+  echo "FAIL: no skip warning for ParamHostRule"
+  echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+  exit 1
+fi
+PARAM_RESP=$(curl -fsS -H "Host: other.example" "http://127.0.0.1:${LB_HOST_PORT}/param/x" 2>/dev/null || true)
+echo "    /param/x response: ${PARAM_RESP}"
+if [[ "${PARAM_RESP}" != web\ * ]]; then
+  echo "FAIL: /param/x should fall through to the default (web) action, got: ${PARAM_RESP}"
+  exit 1
+fi
+echo "    OK: Ref-valued rule skipped; /param/x served by the default action"
+
 echo "==> Sending SIGTERM to cdk-local (${CDKL_PID})"
 kill -TERM "${CDKL_PID}"
 
@@ -204,4 +234,4 @@ if curl -fsS --max-time 2 "http://127.0.0.1:${LB_HOST_PORT}/" >/dev/null 2>&1; t
 fi
 
 echo ""
-echo "==> local-start-alb-routing test passed (default -> web round-robin, /api/* -> api, clean teardown)"
+echo "==> local-start-alb-routing test passed (default -> web round-robin, /api/* -> api, own-DNSName host rule, clean teardown)"

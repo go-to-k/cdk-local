@@ -99,6 +99,36 @@ export class LocalStartAlbRoutingStack extends cdk.Stack {
       actions: [{ type: 'forward', targetGroupArn: apiTg.ref }],
     });
 
+    // go-to-k/cdk-local#857: a host-header value on the ALB's OWN DNSName
+    // (`ListenerCondition.hostHeaders([alb.loadBalancerDnsName])`) matches any
+    // Host locally, so `/own/*` reaches api by IP and by `localhost` alike.
+    new elbv2.CfnListenerRule(this, 'OwnDnsNameRule', {
+      listenerArn: listener.ref,
+      priority: 20,
+      conditions: [
+        { field: 'path-pattern', pathPatternConfig: { values: ['/own/*'] } },
+        { field: 'host-header', hostHeaderConfig: { values: [loadBalancer.attrDnsName] } },
+      ],
+      actions: [{ type: 'forward', targetGroupArn: apiTg.ref }],
+    });
+
+    // A host-header value that cannot be resolved locally skips the whole rule
+    // (with a warning) instead of dropping the host condition, which would
+    // widen it to every `/param/*` request.
+    const hostParam = new cdk.CfnParameter(this, 'HostParam', {
+      type: 'String',
+      default: 'internal.example.com',
+    });
+    new elbv2.CfnListenerRule(this, 'ParamHostRule', {
+      listenerArn: listener.ref,
+      priority: 30,
+      conditions: [
+        { field: 'path-pattern', pathPatternConfig: { values: ['/param/*'] } },
+        { field: 'host-header', hostHeaderConfig: { values: [hostParam.valueAsString] } },
+      ],
+      actions: [{ type: 'forward', targetGroupArn: apiTg.ref }],
+    });
+
     new ecs.CfnService(this, 'WebService', {
       cluster: cluster.ref,
       taskDefinition: webTask.ref,
