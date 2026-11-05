@@ -331,7 +331,12 @@ export function resolveAlbFrontDoor(
     for (const { ruleLogicalId, ruleProps } of rulesByListener.get(listenerLogicalId) ?? []) {
       const priority = parsePriority(ruleProps['Priority']);
       const ruleLabel = `Listener rule ${displayIdent(ruleLogicalId)} (priority ${priority})`;
-      const parsed = parseRuleConditions(ruleProps['Conditions'], ruleLabel, warnings);
+      const parsed = parseRuleConditions(
+        ruleProps['Conditions'],
+        albLogicalId,
+        ruleLabel,
+        warnings
+      );
       if (!parsed) {
         // parseRuleConditions warned about an unsupported / malformed condition.
         continue;
@@ -722,9 +727,12 @@ interface ParsedRuleConditions {
  * values (each field OR-matches). A `source-ip` value that does not parse as
  * a CIDR makes the whole rule unsupported (the rule's authoring intent was
  * specific; dropping the invalid range would silently widen the allow list).
+ * Likewise a value that is not a literal string skips the rule, except a
+ * `host-header` value naming this ALB's own `DNSName` (match-all locally).
  */
 function parseRuleConditions(
   conditions: unknown,
+  albLogicalId: string,
   ruleLabel: string,
   warnings: string[]
 ): ParsedRuleConditions | undefined {
@@ -742,23 +750,43 @@ function parseRuleConditions(
     const c = cond as Record<string, unknown>;
     const field = typeof c['Field'] === 'string' ? c['Field'] : '(unknown)';
     if (field === 'path-pattern') {
-      out.pathPatterns.push(...conditionValues(c, 'PathPatternConfig'));
+      const values = conditionValues(c, 'PathPatternConfig');
+      if (!values) {
+        warnings.push(unresolvableConditionWarning(ruleLabel, field));
+        return undefined;
+      }
+      out.pathPatterns.push(...values);
     } else if (field === 'host-header') {
-      out.hostPatterns.push(...conditionValues(c, 'HostHeaderConfig'));
+      const values = hostHeaderConditionValues(c, albLogicalId);
+      if (!values) {
+        warnings.push(unresolvableConditionWarning(ruleLabel, field));
+        return undefined;
+      }
+      out.hostPatterns.push(...values);
     } else if (field === 'http-header') {
       const parsed = parseHttpHeaderCondition(c);
       if (!parsed) {
         warnings.push(
-          `${ruleLabel} has an http-header condition with no HttpHeaderName / Values; skipping ` +
-            'the rule.'
+          `${ruleLabel} has an http-header condition with no HttpHeaderName / Values, or a value ` +
+            'that is not a literal string; skipping the rule.'
         );
         return undefined;
       }
       out.httpHeaderConditions.push(parsed);
     } else if (field === 'http-request-method') {
-      out.httpRequestMethods.push(...conditionValues(c, 'HttpRequestMethodConfig'));
+      const values = conditionValues(c, 'HttpRequestMethodConfig');
+      if (!values) {
+        warnings.push(unresolvableConditionWarning(ruleLabel, field));
+        return undefined;
+      }
+      out.httpRequestMethods.push(...values);
     } else if (field === 'query-string') {
-      const { parsed, hadEntries } = parseQueryStringConditionValues(c);
+      const qs = parseQueryStringConditionValues(c);
+      if (!qs) {
+        warnings.push(unresolvableConditionWarning(ruleLabel, field));
+        return undefined;
+      }
+      const { parsed, hadEntries } = qs;
       if (hadEntries && parsed.length === 0) {
         warnings.push(
           `${ruleLabel} query-string condition has no parseable { Key?, Value } entries; skipping ` +
@@ -769,6 +797,10 @@ function parseRuleConditions(
       out.queryStringConditions.push(...parsed);
     } else if (field === 'source-ip') {
       const values = conditionValues(c, 'SourceIpConfig');
+      if (!values) {
+        warnings.push(unresolvableConditionWarning(ruleLabel, field));
+        return undefined;
+      }
       const invalid = values.filter((v) => !isValidCidr(v));
       if (invalid.length > 0) {
         warnings.push(
@@ -791,7 +823,8 @@ function parseRuleConditions(
 /**
  * Parse an `http-header` condition into its `{ name, values }` form. Returns
  * `undefined` when `HttpHeaderName` is missing / non-string or `Values` is
- * empty (either makes the rule's authoring intent unrecoverable).
+ * empty or holds a non-literal value (each makes the rule's authoring intent
+ * unrecoverable).
  */
 function parseHttpHeaderCondition(
   cond: Record<string, unknown>
@@ -801,45 +834,56 @@ function parseHttpHeaderCondition(
   const c = cfg as Record<string, unknown>;
   const name = c['HttpHeaderName'];
   if (typeof name !== 'string' || name.length === 0) return undefined;
-  const rawValues = Array.isArray(c['Values']) ? (c['Values'] as unknown[]) : [];
-  const values = rawValues.filter((v): v is string => typeof v === 'string');
-  if (values.length === 0) return undefined;
+  const values = Array.isArray(c['Values']) ? (c['Values'] as unknown[]) : [];
+  if (values.length === 0 || !values.every((v): v is string => typeof v === 'string')) {
+    return undefined;
+  }
   return { name, values };
 }
 
 /**
  * Parse a `query-string` condition's `Values` into `{ key?, value }` pairs.
  * ALB accepts either object entries (`{ Key?, Value }`) or bare strings
- * (legacy v1 shape: a string is treated as `{ value }`). Non-string `Key` /
- * `Value` fields are dropped; an entry with no `Value` is dropped. Returns
+ * (legacy v1 shape: a string is treated as `{ value }`). An entry with no
+ * string `Value` (or a non-string `Key`) is dropped. Returns `undefined` when
+ * the list or any `Key` / `Value` is an intrinsic — the caller skips the rule.
+ * Returns
  * `hadEntries` so the caller can distinguish an absent / empty `Values` array
  * (drop the field silently) from one whose entries were all unparseable
  * (warn + skip the whole rule — silently dropping would widen routing).
  */
-function parseQueryStringConditionValues(cond: Record<string, unknown>): {
-  parsed: AlbQueryStringCondition[];
-  hadEntries: boolean;
-} {
-  const cfg = cond['QueryStringConfig'];
-  const rawValues =
-    cfg && typeof cfg === 'object' && Array.isArray((cfg as Record<string, unknown>)['Values'])
-      ? ((cfg as Record<string, unknown>)['Values'] as unknown[])
-      : Array.isArray(cond['Values'])
-        ? (cond['Values'] as unknown[])
-        : [];
+function parseQueryStringConditionValues(cond: Record<string, unknown>):
+  | {
+      parsed: AlbQueryStringCondition[];
+      hadEntries: boolean;
+    }
+  | undefined {
+  const rawValues = rawConditionValues(cond, 'QueryStringConfig');
+  if (!rawValues) return undefined;
   const parsed: AlbQueryStringCondition[] = [];
   for (const v of rawValues) {
     if (typeof v === 'string') {
       parsed.push({ value: v });
     } else if (v && typeof v === 'object') {
       const e = v as Record<string, unknown>;
+      if (isIntrinsic(e)) return undefined;
       const value = e['Value'];
-      if (typeof value !== 'string') continue;
       const key = e['Key'];
-      parsed.push(typeof key === 'string' ? { key, value } : { value });
+      // An intrinsic Key / Value cannot be resolved locally; dropping the
+      // Key would match the Value under ANY key (widening the rule).
+      if ((value && typeof value === 'object') || (key && typeof key === 'object')) {
+        return undefined;
+      }
+      // Any other malformed entry is dropped (all dropped -> the caller skips).
+      if (typeof value !== 'string' || (key !== undefined && typeof key !== 'string')) continue;
+      parsed.push(key !== undefined ? { key, value } : { value });
     }
   }
   return { parsed, hadEntries: rawValues.length > 0 };
+}
+
+function isIntrinsic(obj: Record<string, unknown>): boolean {
+  return Object.keys(obj).some((k) => k === 'Ref' || k.startsWith('Fn::'));
 }
 
 /**
@@ -867,18 +911,80 @@ function isValidCidr(value: string): boolean {
 }
 
 /**
- * Extract a condition's string values from either the typed `<Field>Config`
- * sub-object's `Values` or the legacy top-level `Values` array.
+ * Extract a condition's raw values from either the typed `<Field>Config`
+ * sub-object's `Values` or the legacy top-level `Values` array. Returns
+ * `undefined` when the list itself is not a literal array (`Values` is an
+ * intrinsic such as `Fn::Split` over a CommaDelimitedList parameter, or the
+ * whole config is an intrinsic): reading it as empty would drop the field.
  */
-function conditionValues(cond: Record<string, unknown>, configKey: string): string[] {
+function rawConditionValues(
+  cond: Record<string, unknown>,
+  configKey: string
+): unknown[] | undefined {
   const cfg = cond[configKey];
-  const raw =
-    cfg && typeof cfg === 'object' && Array.isArray((cfg as Record<string, unknown>)['Values'])
-      ? ((cfg as Record<string, unknown>)['Values'] as unknown[])
-      : Array.isArray(cond['Values'])
-        ? (cond['Values'] as unknown[])
-        : [];
-  return raw.filter((v): v is string => typeof v === 'string');
+  if (cfg !== undefined) {
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return undefined;
+    const c = cfg as Record<string, unknown>;
+    if (isIntrinsic(c)) return undefined;
+    if (Array.isArray(c['Values'])) return c['Values'] as unknown[];
+    if (c['Values'] !== undefined) return undefined;
+  }
+  if (Array.isArray(cond['Values'])) return cond['Values'] as unknown[];
+  return cond['Values'] === undefined ? [] : undefined;
+}
+
+/**
+ * Extract a condition's string values. Returns `undefined` when any value is
+ * not a literal string (an intrinsic such as `Ref` / `Fn::GetAtt` /
+ * `Fn::Join` / `Fn::ImportValue` that cannot be resolved locally): dropping
+ * that value would leave the field emptier than authored — an empty field is
+ * no constraint at all — so the caller must skip the rule instead.
+ */
+function conditionValues(cond: Record<string, unknown>, configKey: string): string[] | undefined {
+  const raw = rawConditionValues(cond, configKey);
+  return raw?.every((v): v is string => typeof v === 'string') ? raw : undefined;
+}
+
+/**
+ * Extract a `host-header` condition's values. `Fn::GetAtt [<Alb>, DNSName]` of
+ * the ALB the listener belongs to means "addressed to this load balancer";
+ * every request that reaches the local front door is addressed to it, so the
+ * value becomes the match-all `*`. Any other non-literal value makes the
+ * result `undefined` (see {@link conditionValues}).
+ */
+function hostHeaderConditionValues(
+  cond: Record<string, unknown>,
+  albLogicalId: string
+): string[] | undefined {
+  const raw = rawConditionValues(cond, 'HostHeaderConfig');
+  if (!raw) return undefined;
+  const out: string[] = [];
+  for (const v of raw) {
+    if (typeof v === 'string') out.push(v);
+    else if (isOwnDnsNameGetAtt(v, albLogicalId)) out.push('*');
+    else return undefined;
+  }
+  return out;
+}
+
+function isOwnDnsNameGetAtt(raw: unknown, albLogicalId: string): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const getAtt = (raw as Record<string, unknown>)['Fn::GetAtt'];
+  const parts = typeof getAtt === 'string' ? getAtt.split('.') : getAtt;
+  return (
+    Array.isArray(parts) &&
+    parts.length === 2 &&
+    parts[0] === albLogicalId &&
+    parts[1] === 'DNSName'
+  );
+}
+
+function unresolvableConditionWarning(ruleLabel: string, field: string): string {
+  return (
+    `${ruleLabel} has a ${field} condition value that is not a literal string (an intrinsic ` +
+    'such as Ref / Fn::GetAtt / Fn::Join / Fn::ImportValue that cannot be resolved locally); ' +
+    'skipping the rule.'
+  );
 }
 
 /** Collect a forward action's `(targetGroupRef, weight)` pairs (single + ForwardConfig forms). */

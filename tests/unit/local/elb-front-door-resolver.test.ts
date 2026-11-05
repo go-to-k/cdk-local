@@ -5,6 +5,7 @@ import {
   type FrontDoorEcsTarget,
   type FrontDoorForwardTarget,
 } from '../../../src/local/elb-front-door-resolver.js';
+import { albHostPatternMatches } from '../../../src/local/alb-path-matcher.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../../src/types/resource.js';
 
@@ -222,6 +223,156 @@ describe('resolveAlbFrontDoor', () => {
     expect(warnings).toEqual([]);
     expect(listeners[0]!.rules[0]!.pathPatterns).toEqual([]);
     expect(listeners[0]!.rules[0]!.hostPatterns).toEqual(['*.api.example.com']);
+  });
+
+  function ruleWithConditions(conditions: unknown[]): Record<string, unknown> {
+    return {
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 1,
+          Conditions: conditions,
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    };
+  }
+
+  it.each([
+    ['list form', { 'Fn::GetAtt': [ALB, 'DNSName'] }],
+    ['dotted string form', { 'Fn::GetAtt': `${ALB}.DNSName` }],
+  ])(
+    "turns a host-header value on this ALB's own DNSName (%s) into a match-all host",
+    (_label, value) => {
+      const stack = stackWith(
+        ruleWithConditions([{ Field: 'host-header', HostHeaderConfig: { Values: [value] } }])
+      );
+      const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+      expect(warnings).toEqual([]);
+      const rule = listeners[0]!.rules[0]!;
+      expect(rule.hostPatterns).toEqual(['*']);
+      expect(forwardTarget(rule.action).serviceLogicalId).toBe(API_SERVICE);
+      for (const host of ['127.0.0.1:8088', 'localhost:8088', 'web.localhost', '192.168.1.5']) {
+        expect(albHostPatternMatches(rule.hostPatterns[0]!, host)).toBe(true);
+      }
+    }
+  );
+
+  it('keeps literal host values next to the own-DNSName value', () => {
+    const stack = stackWith(
+      ruleWithConditions([
+        {
+          Field: 'host-header',
+          HostHeaderConfig: { Values: ['api.example.com', { 'Fn::GetAtt': [ALB, 'DNSName'] }] },
+        },
+      ])
+    );
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.rules[0]!.hostPatterns).toEqual(['api.example.com', '*']);
+  });
+
+  it.each([
+    ['host-header', 'HostHeaderConfig', { Ref: 'HostParam' }],
+    ['host-header', 'HostHeaderConfig', { 'Fn::GetAtt': ['OtherLB', 'DNSName'] }],
+    ['host-header', 'HostHeaderConfig', { 'Fn::GetAtt': [ALB, 'LoadBalancerFullName'] }],
+    ['host-header', 'HostHeaderConfig', { 'Fn::Join': ['', ['api.', { Ref: 'Domain' }]] }],
+    ['host-header', 'HostHeaderConfig', { 'Fn::ImportValue': 'SharedHost' }],
+    ['http-request-method', 'HttpRequestMethodConfig', { Ref: 'MethodParam' }],
+    ['source-ip', 'SourceIpConfig', { Ref: 'CidrParam' }],
+  ])(
+    'skips (with a warning) a rule whose %s value %j cannot be resolved, instead of widening it',
+    (field, configKey, value) => {
+      const stack = stackWith(
+        ruleWithConditions([
+          { Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } },
+          { Field: field, [configKey]: { Values: [value] } },
+        ])
+      );
+      const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+      expect(listeners[0]!.rules).toEqual([]);
+      expect(warnings).toEqual([
+        expect.stringContaining(`has a ${field} condition value that is not a literal string`),
+      ]);
+    }
+  );
+
+  it('keeps the path constraint of an own-DNSName host rule', () => {
+    const stack = stackWith(
+      ruleWithConditions([
+        { Field: 'path-pattern', PathPatternConfig: { Values: ['/own/*'] } },
+        { Field: 'host-header', HostHeaderConfig: { Values: [{ 'Fn::GetAtt': [ALB, 'DNSName'] }] } },
+      ])
+    );
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.rules[0]!.pathPatterns).toEqual(['/own/*']);
+    expect(listeners[0]!.rules[0]!.hostPatterns).toEqual(['*']);
+  });
+
+  it.each([
+    ['host-header', { HostHeaderConfig: { Values: { 'Fn::Split': [',', { Ref: 'Hosts' }] } } }],
+    ['host-header', { HostHeaderConfig: { 'Fn::If': ['Cond', { Values: ['a'] }, { Values: ['b'] }] } }],
+    ['host-header', { Values: { Ref: 'Hosts' } }],
+    ['query-string', { QueryStringConfig: { Values: [{ Key: { Ref: 'KeyParam' }, Value: 'x' }] } }],
+    [
+      'query-string',
+      {
+        QueryStringConfig: {
+          Values: [
+            { Key: 'a', Value: '1' },
+            { Key: 'env', Value: { Ref: 'EnvParam' } },
+          ],
+        },
+      },
+    ],
+    ['query-string', { QueryStringConfig: { Values: { 'Fn::Split': [',', { Ref: 'Qs' }] } } }],
+  ])(
+    'skips (with a warning) a rule whose %s value list %j is not literal, instead of widening it',
+    (field, config) => {
+      const stack = stackWith(
+        ruleWithConditions([
+          { Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } },
+          { Field: field, ...config },
+        ])
+      );
+      const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+      expect(listeners[0]!.rules).toEqual([]);
+      expect(warnings).toEqual([
+        expect.stringContaining(`has a ${field} condition value that is not a literal string`),
+      ]);
+    }
+  );
+
+  it('skips (with a warning) a rule whose path-pattern value cannot be resolved', () => {
+    const stack = stackWith(
+      ruleWithConditions([
+        { Field: 'host-header', HostHeaderConfig: { Values: ['api.example.com'] } },
+        { Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*', { Ref: 'PathParam' }] } },
+      ])
+    );
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings).toEqual([
+      expect.stringContaining('has a path-pattern condition value that is not a literal string'),
+    ]);
+  });
+
+  it('skips (with a warning) a rule whose http-header value cannot be resolved', () => {
+    const stack = stackWith(
+      ruleWithConditions([
+        { Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } },
+        {
+          Field: 'http-header',
+          HttpHeaderConfig: { HttpHeaderName: 'X-Env', Values: ['dev', { Ref: 'EnvParam' }] },
+        },
+      ])
+    );
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings).toEqual([expect.stringContaining('http-header condition')]);
   });
 
   it('resolves a weighted (multi-target) forward into all targets with weights', () => {
