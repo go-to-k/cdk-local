@@ -88,6 +88,23 @@ it:
   `assetManifestPath` on every stack that ships assets. `assetOutdir` bounds
   every asset path the assembly supplies.
 
+### Refusing a problem in the served stacks only
+
+A synthesizer may also return `checkSelectedStacks(stackNames)` next to
+`stacks`. Each command calls it with the names of the stacks its target
+resolved to, after every synthesis (`--watch` reloads included) and before it
+reads deployed state or starts a container. Throw from it to refuse: on boot
+the command fails with your error, and on a reload that reload is skipped and
+the running serve stays up. Use it for a problem synthesis found in only some
+stacks, such as a failed context lookup, so it blocks only the commands that
+serve those stacks. The built-in synthesizer does not return it.
+
+| Command | Stacks passed |
+| --- | --- |
+| `start-agentcore`, `start-web-function`, `start-microvm`, `start-cloudfront` | The target's stack |
+| `start-service` | Each service's stack |
+| `start-alb` | Each load balancer's stack |
+
 ## Keep your `commander` major the same as cdk-local's
 
 `addCommand` splices a cdk-local-built `Command` into **your** Commander

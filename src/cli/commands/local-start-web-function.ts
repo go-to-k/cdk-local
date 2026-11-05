@@ -108,7 +108,7 @@ async function localStartWebFunctionCommand(
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
   };
-  const { stacks } = await synthesizer.synthesize(synthOpts);
+  const { stacks, checkSelectedStacks } = await synthesizer.synthesize(synthOpts);
 
   const resolvedTarget = await resolveSingleTarget(target, {
     entries: listTargets(stacks).webFunctions,
@@ -124,6 +124,7 @@ async function localStartWebFunctionCommand(
   });
 
   const resolved = resolveWebFunctionTarget(resolvedTarget, stacks, options.revision);
+  checkSelectedStacks?.([resolved.stack.stackName]);
   const prepared = prepareWebFunctionServe(resolved);
   const selectionNote: Record<typeof resolved.selection, string> = {
     'target-revision': 'the target revision',

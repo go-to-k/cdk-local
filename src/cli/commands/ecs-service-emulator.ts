@@ -671,7 +671,7 @@ export async function runEcsServiceEmulator(
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
     };
-    const { stacks } = await synthesizer.synthesize(synthOpts);
+    const { stacks, checkSelectedStacks } = await synthesizer.synthesize(synthOpts);
 
     const resolvedTargets = await resolveMultiTarget(targets, {
       entries: strategy.pickEntries(stacks),
@@ -682,6 +682,7 @@ export async function runEcsServiceEmulator(
 
     const { boots, frontDoor, warnings } = strategy.resolveBoots(stacks, resolvedTargets);
     for (const w of warnings) logger.warn(w);
+    checkSelectedStacks?.(servedStackNames(stacks, resolvedTargets, boots));
     // A front-door whose listeners forward ONLY to Lambda targets (#123) has no
     // ECS service to boot; it is still runnable (the Lambda containers live
     // behind the front-door). Only error when there is nothing to run at all.
@@ -1108,7 +1109,15 @@ async function reloadAllServices(args: {
 
   let stacks: StackInfo[];
   try {
-    ({ stacks } = await synthesizer.synthesize(synthOpts));
+    let checkSelectedStacks: ((stackNames: readonly string[]) => void) | undefined;
+    ({ stacks, checkSelectedStacks } = await synthesizer.synthesize(synthOpts));
+    checkSelectedStacks?.(
+      servedStackNames(
+        stacks,
+        resolvedTargets,
+        perTarget.map((pt) => pt.boot)
+      )
+    );
   } catch (err) {
     logger.warn(
       `cdk synth failed during reload; keeping previous version. (${err instanceof Error ? err.message : String(err)})`
@@ -2701,6 +2710,25 @@ function pickCandidateStack(target: string, stacks: StackInfo[]): StackInfo | un
   // Parsed HERE, from the one target string: a `parsed` that disagreed with
   // `target` would silently drop to the first-segment match.
   return candidateTargetStack(parseEcsTarget(target), target, stacks);
+}
+
+/**
+ * The stacks an emulator invocation serves, handed to a host synthesizer's
+ * `checkSelectedStacks`: each chosen target's and each booted service's stack (a
+ * load balancer forwards only within its own stack, so its Lambdas add none). A
+ * target matching no stack adds nothing; its resolver reports the miss.
+ */
+function servedStackNames(
+  stacks: StackInfo[],
+  chosenTargets: readonly string[],
+  boots: readonly ServiceBoot[]
+): string[] {
+  const names = new Set<string>();
+  for (const target of [...chosenTargets, ...boots.map((boot) => boot.target)]) {
+    const stack = pickCandidateStack(target, stacks);
+    if (stack) names.add(stack.stackName);
+  }
+  return [...names];
 }
 
 async function resolveCallerAccountId(

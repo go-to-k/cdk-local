@@ -299,7 +299,7 @@ async function localStartAgentCoreCommand(
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
   };
-  const { stacks } = await synthesizer.synthesize(synthOpts);
+  const { stacks, checkSelectedStacks } = await synthesizer.synthesize(synthOpts);
 
   const resolvedTarget = await resolveSingleTarget(target, {
     entries: listTargets(stacks).agentCoreRuntimes,
@@ -314,6 +314,9 @@ async function localStartAgentCoreCommand(
   });
 
   const candidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
+  // Before the state read, so a host refusal (a failed lookup) is not masked by a
+  // state error; the resolver below normally lands on this same stack.
+  if (candidate) checkSelectedStacks?.([candidate.stackName]);
   stateProvider = createLocalStateProvider(
     options,
     candidate?.stackName ?? '',
@@ -326,6 +329,9 @@ async function localStartAgentCoreCommand(
       : { context: undefined, loaded: undefined };
 
   const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
+  if (resolved.stack.stackName !== candidate?.stackName) {
+    checkSelectedStacks?.([resolved.stack.stackName]);
+  }
   logger.info(
     `Target: ${displayStackName(`${resolved.stack.stackName}/${resolved.logicalId}`)} (${resolved.protocol})`
   );
@@ -573,6 +579,8 @@ async function localStartAgentCoreCommand(
           try {
             const synthRes = await synthesizer.synthesize(synthOpts);
             freshStacks = synthRes.stacks;
+            // The served runtime's stack, before the state read below.
+            synthRes.checkSelectedStacks?.([resolved.stack.stackName]);
             const freshCandidate = pickAgentCoreCandidateStack(resolvedTarget, freshStacks);
             const ctx =
               stateProvider && freshCandidate
