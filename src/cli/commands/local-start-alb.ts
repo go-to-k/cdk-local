@@ -76,6 +76,79 @@ export function parseLbPortOverrides(values: string[] | undefined): Record<numbe
   return out;
 }
 
+/** Parsed `--assume-host` values: one host for every listener, plus per-listener overrides. */
+export interface AssumeHostOverrides {
+  /** `--assume-host <host>`: applies to every listener without its own entry. */
+  all?: string;
+  /** `--assume-host <listenerPort>=<host>`: listener port -> host. */
+  byListenerPort: Record<number, string>;
+}
+
+/**
+ * A DNS name or IP literal (an IPv6 one bracketed), with an optional `:port` —
+ * the shape of an HTTP `Host` header value. No wildcard: the value is the Host
+ * every request is treated as carrying, not a pattern.
+ */
+const ASSUME_HOST_PATTERN =
+  /^(?:[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+
+/**
+ * Parse the repeatable `--assume-host` values (go-to-k/cdk-local#862):
+ * `<host>` applies to every listener, `<listenerPort>=<host>` to one, and a
+ * per-listener entry wins over the bare one. A second bare value, or a second
+ * value for the same listener port, is refused rather than silently resolved.
+ */
+export function parseAssumeHostOverrides(values: string[] | undefined): AssumeHostOverrides {
+  const out: AssumeHostOverrides = { byListenerPort: {} };
+  const usage =
+    'Expected <host> or <listenerPort>=<host> (e.g. api.example.com or 443=api.example.com).';
+  for (const raw of values ?? []) {
+    const value = raw.trim();
+    const eq = value.indexOf('=');
+    const portPart = eq === -1 ? undefined : value.slice(0, eq);
+    const host = eq === -1 ? value : value.slice(eq + 1);
+    const hostPort = /:(\d+)$/.exec(host)?.[1];
+    if (
+      !ASSUME_HOST_PATTERN.test(host) ||
+      (hostPort !== undefined && !(Number(hostPort) >= 1 && Number(hostPort) <= 65535))
+    ) {
+      throw new LocalStartServiceError(
+        `Invalid --assume-host ${JSON.stringify(raw)}: ${host === '' ? 'the host is empty' : `${JSON.stringify(host)} is not a host name`}. ${usage}`
+      );
+    }
+    if (portPart === undefined) {
+      if (/^\d+$/.test(host)) {
+        throw new LocalStartServiceError(
+          `Invalid --assume-host ${JSON.stringify(raw)}: a bare number is not a host name ` +
+            `(did you mean ${host}=<host>?). ${usage}`
+        );
+      }
+      if (out.all !== undefined) {
+        throw new LocalStartServiceError(
+          `--assume-host was given two hosts for every listener (${out.all} and ${host}). ` +
+            'Pass one, or name each listener as <listenerPort>=<host>.'
+        );
+      }
+      out.all = host;
+      continue;
+    }
+    const port = /^\d+$/.test(portPart) ? Number(portPart) : NaN;
+    if (!(port >= 1 && port <= 65535)) {
+      throw new LocalStartServiceError(
+        `Invalid --assume-host ${JSON.stringify(raw)}: the listener port must be 1-65535. ${usage}`
+      );
+    }
+    const prior = out.byListenerPort[port];
+    if (prior !== undefined) {
+      throw new LocalStartServiceError(
+        `--assume-host was given two hosts for listener port ${port} (${prior} and ${host}).`
+      );
+    }
+    out.byListenerPort[port] = host;
+  }
+  return out;
+}
+
 /**
  * Resolve an ALB target string (`Stack/Path` display path or `Stack:LogicalId`)
  * to its stack + `AWS::ElasticLoadBalancingV2::LoadBalancer` logical id. Mirrors
@@ -164,6 +237,7 @@ function notFound(
  */
 export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrategy {
   const lbPortOverrides = parseLbPortOverrides(options.lbPort);
+  const assumeHosts = parseAssumeHostOverrides(options.assumeHost);
   return {
     pickEntries: (stacks) => listTargets(stacks).loadBalancers,
     pickerMessage: 'Select one or more Application Load Balancers to run',
@@ -254,10 +328,12 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
             continue;
           }
           claimedHostPorts.set(hostPort, listener.listenerPort);
+          const assumeHost = assumeHosts.byListenerPort[listener.listenerPort] ?? assumeHosts.all;
           listeners.push({
             listenerPort: listener.listenerPort,
             hostPort,
             protocol: listener.listenerProtocol,
+            ...(assumeHost !== undefined && { assumeHost }),
             ...(listener.defaultAction ? { defaultAction: qualify(listener.defaultAction) } : {}),
             ...(listener.defaultAuthGuard ? { defaultAuthGuard: listener.defaultAuthGuard } : {}),
             rules: listener.rules.map((r) => ({
@@ -286,6 +362,17 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
         if (!resolvedPorts.has(port)) {
           warnings.push(
             `--lb-port override for listener port ${port} matched no ALB listener resolved for ` +
+              'the named target(s); it was ignored.'
+          );
+        }
+      }
+
+      // Same for a per-listener `--assume-host <listenerPort>=<host>`.
+      for (const portStr of Object.keys(assumeHosts.byListenerPort)) {
+        const port = Number(portStr);
+        if (!resolvedPorts.has(port)) {
+          warnings.push(
+            `--assume-host for listener port ${port} matched no ALB listener resolved for ` +
               'the named target(s); it was ignored.'
           );
         }
@@ -393,6 +480,19 @@ export function addAlbSpecificOptions(cmd: Command): Command {
           'Default: host port == ALB listener port. Use this on macOS to remap a privileged ' +
           'listener port (< 1024) to a non-privileged host port.'
       )
+    )
+    .addOption(
+      new Option(
+        '--assume-host <host>',
+        'Treat every inbound request as if it carried this Host: host-header rule conditions ' +
+          'see <host>, and the target (ECS replica or Lambda) receives it as the Host header, as ' +
+          'behind the deployed ALB on its own domain name. Use it to reach a listener rule that ' +
+          'matches only a production host name (host-header: api.example.com) from a browser ' +
+          'or a client that sends Host: localhost. <listenerPort>=<host> (e.g. 443=api.example.com) ' +
+          'applies to one listener and wins over a bare <host>; repeatable. Other rule conditions ' +
+          'are unaffected, and a redirect action keeps the request Host so the browser stays on ' +
+          'the local front-door. Default: the request Host is used as sent.'
+      ).argParser((value: string, prev: string[] | undefined) => [...(prev ?? []), value])
     )
     .addOption(
       new Option(

@@ -34,6 +34,7 @@ http
           body: Buffer.concat(chunks).toString('utf8'),
           revision: process.env.REVISION_LABEL,
           greeting: process.env.GREETING,
+          apiUrl: process.env.API_URL,
         })
       );
     });

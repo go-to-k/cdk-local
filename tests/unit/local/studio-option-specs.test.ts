@@ -225,3 +225,21 @@ describe('resolveEnvVars __proto__ KV row (issue #769)', () => {
     expect(out!.Parameters['__proto__']).toBe('v');
   });
 });
+
+describe('start-alb --assume-host / start-cloudfront --env-vars (go-to-k/cdk-local#862, #863)', () => {
+  it('emits --assume-host for an alb run', () => {
+    expect(buildPerRunArgs('alb', { '--assume-host': ' api.example.com ' })).toEqual([
+      '--assume-host',
+      'api.example.com',
+    ]);
+  });
+
+  it('materializes cloudfront env rows into the --env-vars file shape', () => {
+    expect(buildPerRunArgs('cloudfront', { '--env-vars': [{ left: 'K', right: 'v' }] })).toEqual(
+      []
+    );
+    expect(resolveEnvVars('cloudfront', { '--env-vars': [{ left: 'K', right: 'v' }] })).toEqual({
+      Parameters: { K: 'v' },
+    });
+  });
+});

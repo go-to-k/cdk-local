@@ -103,7 +103,7 @@ The picker opens again; pick `HelloHandler` and the payload lands in
 - **Serve your HTTP surface locally**: `cdkl start-api HelloCdklStack/HelloApi` — API Gateway REST v1 / HTTP v2 / WebSocket and Lambda Function URLs all served by a local HTTP server. See [docs/local-emulation.md](./local-emulation.md) when it ships.
 - **Run an ECS task or service**: `cdkl run-task <Stack>/<Task>` or `cdkl start-service <Stack>/<Service>`.
 - **Bind to a deployed CloudFormation stack**: `--from-cfn-stack <StackName>` injects real ARNs, Secret values, and IAM credentials from the live stack into the local container. This is the "iterate against your real deployed stack, including its data" flow described in the [README](../README.md).
-- **Override env vars without redeploying**: `--env-vars <file>` — supports per-function overrides keyed by CDK logical ID (display-path keys [tracked in #27](https://github.com/go-to-k/cdk-local/issues/27)).
+- **Override env vars without redeploying**: `--env-vars <file>` — supports per-function overrides keyed by CDK construct path or logical ID (see [the key table](../README.md#environment-variables----env-vars)).
 
 ## Where to go when something breaks
 

@@ -44,6 +44,9 @@ export class LocalStartCloudFrontLambdaUrlStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
+      // GREETING / KEEP_ME are echoed so verify.sh can assert --env-vars
+      // (go-to-k/cdk-local#863) overrides one and leaves the other alone.
+      environment: { GREETING: 'from-template', KEEP_ME: 'kept' },
       code: lambda.Code.fromInline(
         [
           'exports.handler = async (event) => {',
@@ -60,6 +63,9 @@ export class LocalStartCloudFrontLambdaUrlStack extends cdk.Stack {
           '      method,',
           '      path,',
           '      echo: body,',
+          '      greeting: process.env.GREETING,',
+          '      keepMe: process.env.KEEP_ME,',
+          '      apiUrl: process.env.API_URL,',
           '    }),',
           '  };',
           '};',

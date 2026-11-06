@@ -60,7 +60,7 @@ vi.mock('../../../src/local/web-function-artifact.js', async (importActual) => {
   };
 });
 
-const { bootWebFunctionOrigins, drainWebFunctionServes } = await import(
+const { bootWebFunctionOrigins, drainWebFunctionServes, buildLambdaBootOptions } = await import(
   '../../../src/cli/commands/local-start-cloudfront.js'
 );
 const { WebFunctionServe, prepareWebFunctionServe } = await import(
@@ -223,6 +223,43 @@ describe('bootWebFunctionOrigins', () => {
     expect(opts.host).toBe('127.0.0.1');
     expect(opts.hostPort).toBe(40123);
     expect([...targets]).toEqual([['Ep', { host: '127.0.0.1', port: 40123 }]]);
+  });
+
+  it('applies --env-vars to the revision each endpoint runs (go-to-k/cdk-local#863)', async () => {
+    const envFile = join(outdir, 'env.json');
+    writeFileSync(
+      envFile,
+      JSON.stringify({
+        Parameters: { API_URL: 'http://localhost:8088' },
+        RevV2: { GREETING: 'from-local' },
+        RevV1: { GREETING: null },
+      })
+    );
+    const opts = buildLambdaBootOptions(
+      { host: '127.0.0.1', pull: true, envVars: envFile } as never,
+      undefined,
+      undefined
+    );
+    await bootWebFunctionOrigins(distribution([web('o1', 'Ep'), web('o2', 'EpV1')]), [stackWith()], opts);
+    expect(h.runDetached).toHaveBeenCalledTimes(2);
+    const [v2, v1] = [runEnv(0), runEnv(1)];
+    expect(v2['GREETING']).toBe('from-local');
+    expect(v2['API_URL']).toBe('http://localhost:8088');
+    expect('GREETING' in v1).toBe(false);
+    expect(v1['API_URL']).toBe('http://localhost:8088');
+    // The runtime-owned variables stay as the revision defines them.
+    expect(v2['AWS_LAMBDA_HTTP_ENDPOINT']).toBe('0.0.0.0:8080');
+  });
+
+  it('runs the ServiceConfig env unchanged without --env-vars', async () => {
+    const opts = buildLambdaBootOptions(
+      { host: '127.0.0.1', pull: true } as never,
+      undefined,
+      undefined
+    );
+    await bootWebFunctionOrigins(distribution([web('o1', 'Ep')]), [stackWith()], opts);
+    expect(runEnv(0)['GREETING']).toBe('from-v2');
+    expect('API_URL' in runEnv(0)).toBe(false);
   });
 
   it('boots one server per endpoint, shared by the origins that name it', async () => {

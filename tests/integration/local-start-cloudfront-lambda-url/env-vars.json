@@ -1,0 +1,4 @@
+{
+  "Parameters": { "API_URL": "http://localhost:8088" },
+  "CdkLocalStartCloudFrontLambdaUrlFixture/OriginFn": { "GREETING": "from-env-vars" }
+}

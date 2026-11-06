@@ -134,6 +134,11 @@ interface LocalStartCloudFrontOptions {
    * execution role and inject the STS creds into its container.
    */
   assumeRole?: string | boolean;
+  /**
+   * `--env-vars <file>` — SAM-shape env overrides for the Lambda Function URL
+   * and Web Function endpoint origins' containers (go-to-k/cdk-local#863).
+   */
+  envVars?: string;
 }
 
 /** Factory options for {@link createLocalStartCloudFrontCommand}. */
@@ -655,7 +660,7 @@ export async function bootLambdaEdgeFunctions(
       const lambda = resolveLambdaTarget(`${distribution.stackName}:${functionLogicalId}`, stacks);
       const containerEnv = await resolveLambdaContainerEnv(
         lambda,
-        opts.envOptions,
+        lambdaEdgeEnvOptions(opts.envOptions),
         opts.profileCredentials,
         opts.extraStateProviders
       );
@@ -705,7 +710,22 @@ export function buildLambdaEnvOptions(
     ...(options.region !== undefined && { region: options.region }),
     ...(options.profile !== undefined && { profile: options.profile }),
     ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+    ...(options.envVars !== undefined && { envVars: options.envVars }),
   };
+}
+
+/**
+ * The env options a Lambda@Edge container is resolved from: the shared ones
+ * minus `--env-vars`. Lambda@Edge functions cannot carry environment variables
+ * in AWS (CloudFront refuses the association), so an override would run the
+ * edge stage in a state the deployed distribution never has.
+ */
+export function lambdaEdgeEnvOptions(
+  envOptions: LambdaContainerEnvOptions
+): LambdaContainerEnvOptions {
+  const out = { ...envOptions };
+  delete out.envVars;
+  return out;
 }
 
 /**
@@ -780,6 +800,28 @@ export function warnUnusedCacheOrigin(
         'BucketDeployment / --origin <id>=<dir> origin serves from disk and is not cached. ' +
         `Pass ${flags} to enable the deployed-S3 origin (then --cache-origin applies), ` +
         'or drop --cache-origin.'
+    );
+  }
+}
+
+/**
+ * Warn that `--env-vars` does nothing when the distribution has no origin it
+ * applies to (a Lambda Function URL or Web Function endpoint origin), rather
+ * than dropping the file silently (go-to-k/cdk-local#863).
+ */
+export function warnUnusedEnvVars(
+  distribution: ResolvedDistribution,
+  options: LocalStartCloudFrontOptions
+): void {
+  if (options.envVars === undefined) return;
+  const applies = [...distribution.origins.values()].some(
+    (o) => o.kind === 'lambda-url' || o.kind === 'web-function'
+  );
+  if (!applies) {
+    getLogger().warn(
+      '--env-vars has no effect: the distribution has no Lambda Function URL or Lambda Web ' +
+        'Function endpoint origin (CloudFront Functions and Lambda@Edge take no environment ' +
+        'variables).'
     );
   }
 }
@@ -1001,6 +1043,7 @@ async function localStartCloudFrontCommand(
 
   warnUnsupported(initial.distribution, extraStateProviders);
   warnUnusedCacheOrigin(options, extraStateProviders);
+  warnUnusedEnvVars(initial.distribution, options);
 
   // Resolve + attach the cf KeyValueStore module to every KVS-reading function
   // (--kvs-file local map / state-source deployed GetKey). Independent of
@@ -1333,6 +1376,16 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
           'credentials into its container so the handler runs with the deployed permissions. Three forms: ' +
           '`--assume-role <arn>` (explicit ARN); `--assume-role` (bare, auto-resolves from state — requires ' +
           '--from-cfn-stack); `--no-assume-role` (opt out). Off by default (the dev shell credentials are forwarded).'
+      )
+    )
+    .addOption(
+      new Option(
+        '--env-vars <file>',
+        'JSON env-var overrides for the Lambda Function URL and Lambda Web Function endpoint origins ' +
+          '(SAM-compatible, the same file as the other commands: {"Parameters": {...}} for every origin, ' +
+          '{"<LogicalId or construct path>": {"KEY": "VALUE"}} for one — the backing function, or the ' +
+          'Web Function revision the endpoint serves; a null value removes the variable). Not applied ' +
+          'to Lambda@Edge functions, which cannot carry environment variables in AWS.'
       )
     )
     .addOption(

@@ -41,7 +41,8 @@ function helloServer(role: string): string {
     'import http.server,socket',
     'class H(http.server.BaseHTTPRequestHandler):',
     ' def do_GET(s):',
-    `  b=('${role} '+socket.gethostname()+chr(10)).encode()`,
+    // ` host=<Host>` echoes the Host the front-door forwarded (--assume-host, #862).
+    `  b=('${role} '+socket.gethostname()+' host='+str(s.headers.get('Host'))+chr(10)).encode()`,
     "  s.send_response(200);s.send_header('Content-Length',str(len(b)));s.end_headers();s.wfile.write(b)",
     ' def log_message(s,*a):pass',
     "http.server.HTTPServer(('0.0.0.0',80),H).serve_forever()",

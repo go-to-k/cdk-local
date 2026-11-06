@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   resolveAlbTarget,
   parseLbPortOverrides,
+  parseAssumeHostOverrides,
   albStrategy,
   createLocalStartAlbCommand,
   addAlbSpecificOptions,
@@ -983,6 +984,8 @@ describe('start-alb option surface contract (addCommonEcsServiceOptions + addAlb
     // semver-relevant surface change.
     const flags = longFlagsOf(addAlbSpecificOptions(new Command()));
     expect(flags).toEqual([
+      // go-to-k/cdk-local#862 — host-header rules + upstream Host see an assumed host.
+      '--assume-host',
       '--bearer-token',
       // Issue #238 — `--image-override` family shared with start-service
       // via `addImageOverrideOptions`. A semver-relevant surface addition.
@@ -1015,5 +1018,130 @@ describe('start-alb option surface contract (addCommonEcsServiceOptions + addAlb
       ])
     ).sort();
     expect(full).toEqual(expected);
+  });
+});
+
+describe('parseAssumeHostOverrides (go-to-k/cdk-local#862)', () => {
+  it('returns nothing assumed when the flag is absent', () => {
+    expect(parseAssumeHostOverrides(undefined)).toEqual({ byListenerPort: {} });
+  });
+
+  it('splits a bare host from per-listener <port>=<host> entries', () => {
+    expect(
+      parseAssumeHostOverrides(['api.example.com', '443=secure.example.com', '8080=[::1]:8080'])
+    ).toEqual({
+      all: 'api.example.com',
+      byListenerPort: { 443: 'secure.example.com', 8080: '[::1]:8080' },
+    });
+  });
+
+  it.each([
+    ['', /the host is empty/],
+    ['443=', /the host is empty/],
+    ['api example.com', /is not a host name/],
+    ['*.example.com', /is not a host name/],
+    ['https://api.example.com', /is not a host name/],
+    ['0=api.example.com', /listener port must be 1-65535/],
+    ['70000=api.example.com', /listener port must be 1-65535/],
+    ['abc=api.example.com', /listener port must be 1-65535/],
+  ])('refuses %j', (value, message) => {
+    expect(() => parseAssumeHostOverrides([value])).toThrow(message);
+  });
+
+  it('refuses two bare hosts and two hosts for one listener port', () => {
+    expect(() => parseAssumeHostOverrides(['a.example.com', 'b.example.com'])).toThrow(
+      /two hosts for every listener \(a\.example\.com and b\.example\.com\)/
+    );
+    expect(() => parseAssumeHostOverrides(['80=a.example.com', '80=b.example.com'])).toThrow(
+      /two hosts for listener port 80/
+    );
+  });
+});
+
+describe('albStrategy --assume-host (go-to-k/cdk-local#862)', () => {
+  it('stamps the bare host on every listener of the plan', () => {
+    const { frontDoor, warnings } = albStrategy({
+      assumeHost: ['api.example.com'],
+    } as never).resolveBoots([albStack()], ['AlbStack:WebLB']);
+    expect(warnings).toEqual([]);
+    expect(frontDoor!.listeners.map((l) => l.assumeHost)).toEqual(['api.example.com']);
+  });
+
+  it('a per-listener entry wins over the bare host', () => {
+    const { frontDoor } = albStrategy({
+      assumeHost: ['all.example.com', '80=one.example.com'],
+    } as never).resolveBoots([albStack()], ['AlbStack:WebLB']);
+    expect(frontDoor!.listeners.map((l) => l.assumeHost)).toEqual(['one.example.com']);
+  });
+
+  it('leaves the plan without assumeHost when the flag is absent', () => {
+    const { frontDoor } = albStrategy({} as never).resolveBoots([albStack()], ['AlbStack:WebLB']);
+    expect(frontDoor!.listeners.every((l) => !('assumeHost' in l))).toBe(true);
+  });
+
+  it('warns when a per-listener entry matches no resolved listener', () => {
+    const { frontDoor, warnings } = albStrategy({
+      assumeHost: ['9999=api.example.com'],
+    } as never).resolveBoots([albStack()], ['AlbStack:WebLB']);
+    expect(warnings.join('\n')).toMatch(/--assume-host for listener port 9999 matched no/);
+    expect(frontDoor!.listeners.map((l) => l.assumeHost)).toEqual([undefined]);
+  });
+
+  it('refuses a malformed value when the strategy is built (before any boot)', () => {
+    expect(() => albStrategy({ assumeHost: ['80='] } as never)).toThrow(/the host is empty/);
+  });
+
+  it('buildFrontDoor routes by the listener assumeHost and logs it in the banner', async () => {
+    const infos: string[] = [];
+    const logger = { info: (m: string) => infos.push(m), warn: () => {} } as never;
+    const { servers } = await buildFrontDoor(
+      {
+        listeners: [
+          {
+            listenerPort: 80,
+            hostPort: 0,
+            protocol: 'HTTP',
+            assumeHost: 'api.example.com',
+            defaultAction: { kind: 'fixed-response', statusCode: 403 },
+            rules: [
+              {
+                priority: 1,
+                pathPatterns: [],
+                hostPatterns: ['api.example.com'],
+                httpHeaderConditions: [],
+                httpRequestMethods: [],
+                queryStringConditions: [],
+                sourceIpCidrs: [],
+                action: { kind: 'fixed-response', statusCode: 200, messageBody: 'api-rule' },
+              },
+            ],
+          },
+        ],
+      },
+      { containerHost: '127.0.0.1', pull: true } as never,
+      logger
+    );
+    try {
+      const res = await fetch(`http://127.0.0.1:${servers[0]!.port}/healthz`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('api-rule');
+      expect(infos.join('\n')).toContain('assumed host: api.example.com (--assume-host;');
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+});
+
+describe('parseAssumeHostOverrides — review follow-ups (go-to-k/cdk-local#862)', () => {
+  it.each([
+    ['api.example.com:0', /is not a host name/],
+    ['api.example.com:99999', /is not a host name/],
+    ['443', /a bare number is not a host name \(did you mean 443=<host>\?\)/],
+  ])('refuses %j', (value, message) => {
+    expect(() => parseAssumeHostOverrides([value])).toThrow(message);
+  });
+
+  it('accepts a host with an in-range port', () => {
+    expect(parseAssumeHostOverrides(['api.example.com:8443']).all).toBe('api.example.com:8443');
   });
 });

@@ -24,6 +24,10 @@
 #     the ResponseHeadersPolicy CORS applied over its response; a /deploy/*
 #     behavior reaches a second endpoint whose code is an extract: false
 #     BucketDeployment. SIGTERM removes every web function container.
+#     The run passes --env-vars web-env.json (go-to-k/cdk-local#863): a
+#     construct-path key overrides WebRevMain's GREETING, a logical-ID key's
+#     null removes WebRevDeploy's, Parameters adds API_URL to both, and
+#     REVISION_LABEL stays as synthesized.
 #
 #     bash tests/integration/local-start-cloudfront/verify.sh
 
@@ -304,9 +308,10 @@ if lsof -ti "tcp:${WEB_PORT}" >/dev/null 2>&1; then
   lsof -ti "tcp:${WEB_PORT}" | xargs -r kill -9 || true
 fi
 
-echo "==> Booting: cdkl start-cloudfront ${WEB_TARGET} --port ${WEB_PORT} --no-pull"
+echo "==> Booting: cdkl start-cloudfront ${WEB_TARGET} --port ${WEB_PORT} --no-pull --env-vars web-env.json"
 WEB_OUT=$(mktemp)
-${CDKL} start-cloudfront "${WEB_TARGET}" --port "${WEB_PORT}" --no-pull > "${WEB_OUT}" 2>&1 &
+${CDKL} start-cloudfront "${WEB_TARGET}" --port "${WEB_PORT}" --no-pull --env-vars web-env.json \
+  > "${WEB_OUT}" 2>&1 &
 WEB_PID=$!
 web_fail() {
   echo "----- WebDist server output -----" >&2
@@ -335,7 +340,8 @@ WEB_HEADERS_FILE=$(mktemp)
 WEB_BODY=$(curl -fsS -D "${WEB_HEADERS_FILE}" -X POST -d 'ping' \
   -H 'Origin: http://127.0.0.1:5050' "${WEB_BASE}/hello?q=1") || web_fail "POST /hello failed"
 echo "${WEB_BODY}" | grep -q '"revision":"main"' || web_fail "the higher-weight revision WebRevMain was not served: ${WEB_BODY}"
-echo "${WEB_BODY}" | grep -q '"greeting":"hi-main"' || web_fail "the revision's ServiceConfig env was not injected: ${WEB_BODY}"
+echo "${WEB_BODY}" | grep -q '"greeting":"hi-local"' || web_fail "--env-vars did not override WebRevMain's GREETING by construct path: ${WEB_BODY}"
+echo "${WEB_BODY}" | grep -q '"apiUrl":"http://localhost:8088"' || web_fail "--env-vars Parameters did not reach WebRevMain: ${WEB_BODY}"
 echo "${WEB_BODY}" | grep -q '"method":"POST"' || web_fail "the method was not forwarded: ${WEB_BODY}"
 echo "${WEB_BODY}" | grep -q '"path":"/hello?q=1"' || web_fail "the path + query were not forwarded: ${WEB_BODY}"
 echo "${WEB_BODY}" | grep -q '"body":"ping"' || web_fail "the request body was not forwarded: ${WEB_BODY}"
@@ -373,6 +379,10 @@ echo "==> WebDist: GET /deploy/x (second endpoint, extract: false BucketDeployme
 DEPLOY_BODY=$(curl -fsS "${WEB_BASE}/deploy/x") || web_fail "GET /deploy/x failed"
 echo "${DEPLOY_BODY}" | grep -q '"revision":"deploy"' || web_fail "/deploy/* did not reach WebRevDeploy: ${DEPLOY_BODY}"
 echo "${DEPLOY_BODY}" | grep -q '"path":"/deploy/x"' || web_fail "/deploy/x path not forwarded: ${DEPLOY_BODY}"
+if echo "${DEPLOY_BODY}" | grep -q '"greeting"'; then
+  web_fail "--env-vars null did not remove WebRevDeploy's GREETING (logical-ID key): ${DEPLOY_BODY}"
+fi
+echo "${DEPLOY_BODY}" | grep -q '"apiUrl":"http://localhost:8088"' || web_fail "--env-vars Parameters did not reach WebRevDeploy: ${DEPLOY_BODY}"
 [[ "$(docker ps --filter name=cdkl-webfn- --format '{{.Names}}' | wc -l | tr -d ' ')" == "2" ]] \
   || web_fail "expected exactly two web function containers (one per endpoint): $(web_orphans)"
 
@@ -420,4 +430,4 @@ ORPH=$(web_orphans) || web_fail "docker ps failed"
 [[ -z "${ORPH}" ]] || web_fail "leftover web function container(s) after a start-up SIGTERM: ${ORPH}"
 rm -f "${WEB_OUT}"
 
-echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response) and security / custom / remove headers (go-to-k/cdk-local#843), a --watch reload, the --cache-origin-without--from-cfn-stack no-op WARN, and Lambda Web Function endpoint origins (go-to-k/cdkd#5516: weighted revision, forwarded origin request, viewer-response + CORS over it, an extract: false BucketDeployment revision, containers removed on SIGTERM)."
+echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response) and security / custom / remove headers (go-to-k/cdk-local#843), a --watch reload, the --cache-origin-without--from-cfn-stack no-op WARN, and Lambda Web Function endpoint origins (go-to-k/cdkd#5516: weighted revision, forwarded origin request, viewer-response + CORS over it, an extract: false BucketDeployment revision, --env-vars overrides per revision (go-to-k/cdk-local#863), containers removed on SIGTERM)."
