@@ -95,6 +95,8 @@ each listener port across replicas and applies the listener rules.
   Lambda target groups refuse it with 502, mirroring ALB itself.
 - `TargetType: lambda` target groups invoke the Lambda locally
   (`requestContext.elb` event); one forward can mix ECS and Lambda targets.
+- `--assume-host [<listenerPort>=]<host>`: rules see `<host>` and every target
+  gets it as `Host`; redirect `#{host}` keeps the request's (#862).
 
 ## Bedrock AgentCore Runtime
 
@@ -148,30 +150,26 @@ One distribution per invocation.
 - **CloudFront Functions** run in-process in a `node:vm` sandbox
   (`cloudfront-js-1.0` / `2.0`, async handlers awaited) that adds the 2.0
   built-ins a bare vm lacks (`Buffer`, `atob` / `btoa`, text codecs, `require`
-  of `crypto` / `querystring` / `buffer`) — a superset of the 2.0 subset. `fs` /
-  `process` / timers / network / `eval` are absent (`ReferenceError`). The vm is
-  a fidelity sandbox, not a security boundary.
+  of `crypto` / `querystring` / `buffer`). `fs` / `process` / timers / network /
+  `eval` are absent. The vm is a fidelity sandbox, not a security boundary.
 - **S3 origin content** is the BucketDeployment source asset from the cloud
   assembly (origin bucket -> `Custom::CDKBucketDeployment` -> `SourceObjectKeys`),
   served with `DefaultRootObject` (ROOT ONLY — sub-paths are not auto-indexed)
   and `CustomErrorResponses`.
 - With NO local BucketDeployment source, `--from-cfn-stack` reads the deployed
-  bucket from **real S3 on demand** (`GetObject` per touched key).
-  Bucket name, in PRIORITY ORDER: the same-stack physical id
-  (`ListStackResources`), a literal `DomainName`, else
-  `cloudfront:GetDistributionConfig`. `AccessDenied` warns with the `--origin`
-  hatch.
+  bucket from **real S3 on demand** (`GetObject` per key). Bucket name, in
+  PRIORITY ORDER: same-stack physical id, a literal `DomainName`, else
+  `GetDistributionConfig`. `AccessDenied` warns with the `--origin` hatch.
 - `--cache-origin` caches that reader only (a WARNED no-op without
   `--from-cfn-stack`).
 - Path patterns route across `DefaultCacheBehavior` + `CacheBehaviors[]`; a
   viewer-request function returning a `statusCode` short-circuits.
-- **ResponseHeadersPolicy CORS** (`CorsConfig`) is reproduced per behavior: a
-  matching `OPTIONS` preflight is answered `204` + CORS headers before the origin
-  is hit, and a real response gets them added LAST (`OriginOverride: false` is
-  NOT distinguished). Origin matching is literal-or-`*`; an AWS-managed policy
-  id is not fetchable, so its CORS is skipped. The policy's security / custom /
-  remove headers are applied to every viewer response (remove first, then each
-  header honoring `Override`); `ServerTimingHeadersConfig` is not.
+- **ResponseHeadersPolicy CORS** per behavior: a matching `OPTIONS` preflight
+  gets `204` + CORS headers without the origin; a real response gets them added
+  LAST (`OriginOverride: false` NOT distinguished). Origin match is
+  literal-or-`*`; an AWS-managed policy id is unfetchable, so skipped. Security /
+  custom / remove headers apply to every viewer response (remove first, then
+  `Override`-aware); `ServerTimingHeadersConfig` does not.
 - **Lambda Function URL origins** resolve `DomainName` -> `AWS::Lambda::Url` ->
   the backing function in a warm RIE container (payload v2.0 event); a pure-S3
   distribution needs no Docker. **AWS_IAM auth is NOT enforced; streaming is
@@ -180,6 +178,7 @@ One distribution per invocation.
   endpoint's pick as `start-web-function` does (shared `WebFunctionServe`) and
   forward the origin request to it (502 unreachable, 504 past
   `OriginReadTimeout`). OAC signing and `AuthType` are NOT reproduced.
+- `--env-vars` overlays both kinds, never Lambda@Edge (AWS forbids its env) (#863).
 - **KeyValueStore reads** (`cf.kvs().get` / `exists`) are backed by the deployed
   store (by NAME via `ListKeyValueStores`, then the SigV4A `GetKey`) or a local
   JSON map (`--kvs-file`); a read with NO binding fails naming both flags.
@@ -187,8 +186,7 @@ One distribution per invocation.
 - **Lambda@Edge** functions ARE run in warm RIE containers at all four event
   types (`viewer-request` / `origin-request` may short-circuit or rewrite). The
   `request.origin` rewrite block and the edge tiers are out of scope.
-- **Any other custom origin** and the 2.0 `cf.fetch` API are WARN-and-skip;
-  unresolved origins return 502.
+- **Other custom origins** and `cf.fetch` WARN-and-skip; unresolved ones 502.
 - `--watch` swaps the routing model under the live socket: viewer functions and
   S3 origins reload; Lambda / Web Function origin containers are BOOT-TIME ONLY.
 

@@ -294,6 +294,16 @@ export interface StartFrontDoorServerOptions {
    * body falls back to the original path-only shape.
    */
   rulesSummary?: FrontDoorRuleSummary[];
+  /**
+   * `--assume-host` (go-to-k/cdk-local#862): evaluate the listener rules as if
+   * every inbound request carried this `Host`, and forward it as the `Host`
+   * header to the upstream target (ECS replica, Lambda event, WebSocket
+   * bridge) — the value the app sees behind the real ALB on its production
+   * name. Redirect `#{host}` placeholders keep the request's own Host, so a
+   * redirect leaves the browser on the local front-door. Absent = the
+   * request's own Host, unchanged.
+   */
+  assumeHost?: string;
 }
 
 /** Default per-request upstream timeout — a hung replica yields a 504, not a hang. */
@@ -406,7 +416,7 @@ function handleProxyRequest(
   if (opts.route) {
     const action = opts.route({
       path: url,
-      ...hostHeader(req),
+      ...routeHost(req, opts),
       headers: req.headers,
       ...(req.method !== undefined && { method: req.method }),
       ...(req.socket.remoteAddress !== undefined && { sourceIp: req.socket.remoteAddress }),
@@ -545,7 +555,11 @@ function buildNoRuleMatched404Body(
   }
 
   const rawHost = req.headers.host;
-  const hostValue = Array.isArray(rawHost) ? rawHost[0] : rawHost;
+  const requestHost = Array.isArray(rawHost) ? rawHost[0] : rawHost;
+  const hostValue =
+    opts.assumeHost !== undefined
+      ? `${opts.assumeHost} (--assume-host; the request sent ${requestHost ?? 'no Host header'})`
+      : requestHost;
   const lines: string[] = [];
   lines.push(
     `No listener rule matched the request on ${opts.label}, and the listener has no ` +
@@ -613,7 +627,7 @@ function handlePoolRequest(
 
     const headers = { ...req.headers };
     stripHopByHopHeaders(headers);
-    appendForwardedHeaders(headers, req, opts.listenerPort, resolveForwardedProto(opts));
+    appendForwardedHeaders(headers, req, opts);
 
     const proxyReq = httpRequest(
       {
@@ -677,8 +691,12 @@ function handlePoolRequest(
   });
 }
 
-/** Extract the request `Host` header (string) for host-header rule matching. */
-function hostHeader(req: IncomingMessage): { host?: string } {
+/**
+ * The `Host` the listener rules see: the `--assume-host` value when set
+ * (go-to-k/cdk-local#862), otherwise the request's own `Host` header.
+ */
+function routeHost(req: IncomingMessage, opts: StartFrontDoorServerOptions): { host?: string } {
+  if (opts.assumeHost !== undefined) return { host: opts.assumeHost };
   const raw = req.headers.host;
   const host = Array.isArray(raw) ? raw[0] : raw;
   return host ? { host } : {};
@@ -882,12 +900,7 @@ function handleLambdaRequest(
           // event's headers match what a real ALB forwards — no connection /
           // transfer-encoding / keep-alive leaking into the handler.
           stripHopByHopHeaders(forwardHeaders);
-          appendForwardedHeaders(
-            forwardHeaders,
-            req,
-            opts.listenerPort,
-            resolveForwardedProto(opts)
-          );
+          appendForwardedHeaders(forwardHeaders, req, opts);
           const snapshot = snapshotFromIncoming(req, body);
           for (const [name, value] of Object.entries(forwardHeaders)) {
             if (value === undefined) continue;
@@ -980,21 +993,24 @@ function resolveForwardedProto(opts: StartFrontDoorServerOptions): 'http' | 'htt
 /**
  * Inject the ALB-style forwarding headers a downstream app may read. Appends
  * the client IP to any existing `X-Forwarded-For` chain (ALB appends rather
- * than replaces) and stamps the scheme / listener port. `scheme` follows the
+ * than replaces) and stamps the scheme / listener port. The scheme follows the
  * listener's protocol so an HTTPS listener stamps `x-forwarded-proto: https`.
+ * With `--assume-host`, `Host` becomes the assumed value — the one every
+ * upstream path (ECS replica, Lambda event, WebSocket bridge) forwards
+ * (go-to-k/cdk-local#862).
  */
 function appendForwardedHeaders(
   headers: NodeJS.Dict<string | string[]>,
   req: IncomingMessage,
-  listenerPort: number,
-  scheme: 'http' | 'https'
+  opts: StartFrontDoorServerOptions
 ): void {
   const clientIp = req.socket.remoteAddress ?? '';
   const existing = headers['x-forwarded-for'];
   const chain = Array.isArray(existing) ? existing.join(', ') : existing;
   headers['x-forwarded-for'] = chain ? `${chain}, ${clientIp}` : clientIp;
-  headers['x-forwarded-proto'] = scheme;
-  headers['x-forwarded-port'] = String(listenerPort);
+  headers['x-forwarded-proto'] = resolveForwardedProto(opts);
+  headers['x-forwarded-port'] = String(opts.listenerPort);
+  if (opts.assumeHost !== undefined) headers['host'] = opts.assumeHost;
 }
 
 function writeError(res: ServerResponse, statusCode: number, message: string): void {
@@ -1028,7 +1044,7 @@ function handleUpgrade(
   }
   const action = opts.route({
     path: req.url ?? '/',
-    ...hostHeader(req),
+    ...routeHost(req, opts),
     headers: req.headers,
     ...(req.method !== undefined && { method: req.method }),
     ...(req.socket.remoteAddress !== undefined && { sourceIp: req.socket.remoteAddress }),
@@ -1148,7 +1164,7 @@ function bridgeWebSocket(
       const headers: NodeJS.Dict<string | string[]> = { ...req.headers };
       // Do NOT strip hop-by-hop: `Upgrade` / `Connection: Upgrade` are the
       // whole point of this code path. Only stamp the X-Forwarded-* set.
-      appendForwardedHeaders(headers, req, opts.listenerPort, resolveForwardedProto(opts));
+      appendForwardedHeaders(headers, req, opts);
 
       const requestLine = `${req.method ?? 'GET'} ${req.url ?? '/'} HTTP/${req.httpVersion}`;
       const lines: string[] = [requestLine];

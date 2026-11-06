@@ -344,6 +344,7 @@ TaskDefinition, not at the resource level):
 | Every target | `Parameters` | Reserved literal; applied first to every container before any per-target overlay |
 | Lambda / AgentCore Runtime | CDK construct path (e.g. `MyStack/Fn`) | Compared against the resource's `Metadata['aws:cdk:path']`; prefix-matched so `MyStack/Fn` also catches the synthesized `MyStack/Fn/Resource` |
 | Lambda / AgentCore Runtime | CloudFormation logical ID (e.g. `MyStackFn1A2B3C`) | Compared against the synthesized top-level resource key in the template; exact match |
+| Lambda Web Function (`start-web-function`, a `start-cloudfront` endpoint origin) | The revision's construct path or logical ID | Matched like a Lambda function's keys against the `AWS::Lambda::WebFunctionRevision` the command runs (for an endpoint origin, the revision its weights pick) |
 | ECS container | Container Name (e.g. `AppContainer`) | Compared against `ContainerDefinitions[].Name` in the synthesized TaskDefinition (= the `containerName` option of `taskDef.addContainer(id, { containerName, ... })`, or the construct id (first arg of `addContainer`) when omitted); exact match. The TaskDefinition's own CDK path / logical ID is NOT accepted — it would identify the TaskDef but not which container's env block to overlay |
 
 `--env-vars` overlays the env block after the template's literals and
@@ -1605,6 +1606,7 @@ except `--host-port` is replaced by the front-door flags below.
 | Flag | Default | Behavior |
 | --- | --- | --- |
 | `--lb-port <listenerPort=hostPort>` | — | Bind the front-door on a specific host port (e.g. `80=8080`); repeatable. Default: host port == ALB listener port. Remap a privileged listener port (< 1024) to a non-privileged host port on macOS. |
+| `--assume-host <host>` | — (the request's own Host) | Treat every inbound request as if it carried `Host: <host>`: `host-header` rule conditions see `<host>`, and the target receives it as its `Host` header (ECS replica, Lambda target event, WebSocket upgrade), as behind the deployed ALB on its own domain name — so a browser or a frontend sending `Host: localhost` reaches a rule written for the production name. `<listenerPort>=<host>` (e.g. `443=api.example.com`) applies to one listener and wins over a bare `<host>`; repeatable. The value is a host name or IP literal with an optional `:port` (no wildcard); a second bare value or a second value for one listener port is refused. Other rule conditions are unaffected. A redirect action's `#{host}` keeps the request's own Host, so the browser stays on the local front-door. The listener banner prints the assumed host, and the no-rule-matched 404 body names both. |
 | `--tls` | off | Terminate TLS locally for cloud-HTTPS listeners. Default: a cloud-HTTPS listener is served over plain HTTP locally (with `X-Forwarded-Proto: https` preserved so the upstream app still sees the deployed listener protocol). Implied by `--tls-cert` / `--tls-key`. Use this when local-dev cookies need `Secure` / `SameSite=None`, when the upstream app inspects TLS metadata, or for mTLS / SNI testing — otherwise plain HTTP is friendlier (no self-signed cert warnings in `curl` / browser). |
 | `--tls-cert <path>` | unset | PEM-encoded server certificate for HTTPS front-door listeners. Implies `--tls`. Must be set together with `--tls-key`. Pass `--tls` alone (without `--tls-cert` / `--tls-key`) to auto-generate a self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`, defaulting to `~/.cache/cdk-local/alb-https/`); requires `openssl` on PATH. The deployed Listener `Certificates[]` are NOT fetched — ACM private keys are not retrievable by design. |
 | `--tls-key <path>` | unset | PEM-encoded server private key matching `--tls-cert`. Implies `--tls`. Must be set together with `--tls-cert`. |
@@ -1628,6 +1630,10 @@ cdkl start-alb MyStack/WebAlb --lb-port 443=8443 --tls
 
 # Opt in to real TLS with a BYO cert (must be set together; implies --tls)
 cdkl start-alb MyStack/WebAlb --tls-cert ./server.pem --tls-key ./server-key.pem
+
+# Route by a production-only host-header rule from a browser (Host: localhost)
+cdkl start-alb MyStack/WebAlb --lb-port 443=8443 --assume-host api.example.com
+# then: open http://localhost:8443/  (matched as api.example.com; the app sees that Host)
 
 # Authenticate-cognito: inject a pre-minted JWT as the default Authorization
 cdkl start-alb MyStack/WebAlb --bearer-token "$(aws cognito-idp ... | jq -r .AuthenticationResult.IdToken)"
@@ -2011,6 +2017,7 @@ On top of the [common flags](#common-flags):
 | `--from-cfn-stack [name]` | off | Bind to a deployed CloudFormation stack (`ListStackResources`). Serves an S3 origin that has NO local BucketDeployment source from its deployed bucket, read from real S3 on demand (the front/back-split case — see the S3 origin → deployed bucket bullet above), AND resolves a Function URL origin / Lambda@Edge function's or a Web Function origin revision's intrinsic env vars to the deployed physical IDs / exports. Bare form uses the resolved stack name; pass a value when the CFn stack name differs. Same semantics as `cdkl invoke --from-cfn-stack`. |
 | `--cache-origin` | off | For a deployed-S3 origin (served from real S3 under `--from-cfn-stack`): keep fetched objects in memory for the session as a read-through cache instead of re-`GetObject`-ing on every request — faster repeat reads / fewer S3 GETs. An out-of-band S3 content change is NOT reflected until a `--watch` reload (which clears the cache) or a restart. Off by default (every request re-reads, always current). Because it only feeds the deployed-S3 reader, it has no effect without `--from-cfn-stack` — passing it alone logs a boot-time WARN (it is harmless, just a no-op). This is the local object cache, NOT CloudFront CDN / TTL caching. |
 | `--stack-region <region>` | unset | Region of the state record to read; used with `--from-cfn-stack` as the CFn client region. |
+| `--env-vars <file>` | unset | SAM-shape JSON env-var overrides for the Lambda Function URL origins' backing functions and the Lambda Web Function endpoint origins' revisions — the same file and merge as `cdkl invoke --env-vars` ([override keys](#--env-vars-override-keys)): `Parameters` for every such origin, a function's or revision's logical ID / construct path for one, `null` removes a variable. Applied after `--from-cfn-stack` substitution. Not applied to Lambda@Edge functions (AWS does not allow environment variables on them); a distribution with no Function URL / Web Function origin logs a WARN that the flag has no effect. |
 | `--assume-role [arn]` | off | Assume a Function URL origin Lambda's deployed execution role (or a Web Function origin revision's `ServiceConfig.ExecutionRoleArn`, as `start-web-function --assume-role` does) and forward STS temp credentials into its container. `--assume-role <arn>` (explicit); `--assume-role` (bare, auto-resolves from state — requires `--from-cfn-stack`); `--no-assume-role` (opt out). Same semantics as `cdkl invoke --assume-role`. |
 | `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container and a Web Function origin's server container are NOT rebuilt on reload (boot-time only). |
 
@@ -2041,6 +2048,11 @@ cdkl start-cloudfront MyStack/ApiDist --port 8080 --no-pull
 # endpoint's revision in a server container)
 cdkl start-cloudfront MyStack/WebDist --port 8080
 # then: curl http://127.0.0.1:8080/        (CloudFront -> endpoint -> your web function)
+
+# Point a Web Function origin at local APIs instead of the deployed URLs its
+# revision's ServiceConfig env names (./web.json: {"MyStack/WebRevision":
+# {"NUXT_PUBLIC_API_URL": "http://localhost:8088"}})
+cdkl start-cloudfront MyStack/WebDist --port 8090 --env-vars ./web.json
 
 # Back a CloudFront Function's cf.kvs().get() reads with a local JSON map
 # (./routes.json is a flat { "key": "value" } file)
@@ -2313,7 +2325,7 @@ The console is a three-pane layout:
   section exposes the per-target run options as controls — a checkbox per
   boolean flag (e.g. ALB `--tls` / `--no-verify-auth`, an AgentCore
   runtime's `--ws` / `--sigv4`), an input per value flag (ECS
-  `--max-tasks`, ALB `--bearer-token`, an AgentCore runtime's
+  `--max-tasks`, ALB `--bearer-token` / `--assume-host`, an AgentCore runtime's
   `--bearer-token` / `--session-id`), an add-row list for repeatable
   mappings (ALB `--lb-port`, ECS `--host-port`), and a KEY/VALUE-or-JSON
   editor for env vars (`--env-vars`). The values are passed to the spawned

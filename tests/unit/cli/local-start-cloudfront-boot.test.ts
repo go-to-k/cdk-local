@@ -31,8 +31,13 @@ vi.mock('../../../src/cli/commands/local-invoke.js', () => ({
   resolveLambdaContainerEnv: resolveContainerEnvMock,
 }));
 
-const { bootLambdaUrlOrigins, bootLambdaEdgeFunctions, buildLambdaEnvOptions, buildLambdaBootOptions } =
-  await import(
+const {
+  bootLambdaUrlOrigins,
+  bootLambdaEdgeFunctions,
+  buildLambdaEnvOptions,
+  buildLambdaBootOptions,
+  warnUnusedEnvVars,
+} = await import(
   '../../../src/cli/commands/local-start-cloudfront.js'
 );
 
@@ -289,5 +294,80 @@ describe("host extra state providers reach the Lambda container env (go-to-k/cdk
     expect(boot.skipPull).toBe(true);
     expect(boot.envOptions).toMatchObject({ fromState: true });
     expect('extraStateProviders' in buildLambdaBootOptions(options, undefined, undefined)).toBe(false);
+  });
+});
+
+describe('--env-vars reaches the origin containers, not Lambda@Edge (go-to-k/cdk-local#863)', () => {
+  const edgeDist = (): ResolvedDistribution => ({
+    ...distributionWith([
+      { kind: 'lambda-url', originId: 'a', functionLogicalId: 'Fn', functionUrlLogicalId: 'FnUrl' },
+    ]),
+    behaviors: [
+      {
+        targetOriginId: 'a',
+        lambdaEdge: { viewerRequest: { functionLogicalId: 'EdgeFn', includeBody: false } },
+      } as never,
+    ],
+  });
+  const withEnv = buildLambdaBootOptions(
+    { host: '127.0.0.1', pull: true, envVars: './env.json', fromCfnStack: 'S' } as never,
+    undefined,
+    undefined
+  );
+
+  it('buildLambdaEnvOptions carries --env-vars into the shared env options', () => {
+    expect(withEnv.envOptions).toEqual({ fromCfnStack: 'S', envVars: './env.json' });
+    expect('envVars' in buildLambdaEnvOptions({ fromCfnStack: 'S' } as never, undefined)).toBe(false);
+  });
+
+  it('bootLambdaUrlOrigins resolves the Function URL Lambda env with --env-vars', async () => {
+    await bootLambdaUrlOrigins(edgeDist(), stacks, withEnv);
+    expect(resolveContainerEnvMock).toHaveBeenCalledWith(
+      { logicalId: 'Fn' },
+      { fromCfnStack: 'S', envVars: './env.json' },
+      undefined,
+      undefined
+    );
+  });
+
+  it('bootLambdaEdgeFunctions resolves the edge Lambda env WITHOUT --env-vars', async () => {
+    await bootLambdaEdgeFunctions(edgeDist(), stacks, withEnv);
+    expect(resolveContainerEnvMock).toHaveBeenCalledWith(
+      { logicalId: 'EdgeFn' },
+      { fromCfnStack: 'S' },
+      undefined,
+      undefined
+    );
+    // The shared options object the Function URL path reads is left intact.
+    expect(withEnv.envOptions.envVars).toBe('./env.json');
+  });
+});
+
+describe('warnUnusedEnvVars (go-to-k/cdk-local#863)', () => {
+  const warn = vi.fn();
+  beforeEach(async () => {
+    warn.mockReset();
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    vi.spyOn(getLogger(), 'warn').mockImplementation(warn);
+  });
+
+  it('warns when no origin takes --env-vars', () => {
+    warnUnusedEnvVars(distributionWith([{ kind: 's3', originId: 'o', localDirs: ['/x'] }]), {
+      envVars: 'e.json',
+    } as never);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^--env-vars has no effect/));
+  });
+
+  it.each([
+    [{ kind: 'lambda-url', originId: 'a', functionLogicalId: 'Fn', functionUrlLogicalId: 'U' }],
+    [{ kind: 'web-function', originId: 'w', endpointLogicalId: 'Ep' }],
+  ] as const)('stays quiet when a %o origin takes it', (origin) => {
+    warnUnusedEnvVars(distributionWith([origin as ResolvedOrigin]), { envVars: 'e.json' } as never);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet without --env-vars', () => {
+    warnUnusedEnvVars(distributionWith([]), {} as never);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

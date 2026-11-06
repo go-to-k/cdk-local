@@ -1,0 +1,5 @@
+{
+  "Parameters": { "API_URL": "http://localhost:8088" },
+  "CdkLocalStartCloudFrontFixture/WebRevMain": { "GREETING": "hi-local" },
+  "WebRevDeploy": { "GREETING": null }
+}

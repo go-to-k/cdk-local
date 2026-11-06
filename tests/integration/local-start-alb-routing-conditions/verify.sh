@@ -15,6 +15,10 @@
 #   - GET / with an unmatched Host        -> the fixed-response default (418
 #     "default-fixed"), synthesized by the front-door with no backing replica.
 #   - SIGTERM tears every container + network + front-door socket down.
+#   - Re-booted with --assume-host 80=api.cdklocal.test (go-to-k/cdk-local#862):
+#     the banner names the assumed host, a request with NO matching Host (and
+#     one with Host: web.cdklocal.test) reaches the api service, and the api
+#     replica receives Host: api.cdklocal.test; teardown is clean again.
 #
 #     bash tests/integration/local-start-alb-routing-conditions/verify.sh
 
@@ -236,5 +240,90 @@ if curl -fsS --max-time 2 "http://127.0.0.1:${LB_HOST_PORT}/" >/dev/null 2>&1; t
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Phase 2: --assume-host (go-to-k/cdk-local#862). The per-listener form names
+# the ALB LISTENER port (80), not the remapped host port.
+# ---------------------------------------------------------------------------
+: > "${OUT_FILE}"
+echo "==> start-alb --assume-host 80=api.cdklocal.test"
+${CDKL} start-alb CdkLocalStartAlbRoutingConditionsFixture:WebLB \
+  --container-host 127.0.0.1 --lb-port "80=${LB_HOST_PORT}" \
+  --assume-host 80=api.cdklocal.test \
+  > "${OUT_FILE}" 2>&1 &
+CDKL_PID=$!
+
+BOOTED=0
+for _ in $(seq 1 120); do
+  if grep -q "Service(s) running:" "${OUT_FILE}" 2>/dev/null; then BOOTED=1; break; fi
+  if ! kill -0 "${CDKL_PID}" 2>/dev/null; then
+    echo "FAIL: cdk-local (--assume-host) exited before reaching the boot banner"
+    echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+    exit 1
+  fi
+  sleep 1
+done
+if [[ "${BOOTED}" -ne 1 ]]; then
+  echo "FAIL: services (--assume-host) did not reach the boot banner within 120s"
+  echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+  exit 1
+fi
+if ! grep -q "assumed host: api.cdklocal.test (--assume-host" "${OUT_FILE}"; then
+  echo "FAIL: the front-door banner does not name the assumed host"
+  echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+  exit 1
+fi
+echo "    OK: banner names the assumed host"
+
+echo "==> Asserting a request with no matching Host reaches the api service as api.cdklocal.test"
+ASSUMED_RESP=""
+for _ in $(seq 1 90); do
+  # No -H: curl sends Host: 127.0.0.1:<port>, which matches no rule unless assumed.
+  ASSUMED_RESP=$(curl -fsS "http://127.0.0.1:${LB_HOST_PORT}/" 2>/dev/null || true)
+  if [[ "${ASSUMED_RESP}" == api\ * ]]; then break; fi
+  if ! kill -0 "${CDKL_PID}" 2>/dev/null; then
+    echo "FAIL: cdk-local (--assume-host) exited while waiting for the api service"
+    echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+    exit 1
+  fi
+  sleep 1
+done
+echo "    response: ${ASSUMED_RESP}"
+if [[ "${ASSUMED_RESP}" != api\ * ]]; then
+  echo "FAIL: with --assume-host the request was not routed by the api.cdklocal.test rule (got: ${ASSUMED_RESP})"
+  echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+  exit 1
+fi
+if [[ "${ASSUMED_RESP}" != *" host=api.cdklocal.test" ]]; then
+  echo "FAIL: the api replica did not receive Host: api.cdklocal.test (got: ${ASSUMED_RESP})"
+  exit 1
+fi
+OTHER_RESP=$(curl -fsS -H 'Host: web.cdklocal.test' "http://127.0.0.1:${LB_HOST_PORT}/" 2>/dev/null || true)
+if [[ "${OTHER_RESP}" != api\ *" host=api.cdklocal.test" ]]; then
+  echo "FAIL: Host: web.cdklocal.test was not overridden by the assumed host (got: ${OTHER_RESP})"
+  exit 1
+fi
+echo "    OK: routed and forwarded as api.cdklocal.test whatever Host the client sent"
+
+echo "==> Sending SIGTERM to cdk-local (--assume-host run)"
+kill -TERM "${CDKL_PID}"
+EXITED=0
+for _ in $(seq 1 60); do
+  if ! kill -0 "${CDKL_PID}" 2>/dev/null; then EXITED=1; break; fi
+  sleep 1
+done
+if [[ "${EXITED}" -ne 1 ]]; then
+  echo "FAIL: cdk-local (--assume-host) did not exit within 60s after SIGTERM"
+  kill -KILL "${CDKL_PID}" 2>/dev/null || true
+  exit 1
+fi
+wait "${CDKL_PID}" 2>/dev/null || true
+CDKL_PID=""
+LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkl-" --format '{{.ID}}' | wc -l | tr -d ' ')
+LEFTOVER_NETS=$(docker network ls --filter "name=cdkl-" --format '{{.ID}}' | wc -l | tr -d ' ')
+if [[ "${LEFTOVER_CONTAINERS}" -ne 0 || "${LEFTOVER_NETS}" -ne 0 ]]; then
+  echo "FAIL: ${LEFTOVER_CONTAINERS} container(s) / ${LEFTOVER_NETS} network(s) left after the --assume-host run"
+  exit 1
+fi
+
 echo ""
-echo "==> local-start-alb-routing-conditions test passed (host-header -> api/web, fixed-response default, clean teardown)"
+echo "==> local-start-alb-routing-conditions test passed (host-header -> api/web, fixed-response default, --assume-host routing + forwarded Host, clean teardown)"

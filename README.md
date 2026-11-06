@@ -133,7 +133,7 @@ cdkl studio --stack 'dev/*'                  # scope the displayed target list (
 
 Each target's composer surfaces its per-run options as controls:
 
-- curated controls per kind — a Lambda's `--env-vars` as KEY/VALUE or JSON, ALB `--tls` / `--lb-port`, ECS `--max-tasks` / `--host-port`, an AgentCore runtime's `--ws` / `--sigv4` / `--bearer-token`;
+- curated controls per kind — a Lambda's `--env-vars` as KEY/VALUE or JSON, ALB `--tls` / `--lb-port` / `--assume-host`, a CloudFront distribution's `--env-vars`, ECS `--max-tasks` / `--host-port`, an AgentCore runtime's `--ws` / `--sigv4` / `--bearer-token`;
 - an **All options** panel that renders an editable control (checkbox / input / dropdown) for every other flag the underlying command accepts, with a raw extra-args input as the final escape hatch;
 - a Dockerfile picker for an ECS service pinned to a deployed registry (where local edits otherwise don't take effect), rebuilding it from local source.
 
@@ -176,12 +176,13 @@ Three boundaries: the Docker daemon pulls images through its own egress (configu
 
 ## Environment variables — `--env-vars`
 
-Every command except `start-cloudfront` (whose CloudFront Functions and Lambda@Edge have no env vars, and whose Function URL / Web Function origins take their environment from the template as-is) accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
+Every command that runs a container accepts `--env-vars <file>` (`start-cloudfront` applies it to its Lambda Function URL and Web Function endpoint origins; its CloudFront Functions and Lambda@Edge functions have no env vars in AWS), a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
 
 ```bash
 cdkl invoke --env-vars ./env.json
 cdkl start-service --env-vars ./env.json
 cdkl start-alb --env-vars ./env.json
+cdkl start-cloudfront MyStack/WebDist --env-vars ./env.json
 ```
 
 ```json
@@ -200,6 +201,7 @@ Each top-level JSON key picks which target to overlay:
 | Every target | `Parameters` | Reserved literal; applied first to every container |
 | Lambda / AgentCore Runtime | CDK construct path (e.g. `MyStack/Fn`) | From `Metadata['aws:cdk:path']` of the resource; prefix-matched (`MyStack/Fn` also catches `MyStack/Fn/Resource`) |
 | Lambda / AgentCore Runtime | CloudFormation logical ID (e.g. `MyStackFn1A2B3C`) | Top-level resource key in the synthesized template; exact match |
+| Lambda Web Function (`start-web-function`, a `start-cloudfront` endpoint origin) | The revision's construct path or logical ID | The `AWS::Lambda::WebFunctionRevision` the command runs (for an endpoint origin, the one its weights pick); matched like a Lambda function's keys |
 | ECS container | Container Name (e.g. `AppContainer`) | `ContainerDefinitions[].Name` in the synthesized TaskDefinition — explicitly set via the `containerName` option of `taskDef.addContainer(id, { containerName, ... })`, or defaults to the construct id (first arg of `addContainer`) when omitted. The TaskDefinition's CDK path / logical ID is NOT accepted as a key — it would identify the TaskDef but not which container's env block to overlay |
 
 `--env-vars` overlays the env block after the template's literals and any resolved ECS `Secrets[]` have been applied; an ECS secret whose key the file gives is not fetched from AWS at all. A per-target key (from the table above) wins over `Parameters`. A `null` value clears the key — use the JSON literal `null`, not the string `"null"`.
@@ -285,7 +287,7 @@ Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each l
 - `--max-tasks 1` clamps the local replica count to 1 without touching your CDK code.
 - A privileged declared host port (`< 1024`, e.g. 80) is auto-remapped to a free high host port — with a WARN naming the remap — because macOS Docker Desktop refuses to publish privileged ports and a `< 1024` host port needs root. `--host-port <containerPort>=<hostPort>` pins a specific host port instead.
 
-`start-alb` uses the symmetric `--lb-port <listenerPort>=<hostPort>` for privileged listener ports like 80 / 443, and `--tls` (or `--tls-cert` / `--tls-key`) to terminate TLS locally instead of serving the HTTPS listener over plain HTTP (the default). Full resolution model: [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
+`start-alb` uses the symmetric `--lb-port <listenerPort>=<hostPort>` for privileged listener ports like 80 / 443, `--assume-host <host>` to route a browser's `Host: localhost` request by a host-header rule written for the production name (the target receives `<host>` as its `Host`), and `--tls` (or `--tls-cert` / `--tls-key`) to terminate TLS locally instead of serving the HTTPS listener over plain HTTP (the default). Full resolution model: [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
 
 ## Supported resources
 

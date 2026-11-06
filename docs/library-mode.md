@@ -445,7 +445,7 @@ SIGINT — every CLI behavior the upstream `cdkl` commands have:
   for an ALB-fronted host CLI; `start-service` hosts only need the
   common block.
 - `addAlbSpecificOptions(cmd)` — ALB-only option block (`--lb-port`,
-  `--tls`, `--tls-cert`, `--tls-key`, `--no-verify-auth`,
+  `--assume-host`, `--tls`, `--tls-cert`, `--tls-key`, `--no-verify-auth`,
   `--bearer-token`). Calling this from a host's `start-alb` keeps the
   option set in sync as upstream cdk-local adds or renames ALB-only
   flags; no duplicate `.addOption(...)` blocks.

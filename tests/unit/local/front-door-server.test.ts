@@ -1778,3 +1778,140 @@ describe('startFrontDoorServer — WebSocket Upgrade resilience', () => {
     expect(raw).not.toMatch(/^x-injected: yes/m);
   });
 });
+
+describe('startFrontDoorServer — assumeHost (go-to-k/cdk-local#862)', () => {
+  const ASSUMED = 'api.example.com';
+
+  async function startAssumed(
+    route: NonNullable<Parameters<typeof startFrontDoorServer>[0]['route']>,
+    extra: Partial<Parameters<typeof startFrontDoorServer>[0]> = {}
+  ): Promise<StartedFrontDoorServer> {
+    const front = await startFrontDoorServer({
+      route,
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+      assumeHost: ASSUMED,
+      ...extra,
+    });
+    cleanups.push(() => front.close());
+    return front;
+  }
+
+  it('routes a request sent with Host: localhost by the assumed host and forwards it as Host', async () => {
+    const api = await startUpstream('api');
+    const apiPool = new FrontDoorEndpointPool();
+    apiPool.register('api:r0', { host: '127.0.0.1', port: api.port });
+    const rules: AlbPathRule<RouteAction>[] = [
+      { priority: 1, pathPatterns: [], hostPatterns: [ASSUMED], target: forward(apiPool) },
+    ];
+    const front = await startAssumed(
+      (req) => matchAlbPathRule(req, rules) ?? { kind: 'fixed-response', statusCode: 403 }
+    );
+
+    const res = await fetchTextWithHost(front.port, '/healthz', `localhost:${front.port}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toBe('api');
+    expect(api.lastHeaders?.host).toBe(ASSUMED);
+  });
+
+  it('without assumeHost the same rule set answers the default action (unchanged behavior)', async () => {
+    const api = await startUpstream('api');
+    const apiPool = new FrontDoorEndpointPool();
+    apiPool.register('api:r0', { host: '127.0.0.1', port: api.port });
+    const rules: AlbPathRule<RouteAction>[] = [
+      { priority: 1, pathPatterns: [], hostPatterns: [ASSUMED], target: forward(apiPool) },
+    ];
+    const front = await startFrontWith(
+      (req) => matchAlbPathRule(req, rules) ?? { kind: 'fixed-response', statusCode: 403 }
+    );
+    const res = await fetchTextWithHost(front.port, '/healthz', `localhost:${front.port}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('hands route() the assumed host whatever Host the client sent', async () => {
+    const seen: Array<string | undefined> = [];
+    const front = await startAssumed((req) => {
+      seen.push(req.host);
+      return { kind: 'fixed-response', statusCode: 204 };
+    });
+    await fetchTextWithHost(front.port, '/', 'other.example.org');
+    await fetchText(front.port, '/');
+    expect(seen).toEqual([ASSUMED, ASSUMED]);
+  });
+
+  it('puts the assumed host in the ALB Lambda event headers', async () => {
+    let event: Record<string, unknown> | undefined;
+    const front = await startAssumed(() => ({
+      kind: 'forward',
+      pools: [
+        {
+          lambda: {
+            targetGroupArn: 'tg',
+            multiValueHeaders: false,
+            label: 'Fn',
+            invoke: async (e) => {
+              event = e;
+              return { statusCode: 200, body: 'ok' };
+            },
+          },
+          weight: 1,
+        },
+      ],
+    }));
+    const res = await postRequest(front.port, '/x', 'b', { host: `localhost:${front.port}` });
+    expect(res.status).toBe(200);
+    expect((event!['headers'] as Record<string, string>)['host']).toBe(ASSUMED);
+  });
+
+  it('carries the assumed host on a bridged WebSocket upgrade', async () => {
+    const { WebSocketServer, WebSocket } = await import('ws');
+    const httpServer = createServer();
+    const wss = new WebSocketServer({ server: httpServer });
+    let upgradeHost: string | undefined;
+    wss.on('connection', (ws, req) => {
+      upgradeHost = req.headers.host;
+      ws.on('message', (data) => ws.send(data));
+    });
+    await new Promise<void>((r) => httpServer.listen(0, '127.0.0.1', r));
+    const upstreamPort = (httpServer.address() as AddressInfo).port;
+    cleanups.push(
+      () => new Promise<void>((r) => wss.close(() => httpServer.close(() => r())))
+    );
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstreamPort });
+    const rules: AlbPathRule<RouteAction>[] = [
+      { priority: 1, pathPatterns: [], hostPatterns: [ASSUMED], target: forward(pool) },
+    ];
+    const front = await startAssumed((req) => matchAlbPathRule(req, rules));
+
+    const echoed = await new Promise<string>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${front.port}/`);
+      ws.on('open', () => ws.send('hi'));
+      ws.on('message', (d) => {
+        ws.close();
+        resolve(d.toString());
+      });
+      ws.on('error', reject);
+    });
+    expect(echoed).toBe('hi');
+    expect(upgradeHost).toBe(ASSUMED);
+  });
+
+  it('keeps the request Host in a redirect #{host}, so the browser stays local', async () => {
+    const front = await startAssumed(() => ({ kind: 'redirect', statusCode: 301, protocol: 'HTTPS', port: '8443' }));
+    const res = await fetchHead(front.port, '/p', 'localhost:18080');
+    expect(res.status).toBe(301);
+    expect(res.location).toBe('https://localhost:8443/p');
+  });
+
+  it('names the assumed host and the sent Host in the no-rule-matched 404 body', async () => {
+    const front = await startAssumed(() => undefined, { rulesSummary: [] });
+    const res = await fetchTextWithHost(front.port, '/', 'localhost:9999');
+    expect(res.status).toBe(404);
+    expect(res.body).toContain(
+      `Host:    ${ASSUMED} (--assume-host; the request sent localhost:9999)`
+    );
+  });
+});

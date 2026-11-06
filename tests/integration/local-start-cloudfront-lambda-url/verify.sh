@@ -12,6 +12,9 @@
 #   - POST /api    -> the request body reaches the Lambda and is echoed back,
 #                     and the method/path are forwarded.
 #   - SIGTERM frees the listening port AND tears down the Lambda container.
+#   - The run passes --env-vars env-vars.json (go-to-k/cdk-local#863): the
+#     function's construct-path key overrides GREETING, Parameters adds
+#     API_URL, and KEEP_ME stays as synthesized.
 #
 # Requires Docker. Run via `/run-integ local-start-cloudfront-lambda-url`
 # (recommended) or directly:
@@ -72,8 +75,9 @@ if [[ ! -d node_modules ]]; then
   vp install --prefer-offline
 fi
 
-echo "==> Booting: cdkl start-cloudfront ${TARGET} --port ${PORT} --no-pull"
-${CDKL} start-cloudfront "${TARGET}" --port "${PORT}" --no-pull > "${OUT_FILE}" 2>&1 &
+echo "==> Booting: cdkl start-cloudfront ${TARGET} --port ${PORT} --no-pull --env-vars env-vars.json"
+${CDKL} start-cloudfront "${TARGET}" --port "${PORT}" --no-pull --env-vars env-vars.json \
+  > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!
 
 echo "==> Waiting for the server banner (Lambda container boot can take a moment)"
@@ -94,6 +98,12 @@ grep -qi "hello from the lambda function url origin" "${ROOT_BODY}" \
   || fail "GET / did not return the Lambda origin's body"
 grep -qi '"method":"GET"' "${ROOT_BODY}" || fail "Lambda did not see method=GET"
 grep -qi '"path":"/"' "${ROOT_BODY}" || fail "Lambda did not see path=/"
+grep -q '"greeting":"from-env-vars"' "${ROOT_BODY}" \
+  || fail "--env-vars did not override GREETING: $(cat "${ROOT_BODY}")"
+grep -q '"keepMe":"kept"' "${ROOT_BODY}" \
+  || fail "an env var --env-vars does not name changed: $(cat "${ROOT_BODY}")"
+grep -q '"apiUrl":"http://localhost:8088"' "${ROOT_BODY}" \
+  || fail "--env-vars Parameters did not reach the Function URL Lambda: $(cat "${ROOT_BODY}")"
 echo "${ROOT_HEADERS}" | grep -qi "x-cdkl-fixture: lambda-url" \
   || fail "viewer-response function header x-cdkl-fixture not present on GET /"
 echo "${ROOT_HEADERS}" | grep -qi "x-lambda-origin: hit" \
@@ -127,4 +137,4 @@ if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then fail "port ${PORT} still bound a
 LEFTOVER=$(docker ps -q --filter name=cdkl-alblambda- | wc -l | tr -d ' ')
 [[ "${LEFTOVER}" == "0" ]] || fail "Lambda origin container not cleaned up (${LEFTOVER} running)"
 
-echo "PASS: cdkl start-cloudfront served the Lambda Function URL origin (GET echo + viewer-response header + cookie, POST body forwarding) and tore the container down."
+echo "PASS: cdkl start-cloudfront served the Lambda Function URL origin (GET echo + viewer-response header + cookie, POST body forwarding, --env-vars overrides) and tore the container down."

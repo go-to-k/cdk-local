@@ -197,6 +197,12 @@ export interface EcsServiceEmulatorOptions {
   /** `--lb-port <listenerPort=hostPort>` front-door overrides (start-alb; repeatable). */
   lbPort?: string[];
   /**
+   * `--assume-host <host>` / `--assume-host <listenerPort>=<host>` (start-alb;
+   * repeatable): the Host every inbound request is evaluated and forwarded
+   * with, for all listeners or one (go-to-k/cdk-local#862).
+   */
+  assumeHost?: string[];
+  /**
    * Terminate TLS locally for HTTPS front-door listeners (start-alb).
    * Defaults to `false`: a cloud-HTTPS listener is served over plain HTTP
    * locally (with `X-Forwarded-Proto: https` preserved so the upstream app
@@ -425,6 +431,12 @@ export interface PlannedFrontDoorListener {
   defaultAction?: PlannedAction;
   /** Default action's authenticate-* guard (set when DefaultActions[] wrapped one). */
   defaultAuthGuard?: FrontDoorAuthGuard;
+  /**
+   * `--assume-host` value for this listener: the Host its rules see and the
+   * upstream receives for every request (go-to-k/cdk-local#862). Absent = the
+   * request's own Host.
+   */
+  assumeHost?: string;
   /** Rules, evaluated by priority (lower first); each carries up to all six ALB condition fields. */
   rules: Array<{
     priority: number;
@@ -2269,6 +2281,7 @@ export async function buildFrontDoor(
         forwardedProto,
         rulesSummary,
         ...(tls ? { tls } : {}),
+        ...(listener.assumeHost !== undefined && { assumeHost: listener.assumeHost }),
       };
       let server: StartedFrontDoorServer;
       try {
@@ -2301,6 +2314,12 @@ export async function buildFrontDoor(
       logger.info(
         `ALB front-door: ${server.scheme}://${formatAuthority(server.host, server.port)} (listener port ${listener.listenerPort})`
       );
+      if (listener.assumeHost !== undefined) {
+        logger.info(
+          `  assumed host: ${displayUntrustedValue(listener.assumeHost)} (--assume-host; ` +
+            'host-header rules see it and the target receives it as Host)'
+        );
+      }
       if (degradedHttps) {
         logger.warn(
           `listener port ${listener.listenerPort} is HTTPS in the cloud but serving HTTP ` +

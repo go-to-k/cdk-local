@@ -300,6 +300,8 @@ describe('start-cloudfront option surface contract (addStartCloudFrontSpecificOp
       '--assume-role',
       // Issue #405 follow-up — in-memory read-through cache for a deployed-S3 origin.
       '--cache-origin',
+      // go-to-k/cdk-local#863 — env overrides for Function URL / Web Function origins.
+      '--env-vars',
       '--from-cfn-stack',
       '--host',
       // Issue #399 — back a CloudFront Function's KeyValueStore reads with a local JSON map.

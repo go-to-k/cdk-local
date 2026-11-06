@@ -136,6 +136,13 @@ export const OPTION_SPECS: Partial<Record<StudioTargetKind, OptionSpec[]>> = {
       rightPlaceholder: 'hostPort',
     },
     {
+      flag: '--assume-host',
+      kind: 'scalar',
+      label: 'Assume host',
+      placeholder: 'api.example.com',
+      help: 'Route and forward every request as if it carried this Host (host-header rules see it; the target receives it). <listenerPort>=<host> limits it to one listener.',
+    },
+    {
       flag: '--bearer-token',
       kind: 'scalar',
       label: 'Bearer token',
@@ -297,6 +304,15 @@ export const OPTION_SPECS: Partial<Record<StudioTargetKind, OptionSpec[]>> = {
       leftPlaceholder: 'originId',
       rightPlaceholder: './dist',
       help: "Point a distribution origin at a local directory when cdk-local can't resolve its BucketDeployment source.",
+    },
+    {
+      flag: '--env-vars',
+      kind: 'env-kv',
+      label: 'Env vars',
+      sep: '=',
+      leftPlaceholder: 'KEY',
+      rightPlaceholder: 'value',
+      help: 'Overlay the Lambda Function URL / Web Function endpoint origin container env vars — add KEY=VALUE rows or paste a JSON object.',
     },
   ],
 };
