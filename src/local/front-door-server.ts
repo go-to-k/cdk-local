@@ -327,6 +327,14 @@ export async function startFrontDoorServer(
 ): Promise<StartedFrontDoorServer> {
   const logger = getLogger().child('front-door');
   const host = opts.host ?? '127.0.0.1';
+  // The WebSocket bridge writes headers as raw `name: value` lines, so a
+  // library caller's unvalidated assumeHost must not carry CR / LF or any
+  // other control / blank character (the CLI parser already refuses them).
+  if (opts.assumeHost !== undefined && !/^[\x21-\x7e]+$/.test(opts.assumeHost)) {
+    throw new Error(
+      `assumeHost must be a non-empty host name without blanks or control characters (got ${JSON.stringify(opts.assumeHost)}).`
+    );
+  }
 
   const forwardedProto: 'http' | 'https' = opts.forwardedProto ?? (opts.tls ? 'https' : 'http');
   const effectiveOpts: StartFrontDoorServerOptions = { ...opts, forwardedProto };

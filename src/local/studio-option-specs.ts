@@ -140,7 +140,7 @@ export const OPTION_SPECS: Partial<Record<StudioTargetKind, OptionSpec[]>> = {
       kind: 'scalar',
       label: 'Assume host',
       placeholder: 'api.example.com',
-      help: 'Route and forward every request as if it carried this Host (host-header rules see it; the target receives it). <listenerPort>=<host> limits it to one listener.',
+      help: 'Route and forward every request as if it carried this Host (host-header rules see it; the target receives it). <listenerPort>=<host> limits it to one listener. One value per run here; the CLI flag is repeatable.',
     },
     {
       flag: '--bearer-token',

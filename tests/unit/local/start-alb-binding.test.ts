@@ -1131,3 +1131,17 @@ describe('albStrategy --assume-host (go-to-k/cdk-local#862)', () => {
     }
   });
 });
+
+describe('parseAssumeHostOverrides — review follow-ups (go-to-k/cdk-local#862)', () => {
+  it.each([
+    ['api.example.com:0', /is not a host name/],
+    ['api.example.com:99999', /is not a host name/],
+    ['443', /a bare number is not a host name \(did you mean 443=<host>\?\)/],
+  ])('refuses %j', (value, message) => {
+    expect(() => parseAssumeHostOverrides([value])).toThrow(message);
+  });
+
+  it('accepts a host with an in-range port', () => {
+    expect(parseAssumeHostOverrides(['api.example.com:8443']).all).toBe('api.example.com:8443');
+  });
+});

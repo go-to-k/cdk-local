@@ -1915,3 +1915,21 @@ describe('startFrontDoorServer — assumeHost (go-to-k/cdk-local#862)', () => {
     );
   });
 });
+
+describe('startFrontDoorServer — assumeHost validation (go-to-k/cdk-local#862 review)', () => {
+  it.each(['api.example.com\r\nX-Injected: 1', 'a b', ''])(
+    'refuses %j before binding',
+    async (assumeHost) => {
+      await expect(
+        startFrontDoorServer({
+          route: () => undefined,
+          port: 0,
+          host: '127.0.0.1',
+          listenerPort: 80,
+          label: 'listener port 80',
+          assumeHost,
+        })
+      ).rejects.toThrow(/assumeHost must be a non-empty host name/);
+    }
+  );
+});

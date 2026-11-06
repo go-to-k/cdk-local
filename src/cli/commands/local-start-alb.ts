@@ -107,12 +107,22 @@ export function parseAssumeHostOverrides(values: string[] | undefined): AssumeHo
     const eq = value.indexOf('=');
     const portPart = eq === -1 ? undefined : value.slice(0, eq);
     const host = eq === -1 ? value : value.slice(eq + 1);
-    if (!ASSUME_HOST_PATTERN.test(host)) {
+    const hostPort = /:(\d+)$/.exec(host)?.[1];
+    if (
+      !ASSUME_HOST_PATTERN.test(host) ||
+      (hostPort !== undefined && !(Number(hostPort) >= 1 && Number(hostPort) <= 65535))
+    ) {
       throw new LocalStartServiceError(
         `Invalid --assume-host ${JSON.stringify(raw)}: ${host === '' ? 'the host is empty' : `${JSON.stringify(host)} is not a host name`}. ${usage}`
       );
     }
     if (portPart === undefined) {
+      if (/^\d+$/.test(host)) {
+        throw new LocalStartServiceError(
+          `Invalid --assume-host ${JSON.stringify(raw)}: a bare number is not a host name ` +
+            `(did you mean ${host}=<host>?). ${usage}`
+        );
+      }
       if (out.all !== undefined) {
         throw new LocalStartServiceError(
           `--assume-host was given two hosts for every listener (${out.all} and ${host}). ` +
