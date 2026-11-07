@@ -223,7 +223,10 @@ cross-region support: it auto-detects cross-account from
 and (when `--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to
 pick up permissions in the target account. `Architectures: [x86_64]`
 (default) and `[arm64]` are honored via `--platform linux/amd64` /
-`linux/arm64` on both the build and the run.
+`linux/arm64` on both the build and the run. The image runs under a Lambda
+Runtime Interface Emulator that cdk-local mounts into it, so an image on a
+non-AWS base (distroless, Alpine with a runtime client) is invoked too; see
+[Images without the Runtime Interface Emulator](local-emulation.md#images-without-the-runtime-interface-emulator).
 
 ### Target resolution
 
@@ -263,7 +266,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `-e, --event <file>` | `{}` | JSON event payload file. |
 | `--event-stdin` | off | Read event JSON from stdin (mutually exclusive with `--event`). |
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block applied to every invoke. `null` clears a key. |
-| `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (`docker build`'s default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache. |
+| `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (`docker build`'s default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache. **Either kind of container Lambda** — also skip pulling `public.ecr.aws/lambda/provided:al2023`, which the mounted Runtime Interface Emulator is copied out of. |
 | `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic tag to already be in the local docker registry from a prior `cdkl invoke`; errors clearly when missing. No-op for ZIP Lambdas and the ECR-pull fallback. Compatible with `--no-pull`. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the CLI's resolved credentials (honoring `--profile`) and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. No-op when `--no-pull` is set. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
@@ -1126,7 +1129,7 @@ produces an error — they're mutually exclusive.
 | `--all-stacks` | off | Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out for an ambiguous selection. Refused when two served stacks declare the same logical id for a served Lambda or API — always the case for one `cdk.Stage` instantiated twice — since start-api cannot serve both under one id; serve one stack at a time with `--stack`. Mutually exclusive with a positional target subset, `--stack`, and an explicit `--from-cfn-stack <name>` (those name a single stack); the bare `--from-cfn-stack` flag stays compatible — it binds each routed stack to its own CFn stack. No-op in a single-stack app (that one stack is already served). |
 | `--warm` | off | Pre-start one container per discovered Lambda at server boot. Trades RAM for first-request latency. |
 | `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
-| `--no-pull` | off | Skip `docker pull` (use cached image). |
+| `--no-pull` | off | Skip `docker pull` (use cached image), including `public.ecr.aws/lambda/provided:al2023`, which the Runtime Interface Emulator mounted into container Lambdas is copied out of. |
 | `--no-build` | off | Skip `docker build` on every container Lambda local-asset build path (reuse the previously-built tag from an earlier server boot). Requires the deterministic tag to already be in the local registry; errors clearly when missing. No-op for ZIP Lambdas and the ECR-pull fallback. Same semantics as `cdkl invoke --no-build`. Compatible with `--no-pull`. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the container-Lambda ECR-pull fallback. Issues `sts:AssumeRole` via the CLI's resolved credentials (honoring `--profile`) and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account / centralized registry pulls. Same-account / same-region pulls do not need this flag. Same semantics as `cdkl invoke --ecr-role-arn`. |
 | `--container-host <host>` | `127.0.0.1` | IP the host uses to bind/probe the RIE port. Must be a numeric IP — `docker run -p <ip>:<port>:8080` rejects hostnames like `host.docker.internal`. |

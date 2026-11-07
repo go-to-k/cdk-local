@@ -215,7 +215,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `-e, --event <file>` | `{}` | JSON event payload file. |
 | `--event-stdin` | off | Read event JSON from stdin (mutually exclusive with `--event`). |
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block applied to every invoke. `null` clears a key. |
-| `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). |
+| `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op for the image itself (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). **Either kind of container Lambda** — also skip pulling the image the Runtime Interface Emulator is copied out of (see [Images without the Runtime Interface Emulator](#images-without-the-runtime-interface-emulator)). |
 | `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkl-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkl invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the CLI's resolved credentials (honoring `--profile`) and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. Same-account / same-region pulls do not need this flag; cross-account without the flag falls back to the caller's credentials (succeeds when an IAM resource policy on the ECR repo grants the caller directly, else AWS surfaces `AccessDenied`). No-op when `--no-pull` is set. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
@@ -473,13 +473,44 @@ uses the caller's credentials directly (works when the ECR repo's
 resource policy grants the caller, else AWS surfaces `AccessDenied`
 with a hint at the flag).
 
-`ImageConfig.Command` becomes the docker run CMD;
-`ImageConfig.EntryPoint` (when set) becomes `--entrypoint <first>`
-plus the rest as positional args; `ImageConfig.WorkingDirectory`
-becomes `--workdir`. When `EntryPoint` is unset (the common case), the
-image's default entrypoint stays in charge — for AWS Lambda base
-images that's `/lambda-entrypoint.sh`, which routes to RIE on port
-8080.
+`ImageConfig.Command` replaces the image's own `CMD` and
+`ImageConfig.EntryPoint` its own `ENTRYPOINT`; a field you leave out keeps
+the image's value. `ImageConfig.WorkingDirectory` becomes `--workdir`.
+
+#### Images without the Runtime Interface Emulator
+
+cdk-local invokes the function through the AWS Lambda Runtime Interface
+Emulator (RIE) on port 8080. The AWS Lambda base images ship one, but an
+image on any other base, such as distroless or Alpine with a Lambda runtime
+client, does not. So cdk-local runs every container-image Lambda under an
+RIE of its own, on `invoke`, `start-api`, and the Lambda targets of
+`start-alb` and `start-cloudfront`, as `sam local` does:
+
+- It mounts the RIE read-only at `/var/rapid/aws-lambda-rie` and makes it the
+  entrypoint.
+- It hands the RIE the image's `ENTRYPOINT` followed by its `CMD`, each
+  replaced by its `ImageConfig` field when set, as the program to run. An AWS
+  base image's `/lambda-entrypoint.sh` then starts the runtime directly.
+- It leaves an image alone whose program already is an RIE: the first word
+  of that `ENTRYPOINT` + `CMD` is named `aws-lambda-rie` or starts with it.
+
+An image whose entrypoint is a script that always starts its own RIE cannot
+be recognised, and its emulator then fails to bind port 8080. Start the RIE
+in such a script only when `AWS_LAMBDA_RUNTIME_API` is unset, as the AWS base
+images do.
+
+The RIE comes from `public.ecr.aws/lambda/provided:al2023`. On first use per
+architecture, cdk-local pulls that image and copies the binary to
+`$XDG_CACHE_HOME/cdk-local/lambda-rie/` (or `~/.cache/cdk-local/lambda-rie/`).
+Later runs reuse the copy; delete that directory to fetch a fresh one. Under
+`--no-pull`, the copy comes from a local `provided:al2023` image only.
+
+When cdk-local cannot get the RIE, for example offline with nothing cached,
+it warns once and runs the image as built. An AWS base image still works
+then.
+
+An invoke that a server other than the RIE answers, with HTTP 404 or 405,
+fails with an error instead of returning that server's body as the result.
 
 ### Docker asset build scripts (`source.executable`)
 
@@ -1001,7 +1032,10 @@ deterministic `cdkl-invoke-<hash>` tag goes into the warm
 container pool; the pool runs `docker run` against it verbatim — no
 `/var/task` bind-mount, no base-image pull, `ImageConfig.Command` /
 `ImageConfig.EntryPoint` / `ImageConfig.WorkingDirectory` /
-`--platform` (from `Architectures`) all threaded through. Container
+`--platform` (from `Architectures`) all threaded through, under the
+Runtime Interface Emulator cdk-local mounts into every container image
+(resolved at the same times; see
+[Images without the Runtime Interface Emulator](#images-without-the-runtime-interface-emulator)). Container
 Lambdas silently ignore `Properties.Layers` (matches AWS's invoke-time
 behavior — layers are baked into the image at build time on the IMAGE
 branch). Hot reload (`--watch`) detects Dockerfile / build-context
