@@ -387,6 +387,17 @@ describe('ensureRieBinary', () => {
   });
 });
 
+describe('isMountableHostPath', () => {
+  it("accepts a Windows drive root but no other ':'", async () => {
+    const { win32, posix } = await import('node:path');
+    const { isMountableHostPath } = await import('../../../src/local/rie-mount.js');
+    expect(isMountableHostPath('C:\\Users\\me\\.cache\\cdk-local\\x', win32)).toBe(true);
+    expect(isMountableHostPath('C:\\Users\\a:b\\x', win32)).toBe(false);
+    expect(isMountableHostPath('/home/me/.cache/x', posix)).toBe(true);
+    expect(isMountableHostPath('/home/a:b/x', posix)).toBe(false);
+  });
+});
+
 describe('rieCacheDirectory', () => {
   it('sits under the product cache home, never the temp root', () => {
     expect(rieCacheDirectory({ XDG_CACHE_HOME: '/x/cache' })).toBe('/x/cache/cdk-local/lambda-rie');
@@ -399,6 +410,8 @@ describe('rieCacheDirectory', () => {
     setEmbedConfig({ productName: 'My Host/../x' });
     expect(rieCacheDirectory({ XDG_CACHE_HOME: '/x/cache' })).toBe('/x/cache/My-Host-..-x/lambda-rie');
     setEmbedConfig({ productName: '..' });
+    expect(rieCacheDirectory({ XDG_CACHE_HOME: '/x/cache' })).toBe('/x/cache/-/lambda-rie');
+    setEmbedConfig({ productName: '' });
     expect(rieCacheDirectory({ XDG_CACHE_HOME: '/x/cache' })).toBe('/x/cache/-/lambda-rie');
   });
 });

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import * as nodePath from 'node:path';
 import { basename, dirname, join } from 'node:path';
 
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -210,8 +211,7 @@ export async function ensureRieBinary(platform: string, skipPull: boolean): Prom
   const root = rieCacheDirectory();
   if (root === undefined) throw new Error('no cache directory (HOME is not set)');
   const target = join(root, platform.replace('/', '-'), RIE_BASENAME);
-  // `docker run -v host:container:ro` splits on `:`, so such a path cannot be mounted.
-  if (target.includes(':'))
+  if (!isMountableHostPath(target))
     throw new Error(`the cache path ${displayUntrustedValue(target)} contains ':'`);
   let run = inFlight.get(target);
   if (run === undefined) {
@@ -225,6 +225,18 @@ export async function ensureRieBinary(platform: string, skipPull: boolean): Prom
     run.catch(() => inFlight.delete(target));
   }
   return run;
+}
+
+/**
+ * Whether `docker run -v <path>:<container>:ro` can carry `path`: the flag
+ * splits on `:`, so a colon outside a Windows drive root (`C:\`, the one form
+ * docker accepts) breaks it. `pathApi` is the host's path flavour (a seam).
+ */
+export function isMountableHostPath(
+  path: string,
+  pathApi: Pick<typeof nodePath, 'parse'> = nodePath
+): boolean {
+  return !path.slice(pathApi.parse(path).root.length).includes(':');
 }
 
 /** `lstat`, so a symlink (to a host file it would expose, say) is never one. */
