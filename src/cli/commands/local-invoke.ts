@@ -90,6 +90,7 @@ import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
 import { pullEcrImage, parseEcrUri } from '../../local/ecr-puller.js';
 import { invokeRie, waitForRieReady } from '../../local/rie-client.js';
+import { resolveRieWrap } from '../../local/rie-mount.js';
 import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
@@ -715,13 +716,27 @@ export async function resolveContainerImagePlan(
 
   const tmpfs = resolveTmpfsForLambda(lambda);
 
+  // Issue #867: run the image under a mounted Lambda RIE so an image on a
+  // non-AWS base (no emulator of its own) still answers the invoke endpoint.
+  // `undefined` keeps the image's own shape (already an RIE, or no binary).
+  // Container Lambdas take no layers, so this is the only extra mount.
+  const rie = await resolveRieWrap({
+    image: imageRef,
+    platform,
+    entryPoint: lambda.imageConfig.entryPoint,
+    command: lambda.imageConfig.command,
+    skipPull: options.pull === false,
+  });
+
   return {
     image: imageRef,
     mounts: [],
-    extraMounts: [],
-    cmd: lambda.imageConfig.command ?? [],
+    extraMounts: rie ? [rie.mount] : [],
+    cmd: rie ? rie.cmd : (lambda.imageConfig.command ?? []),
     platform,
-    ...(lambda.imageConfig.entryPoint &&
+    ...(rie && { entryPoint: rie.entryPoint }),
+    ...(!rie &&
+      lambda.imageConfig.entryPoint &&
       lambda.imageConfig.entryPoint.length > 0 && {
         entryPoint: lambda.imageConfig.entryPoint,
       }),

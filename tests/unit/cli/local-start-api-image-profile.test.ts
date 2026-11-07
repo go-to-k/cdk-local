@@ -1,16 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { pullMock, parseMock } = vi.hoisted(() => ({
+import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
+
+const { pullMock, parseMock, rieWrapMock } = vi.hoisted(() => ({
   pullMock: vi.fn(),
   parseMock: vi.fn(),
+  rieWrapMock: vi.fn(),
 }));
 
 vi.mock('../../../src/local/ecr-puller.js', () => ({
   pullEcrImage: pullMock,
   parseEcrUri: parseMock,
 }));
+vi.mock('../../../src/local/rie-mount.js', () => ({ resolveRieWrap: rieWrapMock }));
 
-const { resolveContainerImageForStartApi } = await import(
+const { resolveContainerImageForStartApi, buildContainerSpec } = await import(
   '../../../src/cli/commands/local-start-api.js'
 );
 
@@ -53,5 +57,72 @@ describe('resolveContainerImageForStartApi — ECR-pull --profile forwarding', (
     const lambda = ecrLambda();
     await resolveContainerImageForStartApi(lambda, true);
     expect(pullMock).toHaveBeenCalledWith(lambda.imageUri, { skipPull: true });
+  });
+});
+
+describe('buildContainerSpec IMAGE branch runs the image under a mounted RIE (#867)', () => {
+  const ecrUri = '111111111111.dkr.ecr.us-east-1.amazonaws.com/repo:abcdef';
+  const RIE = '/var/rapid/aws-lambda-rie';
+  const stack = {
+    stackName: 'ApiStack',
+    region: 'us-east-1',
+    template: {
+      Resources: {
+        Fn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            PackageType: 'Image',
+            Code: { ImageUri: ecrUri },
+            ImageConfig: { Command: ['h'], EntryPoint: ['/custom', '-x'], WorkingDirectory: '/w' },
+          },
+        },
+      },
+    },
+  } as unknown as StackInfo;
+  const build = () =>
+    buildContainerSpec({
+      logicalId: 'Fn',
+      stacks: [stack],
+      overrides: undefined,
+      assumeRole: undefined,
+      containerHost: '127.0.0.1',
+      stsRegion: undefined,
+      inlineTmpDirs: new Set(),
+      layerTmpDirs: new Set(),
+      stateByStack: new Map(),
+      skipPull: true,
+    });
+
+  beforeEach(() => {
+    parseMock.mockReset().mockReturnValue({ accountId: '111111111111', region: 'us-east-1' });
+    pullMock.mockReset().mockResolvedValue('local/pulled:tag');
+    rieWrapMock.mockReset();
+  });
+
+  it('carries the wrap onto the spec and passes the ImageConfig + --no-pull through', async () => {
+    const mount = { hostPath: '/cache/aws-lambda-rie', containerPath: RIE, readOnly: true as const };
+    rieWrapMock.mockResolvedValue({ mount, entryPoint: [RIE], cmd: ['/custom', '-x', 'h'] });
+    const spec = await build();
+    expect(rieWrapMock).toHaveBeenCalledWith({
+      image: 'local/pulled:tag',
+      platform: 'linux/amd64',
+      entryPoint: ['/custom', '-x'],
+      command: ['h'],
+      skipPull: true,
+    });
+    expect(spec).toMatchObject({
+      kind: 'image',
+      rieMount: mount,
+      entryPoint: [RIE],
+      command: ['/custom', '-x', 'h'],
+      workingDir: '/w',
+    });
+  });
+
+  it('keeps the ImageConfig shape when no wrap resolves', async () => {
+    rieWrapMock.mockResolvedValue(undefined);
+    const spec = await build();
+    expect(spec).toMatchObject({ kind: 'image', command: ['h'], entryPoint: ['/custom', '-x'] });
+    expect(spec).not.toHaveProperty('rieMount');
   });
 });

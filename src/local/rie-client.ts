@@ -19,6 +19,27 @@ import { formatAuthority } from '../utils/url-authority.js';
 
 const INVOKE_PATH = '/2015-03-31/functions/function/invocations';
 
+/**
+ * Statuses the RIE cannot produce on {@link INVOKE_PATH} (issue #867): its
+ * HTTP server registers that path for EVERY method (so no 404 / 405 there),
+ * and its invoke handler answers 200 for a result, a handler error and a
+ * timeout alike, 400 / 500 / 502 / 504 for its own failure states
+ * (aws-lambda-runtime-interface-emulator `internal/lambda/rie/handlers.go`).
+ * A 404 or 405 is therefore some OTHER server — e.g. an image's own HTTP
+ * server on `:8080` — and passing its body through as the function's result
+ * would look like a successful invoke. Kept to these two: any status the
+ * runtime itself can echo back stays the caller's to interpret.
+ */
+const NOT_AN_RIE_STATUS: ReadonlySet<number> = new Set([404, 405]);
+
+function notAnRieError(url: string, status: number): Error {
+  return new Error(
+    `The container answered the invoke at ${url} with HTTP ${status}, which the Lambda ` +
+      'Runtime Interface Emulator never sends for that path: something else is listening on the ' +
+      "container's port 8080 (the function's own server?). Check the container logs."
+  );
+}
+
 export interface InvokeResult {
   /** Parsed JSON response when the body is valid JSON, else the raw string. */
   payload: unknown;
@@ -178,6 +199,7 @@ export async function invokeRie(
   }
 
   const raw = await response.text();
+  if (NOT_AN_RIE_STATUS.has(response.status)) throw notAnRieError(url, response.status);
   let payload: unknown = raw;
   try {
     payload = JSON.parse(raw);
@@ -364,6 +386,12 @@ export async function invokeRieStreaming(
       );
     }
     throw err;
+  }
+
+  if (NOT_AN_RIE_STATUS.has(response.status)) {
+    clearTimeout(timer);
+    await response.body?.cancel().catch(() => undefined);
+    throw notAnRieError(url, response.status);
   }
 
   if (!response.body) {

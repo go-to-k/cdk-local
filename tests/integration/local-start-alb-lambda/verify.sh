@@ -6,6 +6,9 @@
 #   - default action       -> EchoFn (asset-backed Node.js Lambda), echoes the
 #                             ALB event it received.
 #   - path-pattern /api/*   -> ApiFn (multi_value_headers.enabled=true).
+#   - path-pattern /non-aws/* -> NonAwsFn, a container image on a NON-AWS base
+#                             with no RIE of its own (#867): it answers only
+#                             through the RIE cdk-local mounts into it.
 # Asserts:
 #   - The host-side ALB front-door endpoint comes up on the --lb-port host port.
 #   - GET /?a=1 -> reaches the echo Lambda, which sees the ALB Lambda-target
@@ -21,6 +24,13 @@
 #     bash tests/integration/local-start-alb-lambda/verify.sh
 
 set -euo pipefail
+
+# --- built-image cleanup (issue #603) ---------------------------------------
+# Namespace: NonAwsFn (#867) makes this fixture `docker build` a
+# `cdkl-invoke-<hash>` image. Sourced BEFORE the `cd` below: `${BASH_SOURCE[0]}`
+# holds the path this script was INVOKED with, so it stops resolving the moment
+# the cwd changes. See tests/integration/_lib/image-cleanup.sh.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/image-cleanup.sh"
 
 cd "$(dirname "$0")"
 
@@ -42,6 +52,7 @@ cleanup() {
     | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkl-" --format '{{.ID}}' \
     | xargs -r docker network rm >/dev/null 2>&1 || true
+  if [[ -n "${RIE_CACHE_HOME:-}" ]]; then rm -rf "${RIE_CACHE_HOME}"; fi
 }
 trap cleanup EXIT
 
@@ -50,6 +61,8 @@ cleanup
 
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
+
+integ_image_cleanup_init 'cdkl-invoke-*'
 
 echo "==> Pulling fixture Lambda base image"
 docker pull "${LAMBDA_IMAGE}"
@@ -60,12 +73,14 @@ if [[ ! -d node_modules ]]; then
 fi
 
 OUT_FILE=$(mktemp)
-trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
+# A fresh cache home (#867) makes every run extract the Lambda RIE for real.
+RIE_CACHE_HOME=$(mktemp -d)
+trap 'rm -f "${OUT_FILE}"; cleanup; integ_image_cleanup_run' EXIT
 
 echo "==> start-alb: naming the ALB (Lambda targets), front-door on host port ${LB_HOST_PORT}"
 # Remap the privileged listener port 80 to a non-privileged host port so the
 # front-door binds without root (the macOS Docker Desktop privileged-port path).
-${CDKL} start-alb CdkLocalStartAlbLambdaFixture:AlbLB \
+XDG_CACHE_HOME="${RIE_CACHE_HOME}" ${CDKL} start-alb CdkLocalStartAlbLambdaFixture:AlbLB \
   --container-host 127.0.0.1 --lb-port "80=${LB_HOST_PORT}" \
   > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!
@@ -196,6 +211,32 @@ if ! echo "${API_RESP}" | grep -q '"greeting":"api-hello"'; then
   exit 1
 fi
 echo "    OK: /api/ping path-routed to ApiFn with the multi-value query event variant + declared env"
+
+echo "==> Asserting GET /non-aws/hi reaches NonAwsFn through the mounted RIE (#867)"
+# NonAwsFn's image has no RIE; with AWS_LAMBDA_RUNTIME_API unset it serves
+# plain HTTP on :8080 answering 404. It answers here only when cdk-local mounts
+# an RIE and runs the image's own ENTRYPOINT + CMD under it (the args marker is
+# the image CMD, which docker drops under --entrypoint).
+NONAWS_RESP=""
+for _ in $(seq 1 90); do
+  NONAWS_RESP=$(curl -fsS "http://127.0.0.1:${LB_HOST_PORT}/non-aws/hi" 2>/dev/null || true)
+  if [[ -n "${NONAWS_RESP}" ]]; then break; fi
+  sleep 1
+done
+echo "    /non-aws/hi response: ${NONAWS_RESP}"
+for needle in '"fromNonAwsBase": true' '"args": \["from-image-cmd"\]' '"greeting": "from-non-aws-base"' '"path": "/non-aws/hi"'; do
+  if ! echo "${NONAWS_RESP}" | grep -q "${needle}"; then
+    echo "FAIL: /non-aws/hi response lacks ${needle}"
+    echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+    exit 1
+  fi
+done
+if ! grep -q "Fetching the Lambda Runtime Interface Emulator" "${OUT_FILE}"; then
+  echo "FAIL: the service output does not show the RIE extraction"
+  echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+  exit 1
+fi
+echo "    OK: NonAwsFn answered through the mounted RIE"
 
 echo "==> Sending SIGTERM to cdk-local (${CDKL_PID})"
 kill -TERM "${CDKL_PID}"

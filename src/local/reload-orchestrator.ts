@@ -287,9 +287,12 @@ function routeKey(route: DiscoveredRoute): string {
  *     `docker-image-builder.ts:computeLocalTag`) so a Dockerfile edit
  *     produces a new tag and triggers rebuild. `command` / `entryPoint`
  *     / `workingDir` / `platform` capture template-side changes that
- *     affect the docker run shape but not the image content.
+ *     affect the docker run shape but not the image content; `rieMount`
+ *     an RIE that became obtainable (or not) on a reload (#867).
+ *
+ * Exported for tests only.
  */
-function specSignature(spec: ContainerSpec): string {
+export function specSignature(spec: ContainerSpec): string {
   if (spec.kind === 'zip') {
     return JSON.stringify({
       kind: 'zip',
@@ -309,6 +312,7 @@ function specSignature(spec: ContainerSpec): string {
     platform: spec.platform,
     command: spec.command,
     entryPoint: spec.entryPoint ?? null,
+    rieMount: spec.rieMount?.hostPath ?? null,
     workingDir: spec.workingDir ?? null,
     env: spec.env,
     containerHost: spec.containerHost,

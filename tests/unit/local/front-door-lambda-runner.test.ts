@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync, strToU8 } from 'fflate';
-import type { ResolvedZipLambda } from '../../../src/local/lambda-resolver.js';
+import type { ResolvedLambda, ResolvedZipLambda } from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 // Mock the docker / RIE boundary so the runner can be exercised without Docker.
@@ -15,7 +15,9 @@ const {
   streamLogsMock,
   waitForRieReadyMock,
   invokeRieMock,
+  rieWrapMock,
 } = vi.hoisted(() => ({
+  rieWrapMock: vi.fn(),
   runDetachedMock: vi.fn(),
   pickFreePortMock: vi.fn(),
   removeContainerMock: vi.fn(),
@@ -37,6 +39,14 @@ vi.mock('../../../src/local/rie-client.js', () => ({
   waitForRieReady: waitForRieReadyMock,
   invokeRie: invokeRieMock,
 }));
+
+// The IMAGE plan's ECR fallback and the RIE mount (#867) without docker.
+vi.mock('../../../src/local/ecr-puller.js', () => ({
+  parseEcrUri: vi.fn(() => ({ accountId: '111122223333', region: 'us-east-1' })),
+  // A ref distinct from Code.ImageUri: the wrap must get the image `docker run` starts.
+  pullEcrImage: vi.fn(() => Promise.resolve('local/pulled:tag')),
+}));
+vi.mock('../../../src/local/rie-mount.js', () => ({ resolveRieWrap: rieWrapMock }));
 
 vi.mock('../../../src/local/runtime-image.js', () => ({
   resolveRuntimeImage: vi.fn(() => 'public.ecr.aws/lambda/nodejs:20'),
@@ -84,6 +94,7 @@ beforeEach(() => {
   pullImageMock.mockReset().mockResolvedValue(undefined);
   waitForRieReadyMock.mockReset().mockResolvedValue(undefined);
   invokeRieMock.mockReset().mockResolvedValue({ payload: { statusCode: 200 }, raw: '{}' });
+  rieWrapMock.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -298,5 +309,56 @@ describe('createFrontDoorLambdaRunner — caller workload identity (go-to-k/cdk-
     const env = runDetachedMock.mock.calls[0]![0].env;
     expect(env.AWS_ACCESS_KEY_ID).toBe('AKIAROLE');
     expect(env.AWS_SESSION_TOKEN).toBe('roleToken');
+  });
+});
+
+describe('createFrontDoorLambdaRunner — container-image Lambda under the mounted RIE (#867)', () => {
+  const RIE = '/var/rapid/aws-lambda-rie';
+  const IMAGE = '111122223333.dkr.ecr.us-east-1.amazonaws.com/repo:tag';
+  function imageLambda(): ResolvedLambda {
+    return {
+      kind: 'image',
+      stack: { stackName: 'S' } as unknown as StackInfo,
+      logicalId: 'ImgFn',
+      resource: { Type: 'AWS::Lambda::Function', Properties: {} },
+      memoryMb: 128,
+      timeoutSec: 10,
+      layers: [],
+      imageUri: IMAGE,
+      imageConfig: { command: ['h'], entryPoint: ['/custom', '-x'], workingDirectory: '/w' },
+      architecture: 'arm64',
+    } as unknown as ResolvedLambda;
+  }
+
+  it('mounts the RIE read-only, makes it the entrypoint and hands it the effective program', async () => {
+    const mount = { hostPath: '/cache/aws-lambda-rie', containerPath: RIE, readOnly: true as const };
+    rieWrapMock.mockResolvedValue({ mount, entryPoint: [RIE], cmd: ['/custom', '-x', 'h'] });
+    const runner = createFrontDoorLambdaRunner(imageLambda(), {
+      containerHost: '127.0.0.1',
+      skipPull: true,
+    });
+    await runner.start();
+    expect(rieWrapMock).toHaveBeenCalledWith({
+      image: 'local/pulled:tag',
+      platform: 'linux/arm64',
+      entryPoint: ['/custom', '-x'],
+      command: ['h'],
+      skipPull: true,
+    });
+    const runArgs = runDetachedMock.mock.calls[0]![0];
+    expect(runArgs.mounts).toEqual([mount]);
+    expect(runArgs.entryPoint).toEqual([RIE]);
+    expect(runArgs.cmd).toEqual(['/custom', '-x', 'h']);
+    expect(runArgs.workingDir).toBe('/w');
+  });
+
+  it('keeps the ImageConfig shape when no wrap resolves', async () => {
+    const runner = createFrontDoorLambdaRunner(imageLambda(), { containerHost: '127.0.0.1' });
+    await runner.start();
+    expect(rieWrapMock.mock.calls[0]![0]).toMatchObject({ skipPull: false });
+    const runArgs = runDetachedMock.mock.calls[0]![0];
+    expect(runArgs.mounts).toEqual([]);
+    expect(runArgs.entryPoint).toEqual(['/custom', '-x']);
+    expect(runArgs.cmd).toEqual(['h']);
   });
 });

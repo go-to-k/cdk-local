@@ -60,6 +60,9 @@ const HOST_ARCHITECTURE =
  *   3. A `curl http://127.0.0.1:<port>/` against the HTTP server
  *      reaches the container Lambda via RIE and the JSON response
  *      includes the `fromContainer: true` marker the app.js emits.
+ *   4. GET /non-aws (#867) reaches a function on a NON-AWS base image with
+ *      no RIE of its own (`../../_lib/non-aws-lambda-image`, multi-arch
+ *      `python:3.12-alpine`), through the RIE cdk-local mounts.
  */
 export class LocalStartApiContainerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -79,6 +82,22 @@ export class LocalStartApiContainerStack extends cdk.Stack {
       path: '/',
       methods: [apigwv2.HttpMethod.GET],
       integration: new apigwv2int.HttpLambdaIntegration('EchoIntegration', fn),
+    });
+
+    const nonAws = new lambda.DockerImageFunction(this, 'NonAwsBaseHandler', {
+      code: lambda.DockerImageCode.fromImageAsset(
+        path.join(__dirname, '../../_lib/non-aws-lambda-image')
+      ),
+      architecture: HOST_ARCHITECTURE,
+      environment: {
+        GREETING: 'from-non-aws-base',
+      },
+      timeout: cdk.Duration.seconds(10),
+    });
+    api.addRoutes({
+      path: '/non-aws',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2int.HttpLambdaIntegration('NonAwsIntegration', nonAws),
     });
   }
 }

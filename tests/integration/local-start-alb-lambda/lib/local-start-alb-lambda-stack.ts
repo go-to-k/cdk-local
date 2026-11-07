@@ -45,6 +45,12 @@ const HOST_ARCHITECTURE =
  *     `/api/*`) path-routes here, exercising the multiValueQueryStringParameters
  *     event variant.
  *
+ *   - `NonAwsFn` (#867), a `DockerImageFunction` on a NON-AWS base image with
+ *     no RIE of its own (`../../_lib/non-aws-lambda-image`, multi-arch
+ *     `python:3.12-alpine`), behind `NonAwsTargetGroup` — rule priority 20,
+ *     `path-pattern` `/non-aws/*`. It answers only through the RIE cdk-local
+ *     mounts into it.
+ *
  * The synth linkage mirrors a real `TargetType: lambda` target group:
  *   TargetGroup.Targets[].Id = { "Fn::GetAtt": [<FnLogicalId>, "Arn"] }
  *   + an AWS::Lambda::Permission for the elasticloadbalancing principal.
@@ -111,6 +117,28 @@ export class LocalStartAlbLambdaStack extends cdk.Stack {
       priority: 10,
       conditions: [{ field: 'path-pattern', pathPatternConfig: { values: ['/api/*'] } }],
       actions: [{ type: 'forward', targetGroupArn: apiTg.ref }],
+    });
+
+    const nonAwsFn = new lambda.DockerImageFunction(this, 'NonAwsFn', {
+      code: lambda.DockerImageCode.fromImageAsset(
+        path.join(__dirname, '../../_lib/non-aws-lambda-image')
+      ),
+      architecture: HOST_ARCHITECTURE,
+      environment: { GREETING: 'from-non-aws-base' },
+      timeout: cdk.Duration.seconds(10),
+    });
+    nonAwsFn.addPermission('AlbInvoke', {
+      principal: new cdk.aws_iam.ServicePrincipal('elasticloadbalancing.amazonaws.com'),
+    });
+    const nonAwsTg = new elbv2.CfnTargetGroup(this, 'NonAwsTargetGroup', {
+      targetType: 'lambda',
+      targets: [{ id: nonAwsFn.functionArn }],
+    });
+    new elbv2.CfnListenerRule(this, 'NonAwsRule', {
+      listenerArn: listener.ref,
+      priority: 20,
+      conditions: [{ field: 'path-pattern', pathPatternConfig: { values: ['/non-aws/*'] } }],
+      actions: [{ type: 'forward', targetGroupArn: nonAwsTg.ref }],
     });
   }
 }

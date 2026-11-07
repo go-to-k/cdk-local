@@ -12,6 +12,7 @@ import {
 import { architectureToPlatform, buildContainerImage } from './docker-image-builder.js';
 import { pullEcrImage, parseEcrUri } from './ecr-puller.js';
 import { invokeRie, waitForRieReady } from './rie-client.js';
+import { resolveRieWrap } from './rie-mount.js';
 import {
   resolveRuntimeCodeMountPath,
   resolveRuntimeFileExtension,
@@ -228,12 +229,25 @@ async function resolveContainerImagePlan(
     });
   }
 
+  // Issue #867: run the image under a mounted Lambda RIE so an image on a
+  // non-AWS base (no emulator of its own) still answers the invoke endpoint.
+  // `undefined` keeps the image's own shape (already an RIE, or no binary).
+  const rie = await resolveRieWrap({
+    image: imageRef!,
+    platform,
+    entryPoint: lambda.imageConfig.entryPoint,
+    command: lambda.imageConfig.command,
+    skipPull: opts.skipPull === true,
+  });
+
   return {
     image: imageRef!,
-    mounts: [],
-    cmd: lambda.imageConfig.command ?? [],
+    mounts: rie ? [rie.mount] : [],
+    cmd: rie ? rie.cmd : (lambda.imageConfig.command ?? []),
     platform,
-    ...(lambda.imageConfig.entryPoint &&
+    ...(rie && { entryPoint: rie.entryPoint }),
+    ...(!rie &&
+      lambda.imageConfig.entryPoint &&
       lambda.imageConfig.entryPoint.length > 0 && {
         entryPoint: lambda.imageConfig.entryPoint,
       }),
