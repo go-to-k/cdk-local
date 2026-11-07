@@ -37,6 +37,8 @@ vi.mock('../../../src/local/docker-runner.js', async (importActual) => ({
   pullImage: vi.fn().mockResolvedValue(undefined),
   streamLogs: vi.fn(() => () => undefined),
 }));
+// The image plans would otherwise run the real docker CLI to mount an RIE (#867).
+vi.mock('../../../src/local/rie-mount.js', () => ({ resolveRieWrap: async () => undefined }));
 vi.mock('../../../src/local/rie-client.js', () => ({
   waitForRieReady: vi.fn().mockResolvedValue(undefined),
   invokeRie: vi.fn(),

@@ -99,6 +99,7 @@ import {
   type ContainerSpec,
   type ContainerPool,
 } from '../../local/container-pool.js';
+import { resolveRieWrap } from '../../local/rie-mount.js';
 import {
   startApiServer,
   readMtlsMaterialsFromDisk,
@@ -2666,13 +2667,27 @@ export async function buildContainerSpec(args: {
     return spec;
   }
 
+  // Issue #867: run the image under a mounted Lambda RIE (resolved once per
+  // boot / `--watch` reload, so a cold start pays nothing extra). `undefined`
+  // keeps the image's own shape: it already starts an RIE, or the binary
+  // could not be obtained (warned once).
+  const rie = await resolveRieWrap({
+    image: imageRef!,
+    platform: platform!,
+    entryPoint: lambda.imageConfig.entryPoint,
+    command: lambda.imageConfig.command,
+    skipPull,
+  });
+
   const spec: ContainerSpec = {
     kind: 'image',
     lambda,
     image: imageRef!,
     platform: platform!,
-    command: lambda.imageConfig.command ?? [],
-    ...(lambda.imageConfig.entryPoint !== undefined &&
+    command: rie ? rie.cmd : (lambda.imageConfig.command ?? []),
+    ...(rie && { entryPoint: rie.entryPoint, rieMount: rie.mount }),
+    ...(!rie &&
+      lambda.imageConfig.entryPoint !== undefined &&
       lambda.imageConfig.entryPoint.length > 0 && {
         entryPoint: lambda.imageConfig.entryPoint,
       }),

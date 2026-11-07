@@ -48,6 +48,10 @@ const HOST_ARCHITECTURE =
  *      asset manifest, calls `docker build`, then runs the resulting image.
  *   2. `--event` payload pass-through.
  *   3. `--env-vars` SAM-shape override.
+ *
+ * `NonAwsBaseHandler` (#867) is built from a NON-AWS base image with no RIE of
+ * its own (`../../_lib/non-aws-lambda-image`); cdk-local mounts one and runs
+ * the image's ENTRYPOINT + CMD under it.
  */
 export class LocalInvokeContainerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -58,6 +62,20 @@ export class LocalInvokeContainerStack extends cdk.Stack {
       architecture: HOST_ARCHITECTURE,
       environment: {
         GREETING: 'hello',
+      },
+      timeout: cdk.Duration.seconds(10),
+    });
+
+    // go-to-k/cdk-local#867: a function on a NON-AWS base image (multi-arch
+    // `python:3.12-alpine`, so building at the host arch is safe), which
+    // ships no Runtime Interface Emulator.
+    new lambda.DockerImageFunction(this, 'NonAwsBaseHandler', {
+      code: lambda.DockerImageCode.fromImageAsset(
+        path.join(__dirname, '../../_lib/non-aws-lambda-image')
+      ),
+      architecture: HOST_ARCHITECTURE,
+      environment: {
+        GREETING: 'from-non-aws-base',
       },
       timeout: cdk.Duration.seconds(10),
     });

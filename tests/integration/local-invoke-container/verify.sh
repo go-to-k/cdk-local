@@ -90,7 +90,7 @@ fi
 # default; --no-pull on the container-Lambda local-build path is
 # documented as a no-op in CLI help — it still skips the public-base
 # image's `docker pull` from the ZIP path which we did up front).
-echo "==> [1/4] Invoking EchoHandler (container) with default empty event"
+echo "==> [1/5] Invoking EchoHandler (container) with default empty event"
 RESULT_1=$(capture ${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
@@ -103,7 +103,7 @@ echo "${RESULT_1}" | grep -q '"fromContainer":true' || {
 }
 
 # Test 2 — event payload via --event
-echo "==> [2/4] Invoking EchoHandler with --event payload"
+echo "==> [2/5] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
@@ -115,7 +115,7 @@ echo "${RESULT_2}" | grep -q '"key":"value"' || {
 }
 
 # Test 3 — --env-vars override
-echo "==> [3/4] Invoking EchoHandler with --env-vars override"
+echo "==> [3/5] Invoking EchoHandler with --env-vars override"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
@@ -133,7 +133,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 # stdout+stderr to inspect the build-vs-skip log lines, and rely on
 # the JSON response always being on the LAST stdout line for the
 # greeting check.
-echo "==> [4/4] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
+echo "==> [4/5] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
 COMBINED_4=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 # A non-zero exit here used to abort the script (issue #577) BEFORE any of the
@@ -163,7 +163,51 @@ if grep -q "Building container image" "${COMBINED_4}"; then
   exit 1
 fi
 
+# Test 5 — a function on a NON-AWS base image (#867). The image ships no
+# Runtime Interface Emulator and, with AWS_LAMBDA_RUNTIME_API unset, serves
+# plain HTTP on :8080 answering 404. cdk-local must mount an RIE, run it as
+# the entrypoint with the image's own ENTRYPOINT + CMD, and return the
+# function's result. A fresh XDG_CACHE_HOME forces the real extraction of the
+# RIE from the AWS base image (no --no-pull, so cdk-local pulls it).
+echo "==> [5/5] Invoking NonAwsBaseHandler (non-AWS base image, RIE mounted by cdk-local)"
+RIE_CACHE_HOME=$(mktemp -d)
+COMBINED_5=$(mktemp)
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}" "${COMBINED_5}" "${CDKL_STDERR}"; rm -rf "${RIE_CACHE_HOME}"; integ_image_cleanup_run' EXIT
+CDKL_RC_5=0
+XDG_CACHE_HOME="${RIE_CACHE_HOME}" ${CDKL} invoke CdkLocalInvokeContainerFixture/NonAwsBaseHandler --event "${EVENT_FILE}" >"${COMBINED_5}" 2>&1 || CDKL_RC_5=$?
+RESULT_5=$(tail -1 "${COMBINED_5}")
+echo "    response: ${RESULT_5}"
+if [ "${CDKL_RC_5}" -ne 0 ]; then
+  echo "FAIL: cdkl invoke exited ${CDKL_RC_5} for the non-AWS-base function (#867). Combined output was:"
+  cat "${COMBINED_5}"
+  exit 1
+fi
+echo "${RESULT_5}" | grep -q '"fromNonAwsBase": true' || {
+  echo "FAIL: the non-AWS-base function did not answer (#867). Combined output was:"
+  cat "${COMBINED_5}"
+  exit 1
+}
+# The image's own CMD reached the process: docker drops it under --entrypoint,
+# so this holds only when cdk-local hands the RIE the inspected Entrypoint + Cmd.
+echo "${RESULT_5}" | grep -q '"args": \["from-image-cmd"\]' || {
+  echo "FAIL: the image CMD did not reach the function. response: ${RESULT_5}"
+  exit 1
+}
+echo "${RESULT_5}" | grep -q '"greeting": "from-non-aws-base"' || {
+  echo "FAIL: expected greeting=from-non-aws-base, got: ${RESULT_5}"
+  exit 1
+}
+echo "${RESULT_5}" | grep -q '"key": "value"' || {
+  echo "FAIL: expected the --event payload echoed, got: ${RESULT_5}"
+  exit 1
+}
+ls "${RIE_CACHE_HOME}"/cdk-local/lambda-rie/*/aws-lambda-rie >/dev/null 2>&1 || {
+  echo "FAIL: the RIE was not extracted into the cache home. Combined output was:"
+  cat "${COMBINED_5}"
+  exit 1
+}
+
 integ_image_cleanup_run
 
 echo ""
-echo "==> All 4 local-invoke container-Lambda tests passed"
+echo "==> All 5 local-invoke container-Lambda tests passed"

@@ -222,9 +222,17 @@ export interface ImageContainerSpec extends ContainerSpecBase {
    * `/lambda-entrypoint.sh` on AWS base images, which routes to RIE).
    * When set, the first entry maps to `docker run --entrypoint <first>`
    * and the rest are prepended to `cmd` as positional args — see
-   * `docker-runner.ts:runDetached`.
+   * `docker-runner.ts:runDetached`. With {@link rieMount} set it is the
+   * mounted RIE instead.
    */
   entryPoint?: string[];
+  /**
+   * Issue #867: the host RIE binary bind-mounted read-only at
+   * `/var/rapid/aws-lambda-rie`, set together with an `entryPoint` naming it
+   * and a `command` carrying the image's effective EntryPoint + Cmd
+   * (`src/local/rie-mount.ts`). Undefined when the image runs as built.
+   */
+  rieMount?: { hostPath: string; containerPath: string; readOnly: true };
   /**
    * `ImageConfig.WorkingDirectory` → `docker run --workdir <dir>`.
    * Undefined when the image's own WORKDIR is sufficient.
@@ -395,7 +403,9 @@ export function createContainerPool(
       // IMAGE branch (closes #453). The pre-built local tag is on
       // `spec.image`; the architecture-derived `--platform` is on
       // `spec.platform`. `ImageConfig` fields drive CMD / entrypoint /
-      // workdir verbatim. No bind mounts: the image already contains
+      // workdir verbatim (or, with `spec.rieMount`, the mounted RIE is the
+      // entrypoint and `spec.command` carries the image's effective
+      // EntryPoint + Cmd — issue #867). No code mount: the image already contains
       // the function code at its built-in `/var/task`. AWS layers are
       // baked into the image at build time, not overlaid at runtime,
       // so we never emit a `/opt` mount on this branch (matches the
@@ -404,15 +414,18 @@ export function createContainerPool(
       containerId = await runDetached({
         image: spec.image,
         mounts: [],
-        ...(spec.profileCredentialsFile && {
-          extraMounts: [
-            {
-              hostPath: spec.profileCredentialsFile.hostPath,
-              containerPath: spec.profileCredentialsFile.containerPath,
-              readOnly: true,
-            },
-          ],
-        }),
+        extraMounts: [
+          ...(spec.rieMount ? [spec.rieMount] : []),
+          ...(spec.profileCredentialsFile
+            ? [
+                {
+                  hostPath: spec.profileCredentialsFile.hostPath,
+                  containerPath: spec.profileCredentialsFile.containerPath,
+                  readOnly: true,
+                },
+              ]
+            : []),
+        ],
         env: spec.env,
         ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
         cmd: spec.command,

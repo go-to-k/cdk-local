@@ -142,3 +142,52 @@ describe('container pool pins --platform to the ZIP Lambda architecture', () => 
     await pool.dispose();
   });
 });
+
+describe('container pool IMAGE branch mounts spec.rieMount (#867)', () => {
+  beforeEach(() => {
+    runDetachedMock.mockReset().mockResolvedValue('container-id');
+    pickFreePortMock.mockReset().mockResolvedValue(9001);
+    removeContainerMock.mockReset().mockResolvedValue(undefined);
+    waitForRieReadyMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('mounts the RIE before the profile credentials file and runs it as the entrypoint', async () => {
+    const rieMount = {
+      hostPath: '/cache/lambda-rie/linux-amd64/aws-lambda-rie',
+      containerPath: '/var/rapid/aws-lambda-rie',
+      readOnly: true as const,
+    };
+    const spec = {
+      ...imageSpec(),
+      rieMount,
+      entryPoint: ['/var/rapid/aws-lambda-rie'],
+      command: ['/app'],
+      profileCredentialsFile: { hostPath: '/tmp/creds', containerPath: '/cdk-local-aws/credentials' },
+    } as unknown as ContainerSpec;
+    const pool = createContainerPool(new Map([['Fn', spec]]), {
+      perLambdaConcurrency: 1,
+      streamLogs: false,
+    });
+    const handle = await pool.acquire('Fn');
+    const args = runDetachedMock.mock.calls[0]![0];
+    expect(args.extraMounts).toEqual([
+      rieMount,
+      { hostPath: '/tmp/creds', containerPath: '/cdk-local-aws/credentials', readOnly: true },
+    ]);
+    expect(args.entryPoint).toEqual(['/var/rapid/aws-lambda-rie']);
+    expect(args.cmd).toEqual(['/app']);
+    pool.release(handle);
+    await pool.dispose();
+  });
+
+  it('passes no extra mount for an image spec without one', async () => {
+    const pool = createContainerPool(new Map([['Fn', imageSpec()]]), {
+      perLambdaConcurrency: 1,
+      streamLogs: false,
+    });
+    const handle = await pool.acquire('Fn');
+    expect(runDetachedMock.mock.calls[0]![0].extraMounts).toEqual([]);
+    pool.release(handle);
+    await pool.dispose();
+  });
+});
