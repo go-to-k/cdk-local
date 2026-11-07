@@ -16,8 +16,8 @@ import { getEmbedConfig } from './embed-config.js';
  * The invocation endpoint every image-Lambda launch POSTs to
  * (`/2015-03-31/functions/function/invocations` on `:8080`) exists only while
  * an RIE serves it. The AWS Lambda base images start one from
- * `/lambda-entrypoint.sh`, but an image on any other base (distroless,
- * scratch, alpine + a Lambda runtime client) has none, so the invoke reached
+ * `/lambda-entrypoint.sh`, but an image on any other base (one carrying only
+ * a Lambda runtime client, or a bare binary) has none, so the invoke reached
  * whatever the image's own process happened to serve. `sam local`'s answer,
  * and the one here: bind-mount an RIE at `/var/rapid/aws-lambda-rie`, make it
  * the entrypoint, and hand it the image's effective EntryPoint + Cmd as the
@@ -88,15 +88,18 @@ export function rieCacheDirectory(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 const inFlight = new Map<string, Promise<string>>();
-/** One warning per process for a binary that cannot be obtained: it hits every function. */
-let warnedNoBinary = false;
+/**
+ * Platforms already warned about a binary that cannot be obtained: one warning
+ * per platform per process, since it then hits every function of that platform.
+ */
+const warnedNoBinary = new Set<string>();
 
 /**
  * Resolve how to run `input.image` under a mounted RIE, or `undefined` when
- * the image must run as-is: the program it starts already IS an RIE (two
+ * the image must run as-is: the program it starts already runs an RIE (two
  * emulators would contend for `:8080`), its config could not be read (warned
  * for that image), or the RIE binary could not be obtained (warned once per
- * process, since it then applies to every function).
+ * platform, since it then applies to every function of that platform).
  */
 export async function resolveRieWrap(input: RieWrapInput): Promise<RieWrap | undefined> {
   const logger = getLogger().child('rie');
@@ -116,9 +119,12 @@ export async function resolveRieWrap(input: RieWrapInput): Promise<RieWrap | und
     );
     return undefined;
   }
-  if (program.length > 0 && isRieExecutable(program[0]!)) {
+  // Any word, not only the first: an init wrapper (`ENTRYPOINT ["/tini", "--"]`)
+  // can start the image's own RIE from the CMD.
+  const ownRie = program.find(isRieExecutable);
+  if (ownRie !== undefined) {
     logger.debug(
-      `Image ${displayUntrustedValue(input.image)} already starts ${displayUntrustedValue(program[0]!)}; not mounting another RIE`
+      `Image ${displayUntrustedValue(input.image)} already runs ${displayUntrustedValue(ownRie)}; not mounting another RIE`
     );
     return undefined;
   }
@@ -126,10 +132,10 @@ export async function resolveRieWrap(input: RieWrapInput): Promise<RieWrap | und
   try {
     hostPath = await ensureRieBinary(input.platform, input.skipPull === true);
   } catch (err) {
-    if (!warnedNoBinary) {
-      warnedNoBinary = true;
+    if (!warnedNoBinary.has(input.platform)) {
+      warnedNoBinary.add(input.platform);
       logger.warn(
-        `Could not mount the Lambda Runtime Interface Emulator into container-image functions (${messageOf(err)}). ` +
+        `Could not mount the Lambda Runtime Interface Emulator into ${displayUntrustedValue(input.platform)} container-image functions (${messageOf(err)}). ` +
           'They run as built, so only images that ship their own emulator (the AWS Lambda base images do) can be invoked.'
       );
     } else {
@@ -147,8 +153,8 @@ export async function resolveRieWrap(input: RieWrapInput): Promise<RieWrap | und
 }
 
 /**
- * Whether the program an image starts is itself an RIE: `aws-lambda-rie`, or a
- * release asset name like `aws-lambda-rie-arm64` copied in unrenamed. A
+ * Whether a word of the program an image starts names an RIE: `aws-lambda-rie`,
+ * or a release asset name like `aws-lambda-rie-arm64` copied in unrenamed. A
  * wrapper script that execs one unconditionally cannot be told apart.
  */
 function isRieExecutable(path: string): boolean {
@@ -204,6 +210,9 @@ export async function ensureRieBinary(platform: string, skipPull: boolean): Prom
   const root = rieCacheDirectory();
   if (root === undefined) throw new Error('no cache directory (HOME is not set)');
   const target = join(root, platform.replace('/', '-'), RIE_BASENAME);
+  // `docker run -v host:container:ro` splits on `:`, so such a path cannot be mounted.
+  if (target.includes(':'))
+    throw new Error(`the cache path ${displayUntrustedValue(target)} contains ':'`);
   let run = inFlight.get(target);
   if (run === undefined) {
     run = (async (): Promise<string> => {
@@ -271,8 +280,13 @@ async function extractRie(
   }
   // `docker create` pulls a missing image itself unless told not to, which
   // `--no-pull` must not allow.
+  // Named with the resource prefix so an extraction killed mid-way leaves a
+  // container the usual `<prefix>-*` orphan sweep finds.
+  const name = `${getEmbedConfig().resourceNamePrefix}-rie-extract-${process.pid}-${randomBytes(4).toString('hex')}`;
   const createArgs = [
     'create',
+    '--name',
+    name,
     ...(skipPull ? ['--pull', 'never'] : []),
     '--platform',
     platform,

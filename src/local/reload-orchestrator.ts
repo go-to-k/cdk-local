@@ -309,6 +309,7 @@ function specSignature(spec: ContainerSpec): string {
     platform: spec.platform,
     command: spec.command,
     entryPoint: spec.entryPoint ?? null,
+    rieMount: spec.rieMount?.hostPath ?? null,
     workingDir: spec.workingDir ?? null,
     env: spec.env,
     containerHost: spec.containerHost,

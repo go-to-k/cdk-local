@@ -43,7 +43,8 @@ vi.mock('../../../src/local/rie-client.js', () => ({
 // The IMAGE plan's ECR fallback and the RIE mount (#867) without docker.
 vi.mock('../../../src/local/ecr-puller.js', () => ({
   parseEcrUri: vi.fn(() => ({ accountId: '111122223333', region: 'us-east-1' })),
-  pullEcrImage: vi.fn((uri: string) => Promise.resolve(uri)),
+  // A ref distinct from Code.ImageUri: the wrap must get the image `docker run` starts.
+  pullEcrImage: vi.fn(() => Promise.resolve('local/pulled:tag')),
 }));
 vi.mock('../../../src/local/rie-mount.js', () => ({ resolveRieWrap: rieWrapMock }));
 
@@ -338,7 +339,7 @@ describe('createFrontDoorLambdaRunner — container-image Lambda under the mount
     });
     await runner.start();
     expect(rieWrapMock).toHaveBeenCalledWith({
-      image: IMAGE,
+      image: 'local/pulled:tag',
       platform: 'linux/arm64',
       entryPoint: ['/custom', '-x'],
       command: ['h'],

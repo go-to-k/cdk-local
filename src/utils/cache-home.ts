@@ -21,7 +21,10 @@ export function userCacheHome(
   env: NodeJS.ProcessEnv = process.env,
   home: () => string = homedir
 ): string | undefined {
-  const product = getEmbedConfig().productName;
+  // `productName` is a prose name: keep one plain path segment of it.
+  const product = getEmbedConfig()
+    .productName.replace(/[^A-Za-z0-9._-]/g, '-')
+    .replace(/^\.+$/, '-');
   const xdg = env['XDG_CACHE_HOME'];
   // A relative value is ignored, as the XDG Base Directory spec requires: it
   // would resolve against the cwd, i.e. inside the CDK project a user may have

@@ -225,7 +225,7 @@ pick up permissions in the target account. `Architectures: [x86_64]`
 (default) and `[arm64]` are honored via `--platform linux/amd64` /
 `linux/arm64` on both the build and the run. The image runs under a Lambda
 Runtime Interface Emulator that cdk-local mounts into it, so an image on a
-non-AWS base (distroless, Alpine with a runtime client) is invoked too; see
+non-AWS base, one with no emulator of its own, is invoked too; see
 [Images without the Runtime Interface Emulator](local-emulation.md#images-without-the-runtime-interface-emulator).
 
 ### Target resolution
@@ -2016,7 +2016,7 @@ On top of the [common flags](#common-flags):
 | `--tls` | off | Terminate real HTTPS. Uses `--tls-cert` / `--tls-key` when supplied, else an auto-generated self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`; requires `openssl` on PATH). Implied by `--tls-cert` / `--tls-key`. |
 | `--tls-cert <path>` | unset | PEM server certificate. Implies `--tls`; must be set with `--tls-key`. |
 | `--tls-key <path>` | unset | PEM server private key matching `--tls-cert`. Implies `--tls`; must be set with `--tls-cert`. |
-| `--no-pull` | off | Skip `docker pull` for a Lambda Function URL / Web Function endpoint origin's base image (use the locally cached image). No effect on a pure-S3 distribution. |
+| `--no-pull` | off | Skip `docker pull` for a Lambda Function URL / Web Function endpoint origin's base image (use the locally cached image), including `public.ecr.aws/lambda/provided:al2023`, which the Runtime Interface Emulator mounted into a container-image Lambda origin is copied out of. No effect on a pure-S3 distribution. |
 | `--from-cfn-stack [name]` | off | Bind to a deployed CloudFormation stack (`ListStackResources`). Serves an S3 origin that has NO local BucketDeployment source from its deployed bucket, read from real S3 on demand (the front/back-split case — see the S3 origin → deployed bucket bullet above), AND resolves a Function URL origin / Lambda@Edge function's or a Web Function origin revision's intrinsic env vars to the deployed physical IDs / exports. Bare form uses the resolved stack name; pass a value when the CFn stack name differs. Same semantics as `cdkl invoke --from-cfn-stack`. |
 | `--cache-origin` | off | For a deployed-S3 origin (served from real S3 under `--from-cfn-stack`): keep fetched objects in memory for the session as a read-through cache instead of re-`GetObject`-ing on every request — faster repeat reads / fewer S3 GETs. An out-of-band S3 content change is NOT reflected until a `--watch` reload (which clears the cache) or a restart. Off by default (every request re-reads, always current). Because it only feeds the deployed-S3 reader, it has no effect without `--from-cfn-stack` — passing it alone logs a boot-time WARN (it is harmless, just a no-op). This is the local object cache, NOT CloudFront CDN / TTL caching. |
 | `--stack-region <region>` | unset | Region of the state record to read; used with `--from-cfn-stack` as the CFn client region. |

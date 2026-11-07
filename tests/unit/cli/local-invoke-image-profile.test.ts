@@ -78,9 +78,12 @@ describe('resolveContainerImagePlan — the mounted Lambda RIE (#867)', () => {
     >[0];
   }
 
+  // The pulled ref differs from Code.ImageUri, so the wrap must be handed
+  // the image `docker run` starts, not the template's URI.
+  const PULLED = 'local/pulled:tag';
   beforeEach(() => {
     parseMock.mockReturnValue({ accountId: '111122223333', region: 'ap-northeast-1' });
-    pullMock.mockImplementation((uri: string) => Promise.resolve(uri));
+    pullMock.mockResolvedValue(PULLED);
     rieWrapMock.mockReset();
   });
 
@@ -96,7 +99,7 @@ describe('resolveContainerImagePlan — the mounted Lambda RIE (#867)', () => {
     } as unknown as Parameters<typeof resolveContainerImagePlan>[1]);
 
     expect(rieWrapMock).toHaveBeenCalledWith({
-      image: lambda.imageUri,
+      image: PULLED,
       platform: 'linux/arm64',
       entryPoint: ['/custom', '-x'],
       command: ['handler'],

@@ -84,6 +84,18 @@ if [[ ! -d node_modules ]]; then
   vp install --prefer-offline
 fi
 
+# #867: every container-image Lambda runs under a Lambda RIE cdk-local copies
+# out of public.ecr.aws/lambda/provided:al2023 into its cache home. Steps 1-4
+# run --no-pull, so cdk-local must copy it out of the LOCAL image pulled here,
+# into a cache home fresh for this run (so the copy really happens, and the
+# AWS-base image runs under the mounted RIE). Step 5 reuses that copy.
+RIE_SOURCE_IMAGE="public.ecr.aws/lambda/provided:al2023"
+echo "==> Pulling ${RIE_SOURCE_IMAGE} (the RIE source for --no-pull)"
+docker pull "${RIE_SOURCE_IMAGE}"
+RIE_CACHE_HOME=$(mktemp -d)
+export XDG_CACHE_HOME="${RIE_CACHE_HOME}"
+trap 'rm -f "${CDKL_STDERR}"; rm -rf "${RIE_CACHE_HOME}"; integ_image_cleanup_run' EXIT
+
 
 # Test 1 — container-Lambda default empty event
 # Uses --no-pull so docker build's --pull flag is not set (this is the
@@ -101,11 +113,17 @@ echo "${RESULT_1}" | grep -q '"fromContainer":true' || {
   echo "FAIL: expected fromContainer=true in response, got: ${RESULT_1}"
   exit 1
 }
+# --no-pull still mounted an RIE: the copy out of the local image landed.
+ls "${RIE_CACHE_HOME}"/cdk-local/lambda-rie/*/aws-lambda-rie >/dev/null 2>&1 || {
+  echo "FAIL: --no-pull did not copy the RIE out of the local ${RIE_SOURCE_IMAGE} (#867). stderr was:"
+  cat "${CDKL_STDERR}"
+  exit 1
+}
 
 # Test 2 — event payload via --event
 echo "==> [2/5] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
+trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"; rm -rf "${RIE_CACHE_HOME}"; integ_image_cleanup_run' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
 RESULT_2=$(capture ${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_2}"
@@ -117,7 +135,7 @@ echo "${RESULT_2}" | grep -q '"key":"value"' || {
 # Test 3 — --env-vars override
 echo "==> [3/5] Invoking EchoHandler with --env-vars override"
 ENV_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"; rm -rf "${RIE_CACHE_HOME}"; integ_image_cleanup_run' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
 RESULT_3=$(capture ${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_3}"
@@ -135,7 +153,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 # greeting check.
 echo "==> [4/5] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
 COMBINED_4=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}" "${CDKL_STDERR}"; rm -rf "${RIE_CACHE_HOME}"; integ_image_cleanup_run' EXIT
 # A non-zero exit here used to abort the script (issue #577) BEFORE any of the
 # three FAIL branches below that `cat "${COMBINED_4}"` -- so the one test whose
 # whole point is inspecting the log lost the log. Capture the status instead.
@@ -157,6 +175,11 @@ grep -q "Skipping docker build" "${COMBINED_4}" || {
   cat "${COMBINED_4}"
   exit 1
 }
+if grep -qE "Could not (mount the Lambda Runtime Interface Emulator|read the ENTRYPOINT)" "${COMBINED_4}"; then
+  echo "FAIL: the AWS-base image ran without the mounted RIE (#867). Combined output was:"
+  cat "${COMBINED_4}"
+  exit 1
+fi
 if grep -q "Building container image" "${COMBINED_4}"; then
   echo "FAIL: --no-build still logged 'Building container image' (rebuild happened despite --no-build). Combined output was:"
   cat "${COMBINED_4}"
@@ -167,14 +190,13 @@ fi
 # Runtime Interface Emulator and, with AWS_LAMBDA_RUNTIME_API unset, serves
 # plain HTTP on :8080 answering 404. cdk-local must mount an RIE, run it as
 # the entrypoint with the image's own ENTRYPOINT + CMD, and return the
-# function's result. A fresh XDG_CACHE_HOME forces the real extraction of the
-# RIE from the AWS base image (no --no-pull, so cdk-local pulls it).
+# function's result. It reuses the RIE copied in step 1 (the pull path is
+# covered by local-start-api-container).
 echo "==> [5/5] Invoking NonAwsBaseHandler (non-AWS base image, RIE mounted by cdk-local)"
-RIE_CACHE_HOME=$(mktemp -d)
 COMBINED_5=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}" "${COMBINED_5}" "${CDKL_STDERR}"; rm -rf "${RIE_CACHE_HOME}"; integ_image_cleanup_run' EXIT
 CDKL_RC_5=0
-XDG_CACHE_HOME="${RIE_CACHE_HOME}" ${CDKL} invoke CdkLocalInvokeContainerFixture/NonAwsBaseHandler --event "${EVENT_FILE}" >"${COMBINED_5}" 2>&1 || CDKL_RC_5=$?
+${CDKL} invoke CdkLocalInvokeContainerFixture/NonAwsBaseHandler --event "${EVENT_FILE}" >"${COMBINED_5}" 2>&1 || CDKL_RC_5=$?
 RESULT_5=$(tail -1 "${COMBINED_5}")
 echo "    response: ${RESULT_5}"
 if [ "${CDKL_RC_5}" -ne 0 ]; then

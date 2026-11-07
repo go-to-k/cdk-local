@@ -187,7 +187,7 @@ describe('resolveRieWrap', () => {
   it('does not wrap an image whose program is an unrenamed RIE release asset', async () => {
     imageConfig = { Entrypoint: ['/usr/local/bin/aws-lambda-rie-arm64'], Cmd: ['/app'] };
     expect(await resolveRieWrap({ image: 'i', platform: 'linux/arm64' })).toBeUndefined();
-    expect(verbs()).not.toContain('create --platform');
+    expect(verbs()).not.toContain('create --name');
   });
 
   it('does not wrap an image with no Entrypoint whose CMD starts an RIE', async () => {
@@ -204,16 +204,26 @@ describe('resolveRieWrap', () => {
     ]);
   });
 
-  it('falls back to undefined and warns ONCE when the binary cannot be obtained', async () => {
+  it('falls back to undefined and warns ONCE PER PLATFORM when the binary cannot be obtained', async () => {
     h.docker.mockImplementation(async (args: string[]) => {
       if (args[0] === 'image') return { stdout: JSON.stringify(imageConfig), stderr: '' };
       throw Object.assign(new Error('pull denied'), { exitCode: 1, stderr: 'denied', stdout: '' });
     });
     expect(await resolveRieWrap({ image: 'a', platform: 'linux/amd64' })).toBeUndefined();
-    expect(await resolveRieWrap({ image: 'b', platform: 'linux/arm64' })).toBeUndefined();
+    expect(await resolveRieWrap({ image: 'b', platform: 'linux/amd64' })).toBeUndefined();
     expect(h.warns).toHaveLength(1);
-    expect(h.warns[0]).toMatch(/Could not mount the Lambda Runtime Interface Emulator/);
+    expect(h.warns[0]).toMatch(/Could not mount the Lambda Runtime Interface Emulator into linux\/amd64/);
     expect(h.warns[0]).toMatch(/docker pull failed/);
+    expect(await resolveRieWrap({ image: 'c', platform: 'linux/arm64' })).toBeUndefined();
+    expect(h.warns).toHaveLength(2);
+    expect(h.warns[1]).toMatch(/into linux\/arm64/);
+  });
+
+  it('does not wrap an image whose init wrapper starts an RIE from the CMD', async () => {
+    imageConfig = { Entrypoint: ['/tini', '--'], Cmd: ['/usr/local/bin/aws-lambda-rie', '/app'] };
+    expect(await resolveRieWrap({ image: 'i', platform: 'linux/amd64' })).toBeUndefined();
+    expect(verbs()).not.toContain('create --name');
+    expect(h.warns).toEqual([]);
   });
 
   it('falls back when the image config cannot be inspected, warning per image', async () => {
@@ -223,7 +233,7 @@ describe('resolveRieWrap', () => {
     expect(h.warns).toHaveLength(2);
     expect(h.warns[0]).toMatch(/ENTRYPOINT \/ CMD of image gone/);
     expect(h.warns[1]).toMatch(/ENTRYPOINT \/ CMD of image other/);
-    expect(verbs()).not.toContain('create --platform');
+    expect(verbs()).not.toContain('create --name');
   });
 
   it('an inspect failure does not use up the binary-failure warning', async () => {
@@ -246,7 +256,7 @@ describe('ensureRieBinary', () => {
     expect(path).toBe(cached('linux/arm64'));
     expect(h.docker.mock.calls.map((c) => c[0])).toEqual([
       ['pull', '--platform', 'linux/arm64', RIE_SOURCE_IMAGE],
-      ['create', '--platform', 'linux/arm64', RIE_SOURCE_IMAGE],
+      ['create', '--name', expect.stringMatching(/^cdkl-rie-extract-\d+-[0-9a-f]{8}$/), '--platform', 'linux/arm64', RIE_SOURCE_IMAGE],
       ['cp', 'cid123:/usr/local/bin/aws-lambda-rie', expect.any(String)],
       ['rm', '-f', 'cid123'],
     ]);
@@ -259,7 +269,7 @@ describe('ensureRieBinary', () => {
   it('--no-pull skips the pull and forbids docker create from pulling', async () => {
     await ensureRieBinary('linux/amd64', true);
     expect(h.docker.mock.calls.map((c) => c[0])).toEqual([
-      ['create', '--pull', 'never', '--platform', 'linux/amd64', RIE_SOURCE_IMAGE],
+      ['create', '--name', expect.any(String), '--pull', 'never', '--platform', 'linux/amd64', RIE_SOURCE_IMAGE],
       ['cp', 'cid123:/usr/local/bin/aws-lambda-rie', expect.any(String)],
       ['rm', '-f', 'cid123'],
     ]);
@@ -276,7 +286,7 @@ describe('ensureRieBinary', () => {
     mkdirSync(dirname(cached('linux/amd64')), { recursive: true });
     writeFileSync(cached('linux/amd64'), fakeElf(EM_AARCH64));
     await ensureRieBinary('linux/amd64', false);
-    expect(verbs()).toContain('create --platform');
+    expect(verbs()).toContain('create --name');
     expect(readFileSync(cached('linux/amd64')).readUInt16LE(18)).toBe(EM_X86_64);
   });
 
@@ -306,7 +316,7 @@ describe('ensureRieBinary', () => {
     mkdirSync(dirname(cached('linux/amd64')), { recursive: true });
     symlinkSync(hostElf, cached('linux/amd64'));
     await ensureRieBinary('linux/amd64', false);
-    expect(verbs()).toContain('create --platform');
+    expect(verbs()).toContain('create --name');
     expect(statSync(cached('linux/amd64')).isFile()).toBe(true);
   });
 
@@ -322,13 +332,54 @@ describe('ensureRieBinary', () => {
       ensureRieBinary('linux/amd64', false),
       ensureRieBinary('linux/amd64', false),
     ]);
-    expect(verbs().filter((v) => v === 'create --platform')).toHaveLength(1);
+    expect(verbs().filter((v) => v === 'create --name')).toHaveLength(1);
   });
 
   it('retries after a failed extraction instead of memoizing the failure', async () => {
     h.docker.mockRejectedValueOnce(Object.assign(new Error('offline'), { exitCode: 1 }));
     await expect(ensureRieBinary('linux/amd64', false)).rejects.toThrow(/docker pull failed/);
     await expect(ensureRieBinary('linux/amd64', false)).resolves.toBe(cached('linux/amd64'));
+  });
+
+  it("refuses a cache path containing ':' (docker -v cannot mount it) before any docker call", async () => {
+    process.env['XDG_CACHE_HOME'] = join(cacheHome, 'a:b');
+    await expect(ensureRieBinary('linux/amd64', false)).rejects.toThrow(/contains ':'/);
+    expect(verbs()).toEqual([]);
+  });
+
+  it('creates no container when no cache directory can be determined', async () => {
+    process.env['XDG_CACHE_HOME'] = 'relative';
+    const savedHome = process.env['HOME'];
+    process.env['HOME'] = '';
+    try {
+      await expect(ensureRieBinary('linux/amd64', false)).rejects.toThrow(/no cache directory/);
+    } finally {
+      if (savedHome === undefined) delete process.env['HOME'];
+      else process.env['HOME'] = savedHome;
+    }
+    expect(verbs()).toEqual([]);
+  });
+
+  it('a failed --no-pull create names the fix, and leaves no temp file', async () => {
+    h.docker.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'create') throw Object.assign(new Error('No such image'), { exitCode: 1 });
+      return { stdout: '', stderr: '' };
+    });
+    await expect(ensureRieBinary('linux/amd64', true)).rejects.toThrow(
+      /docker create failed: No such image \(--no-pull: pull public\.ecr\.aws\/lambda\/provided:al2023 once/
+    );
+    expect(readdirSync(dirname(cached('linux/amd64')))).toEqual([]);
+  });
+
+  it('a failed docker cp still removes the created container', async () => {
+    h.docker.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'create') return { stdout: 'cid123\n', stderr: '' };
+      if (args[0] === 'cp') throw Object.assign(new Error('no such file'), { exitCode: 1 });
+      return { stdout: '', stderr: '' };
+    });
+    await expect(ensureRieBinary('linux/amd64', false)).rejects.toThrow(/docker cp failed/);
+    expect(h.docker.mock.calls.map((c) => c[0]).at(-1)).toEqual(['rm', '-f', 'cid123']);
+    expect(readdirSync(dirname(cached('linux/amd64')))).toEqual([]);
   });
 
   it('refuses an unknown platform', async () => {
@@ -342,8 +393,12 @@ describe('rieCacheDirectory', () => {
     expect(rieCacheDirectory({ XDG_CACHE_HOME: 'relative' })).not.toMatch(/^relative/);
   });
 
-  it("follows an embedding host's productName", () => {
+  it("follows an embedding host's productName, kept to one plain path segment", () => {
     setEmbedConfig({ productName: 'host' });
     expect(rieCacheDirectory({ XDG_CACHE_HOME: '/x/cache' })).toBe('/x/cache/host/lambda-rie');
+    setEmbedConfig({ productName: 'My Host/../x' });
+    expect(rieCacheDirectory({ XDG_CACHE_HOME: '/x/cache' })).toBe('/x/cache/My-Host-..-x/lambda-rie');
+    setEmbedConfig({ productName: '..' });
+    expect(rieCacheDirectory({ XDG_CACHE_HOME: '/x/cache' })).toBe('/x/cache/-/lambda-rie');
   });
 });

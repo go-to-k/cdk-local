@@ -95,7 +95,7 @@ describe('buildContainerSpec IMAGE branch runs the image under a mounted RIE (#8
 
   beforeEach(() => {
     parseMock.mockReset().mockReturnValue({ accountId: '111111111111', region: 'us-east-1' });
-    pullMock.mockReset().mockResolvedValue(ecrUri);
+    pullMock.mockReset().mockResolvedValue('local/pulled:tag');
     rieWrapMock.mockReset();
   });
 
@@ -104,7 +104,7 @@ describe('buildContainerSpec IMAGE branch runs the image under a mounted RIE (#8
     rieWrapMock.mockResolvedValue({ mount, entryPoint: [RIE], cmd: ['/custom', '-x', 'h'] });
     const spec = await build();
     expect(rieWrapMock).toHaveBeenCalledWith({
-      image: ecrUri,
+      image: 'local/pulled:tag',
       platform: 'linux/amd64',
       entryPoint: ['/custom', '-x'],
       command: ['h'],

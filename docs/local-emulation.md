@@ -476,13 +476,16 @@ with a hint at the flag).
 `ImageConfig.Command` replaces the image's own `CMD` and
 `ImageConfig.EntryPoint` its own `ENTRYPOINT`; a field you leave out keeps
 the image's value. `ImageConfig.WorkingDirectory` becomes `--workdir`.
+(When the Runtime Interface Emulator below cannot be mounted, an
+`ImageConfig.EntryPoint` becomes `--entrypoint`, and docker then drops the
+image's own `CMD` unless `ImageConfig.Command` is set.)
 
 #### Images without the Runtime Interface Emulator
 
 cdk-local invokes the function through the AWS Lambda Runtime Interface
 Emulator (RIE) on port 8080. The AWS Lambda base images ship one, but an
-image on any other base, such as distroless or Alpine with a Lambda runtime
-client, does not. So cdk-local runs every container-image Lambda under an
+image on any other base, such as one carrying only a Lambda runtime client,
+does not. So cdk-local runs every container-image Lambda under an
 RIE of its own, on `invoke`, `start-api`, and the Lambda targets of
 `start-alb` and `start-cloudfront`, as `sam local` does:
 
@@ -491,8 +494,8 @@ RIE of its own, on `invoke`, `start-api`, and the Lambda targets of
 - It hands the RIE the image's `ENTRYPOINT` followed by its `CMD`, each
   replaced by its `ImageConfig` field when set, as the program to run. An AWS
   base image's `/lambda-entrypoint.sh` then starts the runtime directly.
-- It leaves an image alone whose program already is an RIE: the first word
-  of that `ENTRYPOINT` + `CMD` is named `aws-lambda-rie` or starts with it.
+- It leaves an image alone whose program already runs an RIE: a word of that
+  `ENTRYPOINT` + `CMD` is named `aws-lambda-rie` or starts with it.
 
 An image whose entrypoint is a script that always starts its own RIE cannot
 be recognised, and its emulator then fails to bind port 8080. Start the RIE
@@ -506,7 +509,7 @@ Later runs reuse the copy; delete that directory to fetch a fresh one. Under
 `--no-pull`, the copy comes from a local `provided:al2023` image only.
 
 When cdk-local cannot get the RIE, for example offline with nothing cached,
-it warns once and runs the image as built. An AWS base image still works
+it warns once per architecture and runs the image as built. An AWS base image still works
 then.
 
 An invoke that a server other than the RIE answers, with HTTP 404 or 405,
