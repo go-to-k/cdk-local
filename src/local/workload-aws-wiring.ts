@@ -32,9 +32,9 @@
 import {
   mkdtempSync,
   readFileSync,
+  lstatSync,
   readdirSync,
   rmSync,
-  statSync,
   writeFileSync,
   existsSync,
 } from 'node:fs';
@@ -620,7 +620,8 @@ export function sweepStaleResignDirs(now: number = Date.now(), dir: string = tmp
     if (!name.startsWith(prefix)) continue;
     const full = path.join(dir, name);
     try {
-      const st = statSync(full);
+      // lstat: a symlink planted under the prefix is skipped, never followed.
+      const st = lstatSync(full);
       if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) continue;
       if (now - st.mtimeMs < STALE_RESIGN_DIR_AGE_MS) continue;
       const pid = Number(readFileSync(path.join(full, 'owner.pid'), 'utf8').trim());
