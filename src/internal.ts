@@ -1302,8 +1302,9 @@ export {
  * non-empty — or, so a workload that calls AWS at once cannot race the
  * forwarder, start an owning forwarder FIRST
  * (`buildNamespaceOwnerForwarderDockerArgs` + `awaitLoopbackForwarderStatus`)
- * and the workload with `--network container:<forwarder>`. The env var is `awsEmulatorEnvName()` (`<envPrefix>_AWS_EMULATOR`;
- * `CDK_LOCAL_AWS_EMULATOR` standalone).
+ * and the workload with `--network container:<forwarder>`. The env var is
+ * `awsEmulatorEnvName()` (`<envPrefix>_AWS_EMULATOR`; `CDK_LOCAL_AWS_EMULATOR`
+ * standalone).
  */
 export {
   AUTH_OFF_PLACEHOLDER_CREDENTIALS,
@@ -1344,7 +1345,6 @@ export {
   buildLoopbackForwarderDockerArgs,
   buildNamespaceOwnerForwarderDockerArgs,
   awaitLoopbackForwarderStatus,
-  newLoopbackForwarderName,
   ensureForwarderImage,
   describeForwarderFailure,
   startLoopbackForwarder,
