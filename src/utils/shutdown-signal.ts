@@ -43,16 +43,16 @@ export function signalExitCode(signal: StopSignal): number {
  * `exitCode` is only for a non-signal trigger (an `uncaughtException` exits 1);
  * a stop signal always exits with its own {@link signalExitCode}.
  */
-export type ShutdownSignalHandler = (
-  signal: StopSignal | 'uncaughtException' | 'unhandledRejection',
-  exitCode?: number
-) => void;
+export interface ShutdownSignalHandler {
+  (signal: StopSignal): void;
+  (signal: 'uncaughtException' | 'unhandledRejection', exitCode: number): void;
+}
 
 export function createShutdownSignalHandler(options: ShutdownSignalOptions): ShutdownSignalHandler {
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const writeStderr = options.writeStderr ?? ((text: string) => void process.stderr.write(text));
   let count = 0;
-  return (signal, exitCode) => {
+  const handler = (signal: string, exitCode?: number): void => {
     const code = exitCode ?? signalExitCode(signal === 'SIGINT' ? 'SIGINT' : 'SIGTERM');
     count += 1;
     if (count === 1) {
@@ -72,4 +72,5 @@ export function createShutdownSignalHandler(options: ShutdownSignalOptions): Shu
     );
     exit(code);
   };
+  return handler as ShutdownSignalHandler;
 }

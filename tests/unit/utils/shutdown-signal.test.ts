@@ -81,4 +81,14 @@ describe('createShutdownSignalHandler', () => {
       expect(s.exit).toHaveBeenCalledWith(code);
     }
   });
+
+  it('a non-signal trigger must pass its exit code (type-level)', () => {
+    const s = setup();
+    s.handler('uncaughtException', 1);
+    // @ts-expect-error a non-signal trigger without an exit code must not compile
+    s.handler('unhandledRejection');
+    // @ts-expect-error a stop signal takes no exit code
+    s.handler('SIGINT', 1);
+    expect(s.cleanup).toHaveBeenCalledTimes(1);
+  });
 });
