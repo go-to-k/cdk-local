@@ -82,8 +82,25 @@ docker run -d --rm --name "${ORPHAN_NET}-metadata" --network "${ORPHAN_NET}" \
   --ip 169.254.171.2 "${SIDECAR_IMAGE}" >/dev/null
 echo "    orphan ${ORPHAN_NET} owns 169.254.171.0/24 (only its metadata sidecar attached)"
 
-echo "==> Booting service (DesiredCount=2)"
-${CDKL} start-service CdkLocalStartServiceFixture:WebService \
+# Issue #889 — count running task containers (not the metadata sidecar, which
+# holds the same chain) whose env carries the fake default-chain key this run
+# booted with (no credential flag). Other lanes' containers never carry it.
+# Unique per run, so a concurrent run of this fixture never matches.
+FAKE_CHAIN_KEY="FAKEINTEGKEY0889X$$"
+count_default_chain_containers() {
+  local n=0 id
+  for id in $(docker ps --filter "name=cdkl-" --filter "ancestor=${BUSYBOX_IMAGE}" --format '{{.ID}}'); do
+    if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${id}" 2>/dev/null \
+      | grep -qx "AWS_ACCESS_KEY_ID=${FAKE_CHAIN_KEY}"; then
+      n=$((n + 1))
+    fi
+  done
+  echo "${n}"
+}
+
+echo "==> Booting service (DesiredCount=2) with no credential flag and a fake default chain"
+env -u AWS_PROFILE -u AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID="${FAKE_CHAIN_KEY}" AWS_SECRET_ACCESS_KEY=integ-fake-secret-889 \
+  ${CDKL} start-service CdkLocalStartServiceFixture:WebService \
   --no-pull --container-host 127.0.0.1 \
   > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!
@@ -142,6 +159,17 @@ if [[ "${WEB_COUNT}" -lt 2 ]]; then
   exit 1
 fi
 echo "    OK: ${WEB_COUNT} busybox web containers running"
+
+echo "==> Asserting both replicas got the host default chain as env (issue #889)"
+CHAIN_COUNT=$(count_default_chain_containers)
+if [[ "${CHAIN_COUNT}" -lt 2 ]]; then
+  echo "FAIL: expected 2 replica containers with the default-chain key, found ${CHAIN_COUNT}"
+  exit 1
+fi
+if grep -qF 'integ-fake-secret-889' "${OUT_FILE}"; then
+  echo "FAIL: the secret key reached the run output"; exit 1
+fi
+echo "    OK: ${CHAIN_COUNT} replica containers carry the default-chain key"
 
 echo "==> Asserting one shared docker network (design § 5 Option A, cdkd PR #522)"
 # Post-#522 every replica in a single CLI invocation joins ONE shared
