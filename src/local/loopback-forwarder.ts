@@ -110,6 +110,8 @@ export interface StartLoopbackForwarderOptions {
   caHostPath?: string;
   /** How long to wait for the result line. Default 20 s. */
   timeoutMs?: number;
+  /** The forwarder container's name (default: {@link newLoopbackForwarderName}). */
+  name?: string;
 }
 
 /** Parse one forwarder status line. Exported for unit tests. */
@@ -197,6 +199,11 @@ export function resetLoopbackForwarderForTest(): void {
   pullFailure = undefined;
 }
 
+/** A fresh forwarder container name: `<prefix>-awsfwd-<pid>-<random>`. */
+export function newLoopbackForwarderName(): string {
+  return `${getEmbedConfig().resourceNamePrefix}-awsfwd-${process.pid}-${randomBytes(4).toString('hex')}`;
+}
+
 /**
  * Start a forwarder in `workloadContainer`'s network + PID namespaces and wait
  * until it reports READY or FAIL. Resolves with the result either way (the
@@ -212,7 +219,7 @@ export async function startLoopbackForwarder(
 ): Promise<LoopbackForwarderResult> {
   const logger = getLogger().child('forwarder');
   await ensureForwarderImage();
-  const name = `${getEmbedConfig().resourceNamePrefix}-awsfwd-${process.pid}-${randomBytes(4).toString('hex')}`;
+  const name = opts.name ?? newLoopbackForwarderName();
   const args = buildLoopbackForwarderDockerArgs({ ...opts, name });
   logger.debug(`Starting loopback forwarder ${name} for ports ${opts.ports.join(',')}`);
   try {

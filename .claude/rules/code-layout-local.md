@@ -73,7 +73,13 @@ a log line, and a served HTTP response body.
 - The endpoint override for cdk-local's own clients lives in the
   `buildProxyClientConfig` seam (`setAwsEndpointOverride`), so the client
   audit keeps covering it. The forwarder joins the workload's network AND
-  pid namespaces: it dies with the workload, so it has no cleanup path.
+  pid namespaces: it dies with the workload, so it has no cleanup path. The
+  one exception is a SIGINT / SIGTERM during its readiness wait, before
+  `runDetached` has handed the workload id to its caller:
+  `attachLoopbackForwarder` then removes both synchronously.
+- `cdkl studio` activates the wiring for its own AWS calls and forwards
+  `--aws-emulator <url>` / `--ca-bundle <abs path>` through
+  `buildSharedChildArgs`.
 
 ## AgentCore
 

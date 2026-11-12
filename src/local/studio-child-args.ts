@@ -47,6 +47,14 @@ export interface SharedChildConfig {
    * flag), so a value-only flag threads cleanly to all of them.
    */
   assumeRole?: string;
+  /**
+   * `--aws-emulator <url>`: the emulator URL studio resolved (from its flag or
+   * the env var). Forwarded with its value, so a bare flag never swallows the
+   * next argument.
+   */
+  awsEmulator?: string;
+  /** `--ca-bundle <file>`, as an absolute path. */
+  caBundle?: string;
 }
 
 /** Per-call knobs for {@link buildSharedChildArgs}. */
@@ -75,7 +83,7 @@ export interface BuildSharedChildArgsOptions {
 
 /**
  * Build the shared `--app` / `--profile` / `--region` / `-c` /
- * `--from-cfn-stack` / `--assume-role` args for a studio child command.
+ * `--aws-emulator` / `--ca-bundle` / `--from-cfn-stack` / `--assume-role` args for a studio child command.
  * Returns a flat argv fragment to spread after the subcommand + target.
  *
  * When `opts.preferAssembly` is true and `config.assemblyDir` is set, the
@@ -97,6 +105,9 @@ export function buildSharedChildArgs(
   for (const [k, v] of Object.entries(config.context ?? {})) {
     args.push('-c', `${k}=${v}`);
   }
+  // Every child command declares `--aws-emulator` / `--ca-bundle`.
+  if (config.awsEmulator) args.push('--aws-emulator', config.awsEmulator);
+  if (config.caBundle) args.push('--ca-bundle', config.caBundle);
   // `--from-cfn-stack` / `--assume-role` bind a child to deployed state / an
   // IAM role. A kind whose child command does not declare them (cloudfront —
   // issue #367) opts out so Commander does not reject the spawn.

@@ -51,6 +51,18 @@ describe('buildSharedChildArgs', () => {
     ]);
   });
 
+  it('forwards --aws-emulator with its URL and --ca-bundle with its path', () => {
+    expect(
+      buildSharedChildArgs({ awsEmulator: 'https://127.0.0.1:9297', caBundle: '/abs/ca.pem' })
+    ).toEqual(['--aws-emulator', 'https://127.0.0.1:9297', '--ca-bundle', '/abs/ca.pem']);
+  });
+
+  it('keeps --aws-emulator / --ca-bundle under omitStateBindings (every child declares them)', () => {
+    expect(
+      buildSharedChildArgs({ awsEmulator: 'https://127.0.0.1:9297' }, { omitStateBindings: true })
+    ).toEqual(['--aws-emulator', 'https://127.0.0.1:9297']);
+  });
+
   it('omits --assume-role for an empty string', () => {
     expect(buildSharedChildArgs({ assumeRole: '' })).toEqual([]);
   });

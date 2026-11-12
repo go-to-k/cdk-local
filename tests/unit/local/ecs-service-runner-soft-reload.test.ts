@@ -82,6 +82,37 @@ vi.mock('../../../src/local/ecs-task-runner.js', () => ({
   },
 }));
 
+// The production `docker start` step (used only by the forwarder-restart
+// test, which drops the start test hook): `docker start` is answered here,
+// everything else goes to the real module. The loopback forwarder attach is
+// recorded in `hoisted.ops` so its order against the LISTEN probe is visible.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    execFile: ((cmd: string, args: readonly string[], ...rest: unknown[]) => {
+      if (args[0] === 'start') {
+        hoisted.ops.push(`docker start ${args[1]}`);
+        const cb = rest[rest.length - 1] as (e: Error | null, r: { stdout: string; stderr: string }) => void;
+        cb(null, { stdout: '', stderr: '' });
+        return undefined;
+      }
+      // Nothing else here may reach a real docker; fail loudly if a new path does.
+      throw new Error(`unexpected execFile in soft-reload test: ${cmd} ${args.join(' ')}`);
+    }) as typeof actual.execFile,
+  };
+});
+
+vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/docker-runner.js')>();
+  return {
+    ...actual,
+    attachLoopbackForwarder: async (id: string) => {
+      hoisted.ops.push(`forwarder ${id}`);
+    },
+  };
+});
+
 vi.mock('../../../src/local/docker-inspect.js', () => ({
   // Container-ID-aware so a soft-reload's re-publish (which inspects
   // the SAME container ID after `docker restart`) gets the SAME IP it
@@ -120,6 +151,9 @@ const {
   __setReloadDrainMs,
   SOFT_RELOAD_COMPLETION_LOG_SUFFIX,
 } = await import('../../../src/local/ecs-service-runner.js');
+const { setActiveWorkloadAwsWiring, resetWorkloadAwsWiringForTest } = await import(
+  '../../../src/local/workload-aws-wiring.js'
+);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function fakeService(): any {
@@ -307,6 +341,69 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     // Flag cleared on the way out.
     expect(r0.softReloadInProgress).toBe(false);
 
+    await controller.shutdown();
+  });
+
+  it('restarts the loopback forwarder after docker start, before the LISTEN probe (production start step)', async () => {
+    // `docker stop` ends the forwarder (it shares the container's pid
+    // namespace), so the production start step must start a fresh one.
+    __setDockerStartImpl(undefined);
+    setActiveWorkloadAwsWiring({
+      mode: 'emulator',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [9297],
+      probeHealth: true,
+      dispose: () => undefined,
+    });
+    try {
+      const pool = new FrontDoorEndpointPool();
+      const registry = new CloudMapRegistry();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const opts = fakeOptions(pool, registry) as any;
+      const controller = await startEcsService(fakeService(), opts, createServiceRunState());
+      const cid = controller.runState.replicas[0]!.state.startedContainers[0]!.id;
+
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+
+      const steps = hoisted.ops.filter((o) => /^(stop|docker start|forwarder|listen) /.test(o));
+      // (The LISTEN probe may repeat; the order up to its first run is what matters.)
+      expect(steps.slice(0, 4)).toEqual([
+        `stop ${cid}`,
+        `docker start ${cid}`,
+        `forwarder ${cid}`,
+        `listen ${cid}`,
+      ]);
+      expect(steps.filter((o) => o.startsWith('forwarder '))).toEqual([`forwarder ${cid}`]);
+      await controller.shutdown();
+    } finally {
+      resetWorkloadAwsWiringForTest();
+    }
+  });
+
+  it('starts no forwarder after docker start when no wiring is active', async () => {
+    __setDockerStartImpl(undefined);
+    resetWorkloadAwsWiringForTest();
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeService(), opts, createServiceRunState());
+    const cid = controller.runState.replicas[0]!.state.startedContainers[0]!.id;
+    await softReloadReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: fakeService(),
+      sourceDirToCopy: '/tmp/cdk.out/asset.h',
+    });
+    expect(hoisted.ops).toContain(`docker start ${cid}`);
+    expect(hoisted.ops.some((o) => o.startsWith('forwarder '))).toBe(false);
     await controller.shutdown();
   });
 

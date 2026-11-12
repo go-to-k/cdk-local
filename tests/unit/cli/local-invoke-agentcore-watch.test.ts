@@ -56,6 +56,17 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
+// The loopback forwarder restart after a soft reload's `docker restart`:
+// record the attach in the same call log as the docker steps.
+const { attachMock } = vi.hoisted(() => ({ attachMock: vi.fn() }));
+vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/local/docker-runner.js')>()),
+  attachLoopbackForwarder: async (id: string, wiring: unknown) => {
+    execFileMock('forwarder', [id]);
+    return attachMock(id, wiring);
+  },
+}));
+
 import {
   addInvokeAgentCoreSpecificOptions,
   createLocalInvokeAgentCoreCommand,
@@ -63,6 +74,11 @@ import {
   softReloadAgentContainer,
   wrapWsOnMessage,
 } from '../../../src/cli/commands/local-invoke-agentcore.js';
+import {
+  resetWorkloadAwsWiringForTest,
+  setActiveWorkloadAwsWiring,
+  type WorkloadAwsWiring,
+} from '../../../src/local/workload-aws-wiring.js';
 import type { ResolvedAgentCoreRuntime } from '../../../src/local/agentcore-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { FileWatcher } from '../../../src/local/file-watcher.js';
@@ -455,6 +471,48 @@ describe('runAgentCoreWatchLoop — classifier dispatch (soft-reload vs rebuild)
 describe('softReloadAgentContainer — docker cp + docker restart wiring', () => {
   beforeEach(() => {
     execFileMock.mockReset();
+    attachMock.mockReset();
+    resetWorkloadAwsWiringForTest();
+  });
+
+  const wiring: WorkloadAwsWiring = {
+    mode: 'emulator',
+    env: {},
+    scrubEnvKeys: [],
+    mounts: [],
+    loopbackPorts: [9297],
+    probeHealth: true,
+    dispose: () => undefined,
+  };
+
+  it('restarts the loopback forwarder after docker restart when a wiring is active', async () => {
+    execFileMock.mockImplementation((_cmd: string, argv: string[]) =>
+      argv[0] === 'inspect' ? '/srv/app\n' : ''
+    );
+    setActiveWorkloadAwsWiring(wiring);
+    try {
+      await softReloadAgentContainer('cidFwd', '/cdk.out/asset.HASH');
+    } finally {
+      resetWorkloadAwsWiringForTest();
+    }
+    const steps = execFileMock.mock.calls.map((c) => `${c[0] === 'forwarder' ? 'forwarder' : (c[1] as string[])[0]}`);
+    expect(steps).toEqual(['inspect', 'cp', 'restart', 'forwarder']);
+    expect(attachMock).toHaveBeenCalledWith('cidFwd', wiring);
+  });
+
+  it('a forwarder failure after the restart keeps its own message (not "docker restart failed")', async () => {
+    execFileMock.mockImplementation((_cmd: string, argv: string[]) =>
+      argv[0] === 'inspect' ? '/srv/app\n' : ''
+    );
+    attachMock.mockRejectedValue(new Error('--aws-emulator https://127.0.0.1:9297: containers cannot reach port 9297'));
+    setActiveWorkloadAwsWiring(wiring);
+    try {
+      const err = await softReloadAgentContainer('cidFwd', '/src').catch((e: unknown) => e);
+      expect((err as Error).message).toMatch(/containers cannot reach port 9297/);
+      expect((err as Error).message).not.toMatch(/docker restart/);
+    } finally {
+      resetWorkloadAwsWiringForTest();
+    }
   });
 
   it('inspects WORKDIR, then docker cp <src>/. <id>:<workdir>/, then docker restart <id>', async () => {

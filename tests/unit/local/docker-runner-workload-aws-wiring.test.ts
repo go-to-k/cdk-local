@@ -94,6 +94,28 @@ describe('withWorkloadAwsWiring', () => {
     expect(defaultChainMock).not.toHaveBeenCalled();
   });
 
+  it("emulator: appends the Java trust store to the function's JAVA_TOOL_OPTIONS and mounts it read-only", async () => {
+    const out = await withWorkloadAwsWiring(
+      { ...baseRun, env: { JAVA_TOOL_OPTIONS: '-Xmx256m' } },
+      emulatorWiring({
+        env: {
+          AWS_ENDPOINT_URL: 'https://127.0.0.1:9297',
+          JAVA_TOOL_OPTIONS:
+            '-Djavax.net.ssl.trustStore=/cdk-local-aws/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12',
+        },
+        mounts: [{ hostPath: '/tmp/ts/truststore.p12', containerPath: '/cdk-local-aws/truststore.p12' }],
+      })
+    );
+    expect(out.env['JAVA_TOOL_OPTIONS']).toBe(
+      '-Xmx256m -Djavax.net.ssl.trustStore=/cdk-local-aws/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12'
+    );
+    expect(out.extraMounts).toContainEqual({
+      hostPath: '/tmp/ts/truststore.p12',
+      containerPath: '/cdk-local-aws/truststore.p12',
+      readOnly: true,
+    });
+  });
+
   it('forward: keeps the profile mount and fills default-chain credentials only when absent', async () => {
     defaultChainMock.mockResolvedValue({ accessKeyId: 'CHAINKEY', secretAccessKey: 'chainsecret' });
     const forward = emulatorWiring({ mode: 'forward', scrubEnvKeys: [], loopbackPorts: [] });

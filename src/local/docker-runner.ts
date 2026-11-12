@@ -1,6 +1,6 @@
 import { flattenToOneLine } from './credential-error.js';
 import { redactDockerArgvValues, describeExitWithoutArgv } from '../utils/docker-argv-redaction.js';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
@@ -22,6 +22,7 @@ import { getEmbedConfig } from './embed-config.js';
 import {
   describeForwarderFailure,
   ensureForwarderImage,
+  newLoopbackForwarderName,
   startLoopbackForwarder,
 } from './loopback-forwarder.js';
 import {
@@ -363,6 +364,62 @@ async function isContainerRunning(containerId: string): Promise<boolean> {
   }
 }
 
+/** Containers {@link removeOnSignalWhile} removes on a signal, with their claim counts. */
+const signalGuarded = new Map<string, number>();
+let signalListeners: { signal: 'SIGINT' | 'SIGTERM'; listener: () => void }[] = [];
+
+/**
+ * Run `fn` with SIGINT / SIGTERM listeners that remove `containers`
+ * synchronously. The forwarder's readiness wait can take seconds, and
+ * {@link runDetached} has not handed the workload's id to its caller yet, so
+ * the caller's own signal cleanup cannot know it; without this, Ctrl-C there
+ * leaves the workload running. A synchronous `docker rm -f` finishes before
+ * any other listener's async shutdown can exit the process. When no other
+ * listener exists, Node's default (exit on the signal) is kept: exit 130 / 143.
+ */
+async function removeOnSignalWhile<T>(
+  containers: readonly string[],
+  fn: () => Promise<T>
+): Promise<T> {
+  // One listener per signal for the whole process, shared by every attach in
+  // flight (`start-api --warm` attaches several at once): each would otherwise
+  // see the others and decide someone else exits.
+  if (signalListeners.length === 0) {
+    signalListeners = (['SIGINT', 'SIGTERM'] as const).map((signal) => {
+      const listener = (): void => {
+        const names = [...signalGuarded.keys()];
+        if (names.length > 0) {
+          try {
+            execFileSync(getDockerCmd(), ['rm', '-f', ...names], {
+              stdio: 'ignore',
+              timeout: 15_000,
+            });
+          } catch {
+            // Best effort: a container already gone makes `rm -f` exit non-zero.
+          }
+        }
+        if (process.listenerCount(signal) === 1) process.exit(signal === 'SIGINT' ? 130 : 143);
+      };
+      process.on(signal, listener);
+      return { signal, listener };
+    });
+  }
+  for (const c of containers) signalGuarded.set(c, (signalGuarded.get(c) ?? 0) + 1);
+  try {
+    return await fn();
+  } finally {
+    for (const c of containers) {
+      const n = (signalGuarded.get(c) ?? 1) - 1;
+      if (n > 0) signalGuarded.set(c, n);
+      else signalGuarded.delete(c);
+    }
+    if (signalGuarded.size === 0) {
+      for (const { signal, listener } of signalListeners) process.off(signal, listener);
+      signalListeners = [];
+    }
+  }
+}
+
 /** Ports each workload's forwarder serves, so a restart re-attaches the same set. */
 const forwardedPortsByContainer = new Map<string, readonly number[]>();
 
@@ -387,14 +444,18 @@ export async function attachLoopbackForwarder(
     wiring.mode === 'emulator'
       ? `--aws-emulator ${wiring.emulatorEndpoint?.url ?? ''}`
       : 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
+  const forwarderName = newLoopbackForwarderName();
   let result;
   try {
-    result = await startLoopbackForwarder({
-      workloadContainer: containerId,
-      ports,
-      probe: wiring.probeHealth ? 'health' : 'tcp',
-      ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
-    });
+    result = await removeOnSignalWhile([containerId, forwarderName], () =>
+      startLoopbackForwarder({
+        workloadContainer: containerId,
+        ports,
+        probe: wiring.probeHealth ? 'health' : 'tcp',
+        name: forwarderName,
+        ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
+      })
+    );
   } catch (err) {
     // Joining a container that already exited fails; it needs no forwarder.
     if (!(await isContainerRunning(containerId))) return;

@@ -2401,10 +2401,6 @@ export async function softReloadAgentContainer(
   }
   try {
     await execFileAsync(dockerCmd, ['restart', containerId]);
-    // The restart ended the loopback forwarder (it shares the container's pid
-    // namespace); start a fresh one.
-    const wiring = getActiveWorkloadAwsWiring();
-    if (wiring) await attachLoopbackForwarder(containerId, wiring);
   } catch (err) {
     throw new CdkLocalError(
       `softReloadAgentContainer: docker restart of '${containerId}' failed: ` +
@@ -2412,6 +2408,11 @@ export async function softReloadAgentContainer(
       'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_RESTART_FAILED'
     );
   }
+  // The restart ended the loopback forwarder (it shares the container's pid
+  // namespace); start a fresh one. Outside the restart's try: a forwarder
+  // failure carries its own actionable message, not "docker restart failed".
+  const wiring = getActiveWorkloadAwsWiring();
+  if (wiring) await attachLoopbackForwarder(containerId, wiring);
 }
 
 /**

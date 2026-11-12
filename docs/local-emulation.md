@@ -137,7 +137,8 @@ Shared across all subcommands:
 Every command that starts a workload container (`invoke`, `start-api`,
 `run-task`, `start-service`, `start-alb`, `start-web-function`,
 `start-microvm`, `start-cloudfront`, `invoke-agentcore`,
-`start-agentcore`) applies the same rules to it:
+`start-agentcore`) applies the same rules to it. `cdkl studio` takes the
+same two flags and forwards them to every command it starts:
 
 - **Endpoint overrides are forwarded.** `AWS_ENDPOINT_URL`, every
   `AWS_ENDPOINT_URL_<SERVICE>`, and the active profile's `endpoint_url`
@@ -151,7 +152,7 @@ Every command that starts a workload container (`invoke`, `start-api`,
   workload starts and the forwarder joins within moments of it; an app that
   calls AWS in its very first instant relies on its SDK's connection retry.
   The forwarder stops with the workload (and is restarted after a `--watch`
-  soft reload). When
+  soft reload); Ctrl-C while it is still starting removes both. When
   containers cannot reach the port, cdk-local warns with the fix. On Linux
   the endpoint must ALSO listen on the Docker bridge gateway: run AWS
   Emulator's Docker image with `-p 127.0.0.1:9297:9297 -p 172.17.0.1:9297:9297`
@@ -161,7 +162,11 @@ Every command that starts a workload container (`invoke`, `start-api`,
   `AWS_CA_BUNDLE`, else the profile's `ca_bundle`, is bind-mounted read-only
   at `/cdk-local-aws/ca-bundle.pem` (with the public root CAs appended), and
   `AWS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and
-  `SSL_CERT_FILE` point at it.
+  `SSL_CERT_FILE` point at it. The JVM reads none of these, so a Java
+  handler gets nothing from a PEM bundle: under `--aws-emulator` it gets
+  the emulator's trust store (below); for any other endpoint, put a trust
+  store in the function and set `JAVA_TOOL_OPTIONS` yourself (template
+  environment or `--env-vars`).
 - **Credentials default to your credential chain.** With no credential
   flag, a container gets what the host's default chain resolves
   (`AWS_PROFILE`, the shared credentials / config files, SSO). The
@@ -196,6 +201,13 @@ runs a command against a local AWS Emulator. The URL defaults to
   so a handler that misses the endpoint fails instead of reaching real AWS.
 - The run's `ca.pem` (or `--ca-bundle` / `AWS_CA_BUNDLE`) is mounted as
   above; certificate verification stays on.
+- For Java, when the URL is https and the run wrote a `truststore.p12`, a copy of it is mounted read-only at
+  `/cdk-local-aws/truststore.p12` and `JAVA_TOOL_OPTIONS` gets
+  `-Djavax.net.ssl.trustStore=/cdk-local-aws/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12`,
+  appended to the container's own `JAVA_TOOL_OPTIONS` (left alone when that
+  already names a trust store). As in AWS Emulator's own guidance, this
+  trust store replaces the JVM's default one, so the handler then reaches
+  the emulator but no other HTTPS host.
 - For a loopback URL, the forwarder repeats the health check through
   `127.0.0.1:<port>` inside the container network with that CA as each
   container starts; a failure stops the command with the fix instead of a
