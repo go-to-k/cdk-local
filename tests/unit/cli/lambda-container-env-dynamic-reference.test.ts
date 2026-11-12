@@ -358,7 +358,12 @@ describe('resolveLambdaContainerEnv — AWS Emulator mixed mode, per workload', 
       expect(result.env['FROM_PIPE']).toBe('yes');
     } finally {
       writer.kill();
-      empty?.kill();
+      // Reap it: the suite refuses a test file that leaves a child running.
+      if (empty && empty.exitCode === null && empty.signalCode === null) {
+        const exited = new Promise((r) => empty!.once('exit', r));
+        empty.kill();
+        await exited;
+      }
       resetEnvVarsFileTextsForTest();
     }
   });

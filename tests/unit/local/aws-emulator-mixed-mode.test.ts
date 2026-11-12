@@ -187,7 +187,12 @@ describe('pipe-backed --env-vars (FIFO)', () => {
       expect(readEnvVarsFileText(fifo)).toBe(body);
       expect(readAwsEmulatorEnvVarsFile(fifo).overrides).toEqual(JSON.parse(body));
     } finally {
-      empty?.kill();
+      // Reap it: the suite refuses a test file that leaves a child running.
+      if (empty && empty.exitCode === null && empty.signalCode === null) {
+        const exited = new Promise((r) => empty!.once('exit', r));
+        empty.kill();
+        await exited;
+      }
       resetEnvVarsFileTextsForTest();
       rmSync(dir, { recursive: true, force: true });
     }
