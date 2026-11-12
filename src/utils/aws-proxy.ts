@@ -420,6 +420,79 @@ export function getAwsEndpointOverride(): AwsEndpointOverride | undefined {
 }
 
 /**
+ * AWS Emulator mixed mode for cdk-local's OWN clients: the endpoint service
+ * ids (`AWS_ENDPOINT_URL_<ID>` suffixes, {@link normalizeAwsEndpointServiceId})
+ * an `--env-vars` sentinel routed to the emulator, and the emulator's
+ * endpoint, CA and keys. A client built for one of these services talks to the
+ * emulator directly from the host; every other client stays on real AWS with
+ * the real identity.
+ */
+export interface AwsEmulatorServiceRouting {
+  services: readonly string[];
+  override: AwsEndpointOverride;
+}
+
+let serviceRouting: { services: ReadonlySet<string>; override: AwsEndpointOverride } | undefined;
+
+/**
+ * The `AWS_ENDPOINT_URL_<ID>` form of an endpoint service id, as the AWS SDKs
+ * derive it from a client's `serviceId`: spaces become underscores, then
+ * uppercase (`Secrets Manager` -> `SECRETS_MANAGER`). Exact, like the SDKs: a
+ * spelling the SDK would not read (`SECRETSMANAGER`) routes nothing.
+ */
+export function normalizeAwsEndpointServiceId(serviceId: string): string {
+  return serviceId.trim().replace(/ /g, '_').toUpperCase();
+}
+
+/**
+ * Install (or clear, with `undefined`) the {@link AwsEmulatorServiceRouting}.
+ * `activateWorkloadAwsWiring` sets it in mixed mode and clears it otherwise.
+ */
+export function setAwsEmulatorServiceRouting(r: AwsEmulatorServiceRouting | undefined): void {
+  serviceRouting = r
+    ? { services: new Set(r.services.map(normalizeAwsEndpointServiceId)), override: r.override }
+    : undefined;
+}
+
+/** The active {@link AwsEmulatorServiceRouting}, if any. */
+export function getAwsEmulatorServiceRouting(): AwsEmulatorServiceRouting | undefined {
+  return serviceRouting
+    ? { services: [...serviceRouting.services].sort(), override: serviceRouting.override }
+    : undefined;
+}
+
+/**
+ * Whether a client for `serviceId` talks to AWS Emulator: always under a
+ * process-wide {@link AwsEndpointOverride} (`--aws-emulator` alone), and in
+ * mixed mode exactly when an `--env-vars` sentinel routed that service.
+ */
+export function isAwsServiceRoutedToEmulator(serviceId: string): boolean {
+  if (endpointOverride) return true;
+  return serviceRouting?.services.has(normalizeAwsEndpointServiceId(serviceId)) ?? false;
+}
+
+/**
+ * The client-config fragment for an AWS SDK client of `serviceId`
+ * (`SECRETS_MANAGER`, or the SDK's own `Secrets Manager`), spread FIRST in the
+ * client's config. Under `--aws-emulator` alone it points at the emulator; in
+ * mixed mode it points at the emulator (endpoint, CA, the emulator's keys) when
+ * a sentinel routed `serviceId`, and otherwise equals
+ * {@link buildProxyClientConfig}: real AWS, the proxy environment and the
+ * default credential chain. When the fragment carries `endpoint`, add no
+ * credentials of your own: the emulator's keys are its only identity.
+ *
+ * Host-side use case: a host CLI (cdkd) building its own clients next to
+ * cdk-local's — `--from-state` reads, secret and parameter lookups — makes the
+ * same per-service decision the workload's runtime calls get.
+ */
+export function awsClientConfigForService(
+  serviceId: string,
+  opts: { profile?: string | undefined } = {}
+): AwsProxyClientConfig {
+  return buildProxyClientConfig({ ...opts, service: serviceId });
+}
+
+/**
  * The client config for one {@link AwsEndpointOverride}, without installing
  * it process-wide: the endpoint, an https agent trusting its CA, and its
  * credentials.
@@ -508,14 +581,29 @@ export function buildProxyRequestHandler(): NodeHttpHandler {
  * FIRST and their credentials after, so the override wins while the
  * `requestHandler` stays.
  *
+ * `service` is the client's endpoint service id ({@link
+ * awsClientConfigForService}): in AWS Emulator mixed mode a routed service
+ * gets the emulator's fragment instead. Omit it only for a client that must
+ * stay on real AWS in mixed mode (identity: STS; deploy artifacts such as the
+ * ECR image, a fromS3 bundle or a layer; `--from-cfn-stack`'s real side;
+ * `start-cloudfront`, which reads its origins by their real names);
+ * `tests/unit/utils/own-aws-client-routing.test.ts` enumerates every client.
+ *
  * Host-side use case: a host CLI (e.g. cdkd) constructing its own AWS SDK
  * clients alongside cdk-local's spreads the same fragment so both honor the
  * same proxy environment with the same `NO_PROXY` semantics.
  */
 export function buildProxyClientConfig(
-  opts: { profile?: string | undefined } = {}
+  opts: { profile?: string | undefined; service?: string | undefined } = {}
 ): AwsProxyClientConfig {
   if (endpointOverride) return endpointOverrideClientConfig(endpointOverride);
+  if (
+    serviceRouting &&
+    opts.service !== undefined &&
+    serviceRouting.services.has(normalizeAwsEndpointServiceId(opts.service))
+  ) {
+    return endpointOverrideClientConfig(serviceRouting.override);
+  }
   if (!isProxyEnvConfigured()) return {};
   if (everySetProxyEnvValueIsUnspeakable()) {
     // Warn only for what a request would actually SELECT, by asking the ONE

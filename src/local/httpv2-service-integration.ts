@@ -143,32 +143,35 @@ async function getClient(service: string, region: string): Promise<unknown> {
   switch (service) {
     case 'sqs': {
       const mod = await import('@aws-sdk/client-sqs');
-      client = new mod.SQSClient({ ...workloadClientConfig(), region });
+      client = new mod.SQSClient({ ...workloadClientConfig({ service: 'SQS' }), region });
       break;
     }
     case 'sns': {
       const mod = await import('@aws-sdk/client-sns');
-      client = new mod.SNSClient({ ...workloadClientConfig(), region });
+      client = new mod.SNSClient({ ...workloadClientConfig({ service: 'SNS' }), region });
       break;
     }
     case 'eventbridge': {
       const mod = await import('@aws-sdk/client-eventbridge');
-      client = new mod.EventBridgeClient({ ...workloadClientConfig(), region });
+      client = new mod.EventBridgeClient({
+        ...workloadClientConfig({ service: 'EVENTBRIDGE' }),
+        region,
+      });
       break;
     }
     case 'kinesis': {
       const mod = await import('@aws-sdk/client-kinesis');
-      client = new mod.KinesisClient({ ...workloadClientConfig(), region });
+      client = new mod.KinesisClient({ ...workloadClientConfig({ service: 'KINESIS' }), region });
       break;
     }
     case 'sfn': {
       const mod = await import('@aws-sdk/client-sfn');
-      client = new mod.SFNClient({ ...workloadClientConfig(), region });
+      client = new mod.SFNClient({ ...workloadClientConfig({ service: 'SFN' }), region });
       break;
     }
     case 'ssm': {
       const mod = await import('@aws-sdk/client-ssm');
-      client = new mod.SSMClient({ ...workloadClientConfig(), region });
+      client = new mod.SSMClient({ ...workloadClientConfig({ service: 'SSM' }), region });
       break;
     }
     default:

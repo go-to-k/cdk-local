@@ -342,6 +342,19 @@ The rules:
   parts far smaller than that. Past the cap, the request fails with HTTP
   413 (`EntityTooLarge`) and a message that names the cap. A presigned URL
   that the handler fetches itself is re-signed too.
+- **cdk-local's own calls follow the same routes.** Values cdk-local reads
+  for a workload before it starts take the workload's route for their
+  service: a `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` /
+  `{{resolve:ssm-secure:...}}` reference, an ECS task's `Secrets`
+  (`ValueFrom`), an `AWS::SSM::Parameter::Value<...>` template parameter
+  under `--from-cfn-stack`, and an HTTP API's direct service integration
+  (SQS, SNS, EventBridge, Kinesis, Step Functions, SSM). With
+  `AWS_ENDPOINT_URL_SECRETS_MANAGER` routed, the secret comes from the
+  emulator (called from the host with the emulator's keys and CA, no
+  sidecar); otherwise from real AWS with your real credentials. These stay
+  on real AWS whatever you route: STS (your identity, `--assume-role` and the
+  account lookup), the deployed artifacts (the ECR image, a `fromS3` code
+  bundle, a layer ARN) and the stack read behind `--from-cfn-stack`.
 - **Names resolve per service.** With `--from-cfn-stack`, a resource of a
   routed service (for `DYNAMODB`, every `AWS::DynamoDB::*`) resolves from
   the stack deployed into the emulator, and everything else from real AWS.
@@ -351,9 +364,8 @@ The rules:
   `--env-vars`. The routed set is the whole run's: a
   service that any workload routes resolves from the emulator for every
   workload. When the emulator has no such stack, those resources keep their
-  real names, with a warning. cdk-local's other AWS calls stay on real AWS,
-  and so do the names it reads itself: `cdkl start-cloudfront` serves S3
-  origins from real S3, under their real names. Mixed mode does not set
+  real names, with a warning. `cdkl start-cloudfront` serves S3 origins and
+  KeyValueStores from real AWS, under their real names. Mixed mode does not set
   `AWS_DISABLE_HOST_PREFIX_INJECTION` (it would apply to real AWS calls too),
   so an operation with a host prefix, such as Step Functions'
   `StartSyncExecution`, cannot be routed to the emulator.

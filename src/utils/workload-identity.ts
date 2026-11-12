@@ -181,11 +181,15 @@ function callerChainWithoutEnv(proxied: boolean): AwsCredentialIdentityProvider 
  * profile is selected (by `profile` or `AWS_PROFILE` — either makes the SDK
  * chain skip the env link, so it already answers as the caller). Then it
  * injects the caller's pre-assume triple, or the caller's chain minus env.
+ *
+ * `service` is the client's endpoint service id: in AWS Emulator mixed mode a
+ * sentinel-routed service gets the emulator's fragment (see
+ * `buildProxyClientConfig`).
  */
 export function workloadClientConfig(
-  opts: { profile?: string | undefined } = {}
+  opts: { profile?: string | undefined; service?: string | undefined } = {}
 ): AwsProxyClientConfig {
-  const base = buildProxyClientConfig({ profile: opts.profile });
+  const base = buildProxyClientConfig({ profile: opts.profile, service: opts.service });
   const rec = callerRecord();
   if (!rec) return base;
   // Under an endpoint override (`--aws-emulator`) the endpoint's own

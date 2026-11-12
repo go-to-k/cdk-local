@@ -1362,6 +1362,26 @@ export {
   type AwsEndpointOverride,
 } from './utils/aws-proxy.js';
 /**
+ * Per-service routing of a host's OWN AWS clients in AWS Emulator mixed mode
+ * (go-to-k/cdk-local#898). `activateWorkloadAwsWiring` installs it; spread
+ * `awsClientConfigForService('<ID>', { profile })` FIRST in a client's config
+ * (`<ID>` is the `AWS_ENDPOINT_URL_<ID>` suffix, e.g. `SECRETS_MANAGER`, or
+ * the SDK's `serviceId`) and the client reads AWS Emulator exactly when a
+ * sentinel routed that service — under `--aws-emulator` alone always, without
+ * it never. When the fragment carries `endpoint`, add no credentials of your
+ * own. A host that resolves the wiring itself
+ * installs it with `setAwsEmulatorServiceRouting({ services:
+ * wiring.mixed.services, override: wiring.mixed.emulatorClientOverride })`.
+ */
+export {
+  awsClientConfigForService,
+  isAwsServiceRoutedToEmulator,
+  normalizeAwsEndpointServiceId,
+  setAwsEmulatorServiceRouting,
+  getAwsEmulatorServiceRouting,
+  type AwsEmulatorServiceRouting,
+} from './utils/aws-proxy.js';
+/**
  * AWS Emulator mixed mode (go-to-k/cdkd#6150): an `aws-emulator` sentinel on
  * `AWS_ENDPOINT_URL_<SERVICE>` in `--env-vars` routes that service to the
  * emulator through a re-signing sidecar, while the workload keeps the real
