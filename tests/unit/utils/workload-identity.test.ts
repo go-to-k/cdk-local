@@ -5,6 +5,11 @@ vi.mock('@aws-sdk/credential-provider-node', () => ({ defaultProvider: defaultPr
 
 import { resetEmbedConfig, setEmbedConfig } from '../../../src/local/embed-config.js';
 import { buildProxyClientConfig } from '../../../src/utils/aws-proxy.js';
+import {
+  resetWorkloadAwsWiringForTest,
+  setActiveWorkloadAwsWiring,
+  type WorkloadAwsWiring,
+} from '../../../src/local/workload-aws-wiring.js';
 import { buildStsClientConfig } from '../../../src/utils/profile-resolver.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import {
@@ -207,6 +212,49 @@ describe('workload-identity', () => {
       resetWorkloadIdentity();
       warnWorkloadCredentialsStripped();
       expect(warn).toHaveBeenCalledTimes(2);
+    });
+
+    const wiringOf = (mode: 'forward' | 'emulator'): WorkloadAwsWiring => ({
+      mode,
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      dispose: () => undefined,
+    });
+
+    it('warnWorkloadCredentialsStripped names the default-chain fallback under a forward wiring', () => {
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+      setActiveWorkloadAwsWiring(wiringOf('forward'));
+      try {
+        warnWorkloadCredentialsStripped();
+      } finally {
+        resetWorkloadAwsWiringForTest();
+      }
+      const text = String(warn.mock.calls[0]![0]);
+      expect(text).toContain('default credential chain');
+      expect(text).not.toContain('receives none');
+    });
+
+    it('warnWorkloadCredentialsStripped says "none" when no wiring fills credentials', () => {
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+      warnWorkloadCredentialsStripped();
+      expect(String(warn.mock.calls[0]![0])).toContain('receives none');
+    });
+
+    it('warnWorkloadCredentialsStripped stays silent under --aws-emulator', () => {
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+      setActiveWorkloadAwsWiring(wiringOf('emulator'));
+      try {
+        warnWorkloadCredentialsStripped();
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        resetWorkloadAwsWiringForTest();
+      }
+      // Not consumed by the silent call: a later run without the emulator still warns.
+      warnWorkloadCredentialsStripped();
+      expect(warn).toHaveBeenCalledTimes(1);
     });
 
     it('shape 3 builds the default chain on the default profile and returns its credentials', async () => {

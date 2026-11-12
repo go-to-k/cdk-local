@@ -330,7 +330,7 @@ export async function withWorkloadAwsWiring(
  */
 export async function prepareLoopbackForwarder(wiring: WorkloadAwsWiring): Promise<void> {
   try {
-    await ensureForwarderImage();
+    await ensureForwarderImage(wiring.skipPull === true);
   } catch (err) {
     if (wiring.mode === 'emulator') {
       throw new DockerRunnerError(
@@ -420,7 +420,13 @@ async function removeOnSignalWhile<T>(
   }
 }
 
-/** Ports each workload's forwarder serves, so a restart re-attaches the same set. */
+/**
+ * Ports each workload's forwarder serves when they differ from the wiring's,
+ * so a restart re-attaches the same set. A set equal to the wiring's (the
+ * usual case, including empty for both) is not stored: the restart fallback
+ * already yields it. {@link removeContainer} drops a workload's entry, so a
+ * long `--watch` session that replaces containers does not accumulate them.
+ */
 const forwardedPortsByContainer = new Map<string, readonly number[]>();
 
 /**
@@ -438,7 +444,8 @@ export async function attachLoopbackForwarder(
   wiring: WorkloadAwsWiring,
   ports: readonly number[] = forwardedPortsByContainer.get(containerId) ?? wiring.loopbackPorts
 ): Promise<void> {
-  forwardedPortsByContainer.set(containerId, ports);
+  if (samePorts(ports, wiring.loopbackPorts)) forwardedPortsByContainer.delete(containerId);
+  else forwardedPortsByContainer.set(containerId, ports);
   if (ports.length === 0) return;
   const label =
     wiring.mode === 'emulator'
@@ -453,6 +460,7 @@ export async function attachLoopbackForwarder(
         ports,
         probe: wiring.probeHealth ? 'health' : 'tcp',
         name: forwarderName,
+        ...(wiring.skipPull ? { skipPull: true } : {}),
         ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
       })
     );
@@ -474,6 +482,10 @@ export async function attachLoopbackForwarder(
     throw new DockerRunnerError(message);
   }
   warnForwarderOnce(String(result.failedPort ?? 0), message);
+}
+
+function samePorts(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((p) => b.includes(p));
 }
 
 async function runDetachedContainer(opts: DockerRunOptions): Promise<string> {
@@ -753,6 +765,8 @@ export function streamLogs(
  */
 export async function removeContainer(containerId: string): Promise<void> {
   if (!containerId) return;
+  // The forwarder shares the workload's namespaces and ends with it.
+  forwardedPortsByContainer.delete(containerId);
   const logger = getLogger().child('docker');
   try {
     await execFileAsync(getDockerCmd(), ['rm', '-f', containerId]);

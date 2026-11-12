@@ -142,13 +142,15 @@ same two flags and forwards them to every command it starts:
 
 - **Endpoint overrides are forwarded.** `AWS_ENDPOINT_URL`, every
   `AWS_ENDPOINT_URL_<SERVICE>`, and the active profile's `endpoint_url`
-  reach the container unchanged (`AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true`
-  turns this off). A value the template or `--env-vars` sets for the same
+  reach the container unchanged (`AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true`,
+  or the profile's `ignore_configured_endpoint_urls = true` when that
+  variable is unset, turns this off, as it does for the host's SDK). A value the template or `--env-vars` sets for the same
   key wins. A loopback endpoint (`127.0.0.1`, `localhost`, `::1`) keeps its
   URL: cdk-local starts a small forwarder container in the workload's
   network namespace that listens on `127.0.0.1:<port>` there and forwards to
   the host, so a certificate issued for `127.0.0.1` still verifies and S3
-  keeps path-style addressing. The forwarder image is pulled before the
+  keeps path-style addressing. The forwarder image is pulled (only when a
+  container needs a forwarder, and never under `--no-pull`) before the
   workload starts and the forwarder joins within moments of it; an app that
   calls AWS in its very first instant relies on its SDK's connection retry.
   The forwarder stops with the workload (and is restarted after a `--watch`
@@ -160,9 +162,13 @@ same two flags and forwards them to every command it starts:
   it to your network.
 - **A CA bundle is mounted.** `--ca-bundle <file>`, else the host's
   `AWS_CA_BUNDLE`, else the profile's `ca_bundle`, is bind-mounted read-only
-  at `/cdk-local-aws/ca-bundle.pem` (with the public root CAs appended), and
-  `AWS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and
-  `SSL_CERT_FILE` point at it. The JVM reads none of these, so a Java
+  at `/cdk-local-aws/ca-bundle.pem` (with the public root CAs appended).
+  For `--ca-bundle` (and under `--aws-emulator`), `AWS_CA_BUNDLE`,
+  `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` point at
+  it. A bundle that only the host's `AWS_CA_BUNDLE` or profile names sets
+  `AWS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` only: on the host it governs
+  AWS calls alone, and `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` would replace
+  a handler's trust store for every other HTTPS host. The JVM reads none of these, so a Java
   handler gets nothing from a PEM bundle: under `--aws-emulator` it gets
   the emulator's trust store (below); for any other endpoint, put a trust
   store in the function and set `JAVA_TOOL_OPTIONS` yourself (template
@@ -171,7 +177,9 @@ same two flags and forwards them to every command it starts:
   flag, a container gets what the host's default chain resolves
   (`AWS_PROFILE`, the shared credentials / config files, SSO). The
   precedence is `--assume-role` > `--profile` > the default chain; for ECS
-  tasks the metadata sidecar serves them.
+  tasks the metadata sidecar serves them. When the chain finds nothing, it
+  is asked again after a minute, so an SSO login during a long `--watch`
+  session reaches containers started after it.
 - **`AWS_DEFAULT_REGION` follows `AWS_REGION`**, as on Lambda and ECS, so
   boto3 finds the region.
 
