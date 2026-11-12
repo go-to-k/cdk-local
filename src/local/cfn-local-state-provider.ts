@@ -127,12 +127,17 @@ export interface CfnLocalStateProviderOptions {
    * (`createMixedModeStateProvider`).
    */
   endpointOverride?: AwsEndpointOverride;
+  /**
+   * The label its warnings start with (default `--from-cfn-stack`). Mixed
+   * mode names the emulator side, so its misses do not read as real-AWS ones.
+   */
+  label?: string;
 }
 
 export class CfnLocalStateProvider implements LocalStateProvider {
   // erasableSyntaxOnly forbids parameter-property shorthand; declare
   // fields explicitly + assign in the body.
-  public readonly label = '--from-cfn-stack';
+  public readonly label: string;
   private readonly cfnStackName: string;
   private readonly region: string;
   // The CFn client is constructed lazily on the first `load` /
@@ -180,6 +185,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     this.region = opts.region;
     this.clientOptions = { region: opts.region };
     this.endpointOverride = opts.endpointOverride;
+    this.label = opts.label ?? '--from-cfn-stack';
     if (opts.profile !== undefined && !opts.endpointOverride) {
       this.clientOptions.profile = opts.profile;
     }

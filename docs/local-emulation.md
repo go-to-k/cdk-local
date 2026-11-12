@@ -334,13 +334,18 @@ The rules:
 - **Names resolve per service.** With `--from-cfn-stack`, a resource of a
   routed service (for `DYNAMODB`, every `AWS::DynamoDB::*`) resolves from
   the stack deployed into the emulator, and everything else from real AWS.
-  `--env-vars` values still win. The routed set is the whole run's: a
+  `--env-vars` values still win. An output or deployed-function value that
+  equals a real resource's physical ID takes the emulator's ID; an ARN or
+  URL that merely contains it is left as it is, so name those in
+  `--env-vars`. The routed set is the whole run's: a
   service that any workload routes resolves from the emulator for every
   workload. When the emulator has no such stack, those resources keep their
-  real names, with a warning. cdk-local's other AWS calls stay on real AWS:
-  `cdkl start-cloudfront` with S3 routed resolves an S3 origin's bucket name
-  from the emulator but still reads the objects from real S3, so name such a
-  bucket in `--env-vars` or do not route S3 there.
+  real names, with a warning. cdk-local's other AWS calls stay on real AWS,
+  and so do the names it reads itself: `cdkl start-cloudfront` serves S3
+  origins from real S3, under their real names. Mixed mode does not set
+  `AWS_DISABLE_HOST_PREFIX_INJECTION` (it would apply to real AWS calls too),
+  so an operation with a host prefix, such as Step Functions'
+  `StartSyncExecution`, cannot be routed to the emulator.
 - Port `47297` is reserved for the sidecar inside a workload that uses a
   sentinel, and a host-network workload cannot use one. `cdkl studio`
   passes `--env-vars` and `--aws-emulator` to the commands it starts, but

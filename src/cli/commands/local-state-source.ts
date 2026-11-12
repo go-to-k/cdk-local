@@ -302,7 +302,13 @@ export function createLocalStateProvider(
   options: LocalStateSourceOptions,
   stackName: string,
   synthRegion: string | undefined,
-  extraStateProviders?: ExtraStateProviders
+  extraStateProviders?: ExtraStateProviders,
+  /**
+   * `realAwsOnly`: the caller reads the resolved resources itself with
+   * cdk-local's own (real-AWS) clients, e.g. `start-cloudfront`'s S3 origins,
+   * so AWS Emulator mixed mode must not hand it the emulator's names.
+   */
+  behavior: { realAwsOnly?: boolean } = {}
 ): LocalStateProvider | undefined {
   const cfnStackOpt = options.fromCfnStack;
   const cfnFlagPresent = isCfnFlagPresent(options);
@@ -354,7 +360,7 @@ export function createLocalStateProvider(
     // Mixed mode (an `aws-emulator` sentinel in --env-vars): resources of the
     // emulated services resolve from the stack deployed into AWS Emulator,
     // the rest from real AWS.
-    const mixed = getActiveWorkloadAwsWiring()?.mixed;
+    const mixed = behavior.realAwsOnly ? undefined : getActiveWorkloadAwsWiring()?.mixed;
     if (!mixed) return real;
     return createMixedModeStateProvider({
       real,
@@ -362,6 +368,7 @@ export function createLocalStateProvider(
         cfnStackName,
         region,
         endpointOverride: mixed.emulatorClientOverride,
+        label: '--from-cfn-stack (AWS Emulator)',
       }),
       emulatedServices: mixed.services,
     });

@@ -537,7 +537,7 @@ describe('runDetached — mixed mode (aws-emulator sentinel)', () => {
     execFileMock.mockReset();
     execFileMock.mockImplementation((_c: string, args: string[]) => {
       if (args[0] === 'run') return { stdout: 'fid\n' };
-      if (args[0] === 'logs') return { stdout: `CDKL-FWD FAIL ${RESIGN} RESIGN_CONFIG_EACCES none\n` };
+      if (args[0] === 'logs') return { stdout: `CDKL-FWD FAIL 0 RESIGN_CONFIG_ENOENT none\n` };
       return {};
     });
     await expect(owner([9297, RESIGN])).rejects.toThrow(/re-signing sidecar could not start/);

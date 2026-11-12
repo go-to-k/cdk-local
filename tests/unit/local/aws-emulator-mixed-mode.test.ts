@@ -148,7 +148,11 @@ describe('createMixedModeStateProvider', () => {
 
   it('swaps the deployed-function env values that name an emulated resource, and delegates the rest to real', async () => {
     const real = fakeProvider(realRecord, {
-      resolveDeployedFunctionEnv: vi.fn(async () => ({ TABLE: 'real-table', BUCKET: 'real-bucket' })),
+      resolveDeployedFunctionEnv: vi.fn(async () => ({
+        TABLE: 'real-table',
+        BUCKET: 'real-bucket',
+        TABLE_ARN: 'arn:aws:dynamodb:us-east-1:111111111111:table/real-table',
+      })),
       resolveLambdaExecutionRoleArn: vi.fn(async () => 'arn:role'),
       getLastLoadError: () => 'real-err',
     });
@@ -158,6 +162,8 @@ describe('createMixedModeStateProvider', () => {
     expect(await p.resolveDeployedFunctionEnv!('real-fn')).toEqual({
       TABLE: 'emu-table',
       BUCKET: 'real-bucket',
+      // Only exact physical IDs are swapped; an ARN keeps naming the real table (documented).
+      TABLE_ARN: 'arn:aws:dynamodb:us-east-1:111111111111:table/real-table',
     });
     expect(await p.resolveLambdaExecutionRoleArn!('real-fn')).toBe('arn:role');
     expect(p.getLastLoadError!()).toBe('real-err');

@@ -22,6 +22,11 @@ import {
   type ResignSidecarConfig,
 } from '../../../src/local/emulator-resign-sidecar.js';
 import { createMixedModeTlsMaterials } from '../../../src/local/mixed-mode-tls.js';
+import {
+  LOOPBACK_FORWARDER_SCRIPT,
+  describeForwarderFailure,
+  parseForwarderStatus,
+} from '../../../src/local/loopback-forwarder.js';
 
 // The shipped sidecar code, loaded as-is.
 interface Core {
@@ -358,6 +363,7 @@ describe('the sidecar server, end to end with the AWS SDK', () => {
   const received: { method: string; url: string; headers: IncomingMessage['headers']; body: Buffer; sigOk: boolean }[] = [];
   let upstream: Server;
   let sidecar: ChildProcess;
+  let sidecarOut = '';
   let dir: string;
   const port = 47000 + Math.floor(Math.random() * 900);
   const tls = createMixedModeTlsMaterials();
@@ -412,6 +418,7 @@ describe('the sidecar server, end to end with the AWS SDK', () => {
       ],
       { stdio: ['ignore', 'pipe', 'inherit'] }
     );
+    sidecar.stdout!.on('data', (d: Buffer) => (sidecarOut += d.toString()));
     await new Promise<void>((resolve, reject) => {
       sidecar.stdout!.on('data', (d: Buffer) => {
         if (d.toString().includes('STARTED {"port"')) resolve();
@@ -509,6 +516,43 @@ describe('the sidecar server, end to end with the AWS SDK', () => {
     expect(status.code).toBe(413);
     expect(status.body).toContain('<Code>EntityTooLarge</Code>');
     expect(received.length).toBe(before);
+    // The streaming guard dropped the body as it arrived (not after holding it all).
+    expect(sidecarOut).toContain('over the cap without holding it');
+  });
+
+  it('Expect: 100-continue over the cap is refused before the body is sent', async () => {
+    const before = received.length;
+    const r = await new Promise<{ code: number; body: string; sentBody: boolean }>((resolve, reject) => {
+      let sentBody = false;
+      const req = httpsRequest({
+        host: '127.0.0.1',
+        port,
+        method: 'PUT',
+        path: '/b/huge',
+        ca: [tls.caCertPem],
+        headers: {
+          authorization: REAL_AUTH.replace('dynamodb', 's3'),
+          expect: '100-continue',
+          'x-amz-content-sha256': 'STREAMING-UNSIGNED-PAYLOAD-TRAILER',
+          'x-amz-decoded-content-length': String(5 * 1024 * 1024),
+          'content-length': '10',
+        },
+      });
+      req.on('continue', () => {
+        sentBody = true;
+        req.end('0123456789');
+      });
+      req.on('response', (res) => {
+        let b = '';
+        res.on('data', (c: Buffer) => (b += c.toString()));
+        res.on('end', () => resolve({ code: res.statusCode!, body: b, sentBody }));
+      });
+      req.on('error', reject);
+      req.flushHeaders();
+    });
+    expect(r).toMatchObject({ code: 413, sentBody: false });
+    expect(r.body).toContain('EntityTooLarge');
+    expect(received.length).toBe(before);
   });
 
   it('serves its certificate for 127.0.0.1 from the per-run CA (a client without that CA refuses it)', async () => {
@@ -521,5 +565,95 @@ describe('the sidecar server, end to end with the AWS SDK', () => {
       req.end();
     });
     expect(err?.code).toMatch(/SELF_SIGNED|UNABLE_TO_VERIFY|CERT/);
+  });
+});
+
+describe('the forwarder script with the sidecar (the code a mixed-mode container runs)', () => {
+  const tls = createMixedModeTlsMaterials();
+  const upstreamTls = createMixedModeTlsMaterials();
+  let dir: string;
+  const procs: ChildProcess[] = [];
+
+  beforeAll(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'resign-fwd-'));
+  });
+  afterAll(async () => {
+    for (const p of procs) {
+      if (p.exitCode === null && p.signalCode === null) {
+        const exited = new Promise((r) => p.once('exit', r));
+        p.kill();
+        await exited;
+      }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function run(upstreamPort: number, sidecarPort: number): Promise<string> {
+    const cfgPath = path.join(dir, `resign-${sidecarPort}.json`);
+    const caPath = path.join(dir, `ca-${sidecarPort}.pem`);
+    writeFileSync(caPath, tls.caCertPem);
+    const cfg: ResignSidecarConfig = {
+      port: sidecarPort,
+      upstream: `https://127.0.0.1:${upstreamPort}`,
+      upstreamCaPem: upstreamTls.caCertPem,
+      certPem: tls.certPem,
+      keyPem: tls.keyPem,
+      credentials: EMU,
+      capBytes: 1024,
+    };
+    writeFileSync(cfgPath, JSON.stringify(cfg), { mode: 0o600 });
+    // argv as forwarderCommand builds it: no TCP port, health probe, CA, resign config.
+    const p = spawn(
+      process.execPath,
+      ['-e', RESIGN_SIDECAR_SCRIPT + LOOPBACK_FORWARDER_SCRIPT, '-', 'health', caPath, cfgPath],
+      { stdio: ['ignore', 'pipe', 'inherit'] }
+    );
+    procs.push(p);
+    let out = '';
+    return new Promise((resolve) => {
+      p.stdout!.on('data', (d: Buffer) => {
+        out += d.toString();
+        const line = out.split('\n').find((l) => l.startsWith('CDKL-FWD '));
+        if (line) resolve(line);
+      });
+    });
+  }
+
+  it('reports READY once a health check through the sidecar reaches the emulator', async () => {
+    const emu = createHttpsServer({ key: upstreamTls.keyPem, cert: upstreamTls.certPem }, (req, res) => {
+      res.writeHead(req.url === '/__admin/health' && !req.headers['authorization'] ? 200 : 500);
+      res.end();
+    });
+    await new Promise<void>((r) => emu.listen(0, '127.0.0.1', () => r()));
+    try {
+      const line = await run((emu.address() as AddressInfo).port, 46000 + Math.floor(Math.random() * 900));
+      expect(line).toBe('CDKL-FWD READY none');
+      expect(parseForwarderStatus(line)).toEqual({ ok: true });
+    } finally {
+      await new Promise((r) => emu.close(r));
+    }
+  });
+
+  it('an unreachable emulator is a RESIGN_UPSTREAM failure whose message is about the emulator', async () => {
+    const closed = createHttpsServer();
+    await new Promise<void>((r) => closed.listen(0, '127.0.0.1', () => r()));
+    const deadPort = (closed.address() as AddressInfo).port;
+    await new Promise((r) => closed.close(r));
+    const sidecarPort = 46000 + Math.floor(Math.random() * 900);
+    const line = await run(deadPort, sidecarPort);
+    const status = parseForwarderStatus(line)!;
+    expect(status).toMatchObject({ ok: false, failedPort: sidecarPort, reason: 'RESIGN_UPSTREAM_HTTP_502' });
+    expect(describeForwarderFailure({ name: 'f', ...status }, '--aws-emulator x (mixed mode)')).toMatch(
+      /did not reach the emulator \(HTTP_502\)/
+    );
+  });
+
+  it('a config the container cannot read names no port', () => {
+    expect(
+      describeForwarderFailure(
+        { name: 'f', ...parseForwarderStatus('CDKL-FWD FAIL 0 RESIGN_CONFIG_ENOENT none')! },
+        'x'
+      )
+    ).toMatch(/could not start inside the workload container \(CONFIG_ENOENT\)/);
   });
 });

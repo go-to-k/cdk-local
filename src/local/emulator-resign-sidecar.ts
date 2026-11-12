@@ -23,7 +23,7 @@
 //   - SigV4 (`AWS4-HMAC-SHA256`, header or presigned query) and SigV4a
 //     (`AWS4-ECDSA-P256-SHA256`): the service and region come from the
 //     original credential scope (SigV4a: `X-Amz-Region-Set`, else the
-//     `us-east-1`). Every signing header and presign parameter is
+//     the host region, else `us-east-1`). Every signing header and presign parameter is
 //     dropped, including the real `X-Amz-Security-Token`, and the request is
 //     signed again with header auth.
 //   - S3 `aws-chunked` bodies (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`, its
@@ -199,7 +199,9 @@ function prepareResign(req,body,cfg,now){
   headers['host']=cfg.upstreamHost;
   headers['content-length']=String(body.length);
   if(signedRequest){
-    var region=scope.region||String(incoming['x-amz-region-set']||'').split(',')[0].trim()||cfg.region||'us-east-1';
+    var regionSet=incoming['x-amz-region-set'];
+    pairs.forEach(function(p){if(p.k.toLowerCase()==='x-amz-region-set'&&regionSet===undefined)regionSet=p.v;});
+    var region=scope.region||String(regionSet||'').split(',')[0].trim()||cfg.region||'us-east-1';
     if(region==='*')region=cfg.region||'us-east-1';
     signRequest({method:String(req.method||'GET'),path:path,query:query,headers:headers,body:body,region:region,service:service,creds:cfg.credentials,now:now});
   }
@@ -251,7 +253,7 @@ function startResigner(cfgPath){return new Promise(function(done){
     req.on('close',function(){release();});
     req.on('end',function(){
       if(busy){send(resp,503,{code:'SlowDown',message:'cdk-local mixed mode: the AWS Emulator re-signing sidecar is holding too many request bodies at once; retry.'},serviceOf(req));return;}
-      if(over){process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,413,tooLargeError(size,cfg.capBytes,serviceOf(req)),serviceOf(req));return;}
+      if(over){process.stdout.write('CDKL-RESIGN rejected a streamed request body over the cap without holding it\n');send(resp,413,tooLargeError(size,cfg.capBytes,serviceOf(req)),serviceOf(req));return;}
       var p;
       try{p=prepareResign(req,Buffer.concat(chunks),cfg,new Date());}catch(e){p={error:{status:400,code:'InvalidRequest',message:'cdk-local mixed mode: the request could not be re-signed.'}};}
       if(p.error){if(p.error.status===413)process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,p.error.status,p.error,serviceOf(req));return;}
@@ -264,6 +266,9 @@ function startResigner(cfgPath){return new Promise(function(done){
         ur.on('error',function(){resp.destroy();});
       });}catch(e){release();send(resp,400,{code:'InvalidRequest',message:'cdk-local mixed mode: the request has a header the AWS Emulator re-signing sidecar cannot forward.'},p.service);return;}
       release();
+      // A client that hangs up (an aborted GetObject) frees the upstream socket too.
+      resp.on('close',function(){if(!resp.writableFinished)r.destroy();});
+      r.setTimeout(300000,function(){r.destroy(Object.assign(new Error('upstream timeout'),{code:'ETIMEDOUT'}));});
       r.on('error',function(e){process.stdout.write('CDKL-RESIGN upstream error '+(e.code||'ERROR')+'\n');send(resp,502,{code:'BadGateway',message:'cdk-local mixed mode: the AWS Emulator at '+cfg.upstream+' did not answer ('+(e.code||'ERROR')+').'},p.service);});
       r.end(p.body);
     });
@@ -300,7 +305,7 @@ export interface ResignSidecarConfig {
   keyPem: string;
   /** The emulator's keys: every forwarded request is signed with these. */
   credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
-  /** Fallback region for a SigV4a request with no single region (default `us-east-1`). */
+  /** Fallback region for a SigV4a request with no single region (the host's `AWS_REGION`, else `us-east-1`). */
   region?: string;
   /** {@link MIXED_MODE_RESIGN_BODY_CAP_BYTES} unless a test lowers it. */
   capBytes: number;

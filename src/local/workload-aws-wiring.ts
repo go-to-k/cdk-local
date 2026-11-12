@@ -604,6 +604,8 @@ function resolveMixedModeWiring(args: {
   disposers: (() => void)[];
   dispose: () => void;
   skipPull: boolean | undefined;
+  /** The host's region, for a SigV4a request that names none (`*`). */
+  region: string | undefined;
 }): WorkloadAwsWiring {
   const { ep, services, credentials, caSources, disposers } = args;
   // Kept together, never one instead of another: a `--ca-bundle` for a
@@ -641,6 +643,7 @@ function resolveMixedModeWiring(args: {
       ...(credentials.sessionToken ? { sessionToken: credentials.sessionToken } : {}),
     },
     capBytes: MIXED_MODE_RESIGN_BODY_CAP_BYTES,
+    ...(args.region ? { region: args.region } : {}),
   };
   writeFileSync(resignConfigHostPath, JSON.stringify(config), { mode: 0o600 });
   const containerPath = getContainerCaBundlePath();
@@ -760,6 +763,7 @@ export async function resolveWorkloadAwsWiring(
           disposers,
           dispose,
           skipPull: opts.skipPull,
+          region: env['AWS_REGION'] || env['AWS_DEFAULT_REGION'] || undefined,
         });
       }
       const ca = caSource && ep.url.startsWith('https:') ? caMount(caSource) : undefined;

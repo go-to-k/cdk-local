@@ -446,5 +446,15 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
     expect(mixed!.label).toBe('--from-cfn-stack');
     expect(typeof mixed!.resolveDeployedFunctionEnv).toBe('function');
     mixed!.dispose();
+    // A caller that reads the resources itself with real-AWS clients opts out.
+    const real = createLocalStateProvider(
+      { fromCfnStack: true, stackRegion: 'us-east-1' },
+      'S',
+      undefined,
+      undefined,
+      { realAwsOnly: true }
+    );
+    expect(real).toBeInstanceOf(CfnLocalStateProvider);
+    real!.dispose();
   });
 });
