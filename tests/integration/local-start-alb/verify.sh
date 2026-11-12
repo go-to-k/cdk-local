@@ -104,12 +104,12 @@ echo "    OK: privileged 80 auto-remapped to ${NOLB_PORT} + serving (no --lb-por
 kill -INT "${NOLB_PID}" 2>/dev/null; wait "${NOLB_PID}" 2>/dev/null || true
 cleanup
 
-# Issue #889 — count running containers whose env carries the fake default-chain
-# key this run booted with (no credential flag). Other lanes' containers never
-# carry it, so the count is this run's.
+# Issue #889 — count running task containers (not the metadata sidecar, which
+# holds the same chain) whose env carries the fake default-chain key this run
+# booted with (no credential flag). Other lanes' containers never carry it.
 count_default_chain_containers() {
   local n=0 id
-  for id in $(docker ps --filter "name=cdkl-" --format '{{.ID}}'); do
+  for id in $(docker ps --filter "name=cdkl-" --filter "ancestor=public.ecr.aws/docker/library/python:3.12-alpine" --format '{{.ID}}'); do
     if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${id}" 2>/dev/null \
       | grep -qx 'AWS_ACCESS_KEY_ID=FAKEINTEGKEY0889'; then
       n=$((n + 1))

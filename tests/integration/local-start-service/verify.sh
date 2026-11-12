@@ -82,12 +82,12 @@ docker run -d --rm --name "${ORPHAN_NET}-metadata" --network "${ORPHAN_NET}" \
   --ip 169.254.171.2 "${SIDECAR_IMAGE}" >/dev/null
 echo "    orphan ${ORPHAN_NET} owns 169.254.171.0/24 (only its metadata sidecar attached)"
 
-# Issue #889 — count running containers whose env carries the fake default-chain
-# key this run booted with (no credential flag). Other lanes' containers never
-# carry it, so the count is this run's.
+# Issue #889 — count running task containers (not the metadata sidecar, which
+# holds the same chain) whose env carries the fake default-chain key this run
+# booted with (no credential flag). Other lanes' containers never carry it.
 count_default_chain_containers() {
   local n=0 id
-  for id in $(docker ps --filter "name=cdkl-" --format '{{.ID}}'); do
+  for id in $(docker ps --filter "name=cdkl-" --filter "ancestor=${BUSYBOX_IMAGE}" --format '{{.ID}}'); do
     if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${id}" 2>/dev/null \
       | grep -qx 'AWS_ACCESS_KEY_ID=FAKEINTEGKEY0889'; then
       n=$((n + 1))
