@@ -1305,8 +1305,11 @@ export {
 export {
   AUTH_OFF_PLACEHOLDER_CREDENTIALS,
   CA_TRUST_ENV_KEYS,
+  HOST_CA_TRUST_ENV_KEYS,
+  HOST_DEFAULT_CREDENTIALS_MISS_TTL_MS,
   EMULATOR_SCRUBBED_ENV_KEYS,
   activateWorkloadAwsWiring,
+  displayEndpointValue,
   applyWorkloadAwsWiringToEnv,
   collectHostEndpointOverrides,
   effectiveLoopbackPorts,

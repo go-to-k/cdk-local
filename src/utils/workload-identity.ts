@@ -28,7 +28,11 @@
 
 import type { AwsCredentialIdentityProvider } from '@smithy/types';
 import { getEmbedConfig } from '../local/embed-config.js';
-import { buildProxyClientConfig, buildProxyRequestHandler } from './aws-proxy.js';
+import {
+  buildProxyClientConfig,
+  buildProxyRequestHandler,
+  getAwsEndpointOverride,
+} from './aws-proxy.js';
 import type { AwsProxyClientConfig } from './aws-proxy.js';
 import { getLogger } from './logger.js';
 
@@ -305,18 +309,23 @@ export function applyWorkloadEnvCredentials(
 }
 
 /**
- * Warn that the container receives no credentials, once per process, naming
- * the remedy: a long-running container's credential error otherwise lands far
- * from its cause. Call it only when {@link applyWorkloadEnvCredentials}
- * returned 'stripped' AND the final env (after any `--profile` overlay) still
- * has no `AWS_ACCESS_KEY_ID`.
+ * Warn, once per process, that the container falls back to the host's default
+ * credential chain without its environment link (the docker-run layer's fill,
+ * `workload-aws-wiring.ts`), naming the remedy: a long-running container's
+ * credential error otherwise lands far from its cause. Call it only when
+ * {@link applyWorkloadEnvCredentials} returned 'stripped' AND the final env
+ * (after any `--profile` overlay) still has no `AWS_ACCESS_KEY_ID`. Silent
+ * under an endpoint override (`--aws-emulator`): the container gets the
+ * endpoint's own credentials there, whatever the shell holds.
  */
 export function warnWorkloadCredentialsStripped(): void {
-  if (stripWarned) return;
+  if (stripWarned || getAwsEndpointOverride()) return;
   stripWarned = true;
   getLogger().warn(
     'The --role-arn role is not handed to the emulated workload, and your shell had no ' +
-      'static AWS credentials to hand it instead, so the container receives none. ' +
-      'Pass --profile <name>, or export static credentials, to give it an identity.'
+      'static AWS credentials to hand it instead, so the container gets what the host default ' +
+      'credential chain resolves without the environment (the AWS_PROFILE or default profile in ' +
+      'your shared config / credentials files, SSO included), or none when that resolves nothing. ' +
+      'Pass --profile <name>, or export static credentials, to choose its identity.'
   );
 }

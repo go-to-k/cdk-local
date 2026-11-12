@@ -29,7 +29,7 @@ vi.mock('node:child_process', () => ({
 const { defaultChainMock } = vi.hoisted(() => ({ defaultChainMock: vi.fn() }));
 vi.mock('@aws-sdk/credential-provider-node', () => ({ defaultProvider: vi.fn(() => defaultChainMock) }));
 
-const { attachLoopbackForwarder, runDetached, withWorkloadAwsWiring } = await import(
+const { attachLoopbackForwarder, removeContainer, runDetached, withWorkloadAwsWiring } = await import(
   '../../../src/local/docker-runner.js'
 );
 const { resetWorkloadAwsWiringForTest, setActiveWorkloadAwsWiring } = await import(
@@ -233,5 +233,60 @@ describe('runDetached forwarder failure policy', () => {
     // Soft reload re-attach with no explicit ports: still none.
     await attachLoopbackForwarder('restart-id', w);
     expect(execFileMock.mock.calls.some((c) => c[1].includes('--pid'))).toBe(false);
+  });
+
+  it("removing a workload forgets its port set, so a long --watch session's map does not grow", async () => {
+    const w = emulatorWiring({ mode: 'forward', scrubEnvKeys: [] });
+    setActiveWorkloadAwsWiring(w);
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'run' && args.includes('--pid')) return { error: new Error('no forwarder in this test') };
+      if (args[0] === 'run') return { stdout: 'gone-id\n' };
+      if (args[0] === 'inspect') return { stdout: 'true\n' };
+      return { stdout: '' };
+    });
+    // First start: the task replaced the endpoint, so its remembered set is empty.
+    await runDetached({ ...baseRun, env: { AWS_ENDPOINT_URL: 'http://task-declared:1', AWS_ACCESS_KEY_ID: 'K', AWS_SECRET_ACCESS_KEY: 'S' } });
+    await removeContainer('gone-id');
+    // The entry is gone: a later attach under the same id falls back to the
+    // wiring's ports instead of the removed workload's empty set.
+    await attachLoopbackForwarder('gone-id', w);
+    const fwd = execFileMock.mock.calls.filter((c) => c[1][0] === 'run' && c[1].includes('--pid'));
+    expect(fwd).toHaveLength(1);
+    expect(fwd[0]![1]).toContain('container:gone-id');
+  });
+});
+
+describe('loopback forwarder image pull', () => {
+  const imageCalls = (): unknown[] => execFileMock.mock.calls.filter((c) => c[1][0] === 'image' || c[1][0] === 'pull');
+
+  function stub(): void {
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: args.includes('--pid') ? 'fwd\n' : 'workload-id\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return { stdout: '' };
+    });
+  }
+
+  it('checks for the image when a container needs a forwarder', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    stub();
+    await runDetached({ ...baseRun, env: {} });
+    expect(imageCalls().length).toBeGreaterThan(0);
+  });
+
+  it('--no-pull: never inspects or pulls the forwarder image', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring({ skipPull: true }));
+    stub();
+    await runDetached({ ...baseRun, env: {} });
+    expect(execFileMock.mock.calls.some((c) => c[1].includes('--pid'))).toBe(true);
+    expect(imageCalls()).toHaveLength(0);
+  });
+
+  it('a container with no loopback port to forward never touches the image', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring({ mode: 'forward', scrubEnvKeys: [], loopbackPorts: [] }));
+    stub();
+    await runDetached({ ...baseRun, env: { AWS_ACCESS_KEY_ID: 'K', AWS_SECRET_ACCESS_KEY: 'S' } });
+    expect(imageCalls()).toHaveLength(0);
   });
 });

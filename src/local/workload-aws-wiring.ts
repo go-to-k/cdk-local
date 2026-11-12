@@ -50,6 +50,13 @@ export const CA_TRUST_ENV_KEYS = [
 ] as const;
 
 /**
+ * The subset of {@link CA_TRUST_ENV_KEYS} set for a CA bundle that only the
+ * host's AWS configuration names (`AWS_CA_BUNDLE`, a profile's `ca_bundle`):
+ * the variables that ADD to a runtime's trust instead of replacing it.
+ */
+export const HOST_CA_TRUST_ENV_KEYS = ['AWS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'] as const;
+
+/**
  * Variables removed from a container's env under `--aws-emulator`: each
  * can point an SDK at real credentials (a host profile name, a host
  * credentials / config file, a web-identity role).
@@ -83,9 +90,30 @@ export interface ParsedAwsEndpoint {
 }
 
 /**
+ * An endpoint value as it may appear in a message: everything up to the LAST
+ * `@` (userinfo) becomes `***`, and so does everything after the first `?` or
+ * `#` that follows. Anchoring on the last `@` needs no URL parse, so a value
+ * the parser rejects (no scheme, a stray `\`, a `/` or `?` inside the
+ * password) cannot carry its credentials past it; a `@` in a path or query
+ * over-masks the host, the safe direction. Only an `http(s):` prefix is kept
+ * ahead of the mask: in `AKIA:secret@host` the `AKIA:` is userinfo, not a
+ * scheme. Quoted / escaped for display.
+ */
+export function displayEndpointValue(value: string): string {
+  const scheme = /^\s*https?:[/\\]*/i.exec(value)?.[0] ?? '';
+  let rest = value.slice(scheme.length);
+  const at = rest.lastIndexOf('@');
+  if (at >= 0) rest = `***${rest.slice(at)}`;
+  const tail = rest.search(/[?#]/);
+  if (tail >= 0) rest = `${rest.slice(0, tail + 1)}***`;
+  return displayUntrustedValue(`${scheme}${rest}`);
+}
+
+/**
  * Parse and validate an endpoint URL (`https://127.0.0.1:9297`). Throws a
  * user-facing error for anything that is not an `http(s)` URL without
- * credentials, path or query.
+ * credentials, path or query. The error never echoes the value's userinfo or
+ * query ({@link displayEndpointValue}).
  */
 export function parseAwsEndpoint(value: string, label = '--aws-emulator'): ParsedAwsEndpoint {
   let u: URL;
@@ -93,15 +121,15 @@ export function parseAwsEndpoint(value: string, label = '--aws-emulator'): Parse
     u = new URL(value);
   } catch {
     throw new Error(
-      `${label} ${displayUntrustedValue(value)} is not a URL (expected e.g. https://127.0.0.1:9297).`
+      `${label} ${displayEndpointValue(value)} is not a URL (expected e.g. https://127.0.0.1:9297).`
     );
   }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') {
-    throw new Error(`${label} must be an http(s) URL, got ${displayUntrustedValue(value)}.`);
+    throw new Error(`${label} must be an http(s) URL, got ${displayEndpointValue(value)}.`);
   }
   if (u.username || u.password || u.search || u.hash || (u.pathname !== '/' && u.pathname !== '')) {
     throw new Error(
-      `${label} must be a bare scheme://host:port URL (no credentials, path or query), got ${displayUntrustedValue(value)}.`
+      `${label} must be a bare scheme://host:port URL (no credentials, path or query), got ${displayEndpointValue(value)}.`
     );
   }
   const port = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80;
@@ -204,14 +232,15 @@ function profileName(env: NodeJS.ProcessEnv, profile: string | undefined): strin
 }
 
 /**
- * The active profile's `endpoint_url` / `ca_bundle` from the shared config
- * file (`AWS_CONFIG_FILE`, else `~/.aws/config`). Never throws.
+ * The active profile's `endpoint_url` / `ca_bundle` /
+ * `ignore_configured_endpoint_urls` from the shared config file
+ * (`AWS_CONFIG_FILE`, else `~/.aws/config`). Never throws.
  */
 export function readProfileEndpointSettings(
   env: NodeJS.ProcessEnv,
   profile: string | undefined,
   homeDir: string = homedir()
-): { endpointUrl?: string; caBundle?: string } {
+): { endpointUrl?: string; caBundle?: string; ignoreConfiguredEndpointUrls?: boolean } {
   const file = env['AWS_CONFIG_FILE'] || path.join(homeDir, '.aws', 'config');
   let sections: Record<string, Record<string, string>>;
   try {
@@ -228,21 +257,44 @@ export function readProfileEndpointSettings(
   return {
     ...(sec['endpoint_url'] ? { endpointUrl: sec['endpoint_url'] } : {}),
     ...(sec['ca_bundle'] ? { caBundle: sec['ca_bundle'] } : {}),
+    ...(sec['ignore_configured_endpoint_urls']
+      ? {
+          ignoreConfiguredEndpointUrls:
+            sec['ignore_configured_endpoint_urls'].toLowerCase() === 'true',
+        }
+      : {}),
   };
+}
+
+/**
+ * Whether the host SDK ignores every configured endpoint: the env
+ * `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS` when set, else the active profile's
+ * `ignore_configured_endpoint_urls` (the SDKs' own precedence).
+ */
+function ignoresConfiguredEndpointUrls(
+  env: NodeJS.ProcessEnv,
+  profile: string | undefined,
+  homeDir: string | undefined
+): boolean {
+  const fromEnv = (env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'] ?? '').trim();
+  if (fromEnv !== '') return fromEnv.toLowerCase() === 'true';
+  return readProfileEndpointSettings(env, profile, homeDir).ignoreConfiguredEndpointUrls === true;
 }
 
 /**
  * The endpoint overrides the host carries, as container env entries:
  * `AWS_ENDPOINT_URL` and every `AWS_ENDPOINT_URL_<SERVICE>` from `env`, plus
  * the active profile's `endpoint_url` as `AWS_ENDPOINT_URL` when the env sets
- * none. Empty when `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` (the SDK's own
- * opt-out). Values that are not http(s) URLs are skipped with a warning.
+ * none. Empty when the host SDK ignores configured endpoints
+ * (`AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true`, else the profile's
+ * `ignore_configured_endpoint_urls = true`). Values that are not http(s) URLs
+ * are skipped with a warning.
  */
 export function collectHostEndpointOverrides(
   env: NodeJS.ProcessEnv,
   opts: { profile?: string | undefined; homeDir?: string } = {}
 ): Record<string, string> {
-  if ((env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'] ?? '').toLowerCase() === 'true') return {};
+  if (ignoresConfiguredEndpointUrls(env, opts.profile, opts.homeDir)) return {};
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined || v === '') continue;
@@ -292,6 +344,8 @@ export interface WorkloadAwsWiring {
   probeHealth: boolean;
   /** Host path of the CA bundle file (mounted, and used by the probe). */
   caHostPath?: string;
+  /** `--no-pull`: the loopback forwarder image is not pulled. */
+  skipPull?: boolean;
   /**
    * Under `emulator` mode: the ONLY credentials a container receives
    * (undefined → the container gets none). Unused under `forward`.
@@ -321,6 +375,8 @@ export interface ResolveWorkloadAwsWiringOptions {
    * Resolves `undefined` when healthy, else a short reason.
    */
   probeHealth?: (url: string, caPath: string | undefined) => Promise<string | undefined>;
+  /** `--no-pull`: never pull the loopback forwarder image. */
+  skipPull?: boolean | undefined;
 }
 
 /**
@@ -484,13 +540,14 @@ export async function resolveWorkloadAwsWiring(
     }
   };
   const caMount = (
-    source: string
+    source: string,
+    keys: readonly string[] = CA_TRUST_ENV_KEYS
   ): { hostPath: string; mounts: WorkloadMount[]; env: Record<string, string> } => {
     const file = writeCaBundleFile(expandHome(source, homeDir));
     disposers.push(file.dispose);
     const containerPath = getContainerCaBundlePath();
     const caEnv: Record<string, string> = {};
-    for (const k of CA_TRUST_ENV_KEYS) caEnv[k] = containerPath;
+    for (const k of keys) caEnv[k] = containerPath;
     return {
       hostPath: file.hostPath,
       mounts: [{ hostPath: file.hostPath, containerPath }],
@@ -568,6 +625,7 @@ export async function resolveWorkloadAwsWiring(
         probeHealth: ca !== undefined,
         ...(ca ? { caHostPath: ca.hostPath } : {}),
         emulatorCredentials: credentials,
+        ...(opts.skipPull ? { skipPull: true } : {}),
         dispose,
       };
     }
@@ -577,12 +635,15 @@ export async function resolveWorkloadAwsWiring(
     if (opts.caBundle) ca = caMount(opts.caBundle);
     else {
       // A host-configured bundle that cannot be used is skipped with a warning
-      // rather than failing every command (the JS SDK never read it).
+      // rather than failing every command (the JS SDK never read it). On the
+      // host it governs AWS traffic only, so only the ADDITIVE variables are
+      // set: `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` would REPLACE a handler's
+      // trust store for every other HTTPS host too.
       const hostCa =
         env['AWS_CA_BUNDLE'] || readProfileEndpointSettings(env, opts.profile, homeDir).caBundle;
       if (hostCa) {
         try {
-          ca = caMount(hostCa);
+          ca = caMount(hostCa, HOST_CA_TRUST_ENV_KEYS);
         } catch (err) {
           getLogger().warn(`${(err as Error).message} It is not mounted into workload containers.`);
         }
@@ -601,6 +662,7 @@ export async function resolveWorkloadAwsWiring(
       loopbackPorts: [...ports].sort((a, b) => a - b),
       probeHealth: false,
       ...(ca ? { caHostPath: ca.hostPath } : {}),
+      ...(opts.skipPull ? { skipPull: true } : {}),
       dispose,
     };
   } catch (err) {
@@ -701,7 +763,9 @@ export function applyWorkloadAwsWiringToEnv(
  * `--profile` > this chain, because it only fills an env with no
  * `AWS_ACCESS_KEY_ID`. After a `--role-arn` assume, the environment holds the
  * role, so the chain is read without its environment link. Memoized per
- * process; resolves `undefined` (debug-logged) when the chain finds nothing.
+ * process; resolves `undefined` (debug-logged) when the chain finds nothing,
+ * and answers `undefined` again without a walk for
+ * {@link HOST_DEFAULT_CREDENTIALS_MISS_TTL_MS} after a miss.
  *
  * Host-side use case: the no-flag credential source for a host's own
  * container commands.
@@ -719,7 +783,10 @@ export async function resolveHostDefaultCredentials(
     const { defaultProvider } = await import('@aws-sdk/credential-provider-node');
     // The SDK provider memoizes and refreshes expiring credentials itself, so
     // a long-running serve keeps handing new containers live keys.
-    provider = defaultProvider(name ? { profile: name } : {});
+    // `ignoreCache`: re-read the shared config / credentials files rather than
+    // the SDK's process-wide copy, so a retry after a miss sees a profile or
+    // keys written since (an SSO token file is read fresh either way).
+    provider = defaultProvider({ ...(name ? { profile: name } : {}), ignoreCache: true });
     chainProviders.set(key, provider);
   }
   try {
@@ -741,7 +808,17 @@ export async function resolveHostDefaultCredentials(
   }
 }
 
-const CHAIN_MISS_TTL_MS = 60_000;
+/**
+ * How long {@link resolveHostDefaultCredentials} remembers a miss: within it,
+ * a call resolves `undefined` without walking the chain; after it, the chain
+ * is walked again, so a credential source that appears later (an SSO login
+ * during a long `--watch` session) is picked up.
+ *
+ * Host-side use case: a host calls `resolveHostDefaultCredentials` per
+ * container and relies on this bound instead of caching misses itself.
+ */
+export const HOST_DEFAULT_CREDENTIALS_MISS_TTL_MS = 60_000;
+const CHAIN_MISS_TTL_MS = HOST_DEFAULT_CREDENTIALS_MISS_TTL_MS;
 const chainProviders = new Map<string, AwsCredentialIdentityProvider>();
 const chainMisses = new Map<string, number>();
 let active: WorkloadAwsWiring | undefined;
@@ -781,6 +858,8 @@ export interface WorkloadAwsWiringCommandOptions {
   awsEmulator?: string | boolean | undefined;
   caBundle?: string | undefined;
   profile?: string | undefined;
+  /** Commander's `--no-pull` (`false` when given): the forwarder image is not pulled either. */
+  pull?: boolean | undefined;
 }
 
 /**
@@ -823,6 +902,7 @@ export async function activateWorkloadAwsWiring(
     awsEmulator: resolveAwsEmulatorOption(options.awsEmulator),
     caBundle: options.caBundle,
     profile: options.profile,
+    skipPull: options.pull === false,
   });
   setActiveWorkloadAwsWiring(wiring);
   if (wiring.mode === 'emulator' && wiring.emulatorEndpoint) {
@@ -832,7 +912,7 @@ export async function activateWorkloadAwsWiring(
       ...(wiring.emulatorCredentials ? { credentials: wiring.emulatorCredentials } : {}),
     });
     getLogger().info(
-      `Using AWS Emulator at ${wiring.emulatorEndpoint.url} for cdk-local's AWS calls and every workload container.`
+      `Using AWS Emulator at ${wiring.emulatorEndpoint.url} for ${getEmbedConfig().productName}'s AWS calls and every workload container.`
     );
   } else {
     setAwsEndpointOverride(undefined);

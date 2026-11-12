@@ -4,7 +4,7 @@ const defaultProviderMock = vi.hoisted(() => vi.fn());
 vi.mock('@aws-sdk/credential-provider-node', () => ({ defaultProvider: defaultProviderMock }));
 
 import { resetEmbedConfig, setEmbedConfig } from '../../../src/local/embed-config.js';
-import { buildProxyClientConfig } from '../../../src/utils/aws-proxy.js';
+import { buildProxyClientConfig, setAwsEndpointOverride } from '../../../src/utils/aws-proxy.js';
 import { buildStsClientConfig } from '../../../src/utils/profile-resolver.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import {
@@ -207,6 +207,28 @@ describe('workload-identity', () => {
       resetWorkloadIdentity();
       warnWorkloadCredentialsStripped();
       expect(warn).toHaveBeenCalledTimes(2);
+    });
+
+    it('warnWorkloadCredentialsStripped names the default-chain fallback, not "none"', () => {
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+      warnWorkloadCredentialsStripped();
+      const text = String(warn.mock.calls[0]![0]);
+      expect(text).toContain('default credential chain');
+      expect(text).not.toContain('receives none');
+    });
+
+    it('warnWorkloadCredentialsStripped stays silent under an endpoint override (--aws-emulator)', () => {
+      const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+      setAwsEndpointOverride({ endpoint: 'https://127.0.0.1:9297' });
+      try {
+        warnWorkloadCredentialsStripped();
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        setAwsEndpointOverride(undefined);
+      }
+      // Not consumed by the silent call: a later run without the override still warns.
+      warnWorkloadCredentialsStripped();
+      expect(warn).toHaveBeenCalledTimes(1);
     });
 
     it('shape 3 builds the default chain on the default profile and returns its credentials', async () => {

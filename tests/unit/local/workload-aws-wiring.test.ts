@@ -14,6 +14,8 @@ vi.mock('@aws-sdk/credential-provider-node', () => ({ defaultProvider: defaultPr
 const {
   AUTH_OFF_PLACEHOLDER_CREDENTIALS,
   CA_TRUST_ENV_KEYS,
+  HOST_CA_TRUST_ENV_KEYS,
+  HOST_DEFAULT_CREDENTIALS_MISS_TTL_MS,
   activateWorkloadAwsWiring,
   applyWorkloadAwsWiringToEnv,
   collectHostEndpointOverrides,
@@ -25,6 +27,7 @@ const {
   resolveAwsEmulatorOption,
   getActiveWorkloadAwsWiring,
   parseAwsEndpoint,
+  displayEndpointValue,
   readEmulatorRunFiles,
   mergeJavaToolOptions,
   resetWorkloadAwsWiringForTest,
@@ -100,6 +103,49 @@ describe('parseAwsEndpoint', () => {
     expect(() => parseAwsEndpoint('https://127.0.0.1:9297/x')).toThrow(/bare/);
     expect(() => parseAwsEndpoint('https://u:p@127.0.0.1:9297')).toThrow(/bare/);
   });
+
+  it.each([
+    'https://user:secret@127.0.0.1:9297',
+    'https://user:secret@127.0.0.1:9297/x?token=secret',
+    'https://user:se/cr?et@127.0.0.1:9297',
+    'https:\\\\user:secret@127.0.0.1:9297',
+    'HTTPS://user:secret@127.0.0.1:9297',
+    'user:secret@127.0.0.1:9297',
+    'ftp://user:secret@127.0.0.1',
+    ' https://user:secret@127.0.0.1:9297',
+    'https://user:secret@@127.0.0.1:9297',
+    'https://127.0.0.1:9297?token=secret',
+    'https://127.0.0.1:9297#secret',
+  ])('never echoes userinfo or a query in its rejection: %s', (value) => {
+    let message = '';
+    try {
+      parseAwsEndpoint(value);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).not.toBe('');
+    expect(message).not.toContain('secret');
+    expect(message).not.toContain('user');
+    expect(message).toContain('***');
+  });
+
+  it('keeps the host in the redacted value so the message still says what was given', () => {
+    expect(() => parseAwsEndpoint('https://user:secret@127.0.0.1:9297')).toThrow(
+      'got "https://***@127.0.0.1:9297".'
+    );
+  });
+});
+
+describe('displayEndpointValue', () => {
+  it('leaves a value without userinfo or query as-is', () => {
+    expect(displayEndpointValue('https://127.0.0.1:9297')).toBe('https://127.0.0.1:9297');
+    expect(displayEndpointValue('127.0.0.1:9297')).toBe('127.0.0.1:9297');
+  });
+
+  it('masks a bare-token userinfo and an access-key-looking scheme alike', () => {
+    expect(displayEndpointValue('https://ghp_TOKEN@host')).toBe('"https://***@host"');
+    expect(displayEndpointValue('AKIAEXAMPLE:wJalr@host')).toBe('"***@host"');
+  });
 });
 
 describe('collectHostEndpointOverrides', () => {
@@ -142,6 +188,39 @@ describe('collectHostEndpointOverrides', () => {
       )
     ).toEqual({});
     expect(collectHostEndpointOverrides({ AWS_ENDPOINT_URL_SQS: 'not a url' }, { homeDir: home })).toEqual({});
+  });
+
+  it("honours the profile's ignore_configured_endpoint_urls, with the env var winning over it", () => {
+    mkdirSync(path.join(home, '.aws'));
+    writeFileSync(
+      path.join(home, '.aws', 'config'),
+      '[profile emu]\nendpoint_url = https://127.0.0.1:9297\nignore_configured_endpoint_urls = true\n' +
+        '[profile off]\nendpoint_url = https://127.0.0.1:9297\nignore_configured_endpoint_urls = false\n'
+    );
+    // The profile key alone: neither the profile's endpoint_url nor the env's.
+    expect(collectHostEndpointOverrides({ AWS_PROFILE: 'emu' }, { homeDir: home })).toEqual({});
+    expect(
+      collectHostEndpointOverrides(
+        { AWS_ENDPOINT_URL_S3: 'https://127.0.0.1:9400' },
+        { homeDir: home, profile: 'emu' }
+      )
+    ).toEqual({});
+    // The env var, when set, wins over the profile key in both directions.
+    expect(
+      collectHostEndpointOverrides(
+        { AWS_PROFILE: 'emu', AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: 'false' },
+        { homeDir: home }
+      )
+    ).toEqual({ AWS_ENDPOINT_URL: 'https://127.0.0.1:9297' });
+    expect(
+      collectHostEndpointOverrides(
+        { AWS_PROFILE: 'off', AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: 'TRUE' },
+        { homeDir: home }
+      )
+    ).toEqual({});
+    expect(collectHostEndpointOverrides({ AWS_PROFILE: 'off' }, { homeDir: home })).toEqual({
+      AWS_ENDPOINT_URL: 'https://127.0.0.1:9297',
+    });
   });
 });
 
@@ -231,7 +310,11 @@ describe('resolveWorkloadAwsWiring — forward mode (no --aws-emulator)', () => 
         AWS_ENDPOINT_URL_SQS: 'https://10.1.2.3:4566',
       });
       expect(w.loopbackPorts).toEqual([9297, 9400]);
-      for (const k of CA_TRUST_ENV_KEYS) expect(w.env[k]).toBe('/cdk-local-aws/ca-bundle.pem');
+      // A host AWS_CA_BUNDLE governs AWS calls only: the additive variables
+      // point at it, the trust-store-REPLACING ones stay unset.
+      for (const k of HOST_CA_TRUST_ENV_KEYS) expect(w.env[k]).toBe('/cdk-local-aws/ca-bundle.pem');
+      expect(w.env['SSL_CERT_FILE']).toBeUndefined();
+      expect(w.env['REQUESTS_CA_BUNDLE']).toBeUndefined();
       expect(w.mounts).toEqual([{ hostPath: w.caHostPath, containerPath: '/cdk-local-aws/ca-bundle.pem' }]);
       expect(w.probeHealth).toBe(false);
     } finally {
@@ -249,9 +332,30 @@ describe('resolveWorkloadAwsWiring — forward mode (no --aws-emulator)', () => 
     });
     try {
       expect(readFileSync(w.caHostPath!, 'utf8')).toContain('MIIBflag');
+      // An explicit --ca-bundle sets all four, the replacing ones included.
+      for (const k of CA_TRUST_ENV_KEYS) expect(w.env[k]).toBe('/cdk-local-aws/ca-bundle.pem');
     } finally {
       w.dispose();
     }
+  });
+
+  it("a profile's ca_bundle sets only the additive trust variables", async () => {
+    mkdirSync(path.join(home, '.aws'));
+    writeFileSync(path.join(home, 'p.pem'), PEM);
+    writeFileSync(path.join(home, '.aws', 'config'), `[default]\nca_bundle = ${path.join(home, 'p.pem')}\n`);
+    const w = await resolveWorkloadAwsWiring({ env: {}, homeDir: home });
+    try {
+      expect(Object.keys(w.env).sort()).toEqual([...HOST_CA_TRUST_ENV_KEYS].sort());
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it('carries --no-pull to the wiring for the forwarder image', async () => {
+    const w = await resolveWorkloadAwsWiring({ env: {}, homeDir: home, skipPull: true });
+    expect(w.skipPull).toBe(true);
+    const plain = await resolveWorkloadAwsWiring({ env: {}, homeDir: home });
+    expect(plain.skipPull).toBeUndefined();
   });
 });
 
@@ -523,21 +627,21 @@ describe('resolveHostDefaultCredentials (cdkd#6129)', () => {
     });
     await resolveHostDefaultCredentials();
     expect(defaultProviderMock).toHaveBeenCalledTimes(1);
-    expect(defaultProviderMock).toHaveBeenCalledWith({});
+    expect(defaultProviderMock).toHaveBeenCalledWith({ ignoreCache: true });
     expect(defaultChainMock).toHaveBeenCalledTimes(2);
   });
 
   it('honours a profile per call', async () => {
     defaultChainMock.mockResolvedValue({ accessKeyId: 'K', secretAccessKey: 'S' });
     await resolveHostDefaultCredentials({ profile: 'dev' });
-    expect(defaultProviderMock).toHaveBeenCalledWith({ profile: 'dev' });
+    expect(defaultProviderMock).toHaveBeenCalledWith({ profile: 'dev', ignoreCache: true });
   });
 
   it('after a --role-arn assume, reads the chain WITHOUT its env link (the env holds the role)', async () => {
     recordAssumedRole(undefined, { accessKeyId: 'ROLE', secretAccessKey: 'r', sessionToken: 't' });
     defaultChainMock.mockResolvedValue({ accessKeyId: 'CALLER', secretAccessKey: 'c' });
     await resolveHostDefaultCredentials();
-    expect(defaultProviderMock).toHaveBeenCalledWith({ profile: 'default' });
+    expect(defaultProviderMock).toHaveBeenCalledWith({ profile: 'default', ignoreCache: true });
   });
 
   it('resolves undefined when the chain finds nothing, and remembers the miss briefly', async () => {
@@ -545,6 +649,26 @@ describe('resolveHostDefaultCredentials (cdkd#6129)', () => {
     await expect(resolveHostDefaultCredentials()).resolves.toBeUndefined();
     await expect(resolveHostDefaultCredentials()).resolves.toBeUndefined();
     expect(defaultChainMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('walks the chain again once the miss TTL has passed (a login during a long --watch session)', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      defaultChainMock.mockRejectedValueOnce(new Error('Could not load credentials from any providers'));
+      await expect(resolveHostDefaultCredentials()).resolves.toBeUndefined();
+      now.mockReturnValue(1_000_000 + HOST_DEFAULT_CREDENTIALS_MISS_TTL_MS - 1);
+      await expect(resolveHostDefaultCredentials()).resolves.toBeUndefined();
+      expect(defaultChainMock).toHaveBeenCalledTimes(1);
+      defaultChainMock.mockResolvedValueOnce({ accessKeyId: 'AFTERLOGIN', secretAccessKey: 's' });
+      now.mockReturnValue(1_000_000 + HOST_DEFAULT_CREDENTIALS_MISS_TTL_MS);
+      await expect(resolveHostDefaultCredentials()).resolves.toEqual({
+        accessKeyId: 'AFTERLOGIN',
+        secretAccessKey: 's',
+      });
+      expect(defaultChainMock).toHaveBeenCalledTimes(2);
+    } finally {
+      now.mockRestore();
+    }
   });
 });
 
@@ -676,6 +800,63 @@ describe('activateWorkloadAwsWiring', () => {
       else process.env['HOME'] = prevHome;
     }
   });
+
+  it("names the host's product in the activation line", async () => {
+    vi.stubEnv('HOME', home);
+    const server = await startHealthServer();
+    const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => undefined);
+    try {
+      writeEmulatorRun(server.port);
+      await activateWorkloadAwsWiring({ awsEmulator: `http://127.0.0.1:${server.port}` });
+      expect(info.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        "for cdk-local's AWS calls and every workload container"
+      );
+      info.mockClear();
+      setEmbedConfig({ productName: 'hostcli' });
+      await activateWorkloadAwsWiring({ awsEmulator: `http://127.0.0.1:${server.port}` });
+      const lines = info.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(lines).toContain("for hostcli's AWS calls and every workload container");
+      expect(lines).not.toContain('cdk-local');
+    } finally {
+      setEmbedConfig(undefined);
+      info.mockRestore();
+      vi.unstubAllEnvs();
+      await server.close();
+    }
+  });
+
+  it.each([
+    ['the flag', { awsEmulator: 'https://user:secret@127.0.0.1:9297' }, ''],
+    ['the env var', {}, 'https://user:secret@127.0.0.1:9297'],
+  ])(
+    'a URL with userinfo given by %s is refused without printing the userinfo anywhere',
+    async (_via, options, envValue) => {
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('CDK_LOCAL_AWS_EMULATOR', envValue);
+      const logger = getLogger();
+      const spies = (['debug', 'info', 'warn', 'error'] as const).map((m) =>
+        vi.spyOn(logger, m).mockImplementation(() => undefined)
+      );
+      try {
+        const err = await activateWorkloadAwsWiring(options).then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
+        expect(err).toBeInstanceOf(Error);
+        const printed = [
+          err!.message,
+          String(err!.stack),
+          ...spies.flatMap((s) => s.mock.calls.map((c) => c.map(String).join(' '))),
+        ].join('\n');
+        expect(printed).not.toContain('secret');
+        expect(printed).not.toContain('user:');
+        expect(printed).toContain('https://***@127.0.0.1:9297');
+      } finally {
+        for (const s of spies) s.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    }
+  );
 
   it('without the flag, leaves cdk-local clients on their default endpoints', async () => {
     vi.stubEnv('HOME', home);

@@ -112,6 +112,8 @@ export interface StartLoopbackForwarderOptions {
   timeoutMs?: number;
   /** The forwarder container's name (default: {@link newLoopbackForwarderName}). */
   name?: string;
+  /** `--no-pull`: do not pull the forwarder image ({@link ensureForwarderImage}). */
+  skipPull?: boolean;
 }
 
 /** Parse one forwarder status line. Exported for unit tests. */
@@ -174,8 +176,11 @@ const PULL_FAILURE_TTL_MS = 60_000;
 /**
  * Pull the forwarder image once per process when it is not present yet. Call
  * it before starting a workload so the forwarder starts without a pull.
+ * `skipPull` (`--no-pull`) skips the check and the pull, as for every other
+ * image: `docker run` then uses the local copy.
  */
-export async function ensureForwarderImage(): Promise<void> {
+export async function ensureForwarderImage(skipPull = false): Promise<void> {
+  if (skipPull) return;
   if (pullFailure && Date.now() - pullFailure.at < PULL_FAILURE_TTL_MS) throw pullFailure.error;
   imageReady ??= (async () => {
     try {
@@ -218,7 +223,7 @@ export async function startLoopbackForwarder(
   opts: StartLoopbackForwarderOptions
 ): Promise<LoopbackForwarderResult> {
   const logger = getLogger().child('forwarder');
-  await ensureForwarderImage();
+  await ensureForwarderImage(opts.skipPull === true);
   const name = opts.name ?? newLoopbackForwarderName();
   const args = buildLoopbackForwarderDockerArgs({ ...opts, name });
   logger.debug(`Starting loopback forwarder ${name} for ports ${opts.ports.join(',')}`);
