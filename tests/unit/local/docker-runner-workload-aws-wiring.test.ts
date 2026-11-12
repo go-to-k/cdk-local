@@ -29,9 +29,13 @@ vi.mock('node:child_process', () => ({
 const { defaultChainMock } = vi.hoisted(() => ({ defaultChainMock: vi.fn() }));
 vi.mock('@aws-sdk/credential-provider-node', () => ({ defaultProvider: vi.fn(() => defaultChainMock) }));
 
-const { attachLoopbackForwarder, removeContainer, runDetached, withWorkloadAwsWiring } = await import(
-  '../../../src/local/docker-runner.js'
-);
+const {
+  attachLoopbackForwarder,
+  removeContainer,
+  runDetached,
+  startNamespaceOwnerForwarder,
+  withWorkloadAwsWiring,
+} = await import('../../../src/local/docker-runner.js');
 const { resetWorkloadAwsWiringForTest, setActiveWorkloadAwsWiring } = await import(
   '../../../src/local/workload-aws-wiring.js'
 );
@@ -291,5 +295,76 @@ describe('loopback forwarder image pull', () => {
     stub();
     await runDetached({ ...baseRun, env: { AWS_ACCESS_KEY_ID: 'K', AWS_SECRET_ACCESS_KEY: 'S' } });
     expect(imageCalls()).toHaveLength(0);
+  });
+});
+
+describe('startNamespaceOwnerForwarder (issue #878)', () => {
+  const namespace = {
+    network: 'cdkl-task-x',
+    networkAliases: ['app'],
+    publish: ['127.0.0.1::8080/tcp'],
+    addHosts: ['host.docker.internal:host-gateway'],
+    links: [],
+  };
+  const calls = (): string[][] => execFileMock.mock.calls.map((c) => c[1] as string[]);
+  const start = (wiring: Wiring) =>
+    startNamespaceOwnerForwarder({
+      name: 'cdkl-fam-app-abc-awsfwd',
+      namespace,
+      ports: [9297],
+      wiring,
+      workloadLabel: 'container app',
+    });
+
+  it('runs the owner argv, waits for READY, and resolves its id', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid123\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return {};
+    });
+    await expect(start(emulatorWiring())).resolves.toBe('fid123');
+    const run = calls().find((a) => a[0] === 'run')!;
+    expect(run.slice(0, 6)).toEqual(['run', '-d', '--rm', '--name', 'cdkl-fam-app-abc-awsfwd', '--network']);
+    expect(run).toContain('cdkl-task-x');
+    expect(run).toContain('127.0.0.1::8080/tcp');
+    expect(run).not.toContain('--pid');
+    expect(calls().some((a) => a[0] === 'rm')).toBe(false);
+  });
+
+  it('--aws-emulator: a FAIL removes the forwarder and throws', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid123\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD FAIL 9297 ECONNREFUSED 172.17.0.1\n' };
+      return {};
+    });
+    await expect(start(emulatorWiring())).rejects.toThrow(/cannot reach port 9297/);
+    expect(calls()).toContainEqual(['rm', '-f', 'cdkl-fam-app-abc-awsfwd']);
+  });
+
+  it('forward mode: a FAIL removes the forwarder, warns, and resolves undefined', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid123\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD FAIL 9878 ECONNREFUSED 172.17.0.1\n' };
+      return {};
+    });
+    await expect(start(emulatorWiring({ mode: 'forward' }))).resolves.toBeUndefined();
+    expect(calls()).toContainEqual(['rm', '-f', 'cdkl-fam-app-abc-awsfwd']);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('--aws-emulator: a failed docker run (a published port in use) names the workload and never the argv', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') {
+        return { error: Object.assign(new Error('Command failed: docker run ... EMUSECRET'), { stderr: 'port is already allocated' }) };
+      }
+      return {};
+    });
+    const err = (await start(emulatorWiring()).catch((e: unknown) => e)) as Error;
+    expect(err.message).toMatch(/loopback forwarder for container app/);
+    expect(err.message).toMatch(/port is already allocated/);
+    expect(err.message).not.toContain('EMUSECRET');
+    expect(calls()).toContainEqual(['rm', '-f', 'cdkl-fam-app-abc-awsfwd']);
   });
 });
