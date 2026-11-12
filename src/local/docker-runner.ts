@@ -364,6 +364,10 @@ async function isContainerRunning(containerId: string): Promise<boolean> {
   }
 }
 
+/** Containers {@link removeOnSignalWhile} removes on a signal, with their claim counts. */
+const signalGuarded = new Map<string, number>();
+let signalListeners: { signal: 'SIGINT' | 'SIGTERM'; listener: () => void }[] = [];
+
 /**
  * Run `fn` with SIGINT / SIGTERM listeners that remove `containers`
  * synchronously. The forwarder's readiness wait can take seconds, and
@@ -373,10 +377,6 @@ async function isContainerRunning(containerId: string): Promise<boolean> {
  * any other listener's async shutdown can exit the process. When no other
  * listener exists, Node's default (exit on the signal) is kept: exit 130 / 143.
  */
-/** Containers {@link removeOnSignalWhile} removes on a signal, with their claim counts. */
-const signalGuarded = new Map<string, number>();
-let signalListeners: { signal: 'SIGINT' | 'SIGTERM'; listener: () => void }[] = [];
-
 async function removeOnSignalWhile<T>(
   containers: readonly string[],
   fn: () => Promise<T>
