@@ -72,6 +72,7 @@ import {
 import { candidateTargetStack } from '../stack-matcher.js';
 import {
   createLocalStateProvider,
+  UNNAMED_WORKLOAD,
   resolveCfnFallbackRegion,
   isCfnFlagPresent,
   rejectExplicitCfnStackWithMultipleStacks,
@@ -652,10 +653,14 @@ export async function prepareEcsImageContexts(args: {
   rejectExplicitCfnStackWithMultipleStacks(options, owningStacks.length);
 
   for (const stack of owningStacks) {
+    // The names a container no `--env-vars` section names reads, as the
+    // `start-service` child resolves its images (#905).
     const stateProvider = createLocalStateProvider(
       options,
       stack.stackName,
-      await resolveCfnFallbackRegion(options, stack.region)
+      await resolveCfnFallbackRegion(options, stack.region),
+      undefined,
+      { workload: UNNAMED_WORKLOAD }
     );
     try {
       // buildEcsImageResolutionContext reads `region` / `profile` off the bag

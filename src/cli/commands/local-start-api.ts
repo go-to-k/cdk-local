@@ -797,7 +797,8 @@ async function localStartApiCommand(
           servedRoutes,
           routesWithAuth,
           options,
-          extraStateProviders
+          extraStateProviders,
+          webSocketApis
         )
       : new Map<string, StackStateBundle>();
 
@@ -2461,7 +2462,9 @@ export async function buildContainerSpec(args: {
   let templateEnv = getTemplateEnv(lambda.resource);
   const stackBundle = stateByStack.get(lambda.stack.stackName);
   // Mixed mode: this function's own routed services pick its names (#905).
-  const stateBundle = stackBundle?.byLambda?.get(logicalId) ?? stackBundle;
+  const stateBundle =
+    stackBundle?.byLambda?.get(logicalId) ??
+    (stackBundle?.withoutSharedState ? undefined : stackBundle);
   let stateAudit: ReturnType<typeof substituteEnvVarsFromState>['audit'] | undefined;
   const plaintextKeys = new Set<string>();
   const deployedSecretKeys: string[] = [];
@@ -2581,7 +2584,7 @@ export async function buildContainerSpec(args: {
     assumeRole,
     lambdaResource: lambda.resource,
     // The execution role is assumed through real STS: the stack's names.
-    stateBundle: stackBundle,
+    stateBundle: stackBundle?.withoutSharedState ? undefined : stackBundle,
   });
   if (roleArn) {
     const creds = await assumeLambdaExecutionRole(roleArn, stsRegion, profile);
@@ -3805,6 +3808,11 @@ export interface StackStateBundle {
    * uses this bundle.
    */
   byLambda?: Map<string, StackStateBundle>;
+  /**
+   * Set when only {@link byLambda} loaded: a function with no entry there
+   * resolves as without a state source.
+   */
+  withoutSharedState?: boolean;
 }
 
 /**
@@ -3846,7 +3854,9 @@ export async function loadStateForRoutedStacks(
   routes: readonly DiscoveredRoute[],
   routesWithAuth: readonly RouteWithAuth[],
   options: LocalStartApiOptions,
-  extraStateProviders: ExtraStateProviders | undefined
+  extraStateProviders: ExtraStateProviders | undefined,
+  /** WebSocket APIs served too: their Lambdas read state like any routed one. */
+  webSocketApis: readonly DiscoveredWebSocketApi[] = []
 ): Promise<Map<string, StackStateBundle>> {
   const out = new Map<string, StackStateBundle>();
 
@@ -3855,7 +3865,7 @@ export async function loadStateForRoutedStacks(
   // resolution mirrors `resolveLambdaByLogicalId`'s walk so we never
   // load state for a stack whose Lambdas are not actually reachable
   // from the discovered API surface.
-  const lambdaIds = uniqueLambdaIds(routes, routesWithAuth);
+  const lambdaIds = uniqueLambdaIds(routes, routesWithAuth, webSocketApis);
   const reachableStackNames = new Set<string>();
   for (const logicalId of lambdaIds) {
     for (const stack of stacks) {
@@ -3910,27 +3920,45 @@ export async function loadStateForRoutedStacks(
     const stackLambdaIds = lambdaIds.filter(
       (id) => stack.template.Resources?.[id]?.Type === 'AWS::Lambda::Function'
     );
-    const bundle = await loadStackStateBundle(stack, providerFor(UNNAMED_WORKLOAD), {
-      lambdaIds: stackLambdaIds,
-      intrinsicEnv: stackHasIntrinsicEnv(stackName),
-      options,
-    });
-    if (!bundle) continue;
     const groups = groupWorkloadsRoutedApart(stackLambdaIds, (logicalId) => ({
       logicalId,
       cdkPath: readCdkPathOrUndefined(stack.template.Resources![logicalId]!),
     }));
+    const grouped = new Set(groups.flatMap((g) => g.items));
+    const shared = await loadStackStateBundle(stack, providerFor(UNNAMED_WORKLOAD), {
+      lambdaIds: stackLambdaIds.filter((id) => !grouped.has(id)),
+      intrinsicEnv: stackHasIntrinsicEnv(stackName),
+      options,
+    });
+    const byLambda = new Map<string, StackStateBundle>();
     for (const group of groups) {
       const own = await loadStackStateBundle(stack, providerFor(group.workload), {
         lambdaIds: group.items,
         intrinsicEnv: stackHasIntrinsicEnv(stackName),
         options,
-        ...(bundle.pseudoParameters && { pseudoParameters: bundle.pseudoParameters }),
+        ...(shared?.pseudoParameters && { pseudoParameters: shared.pseudoParameters }),
       });
-      if (!own) continue;
-      bundle.byLambda ??= new Map();
-      for (const logicalId of group.items) bundle.byLambda.set(logicalId, own);
+      if (own) for (const logicalId of group.items) byLambda.set(logicalId, own);
     }
+    // The shared load can fail while a group's succeeds (a stack only the
+    // emulator has, routed only in functions' own sections): keep the
+    // group's bundles; the other functions resolve as without state.
+    const bundle: StackStateBundle | undefined =
+      shared ??
+      (byLambda.size > 0
+        ? {
+            state: {
+              version: 1,
+              stackName: stack.stackName,
+              resources: {},
+              outputs: {},
+              lastModified: 0,
+            },
+            withoutSharedState: true,
+          }
+        : undefined);
+    if (!bundle) continue;
+    if (byLambda.size > 0) bundle.byLambda = byLambda;
     out.set(stackName, bundle);
   }
   return out;

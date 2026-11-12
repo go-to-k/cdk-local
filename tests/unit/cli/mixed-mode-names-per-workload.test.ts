@@ -66,11 +66,18 @@ function stateRecord(table: string): {
   };
 }
 
+let realStackMissing = false;
+
 function fakeProvider(table: string): LocalStateProvider {
   return {
     label: table,
-    load: async () => stateRecord(table),
+    load: async () => (table === REAL_TABLE && realStackMissing ? undefined : stateRecord(table)),
     buildCrossStackResolver: async () => undefined,
+    // A SecureString template parameter, decrypted on the side this provider reads.
+    resolveTemplateSsmParameters: async () => ({
+      values: { DbPassword: `${table}-pw` },
+      secureStringLogicalIds: ['DbPassword'],
+    }),
     dispose: () => {},
   };
 }
@@ -110,6 +117,7 @@ beforeEach(() => {
 afterEach(() => {
   setAwsEmulatorServiceRouting(undefined);
   workloads.length = 0;
+  realStackMissing = false;
 });
 
 describe('groupWorkloadsRoutedApart', () => {
@@ -170,15 +178,21 @@ describe('start-api — names per function', () => {
 
   const envOf = async (
     envOverrides: Record<string, unknown>,
-    logicalId: string
+    logicalId: string,
+    opts: { webSocketB?: boolean } = {}
   ): Promise<Record<string, string>> => {
     route(envOverrides);
     const stateByStack = await loadStateForRoutedStacks(
       [stack],
-      [routeTo('A'), routeTo('B')],
+      opts.webSocketB ? [routeTo('A')] : [routeTo('A'), routeTo('B')],
       [],
       { fromState: true } as never,
-      extraStateProviders
+      extraStateProviders,
+      opts.webSocketB
+        ? ([{ routes: [{ targetLambdaLogicalId: 'B' }] }] as unknown as Parameters<
+            typeof loadStateForRoutedStacks
+          >[5])
+        : []
     );
     const inlineTmpDirs = new Set<string>();
     try {
@@ -203,6 +217,18 @@ describe('start-api — names per function', () => {
   it('A (routed in its own section) reads the emulator name, B the REAL one', async () => {
     expect((await envOf(A_ROUTES_DYNAMODB, 'A'))['TABLE']).toBe(EMU_TABLE);
     expect((await envOf(A_ROUTES_DYNAMODB, 'B'))['TABLE']).toBe(REAL_TABLE);
+  });
+
+  it('a WebSocket route Lambda reads its own names too', async () => {
+    const bRoutes = { B: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } };
+    expect((await envOf(bRoutes, 'B', { webSocketB: true }))['TABLE']).toBe(EMU_TABLE);
+    expect((await envOf(bRoutes, 'A', { webSocketB: true }))['TABLE']).toBe(REAL_TABLE);
+  });
+
+  it('a stack only the emulator has: A still reads the emulator name, B none', async () => {
+    realStackMissing = true;
+    expect((await envOf(A_ROUTES_DYNAMODB, 'A'))['TABLE']).toBe(EMU_TABLE);
+    expect((await envOf(A_ROUTES_DYNAMODB, 'B'))['TABLE']).toBeUndefined();
   });
 
   it('a section by CDK path routes the function too', async () => {
@@ -309,6 +335,37 @@ describe('ECS — names per container', () => {
     expect(Object.fromEntries(task.containers.map((c) => [c.name, c.environment['MIXED']]))).toEqual(
       { A: `value-of-${EMU_TABLE}-arn`, B: `value-of-${REAL_TABLE}-arn` }
     );
+  });
+
+  it('a SecureString parameter stays off argv for each container, from its own side', async () => {
+    route({ A: { AWS_ENDPOINT_URL_SSM: 'aws-emulator' } });
+    const stack = taskStack();
+    const tpl = stack.template as { Parameters?: Record<string, unknown>; Resources: Record<string, any> };
+    tpl.Parameters = { DbPassword: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/db/pw' } };
+    for (const def of tpl.Resources['TaskDef'].Properties.ContainerDefinitions) {
+      def.Environment.push({ Name: 'PW', Value: { Ref: 'DbPassword' } });
+    }
+    const ssmAware = {
+      fromState: (_o: unknown, behavior: { workload?: unknown }): LocalStateProvider => {
+        const services = awsEmulatorRoutedServices(
+          behavior.workload as Parameters<typeof awsEmulatorRoutedServices>[0]
+        );
+        return fakeProvider(services?.includes('SSM') ? EMU_TABLE : REAL_TABLE);
+      },
+    };
+    const { stateProvider, stateProviderFor } = await createTargetStateProviders(
+      'S:TaskDef',
+      [stack],
+      { fromState: true } as never,
+      ssmAware as never
+    );
+    const ctx = await buildRunTaskContext(stack, stateProvider, {} as never, stateProviderFor);
+    const task = resolveEcsTaskTarget('S:TaskDef', [stack], ctx);
+    const byName = Object.fromEntries(task.containers.map((c) => [c.name, c]));
+    expect(byName['A']!.environment['PW']).toBe(`${EMU_TABLE}-pw`);
+    expect(byName['B']!.environment['PW']).toBe(`${REAL_TABLE}-pw`);
+    expect(byName['A']!.sensitiveEnvKeys).toContain('PW');
+    expect(byName['B']!.sensitiveEnvKeys).toContain('PW');
   });
 
   it('no section sentinel: every container shares one Parameters-only provider (unchanged)', async () => {
