@@ -376,8 +376,8 @@ async function localRunTaskCommand(
       info: (m) => logger.info(m),
       warn: (m) => logger.warn(m),
     });
-    sigintHandler = (): void => onSignal('SIGINT', 130);
-    sigtermHandler = (): void => onSignal('SIGTERM', 130);
+    sigintHandler = (): void => onSignal('SIGINT');
+    sigtermHandler = (): void => onSignal('SIGTERM');
     process.on('SIGINT', sigintHandler);
     process.on('SIGTERM', sigtermHandler);
 

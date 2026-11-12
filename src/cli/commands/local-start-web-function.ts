@@ -14,6 +14,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import { formatAuthority } from '../../utils/url-authority.js';
+import { signalExitCode, type StopSignal } from '../../utils/shutdown-signal.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import {
@@ -157,7 +158,7 @@ async function localStartWebFunctionCommand(
 
   // Armed before the first host-side effect (the extracted bundle), so ^C
   // during the extraction or a long first pull still removes it.
-  const shutdown = async (signal: 'SIGINT' | 'SIGTERM', exitCode: number): Promise<void> => {
+  const shutdown = async (signal: StopSignal): Promise<void> => {
     if (shuttingDown) {
       // A second signal. Abandon ONLY while teardown waits on an in-flight
       // `docker run` (which may never return). Once it is removing the
@@ -176,16 +177,16 @@ async function localStartWebFunctionCommand(
           `credentials. Remove it by its name (this works even if it is created after this ` +
           `exit): docker rm -f ${serve.containerName ?? '<name>'}`
       );
-      process.exit(signal === 'SIGINT' ? 130 : 143);
+      process.exit(signalExitCode(signal));
       return;
     }
     shuttingDown = true;
     logger.info(`Received ${signal}, shutting down...`);
     await serve.teardown();
-    process.exit(exitCode);
+    process.exit(signalExitCode(signal));
   };
-  process.on('SIGINT', () => void shutdown('SIGINT', 130));
-  process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
   try {
     const address = await serve.start();

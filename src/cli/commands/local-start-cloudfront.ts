@@ -45,7 +45,11 @@ import { resolveDeployedKvsArnByName } from '../../local/cloudfront-kvs-client.j
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
-import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
+import {
+  createShutdownSignalHandler,
+  signalExitCode,
+  type StopSignal,
+} from '../../utils/shutdown-signal.js';
 import { createReloadQueue, stopWatchReloads, type ReloadQueue } from '../../local/reload-queue.js';
 import {
   resolveFrontDoorTlsMaterials,
@@ -1079,13 +1083,11 @@ async function localStartCloudFrontCommand(
   // shutdown handler below.
   const webFunctionServes: WebFunctionServe[] = [];
   let bootAborted = false;
-  const onBootSignal = (signal: 'SIGINT' | 'SIGTERM'): void => {
+  const onBootSignal = (signal: StopSignal): void => {
     if (bootAborted) return;
     bootAborted = true;
     logger.info(`Received ${signal} during start-up; removing the web function containers...`);
-    void drainWebFunctionServes(webFunctionServes).then(() =>
-      process.exit(signal === 'SIGINT' ? 130 : 0)
-    );
+    void drainWebFunctionServes(webFunctionServes).then(() => process.exit(signalExitCode(signal)));
   };
   const bootSigint = (): void => onBootSignal('SIGINT');
   const bootSigterm = (): void => onBootSignal('SIGTERM');
@@ -1263,8 +1265,8 @@ async function localStartCloudFrontCommand(
     info: (m) => logger.info(m),
     warn: (m) => logger.warn(m),
   });
-  process.on('SIGINT', () => shutdown('SIGINT', 130));
-  process.on('SIGTERM', () => shutdown('SIGTERM', 0));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   // Block forever — signal handlers exit the process.
   await new Promise<never>(() => undefined);
@@ -1405,7 +1407,7 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
       new Option(
         '--watch',
         "Hot-reload: re-synth + re-resolve the distribution when the CDK app's source changes (honors cdk.json " +
-          'watch.include/exclude; cdk.out, node_modules, .git are always excluded). The server keeps the previous ' +
+          'watch.include/exclude; cdk.out, cdk.context.json, node_modules, .git are always excluded). The server keeps the previous ' +
           'version serving when synth fails mid-reload.'
       ).default(false)
     );

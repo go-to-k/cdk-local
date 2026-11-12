@@ -153,7 +153,7 @@ export function addStartServiceSpecificOptions(cmd: Command): Command {
       new Option(
         '--watch',
         'Hot-reload: re-synth + per-replica reload when the CDK source changes (honors ' +
-          'cdk.json watch.include/exclude; cdk.out, node_modules, .git are always excluded). ' +
+          'cdk.json watch.include/exclude; cdk.out, cdk.context.json, node_modules, .git are always excluded). ' +
           'A per-firing classifier picks the per-replica primitive: source-only edits on ' +
           'interpreted-language handlers (Node/Python/Ruby/shell) take a bind-mount FAST PATH ' +
           '(`docker cp` the new source into each replica + restart it; no rebuild). ' +

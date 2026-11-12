@@ -14,6 +14,7 @@ import {
   warnFinchArgvExposure,
 } from '../utils/docker-cmd.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { signalExitCode } from '../utils/shutdown-signal.js';
 import { displayIdent, displayToolOutput } from '../utils/ident-display.js';
 import { getLogger } from '../utils/logger.js';
 import { defineOwnKey } from '../utils/own-keys.js';
@@ -415,7 +416,7 @@ async function removeOnSignalWhile<T>(
             // Best effort: a container already gone makes `rm -f` exit non-zero.
           }
         }
-        if (process.listenerCount(signal) === 1) process.exit(signal === 'SIGINT' ? 130 : 143);
+        if (process.listenerCount(signal) === 1) process.exit(signalExitCode(signal));
       };
       process.on(signal, listener);
       return { signal, listener };

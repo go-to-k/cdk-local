@@ -1085,7 +1085,7 @@ the same tier; cdk-local uses literal-segment count as a heuristic).
 | `--debug-port-base <port>` | unset | Allocate a contiguous `--inspect-brk` port range across Lambdas (one per Lambda). |
 | `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkl invoke`. |
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
-| `--watch` | off | Hot reload: re-synth + re-discover routes when the CDK app's source tree (the directory holding `cdk.json`) changes. Honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out/`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
+| `--watch` | off | Hot reload: re-synth + re-discover routes when the CDK app's source tree (the directory holding `cdk.json`) changes. Honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out/`, `cdk.context.json`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters in Lambda env vars with the deployed physical IDs / exports. **The bare form is the typical shape** — `cdkl start-api MyStack/MyApi --from-cfn-stack` resolves to the CDK stack name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden). The explicit form is rejected when more than one stack is routed in one invocation; the bare form is fine for multi-stack. `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in a routed Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Re-runs against fresh CFn data on every hot-reload firing (`--watch`). ListStackResources failures degrade per-stack to warn-and-fall-back so an unreadable stack never aborts the server. |
 | `--stack-region <region>` | auto | Region used to construct the CloudFormation client for `--from-cfn-stack`. |
@@ -1125,11 +1125,26 @@ then tears everything down. This holds for every `--watch` command.
 
 The watch set honors `cdk.json`'s `watch.include` / `watch.exclude`
 globs (mirroring `cdk watch`); `watch.include` defaults to `**` and a
-missing `watch` block is not an error. Three paths are ALWAYS excluded:
+missing `watch` block is not an error. These paths are ALWAYS excluded:
 
 - the synth **output directory** (`cdk.out/`, or the `--output` value),
+- `cdk.context.json` (a synth rewrites it when the app does a context lookup),
+- the OS temp directory, when `TMPDIR` points under the project (cdk-local
+  stages its temporary files there),
 - `node_modules`,
 - `.git`.
+
+Those are the files cdk-local itself writes into the watched tree (plus two
+directories skipped for traversal cost), so its own writes can never trigger a
+reload. A file YOU write there is not excluded: for example
+`cdkl start-service ... --watch > app.log` writes `app.log` into the project,
+and each log line would fire a reload. List it in `cdk.json`:
+
+```json
+{ "watch": { "exclude": ["*.log"] } }
+```
+
+or send the log outside the project (`> /tmp/app.log`).
 
 Excluding the output directory is load-bearing for correctness: each
 reload re-synths INTO `cdk.out/`, so watching it would make the reload's
@@ -1301,10 +1316,11 @@ containers are reported with the `docker ps` cleanup command.
 
 ### `start-api` exit codes
 
-- `0` — server started cleanly and shut down on SIGTERM.
 - `1` — startup failure (Docker missing, port bind failed, route
   discovery rejected) OR uncaught exception during the run.
-- `130` — exited via SIGINT.
+- `130` — stopped by SIGINT.
+- `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
+  number) and follow the same graceful shutdown; a clean stop is not `0`.
 
 ### `start-api` authorizers
 
@@ -1866,7 +1882,7 @@ dependsOn relation start in template order.
 4. cdk-local exits with the essential container's exit code.
 
 `^C` triggers the same teardown. A second `^C` lets it finish; a third
-exits 130 immediately, skipping container cleanup (same pattern as
+exits immediately (130 for SIGINT, 143 for SIGTERM), skipping container cleanup (same pattern as
 `cdkl start-api`).
 
 `--detach` skips steps 1, 2, and 4. The sidecar and user containers
@@ -1993,7 +2009,7 @@ error.
 | `--no-pull` | off | Skip `docker pull` on every container image and the metadata sidecar. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region used to construct the CloudFormation client for `--from-cfn-stack`. |
-| `--watch` | off | Hot reload: re-synth + per-replica rolling deploy when the CDK app's source changes. Honors `cdk.json` `watch.include` / `watch.exclude` (mirrors `cdk watch`); `cdk.out/`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. Each replica is rolled one at a time — boot a shadow replica with the new image under a bumped generation suffix, wait for a TCP-ready probe on the container port (default 60s; tunable via `--shadow-ready-timeout`), atomically swap Service-Connect / Cloud Map registrations, then retire the old container — so peer services see zero connection refusals across the reload even on multi-replica services. Synth failures keep the previous replica(s) serving (warn-and-continue, never crashes the emulator). |
+| `--watch` | off | Hot reload: re-synth + per-replica rolling deploy when the CDK app's source changes. Honors `cdk.json` `watch.include` / `watch.exclude` (mirrors `cdk watch`); `cdk.out/`, `cdk.context.json`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. Each replica is rolled one at a time — boot a shadow replica with the new image under a bumped generation suffix, wait for a TCP-ready probe on the container port (default 60s; tunable via `--shadow-ready-timeout`), atomically swap Service-Connect / Cloud Map registrations, then retire the old container — so peer services see zero connection refusals across the reload even on multi-replica services. Synth failures keep the previous replica(s) serving (warn-and-continue, never crashes the emulator). |
 | `--no-logs` | off | Disable foreground streaming of each replica container stdout/stderr. By default every booted replica streams its docker logs to the host terminal with a `[svc=<service> r=<replica-index> c=<container>]` prefix, matching `cdkl run-task`'s log surface so application `console.log` calls are visible without a side `docker logs -f`. The streamer follows replicas across `--watch` reloads (both the rebuild rolling primitive and the soft-reload stop + start path). Pass `--no-logs` for multi-replica / multi-service runs whose interleaved log volume is unreadable; `docker logs -f <id>` in a separate terminal stays available. |
 | `--shadow-ready-timeout <ms>` | `60000` | Milliseconds the `--watch` rolling primitive waits for a shadow replica's first essential-container port to accept a TCP connection before swapping registrations off the old replica. Default 60s covers realistic prod-shaped Node app cold-starts (TS->JS compile, full `node_modules` graph, framework boot, DB pool init). Bump higher (e.g. `120000`) when the reload log surfaces `TCP probe <ip>:<port> did not accept within <N>ms` — typical for Java / heavy ORM init / `--inspect-brk` attach pauses. Env var: `CDKL_SHADOW_READY_TIMEOUT_MS` (flag wins over env, env wins over default). Issue #265. |
 
@@ -2342,7 +2358,7 @@ the TCP-ready probe passes.
 replica in parallel — each replica's docker containers + per-replica
 network + metadata sidecar are torn down via the same `cleanupEcsRun`
 path `run-task` uses. A second `^C` lets that teardown finish; a third
-bypasses it and exits 130 immediately so users have an escape hatch when
+bypasses it and exits immediately (130 / 143 by the signal) so users have an escape hatch when
 docker hangs.
 
 ### `start-service` scope (deferred follow-ups)

@@ -16,6 +16,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { signalExitCode, type StopSignal } from '../../utils/shutdown-signal.js';
 import { displayStackName } from '../../utils/ident-display.js';
 import { describeAwsFailureForWarn } from '../../local/credential-error.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -1492,9 +1493,13 @@ function blockUntilShutdown(
 ): Promise<void> {
   return new Promise<void>((resolveShutdown) => {
     let shuttingDown = false;
-    const shutdown = (signal: string): void => {
+    const shutdown = (signal: StopSignal): void => {
       if (shuttingDown) return;
       shuttingDown = true;
+      // Not `process.exit`: a host CLI may embed studio in a longer-lived
+      // process. The shell-convention status (#893) is what the process ends
+      // with once studio returns.
+      process.exitCode = signalExitCode(signal);
       getLogger().info(`Received ${signal}; stopping ${cliName} studio...`);
       // Unsubscribe the store from the bus so a host CLI that restarts
       // studio in a long-lived process does not accumulate listeners.

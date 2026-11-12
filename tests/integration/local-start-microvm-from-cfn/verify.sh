@@ -121,7 +121,7 @@ boot_run() {
   fail "start-microvm did not print its ready banner in time"
 }
 
-# SIGTERM the run, wait for THAT pid to exit 0, and require its containers gone.
+# SIGTERM the run, wait for THAT pid to exit 143 (the SIGTERM code), and require its containers gone.
 terminate_run() {
   local pid="${CDKL_PID}"
   kill -TERM "${pid}"
@@ -130,7 +130,7 @@ terminate_run() {
   local rc=$?
   set -e
   CDKL_PID=""
-  [ "${rc}" -eq 0 ] || fail "start-microvm exited ${rc} on SIGTERM (want 0)"
+  [ "${rc}" -eq 143 ] || fail "start-microvm exited ${rc} on SIGTERM (want 143)"
   local left
   left="$(containers_of "${pid}")"
   [ -z "${left}" ] || fail "leftover MicroVM container(s) after SIGTERM: ${left}"

@@ -14,7 +14,7 @@
 #      edit.
 #   3. cdk.json `watch.exclude` is honored: touching an excluded path
 #      (a *.md file) triggers no reload.
-#   4. Clean teardown on SIGTERM: no leftover cdkl-* containers /
+#   4. Clean teardown on SIGTERM (exit 143): no leftover cdkl-* containers /
 #      networks after the emulator exits.
 #
 # Run via `/run-integ local-start-service-watch` (recommended) or
@@ -301,8 +301,16 @@ if [[ "${EXITED}" -ne 1 ]]; then
   kill -KILL "${CDKL_PID}" 2>/dev/null || true
   exit 1
 fi
-wait "${CDKL_PID}" 2>/dev/null || true
+# Issue #893: a SIGTERM stop exits with the shell-convention 143.
+CDKL_RC=0
+wait "${CDKL_PID}" 2>/dev/null || CDKL_RC=$?
 CDKL_PID=""
+if [[ "${CDKL_RC}" -ne 143 ]]; then
+  echo "FAIL: expected exit 143 after SIGTERM, got ${CDKL_RC}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [SIGTERM exit code 143] OK"
 
 echo "==> Asserting clean teardown — no leftover containers"
 LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkl-" --format '{{.ID}}' | wc -l | tr -d ' ')
