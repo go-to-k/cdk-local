@@ -5,7 +5,7 @@
  * `{{resolve:...}}` token. Resolved keys go off the `docker run` argv; an
  * `--env-vars` override skips the lookup; a failure throws.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
@@ -358,6 +358,7 @@ describe('resolveLambdaContainerEnv — AWS Emulator mixed mode, per workload', 
       expect(result.env['FROM_PIPE']).toBe('yes');
     } finally {
       writer.kill();
+      rmSync(dir, { recursive: true, force: true });
       // Reap it: the suite refuses a test file that leaves a child running.
       if (empty && empty.exitCode === null && empty.signalCode === null) {
         const exited = new Promise((r) => empty!.once('exit', r));

@@ -9,10 +9,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { ResolvedEcsContainer, ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
 
-const { execFileMock, smSend, smRegions, stubs } = vi.hoisted(() => ({
+const { execFileMock, smSend, smRegions, smEndpoints, stubs } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
   smSend: vi.fn(),
   smRegions: [] as Array<string | undefined>,
+  smEndpoints: [] as Array<string | undefined>,
   stubs: {
     resolveEcsSecrets: vi.fn(),
     createTaskNetwork: vi.fn(),
@@ -38,8 +39,9 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('@aws-sdk/client-secrets-manager', () => ({
   SecretsManagerClient: class {
-    constructor(config: { region?: string }) {
+    constructor(config: { region?: string; endpoint?: string }) {
       smRegions.push(config.region);
+      smEndpoints.push(config.endpoint);
     }
     send = smSend;
     destroy(): void {}
@@ -153,6 +155,7 @@ describe('runEcsTask — dynamic references in Environment (#784)', () => {
     stubs.createTaskNetwork.mockResolvedValue(network);
     smSend.mockReset();
     smRegions.length = 0;
+    smEndpoints.length = 0;
     smSend.mockResolvedValue({ SecretString: JSON.stringify({ password: PLAINTEXT }) });
     savedDocker = process.env['CDK_DOCKER'];
     savedOptIn = process.env['CDKL_ALLOW_SECRETS_ON_ARGV'];
@@ -183,6 +186,28 @@ describe('runEcsTask — dynamic references in Environment (#784)', () => {
     expect(argv).toContain('LOG=info');
     const execOpts = runs[0]![2] as { env?: Record<string, string> };
     expect(execOpts.env?.['DB_PASSWORD']).toBe(PLAINTEXT);
+  });
+
+  // go-to-k/cdk-local#902: the container is the workload, so its own sentinel
+  // decides where its `{{resolve}}` is read in AWS Emulator mixed mode.
+  it("mixed mode: reads from the emulator only when the container's own section routes the service", async () => {
+    const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');
+    const route = (section: string): void =>
+      setAwsEmulatorServiceRouting({
+        services: ['SECRETS_MANAGER'],
+        override: { endpoint: 'https://127.0.0.1:9395' },
+        envOverrides: { [section]: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator' } },
+      });
+    try {
+      for (const section of ['app', 'other']) {
+        route(section);
+        const task = makeTask([makeContainer({ environment: { DB_PASSWORD: TOKEN } })]);
+        await runEcsTask(task, runnableOptions(task), createEcsRunState());
+      }
+      expect(smEndpoints).toEqual(['https://127.0.0.1:9395', undefined]);
+    } finally {
+      setAwsEmulatorServiceRouting(undefined);
+    }
   });
 
   it('an --env-vars override on the key skips the lookup', async () => {
