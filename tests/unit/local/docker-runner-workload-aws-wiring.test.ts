@@ -273,13 +273,16 @@ describe('loopback forwarder image pull', () => {
     stub();
     await runDetached({ ...baseRun, env: {} });
     expect(imageCalls().length).toBeGreaterThan(0);
+    const fwd = execFileMock.mock.calls.find((c) => c[1].includes('--pid'))!;
+    expect(fwd[1]).not.toContain('never');
   });
 
   it('--no-pull: never inspects or pulls the forwarder image', async () => {
     setActiveWorkloadAwsWiring(emulatorWiring({ skipPull: true }));
     stub();
     await runDetached({ ...baseRun, env: {} });
-    expect(execFileMock.mock.calls.some((c) => c[1].includes('--pid'))).toBe(true);
+    const fwd = execFileMock.mock.calls.find((c) => c[1].includes('--pid'))!;
+    expect((fwd[1] as string[]).join(' ')).toContain('--pull never');
     expect(imageCalls()).toHaveLength(0);
   });
 

@@ -28,11 +28,10 @@
 
 import type { AwsCredentialIdentityProvider } from '@smithy/types';
 import { getEmbedConfig } from '../local/embed-config.js';
-import {
-  buildProxyClientConfig,
-  buildProxyRequestHandler,
-  getAwsEndpointOverride,
-} from './aws-proxy.js';
+import { buildProxyClientConfig, buildProxyRequestHandler } from './aws-proxy.js';
+// A function-only import cycle (the wiring reads `assumedRoleRecorded`): both
+// are called at run time, never during module evaluation.
+import { getActiveWorkloadAwsWiring } from '../local/workload-aws-wiring.js';
 import type { AwsProxyClientConfig } from './aws-proxy.js';
 import { getLogger } from './logger.js';
 
@@ -309,23 +308,28 @@ export function applyWorkloadEnvCredentials(
 }
 
 /**
- * Warn, once per process, that the container falls back to the host's default
- * credential chain without its environment link (the docker-run layer's fill,
- * `workload-aws-wiring.ts`), naming the remedy: a long-running container's
- * credential error otherwise lands far from its cause. Call it only when
- * {@link applyWorkloadEnvCredentials} returned 'stripped' AND the final env
- * (after any `--profile` overlay) still has no `AWS_ACCESS_KEY_ID`. Silent
- * under an endpoint override (`--aws-emulator`): the container gets the
- * endpoint's own credentials there, whatever the shell holds.
+ * Warn, once per process, what the container gets instead of the role, naming
+ * the remedy: a long-running container's credential error otherwise lands far
+ * from its cause. With an active forward-mode wiring that is the host's default
+ * chain without its environment link (the docker-run layer's fill,
+ * `workload-aws-wiring.ts`); with no active wiring it is nothing. Call it only
+ * when {@link applyWorkloadEnvCredentials} returned 'stripped' AND the final
+ * env (after any `--profile` overlay) still has no `AWS_ACCESS_KEY_ID`. Silent
+ * under `--aws-emulator`: the container gets the endpoint's own credentials
+ * there, whatever the shell holds.
  */
 export function warnWorkloadCredentialsStripped(): void {
-  if (stripWarned || getAwsEndpointOverride()) return;
+  const wiring = getActiveWorkloadAwsWiring();
+  if (stripWarned || wiring?.mode === 'emulator') return;
   stripWarned = true;
+  const gets = wiring
+    ? 'the container gets what the host default credential chain resolves without the ' +
+      'environment (the AWS_PROFILE or default profile in your shared config / credentials ' +
+      'files, SSO included), or none when that resolves nothing'
+    : 'the container receives none';
   getLogger().warn(
     'The --role-arn role is not handed to the emulated workload, and your shell had no ' +
-      'static AWS credentials to hand it instead, so the container gets what the host default ' +
-      'credential chain resolves without the environment (the AWS_PROFILE or default profile in ' +
-      'your shared config / credentials files, SSO included), or none when that resolves nothing. ' +
+      `static AWS credentials to hand it instead, so ${gets}. ` +
       'Pass --profile <name>, or export static credentials, to choose its identity.'
   );
 }

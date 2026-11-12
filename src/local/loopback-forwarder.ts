@@ -148,13 +148,15 @@ export function parseForwarderStatus(
 export function buildLoopbackForwarderDockerArgs(
   opts: Pick<
     StartLoopbackForwarderOptions,
-    'workloadContainer' | 'ports' | 'probe' | 'caHostPath'
+    'workloadContainer' | 'ports' | 'probe' | 'caHostPath' | 'skipPull'
   > & {
     name: string;
   }
 ): string[] {
   const ns = `container:${opts.workloadContainer}`;
   const args = ['run', '-d', '--rm', '--name', opts.name, '--network', ns, '--pid', ns];
+  // `--no-pull`: a missing image fails the forwarder instead of an implicit pull.
+  if (opts.skipPull) args.push('--pull', 'never');
   if (opts.caHostPath) args.push('-v', `${opts.caHostPath}:${FORWARDER_CA_PATH}:ro`);
   args.push(
     '--entrypoint',
@@ -176,8 +178,8 @@ const PULL_FAILURE_TTL_MS = 60_000;
 /**
  * Pull the forwarder image once per process when it is not present yet. Call
  * it before starting a workload so the forwarder starts without a pull.
- * `skipPull` (`--no-pull`) skips the check and the pull, as for every other
- * image: `docker run` then uses the local copy.
+ * `skipPull` (`--no-pull`) skips the check and the pull; the forwarder's
+ * `docker run` then carries `--pull never`, so only a local copy is used.
  */
 export async function ensureForwarderImage(skipPull = false): Promise<void> {
   if (skipPull) return;
