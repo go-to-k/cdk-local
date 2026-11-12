@@ -149,6 +149,7 @@ const {
   __setDockerInspectPublishesHostPortsImpl,
   __setListenProbeImpl,
   __setReloadDrainMs,
+  networkEndpointId,
   SOFT_RELOAD_COMPLETION_LOG_SUFFIX,
 } = await import('../../../src/local/ecs-service-runner.js');
 const { setActiveWorkloadAwsWiring, resetWorkloadAwsWiringForTest } = await import(
@@ -405,6 +406,42 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     expect(hoisted.ops).toContain(`docker start ${cid}`);
     expect(hoisted.ops.some((o) => o.startsWith('forwarder '))).toBe(false);
     await controller.shutdown();
+  });
+
+  it('attaches no forwarder after docker start of a container in an owning forwarder (issue #878)', async () => {
+    // The owning forwarder never stopped, so the restarted app is inside a
+    // listener that is already up; a second (pid-sharing) one would collide.
+    __setDockerStartImpl(undefined);
+    setActiveWorkloadAwsWiring({
+      mode: 'emulator',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [9297],
+      probeHealth: true,
+      dispose: () => undefined,
+    });
+    try {
+      const pool = new FrontDoorEndpointPool();
+      const registry = new CloudMapRegistry();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const opts = fakeOptions(pool, registry) as any;
+      const controller = await startEcsService(fakeService(), opts, createServiceRunState());
+      const r0 = controller.runState.replicas[0]!;
+      r0.state.forwarders = [{ containerName: 'web', name: 'fwd', id: 'cid-7', joined: true }];
+      const cid = r0.state.startedContainers[0]!.id;
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      expect(hoisted.ops).toContain(`docker start ${cid}`);
+      expect(hoisted.ops.some((o) => o.startsWith('forwarder '))).toBe(false);
+      await controller.shutdown();
+    } finally {
+      resetWorkloadAwsWiringForTest();
+    }
   });
 
   it('falls back to "/" when the image declares no WORKDIR (Dockerfile without WORKDIR)', async () => {
@@ -1060,6 +1097,57 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
       await controller.shutdown();
     });
 
+    // Issue #878 — a container in a namespace-owning loopback forwarder's
+    // namespace has no endpoint of its own: the network ops target the
+    // forwarder, which keeps running; cp / stop / start / exec target the
+    // container, and its start attaches no second forwarder.
+    function joinForwarder(r0: any): void {
+      r0.state.forwarders = [{ containerName: 'web', name: 'fwd', id: 'cid-7', joined: true }];
+    }
+
+    it('joined container: detaches + drains + restores aliases on its FORWARDER, restarts the container', async () => {
+      const startOpts: unknown[] = [];
+      __setDockerStartImpl(async (id, opts) => {
+        hoisted.ops.push(`start ${id}`);
+        startOpts.push(opts);
+      });
+      const { cid, net, controller } = await bootAndReload(joinForwarder);
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      const fip = '172.20.0.17';
+      expect(hoisted.ops).toEqual([
+        `disconnect ${net} cid-7`,
+        `connect ${net} cid-7 ip=${fip} aliases=`,
+        `stop ${cid}`,
+        `start ${cid}`,
+        `listen ${cid}`,
+        `listen ${cid}`,
+        `disconnect ${net} cid-7`,
+        `connect ${net} cid-7 ip=${fip} aliases=web,svc,svc.cdkl.local`,
+      ]);
+      expect(startOpts).toEqual([{ joinedForwarder: true }]);
+      await controller.shutdown();
+    });
+
+    it('joined host-port publisher: keeps its forwarder attached (a running re-attach drops its ports)', async () => {
+      // The publish read must hit the FORWARDER: a joined container has no
+      // port bindings of its own.
+      __setDockerInspectPublishesHostPortsImpl(async (id) => id === 'cid-7');
+      const { cid, controller } = await bootAndReload(joinForwarder);
+      await softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      });
+      expect(hoisted.ops).toEqual([`stop ${cid}`, `start ${cid}`, `listen ${cid}`]);
+      await controller.shutdown();
+    });
+
     it('leaves a container on a non-shared network in place (no disconnect / connect)', async () => {
       const { cid, controller } = await bootAndReload((r0) => {
         r0.state.network.ownedByCaller = false;
@@ -1407,5 +1495,20 @@ describe('Cloud Map publish warns render identifiers (#761)', () => {
     expect(warnWith('ServiceRegistries[].cloudMapServiceLogicalId=')).toBe(
       'ECS Service "a\' b" ServiceRegistries[].cloudMapServiceLogicalId="x [2Kforged" did not resolve to an AWS::ServiceDiscovery::Service in stack "stack\' x". Skipping this registration.'
     );
+  });
+});
+
+describe('networkEndpointId (issue #878)', () => {
+  it('is the joined forwarder of that container, else the container itself', () => {
+    const state = {
+      forwarders: [
+        { containerName: 'web', name: 'f1', id: 'fid-1', joined: true },
+        { containerName: 'side', name: 'f2', id: 'fid-2', joined: false },
+      ],
+    };
+    expect(networkEndpointId(state, 'web', 'cid-1')).toBe('fid-1');
+    expect(networkEndpointId(state, 'side', 'cid-2')).toBe('cid-2');
+    expect(networkEndpointId(state, 'other', 'cid-3')).toBe('cid-3');
+    expect(networkEndpointId({} as never, 'web', 'cid-1')).toBe('cid-1');
   });
 });

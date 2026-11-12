@@ -512,6 +512,21 @@ async function localRunTaskCommand(
         `Use 'docker ps --filter network=${result.state.network?.networkName ?? '<network>'}' to inspect; ` +
           `tear down with 'docker rm -f' and 'docker network rm'.`
       );
+      // A container in a loopback forwarder's namespace has no endpoint of
+      // its own, so that network filter lists only the forwarders (#878).
+      const joinedForwarders = result.state.forwarders.filter((f) => f.joined);
+      if (joinedForwarders.length > 0) {
+        const joinedNames = new Set(joinedForwarders.map((f) => f.containerName));
+        const containers = result.state.startedContainers
+          .filter((c) => joinedNames.has(c.name))
+          .map((c) => c.id.slice(0, 12))
+          .join(', ');
+        logger.info(
+          `Under the loopback AWS endpoint, task containers share the network of a forwarder ` +
+            `container, so that filter does not list them. Task container ids: ${containers}. ` +
+            `Remove them before the forwarders (${joinedForwarders.map((f) => f.name).join(', ')}).`
+        );
+      }
       // Detach mode skips cleanup — the caller manages container lifecycle.
       sigintCount = 99;
       return;

@@ -77,12 +77,12 @@ a log line, and a served HTTP response body.
   one exception is a SIGINT / SIGTERM during its readiness wait, before
   `runDetached` has handed the workload id to its caller:
   `attachLoopbackForwarder` then removes both synchronously.
-- `buildNamespaceOwnerForwarderDockerArgs` is the race-free inverse for a
-  host's own runner: the forwarder starts FIRST on the task network, carrying
-  the aliases / `-p` / `--add-host` / `--link` Docker refuses on a
-  `--network container:` joiner, and the workload joins it after READY. It
-  shares no pid namespace, so the CALLER removes it after the workload.
-  cdk-local's own runners still attach after start.
+- `buildNamespaceOwnerForwarderDockerArgs`: the forwarder starts FIRST on the
+  task network with the aliases / `-p` / `--add-host` / `--link` Docker
+  refuses on a `--network container:` joiner; the workload joins after READY
+  and the CALLER removes the forwarder after it. ECS task containers start
+  this way (#878); a joined one holds no endpoint, so the service runner's
+  IP / port / network ops target `networkEndpointId`.
 - `cdkl studio` activates the wiring for its own AWS calls and forwards
   `--aws-emulator <url>` / `--ca-bundle <abs path>` through
   `buildSharedChildArgs`.

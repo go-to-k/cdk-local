@@ -105,7 +105,7 @@ const NON_AUTHORITY: readonly Allowed[] = [
   },
   {
     file: 'local/ecs-task-runner.ts',
-    contains: "'-p', `${containerHost}:${hostPort}",
+    contains: 'const publish = `${containerHost}:${hostPort}',
     why: 'docker `-p` publish grammar',
   },
   {

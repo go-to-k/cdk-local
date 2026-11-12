@@ -18,8 +18,8 @@ import {
   DockerRunnerError,
   pullImage,
   removeContainer,
-  attachLoopbackForwarder,
-  prepareLoopbackForwarder,
+  rememberForwardedPorts,
+  startNamespaceOwnerForwarder,
   appendEnvFlags,
   describeRefusedSensitiveEnvKeys,
   execEnvForSecrets,
@@ -57,6 +57,7 @@ import {
   type ResolvedEcsVolume,
 } from './ecs-task-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import type { LoopbackForwarderNamespace } from './loopback-forwarder.js';
 import {
   applyWorkloadAwsWiringToEnv,
   effectiveLoopbackPorts,
@@ -348,6 +349,27 @@ export interface EcsRunState {
    * its own visibility for the ports it fronts.
    */
   publishedEndpoints: PublishedHostEndpoint[];
+  /**
+   * Loopback forwarders that OWN a task container's network namespace (issue
+   * #878), recorded once each one reports READY (until then a signal guard
+   * removes it on Ctrl-C). `joined` once
+   * its container started in that namespace: the forwarder then holds the
+   * container's network endpoint (IP, aliases, published ports), and teardown
+   * removes it AFTER the container.
+   */
+  forwarders: EcsRunForwarder[];
+}
+
+/** One namespace-owning loopback forwarder of a task container (issue #878). */
+export interface EcsRunForwarder {
+  /** Task-definition name of the container that joins (or will join) it. */
+  containerName: string;
+  /** The forwarder's docker name. */
+  name: string;
+  /** The forwarder's docker id. */
+  id: string;
+  /** True once the container started in the forwarder's namespace. */
+  joined: boolean;
 }
 
 /**
@@ -385,6 +407,7 @@ export function createEcsRunState(): EcsRunState {
     startedContainers: [],
     logStoppers: [],
     publishedEndpoints: [],
+    forwarders: [],
   };
 }
 
@@ -407,6 +430,12 @@ export async function cleanupEcsRun(
   }
   state.logStoppers = [];
 
+  // A forwarder whose container never started (a failure or ^C between the
+  // two `docker run`s) owns a namespace nothing joins: it only holds the
+  // container's published ports. Removed even under `--keep-running`.
+  await removeForwarders((state.forwarders ?? []).filter((f) => !f.joined));
+  state.forwarders = (state.forwarders ?? []).filter((f) => f.joined);
+
   if (!options.keepRunning) {
     for (const c of state.startedContainers) {
       try {
@@ -425,6 +454,11 @@ export async function cleanupEcsRun(
       }
     }
     state.startedContainers = [];
+    // After the containers: each joined its forwarder's network namespace, so
+    // removing a forwarder first would cut the container's network while it
+    // stops. `rm -f`, not `stop`: node as PID 1 ignores SIGTERM.
+    await removeForwarders(state.forwarders);
+    state.forwarders = [];
   }
 
   // Sidecar + network teardown runs unconditionally for runner-owned
@@ -449,6 +483,11 @@ export async function cleanupEcsRun(
     }
   }
   state.dockerVolumeNames = [];
+}
+
+async function removeForwarders(forwarders: readonly EcsRunForwarder[]): Promise<void> {
+  // `removeContainer` logs its own failure at debug and never throws.
+  for (const f of forwarders) await removeContainer(f.id || f.name);
 }
 
 /**
@@ -681,7 +720,12 @@ export async function runEcsTask(
   // docker calls.
   const dockerCmds = new Map<
     string,
-    { args: string[]; sensitiveEnv: Record<string, string>; loopbackPorts: number[] }
+    {
+      args: string[];
+      sensitiveEnv: Record<string, string>;
+      loopbackPorts: number[];
+      forwarder?: ReturnType<typeof buildDockerRunArgs>['forwarder'];
+    }
   >();
   for (const container of task.containers) {
     const image = imagePlan.get(container.name);
@@ -733,6 +777,7 @@ export async function runEcsTask(
       args: built.args,
       sensitiveEnv: built.sensitiveEnv,
       loopbackPorts: built.loopbackPorts,
+      ...(built.forwarder ? { forwarder: built.forwarder } : {}),
     });
     // Warn HERE, in the build loop, so every container's dropped keys are
     // reported even when an earlier container's `docker run` fails (#772).
@@ -759,11 +804,32 @@ export async function runEcsTask(
     const container = task.containers.find((c) => c.name === containerName)!;
     await awaitDependencies(container, startedByName);
 
-    const { args, sensitiveEnv, loopbackPorts } = dockerCmds.get(container.name)!;
-    // Pull the forwarder image before the container starts (workload-aws-wiring.ts).
-    const forwarderWiring = getActiveWorkloadAwsWiring();
-    if (loopbackPorts.length > 0 && forwarderWiring)
-      await prepareLoopbackForwarder(forwarderWiring);
+    const cmd = dockerCmds.get(container.name)!;
+    const { sensitiveEnv, loopbackPorts } = cmd;
+    let args = cmd.args;
+    // Reach a loopback AWS endpoint on the host from inside the container
+    // (workload-aws-wiring.ts): a forwarder that OWNS the container's network
+    // namespace starts FIRST, and on READY the container joins it, so its
+    // first AWS call cannot race the forwarder (issue #878). Without a
+    // forwarder (outside `--aws-emulator` a failed one is a warning) the
+    // container starts on its own network endpoint.
+    const wiring = getActiveWorkloadAwsWiring();
+    let joined: EcsRunForwarder | undefined;
+    if (cmd.forwarder && wiring && loopbackPorts.length > 0) {
+      const fwd = cmd.forwarder;
+      const fwdId = await startNamespaceOwnerForwarder({
+        name: fwd.name,
+        namespace: fwd.namespace,
+        ports: loopbackPorts,
+        wiring,
+        workloadLabel: `container ${displayIdent(container.name)}`,
+      });
+      if (fwdId !== undefined) {
+        joined = { containerName: container.name, name: fwd.name, id: fwdId, joined: false };
+        state.forwarders.push(joined);
+        args = fwd.args;
+      }
+    }
     logger.info(
       `Starting container ${displayIdent(container.name)} (image=${displayIdent(imagePlan.get(container.name))})`
     );
@@ -783,13 +849,11 @@ export async function runEcsTask(
       );
     }
     state.startedContainers.push({ name: container.name, id });
+    if (joined) joined.joined = true;
+    // Without one, a `--watch` restart attaches a forwarder for exactly the
+    // ports this container's env points at (none when the task overrode it).
+    else if (wiring) rememberForwardedPorts(id, wiring, loopbackPorts);
     startedByName.set(container.name, { id, container });
-    // Reach a loopback AWS endpoint on the host from inside the container
-    // (workload-aws-wiring.ts). The app may already be booting: an SDK call
-    // racing the forwarder's first millisecond fails with a retryable
-    // connection error.
-    const wiring = getActiveWorkloadAwsWiring();
-    if (wiring) await attachLoopbackForwarder(id, wiring, loopbackPorts);
 
     if (!options.detach) {
       state.logStoppers.push(attachContainerLogStreamer(`[${displayIdent(container.name)}] `, id));
@@ -1461,18 +1525,50 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   publishedEndpoints: PublishedHostEndpoint[];
   /** Loopback ports the final env still points at (the forwarder serves them). */
   loopbackPorts: number[];
+  /**
+   * Set when {@link loopbackPorts} is non-empty: the loopback forwarder that
+   * OWNS this container's network namespace (issue #878). The runner starts it
+   * first and, on READY, runs {@link forwarder.args} -- this same container
+   * joined to the forwarder with `--network container:<name>` -- in place of
+   * `args`, so the app's first AWS call cannot race the forwarder.
+   */
+  forwarder?: {
+    /** The forwarder container's name (`<container docker name>-awsfwd`). */
+    name: string;
+    /** What Docker refuses on a `--network container:` joiner, carried by the forwarder. */
+    namespace: LoopbackForwarderNamespace;
+    /** This container's `docker run` argv joined to the forwarder's namespace. */
+    args: string[];
+  };
 } {
   const { task, container, image, network, volumeByName, secrets, containerHost, roleArn } = opts;
+  // `args` runs the container on its own network endpoint. `joinArgs` runs the
+  // same container in the loopback forwarder's namespace: every flag Docker
+  // refuses with `--network container:<id>` (`--network-alias`, `-p`,
+  // `--add-host`, `--link`) goes to the forwarder's namespace instead. A flag
+  // pushed through `both` reaches both argvs.
   const args: string[] = ['run', '-d'];
+  const joinArgs: string[] = ['run', '-d'];
+  const both = (...xs: string[]): void => {
+    args.push(...xs);
+    joinArgs.push(...xs);
+  };
+  const ownerAliases: string[] = [];
+  const ownerPublish: string[] = [];
+  const ownerAddHosts: string[] = [];
+  const ownerLinks: string[] = [];
   const publishedEndpoints: PublishedHostEndpoint[] = [];
 
   // Stable name so siblings can reach this container via DNS.
-  args.push(
-    '--name',
-    `${getEmbedConfig().resourceNamePrefix}-${task.family}-${container.name}-${randHex(3)}`
-  );
+  const dockerName = `${getEmbedConfig().resourceNamePrefix}-${task.family}-${container.name}-${randHex(3)}`;
+  const forwarderName = `${dockerName}-awsfwd`;
+  both('--name', dockerName);
   args.push('--network', network);
-  if (!opts.omitContainerNameAlias) args.push('--network-alias', container.name);
+  joinArgs.push('--network', `container:${forwarderName}`);
+  if (!opts.omitContainerNameAlias) {
+    args.push('--network-alias', container.name);
+    ownerAliases.push(container.name);
+  }
 
   // Issue #460 / design § 5 Option A — extra `--network-alias` for
   // every Service Connect discoveryName / ClientAlias short-form /
@@ -1485,6 +1581,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     for (const a of opts.networkAliases) {
       if (!seen.has(a)) {
         args.push('--network-alias', a);
+        ownerAliases.push(a);
         seen.add(a);
       }
     }
@@ -1498,6 +1595,10 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // the deferred DNS-sidecar option (§6 of the design).
   if (opts.addHostFlags && opts.addHostFlags.length > 0) {
     for (const f of opts.addHostFlags) args.push(f);
+    // Verbatim `['--add-host', 'name:ip', ...]` pairs: the values go to the owner.
+    for (let i = 0; i + 1 < opts.addHostFlags.length; i++) {
+      if (opts.addHostFlags[i] === '--add-host') ownerAddHosts.push(opts.addHostFlags[++i]!);
+    }
   }
 
   let resolvedPlatform: string | undefined;
@@ -1508,7 +1609,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
       task.runtimePlatform.cpuArchitecture === 'ARM64' ? 'linux/arm64' : 'linux/amd64';
   }
   if (resolvedPlatform) {
-    args.push('--platform', resolvedPlatform);
+    both('--platform', resolvedPlatform);
     // An ECS task container threads `--platform` too (RuntimePlatform /
     // override), but runs via execFileAsync rather than runDetached — so
     // surface CPU emulation here as well: a Swift/Rust ECS task can die
@@ -1548,7 +1649,9 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
             `${formatAuthority(containerHost, hostPort)}${overrideNote}. ` +
             `Reach it at ${formatAuthority(containerHost, hostPort)}.`
         );
-      args.push('-p', `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`);
+      const publish = `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`;
+      args.push('-p', publish);
+      ownerPublish.push(publish);
       publishedEndpoints.push({
         containerName: container.name,
         containerPort: pm.containerPort,
@@ -1572,7 +1675,9 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     for (const pm of container.portMappings) {
       if (!ephemeralPorts.has(pm.containerPort) || alreadyEphemeral.has(pm.containerPort)) continue;
       alreadyEphemeral.add(pm.containerPort);
-      args.push('-p', `${containerHost}::${pm.containerPort}/${pm.protocol}`);
+      const publish = `${containerHost}::${pm.containerPort}/${pm.protocol}`;
+      args.push('-p', publish);
+      ownerPublish.push(publish);
     }
   }
 
@@ -1591,14 +1696,11 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   const profileCredentialsFile =
     wiring?.mode === 'emulator' ? undefined : opts.profileCredentialsFile;
   if (profileCredentialsFile) {
-    args.push(
-      '-v',
-      `${profileCredentialsFile.hostPath}:${profileCredentialsFile.containerPath}:ro`
-    );
+    both('-v', `${profileCredentialsFile.hostPath}:${profileCredentialsFile.containerPath}:ro`);
   }
   for (const m of wiring?.mounts ?? []) {
     if (!container.mountPoints.some((mp) => mp.containerPath === m.containerPath)) {
-      args.push('-v', `${m.hostPath}:${m.containerPath}:ro`);
+      both('-v', `${m.hostPath}:${m.containerPath}:ro`);
     }
   }
 
@@ -1610,15 +1712,15 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     if (v.kind === 'host') {
       if (v.hostPath) {
         const ro = mp.readOnly ? ':ro' : '';
-        args.push('-v', `${v.hostPath}:${mp.containerPath}${ro}`);
+        both('-v', `${v.hostPath}:${mp.containerPath}${ro}`);
       } else {
         // Anonymous: only the container path, docker manages the volume.
-        args.push('-v', mp.containerPath);
+        both('-v', mp.containerPath);
       }
     } else {
       const name = v.dockerVolumeName ?? v.name;
       const ro = mp.readOnly ? ':ro' : '';
-      args.push('-v', `${name}:${mp.containerPath}${ro}`);
+      both('-v', `${name}:${mp.containerPath}${ro}`);
     }
   }
 
@@ -1693,34 +1795,39 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // Env keys that resolved to a decrypted SecureString SSM parameter
   // (issue #99) — same off-argv treatment as secrets.
   for (const k of container.sensitiveEnvKeys) sensitiveEnvKeys.add(k);
+  const envFlags: string[] = [];
   const { passthrough: sensitiveEnv, collisions } = appendEnvFlags(
-    args,
+    envFlags,
     finalEnv,
     sensitiveEnvKeys
   );
+  both(...envFlags);
 
-  if (container.user) args.push('--user', container.user);
-  if (container.privileged) args.push('--privileged');
-  if (container.readonlyRootFilesystem) args.push('--read-only');
-  if (container.workingDirectory) args.push('--workdir', container.workingDirectory);
+  if (container.user) both('--user', container.user);
+  if (container.privileged) both('--privileged');
+  if (container.readonlyRootFilesystem) both('--read-only');
+  if (container.workingDirectory) both('--workdir', container.workingDirectory);
   for (const u of container.ulimits) {
-    args.push('--ulimit', `${u.name}=${u.softLimit}:${u.hardLimit}`);
+    both('--ulimit', `${u.name}=${u.softLimit}:${u.hardLimit}`);
   }
-  for (const link of container.links) args.push('--link', link);
+  for (const link of container.links) {
+    args.push('--link', link);
+    ownerLinks.push(link);
+  }
 
   if (container.healthCheck) {
-    args.push('--health-cmd', shellJoin(container.healthCheck.command));
+    both('--health-cmd', shellJoin(container.healthCheck.command));
     if (container.healthCheck.interval !== undefined) {
-      args.push('--health-interval', `${container.healthCheck.interval}s`);
+      both('--health-interval', `${container.healthCheck.interval}s`);
     }
     if (container.healthCheck.timeout !== undefined) {
-      args.push('--health-timeout', `${container.healthCheck.timeout}s`);
+      both('--health-timeout', `${container.healthCheck.timeout}s`);
     }
     if (container.healthCheck.retries !== undefined) {
-      args.push('--health-retries', String(container.healthCheck.retries));
+      both('--health-retries', String(container.healthCheck.retries));
     }
     if (container.healthCheck.startPeriod !== undefined) {
-      args.push('--health-start-period', `${container.healthCheck.startPeriod}s`);
+      both('--health-start-period', `${container.healthCheck.startPeriod}s`);
     }
   }
 
@@ -1728,13 +1835,32 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // the rest become positional args before CMD.
   let entryPointTail: string[] = [];
   if (container.entryPoint && container.entryPoint.length > 0) {
-    args.push('--entrypoint', container.entryPoint[0]!);
+    both('--entrypoint', container.entryPoint[0]!);
     entryPointTail = container.entryPoint.slice(1);
   }
 
-  args.push(image, ...entryPointTail, ...(container.command ?? []));
+  both(image, ...entryPointTail, ...(container.command ?? []));
   const loopbackPorts = wiring ? effectiveLoopbackPorts(finalEnv, wiring) : [];
-  return { args, sensitiveEnv, collisions, publishedEndpoints, loopbackPorts };
+  return {
+    args,
+    sensitiveEnv,
+    collisions,
+    publishedEndpoints,
+    loopbackPorts,
+    ...(loopbackPorts.length > 0 && {
+      forwarder: {
+        name: forwarderName,
+        namespace: {
+          network,
+          networkAliases: ownerAliases,
+          publish: ownerPublish,
+          addHosts: ownerAddHosts,
+          links: ownerLinks,
+        },
+        args: joinArgs,
+      },
+    }),
+  };
 }
 
 /**

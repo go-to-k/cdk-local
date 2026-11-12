@@ -20,10 +20,14 @@ import { defineOwnKey } from '../utils/own-keys.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { getEmbedConfig } from './embed-config.js';
 import {
+  awaitLoopbackForwarderStatus,
+  buildNamespaceOwnerForwarderDockerArgs,
   describeForwarderFailure,
   ensureForwarderImage,
   newLoopbackForwarderName,
   startLoopbackForwarder,
+  type LoopbackForwarderNamespace,
+  type LoopbackForwarderResult,
 } from './loopback-forwarder.js';
 import {
   applyWorkloadAwsWiringToEnv,
@@ -447,10 +451,7 @@ export async function attachLoopbackForwarder(
   if (samePorts(ports, wiring.loopbackPorts)) forwardedPortsByContainer.delete(containerId);
   else forwardedPortsByContainer.set(containerId, ports);
   if (ports.length === 0) return;
-  const label =
-    wiring.mode === 'emulator'
-      ? `--aws-emulator ${wiring.emulatorEndpoint?.url ?? ''}`
-      : 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
+  const label = forwarderEndpointLabel(wiring);
   const forwarderName = newLoopbackForwarderName();
   let result;
   try {
@@ -482,6 +483,103 @@ export async function attachLoopbackForwarder(
     throw new DockerRunnerError(message);
   }
   warnForwarderOnce(String(result.failedPort ?? 0), message);
+}
+
+/**
+ * Start the loopback forwarder that OWNS a workload's network namespace, BEFORE
+ * the workload (`buildNamespaceOwnerForwarderDockerArgs`), and wait for its
+ * result. Resolves the forwarder's container id on READY: the caller then
+ * starts the workload with `--network container:<name>`, so the workload's
+ * first AWS call cannot race the forwarder, and removes the forwarder AFTER
+ * the workload (it shares no pid namespace, so it outlives the workload).
+ *
+ * On any failure the forwarder is removed. Under `--aws-emulator` that throws
+ * (nothing of the workload has started yet); otherwise it is the same
+ * once-per-port warning as {@link attachLoopbackForwarder}, and the result is
+ * `undefined`: the caller starts the workload on its own network endpoint,
+ * without a forwarder. A Ctrl-C while it runs removes the forwarder.
+ */
+export async function startNamespaceOwnerForwarder(opts: {
+  /** The forwarder container's name: the workload joins `container:<name>`. */
+  name: string;
+  namespace: LoopbackForwarderNamespace;
+  ports: readonly number[];
+  wiring: WorkloadAwsWiring;
+  /** Names the workload in a failure message (e.g. `container 'app'`). */
+  workloadLabel: string;
+}): Promise<string | undefined> {
+  const { name, wiring } = opts;
+  const label = forwarderEndpointLabel(wiring);
+  await prepareLoopbackForwarder(wiring);
+  const args = buildNamespaceOwnerForwarderDockerArgs({
+    name,
+    namespace: opts.namespace,
+    ports: opts.ports,
+    probe: wiring.probeHealth ? 'health' : 'tcp',
+    ...(wiring.skipPull ? { skipPull: true } : {}),
+    ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
+  });
+  getLogger()
+    .child('docker')
+    .debug(`Starting loopback forwarder ${name} for ports ${opts.ports.join(',')}`);
+  const fail = async (key: string, message: string, remove = true): Promise<undefined> => {
+    if (remove) await removeContainer(name);
+    if (wiring.mode === 'emulator') throw new DockerRunnerError(message);
+    warnForwarderOnce(key, message);
+    return undefined;
+  };
+  return removeOnSignalWhile([name], async () => {
+    let id: string;
+    try {
+      id = (await execFileAsync(getDockerCmd(), args)).stdout.trim();
+    } catch (error) {
+      // The forwarder holds the workload's network aliases and published
+      // ports, so a host port already in use fails HERE. A failed `run -d`
+      // can still have created the container: `fail` removes it.
+      const err = error as { stderr?: string };
+      // A name conflict means a container this run did NOT create holds the
+      // name (a `--detach` leftover, a peer run): never remove it.
+      const conflict = /is already (?:in use|used) by|Conflict\. The container name/.test(
+        err.stderr ?? ''
+      );
+      return fail(
+        'start',
+        `${label}: could not start the loopback forwarder for ${opts.workloadLabel} ` +
+          `(it holds the ${opts.workloadLabel}'s network aliases and published ports): ` +
+          displayToolOutput(err.stderr?.trim() || describeExitWithoutArgv(error)),
+        !conflict
+      );
+    }
+    let result: LoopbackForwarderResult;
+    try {
+      result = await awaitLoopbackForwarderStatus(name);
+    } catch (err) {
+      return fail('start', `${label}: ${(err as Error).message}`);
+    }
+    if (result.ok) return id || name;
+    return fail(String(result.failedPort ?? 0), describeForwarderFailure(result, label));
+  });
+}
+
+/**
+ * Record the loopback ports `containerId`'s env points at when it started
+ * WITHOUT a forwarder (none needed, or a failed owning forwarder outside
+ * `--aws-emulator`), so a later restart's {@link attachLoopbackForwarder}
+ * serves exactly those ports, none for an empty set.
+ */
+export function rememberForwardedPorts(
+  containerId: string,
+  wiring: WorkloadAwsWiring,
+  ports: readonly number[]
+): void {
+  if (samePorts(ports, wiring.loopbackPorts)) forwardedPortsByContainer.delete(containerId);
+  else forwardedPortsByContainer.set(containerId, ports);
+}
+
+function forwarderEndpointLabel(wiring: WorkloadAwsWiring): string {
+  return wiring.mode === 'emulator'
+    ? `--aws-emulator ${wiring.emulatorEndpoint?.url ?? ''}`
+    : 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
 }
 
 function samePorts(a: readonly number[], b: readonly number[]): boolean {

@@ -29,9 +29,14 @@ vi.mock('node:child_process', () => ({
 const { defaultChainMock } = vi.hoisted(() => ({ defaultChainMock: vi.fn() }));
 vi.mock('@aws-sdk/credential-provider-node', () => ({ defaultProvider: vi.fn(() => defaultChainMock) }));
 
-const { attachLoopbackForwarder, removeContainer, runDetached, withWorkloadAwsWiring } = await import(
-  '../../../src/local/docker-runner.js'
-);
+const {
+  attachLoopbackForwarder,
+  rememberForwardedPorts,
+  removeContainer,
+  runDetached,
+  startNamespaceOwnerForwarder,
+  withWorkloadAwsWiring,
+} = await import('../../../src/local/docker-runner.js');
 const { resetWorkloadAwsWiringForTest, setActiveWorkloadAwsWiring } = await import(
   '../../../src/local/workload-aws-wiring.js'
 );
@@ -291,5 +296,155 @@ describe('loopback forwarder image pull', () => {
     stub();
     await runDetached({ ...baseRun, env: { AWS_ACCESS_KEY_ID: 'K', AWS_SECRET_ACCESS_KEY: 'S' } });
     expect(imageCalls()).toHaveLength(0);
+  });
+});
+
+describe('startNamespaceOwnerForwarder (issue #878)', () => {
+  const namespace = {
+    network: 'cdkl-task-x',
+    networkAliases: ['app'],
+    publish: ['127.0.0.1::8080/tcp'],
+    addHosts: ['host.docker.internal:host-gateway'],
+    links: [],
+  };
+  const calls = (): string[][] => execFileMock.mock.calls.map((c) => c[1] as string[]);
+  const start = (wiring: Wiring) =>
+    startNamespaceOwnerForwarder({
+      name: 'cdkl-fam-app-abc-awsfwd',
+      namespace,
+      ports: [9297],
+      wiring,
+      workloadLabel: 'container app',
+    });
+
+  it('runs the owner argv, waits for READY, and resolves its id', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid123\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return {};
+    });
+    await expect(start(emulatorWiring())).resolves.toBe('fid123');
+    const run = calls().find((a) => a[0] === 'run')!;
+    expect(run.slice(0, 6)).toEqual(['run', '-d', '--rm', '--name', 'cdkl-fam-app-abc-awsfwd', '--network']);
+    expect(run).toContain('cdkl-task-x');
+    expect(run).toContain('127.0.0.1::8080/tcp');
+    expect(run).not.toContain('--pid');
+    expect(calls().some((a) => a[0] === 'rm')).toBe(false);
+  });
+
+  it('passes the probe mode and the CA mount from the wiring', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid123\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return {};
+    });
+    await start(emulatorWiring());
+    const health = calls().find((a) => a[0] === 'run')!;
+    expect(health).toContain('/tmp/ca/ca-bundle.pem:/cdkl-forwarder/ca.pem:ro');
+    expect(health.slice(-3)).toEqual(['9297', 'health', '/cdkl-forwarder/ca.pem']);
+    execFileMock.mockClear();
+    await start(emulatorWiring({ probeHealth: false, caHostPath: undefined, skipPull: true }));
+    const tcp = calls().find((a) => a[0] === 'run')!;
+    expect(tcp.slice(-2)).toEqual(['9297', 'tcp']);
+    expect(tcp).toContain('never');
+    expect(tcp.join(' ')).not.toContain('ca.pem');
+  });
+
+  it('removes a forwarder that exits before reporting; --aws-emulator throws', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid123\n' };
+      if (args[0] === 'logs') return { error: Object.assign(new Error('x'), { stderr: 'No such container' }) };
+      return {};
+    });
+    await expect(start(emulatorWiring())).rejects.toThrow(/exited before reporting/);
+    expect(calls()).toContainEqual(['rm', '-f', 'cdkl-fam-app-abc-awsfwd']);
+  });
+
+  it('--aws-emulator: a FAIL removes the forwarder and throws', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid123\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD FAIL 9297 ECONNREFUSED 172.17.0.1\n' };
+      return {};
+    });
+    await expect(start(emulatorWiring())).rejects.toThrow(/cannot reach port 9297/);
+    expect(calls()).toContainEqual(['rm', '-f', 'cdkl-fam-app-abc-awsfwd']);
+  });
+
+  it('forward mode: a FAIL removes the forwarder, warns, and resolves undefined', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid123\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD FAIL 9878 ECONNREFUSED 172.17.0.1\n' };
+      return {};
+    });
+    await expect(start(emulatorWiring({ mode: 'forward' }))).resolves.toBeUndefined();
+    expect(calls()).toContainEqual(['rm', '-f', 'cdkl-fam-app-abc-awsfwd']);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('--aws-emulator: a failed docker run (a published port in use) names the workload and never the argv', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') {
+        return { error: Object.assign(new Error('Command failed: docker run ... EMUSECRET'), { stderr: 'port is already allocated' }) };
+      }
+      return {};
+    });
+    const err = (await start(emulatorWiring()).catch((e: unknown) => e)) as Error;
+    expect(err.message).toMatch(/loopback forwarder for container app/);
+    expect(err.message).toMatch(/port is already allocated/);
+    expect(err.message).not.toContain('EMUSECRET');
+    expect(calls()).toContainEqual(['rm', '-f', 'cdkl-fam-app-abc-awsfwd']);
+  });
+
+  it('a remembered empty port set makes a restart attach no forwarder', async () => {
+    rememberForwardedPorts('cid-own', emulatorWiring(), []);
+    await attachLoopbackForwarder('cid-own', emulatorWiring());
+    expect(calls().some((a) => a[0] === 'run')).toBe(false);
+    await removeContainer('cid-own');
+  });
+
+  it('a host port clash is not mistaken for a name conflict: the created forwarder is removed', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') {
+        return {
+          error: Object.assign(new Error('Command failed'), {
+            stderr: 'Bind for 127.0.0.1:8080 failed: port is already allocated; bind: address already in use',
+          }),
+        };
+      }
+      return {};
+    });
+    await expect(start(emulatorWiring())).rejects.toThrow(/address already in use/);
+    expect(calls()).toContainEqual(['rm', '-f', 'cdkl-fam-app-abc-awsfwd']);
+  });
+
+  it('never removes a container another run holds the name of (name conflict)', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') {
+        return {
+          error: Object.assign(new Error('Command failed'), {
+            stderr: 'Conflict. The container name "/cdkl-fam-app-abc-awsfwd" is already in use',
+          }),
+        };
+      }
+      return {};
+    });
+    await expect(start(emulatorWiring())).rejects.toThrow(/already in use/);
+    expect(calls().some((a) => a[0] === 'rm')).toBe(false);
+  });
+
+  it('recognizes the finch (nerdctl) name-conflict wording too', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) =>
+      args[0] === 'run'
+        ? {
+            error: Object.assign(new Error('Command failed'), {
+              stderr: 'name "cdkl-fam-app-abc-awsfwd" is already used by ID "0123abcd"',
+            }),
+          }
+        : {}
+    );
+    await expect(start(emulatorWiring())).rejects.toThrow(/already used by/);
+    expect(calls().some((a) => a[0] === 'rm')).toBe(false);
   });
 });

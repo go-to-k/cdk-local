@@ -919,6 +919,32 @@ export function containerPublishesHostPorts(
 }
 
 /**
+ * Issue #878 — the docker id holding `containerName`'s network endpoint in
+ * `state`: the loopback forwarder whose namespace the container joined (a
+ * loopback AWS endpoint is active), else the container `containerId` itself.
+ * Read IPs and published host ports from, and `docker network
+ * connect` / `disconnect`, THIS id: a joined container has no endpoint of its
+ * own, while `docker exec` / `cp` / `stop` / `start` still target the
+ * container. Kept here, not in the task runner, for the same `vi.mock`
+ * reason as {@link containerPublishesHostPorts}.
+ *
+ * @internal exported for its unit test
+ */
+export function networkEndpointId(
+  state: Pick<EcsRunState, 'forwarders'>,
+  containerName: string,
+  containerId: string
+): string {
+  const owner = (state.forwarders ?? []).find((f) => f.containerName === containerName && f.joined);
+  return owner?.id ?? containerId;
+}
+
+/** Whether `containerName` runs in a loopback forwarder's namespace (issue #878). */
+function joinsForwarder(state: Pick<EcsRunState, 'forwarders'>, containerName: string): boolean {
+  return (state.forwarders ?? []).some((f) => f.containerName === containerName && f.joined);
+}
+
+/**
  * Issue #805 — finish a replica booted with `deferPublish`: give each
  * container `bootReplica` recorded in `withheldAliasContainers` its aliases back
  * once its own first port listens (best-effort, sharing `deadline`), then
@@ -961,7 +987,8 @@ async function publishGatedReplica(
         }
       }
       if (isShuttingDown()) return;
-      const ip = await getContainerNetworkIp(started.id, network.networkName);
+      const endpoint = networkEndpointId(instance.state, name, started.id);
+      const ip = await getContainerNetworkIp(endpoint, network.networkName);
       if (!ip) {
         throw new EcsServiceRunnerError(
           `${label}: no docker IP for ` +
@@ -970,8 +997,8 @@ async function publishGatedReplica(
       }
       const aliases = [name];
       for (const a of fullAliases.get(name) ?? []) if (!aliases.includes(a)) aliases.push(a);
-      await dockerNetworkDisconnectImpl(network.networkName, started.id);
-      await dockerNetworkConnectImpl(network.networkName, started.id, { ip, aliases });
+      await dockerNetworkDisconnectImpl(network.networkName, endpoint);
+      await dockerNetworkConnectImpl(network.networkName, endpoint, { ip, aliases });
     }
     instance.withheldAliasContainers = [];
   }
@@ -1056,7 +1083,10 @@ async function publishReplicaToCloudMap(
 
   let ip: string | undefined;
   try {
-    ip = await getContainerNetworkIp(started.id, networkName);
+    ip = await getContainerNetworkIp(
+      networkEndpointId(instance.state, started.name, started.id),
+      networkName
+    );
   } catch (err) {
     logger.warn(
       `Replica ${instance.index}: docker inspect failed before Cloud Map publish: ` +
@@ -1206,7 +1236,10 @@ async function publishReplicaToFrontDoor(
     }
     let hostPort: number | undefined;
     try {
-      hostPort = await getPublishedHostPort(started.id, target.targetContainerPort);
+      hostPort = await getPublishedHostPort(
+        networkEndpointId(instance.state, started.name, started.id),
+        target.targetContainerPort
+      );
     } catch (err) {
       logger.warn(
         `Replica ${instance.index}: docker inspect failed before front-door publish: ` +
@@ -1800,7 +1833,17 @@ export async function softReloadReplica(args: {
   const networkAliasesByContainer = buildNetworkAliasesByContainer(newService);
   // `port` is the container's first mapped port: an IP-only re-attached
   // container gets its aliases back only once THAT port listens.
-  const targets: Array<{ name: string; id: string; aliases: string[]; port?: number }> = [];
+  // `endpoint` is the docker id holding the container's network endpoint: its
+  // namespace-owning loopback forwarder when `joined` (issue #878), else the
+  // container itself. Network ops target `endpoint`; cp / stop / start `id`.
+  const targets: Array<{
+    name: string;
+    id: string;
+    endpoint: string;
+    joined: boolean;
+    aliases: string[];
+    port?: number;
+  }> = [];
   for (const container of containersToCycle) {
     const id = startedById.get(container.name);
     if (!id) {
@@ -1814,7 +1857,14 @@ export async function softReloadReplica(args: {
       if (!aliases.includes(a)) aliases.push(a);
     }
     const port = container.portMappings[0]?.containerPort;
-    targets.push({ name: container.name, id, aliases, ...(port !== undefined ? { port } : {}) });
+    targets.push({
+      name: container.name,
+      id,
+      endpoint: networkEndpointId(instance.state, container.name, id),
+      joined: joinsForwarder(instance.state, container.name),
+      aliases,
+      ...(port !== undefined ? { port } : {}),
+    });
   }
 
   // Phase 4 zero-refusal guarantee — drain BEFORE the stop + start.
@@ -1943,12 +1993,12 @@ export async function softReloadReplica(args: {
           // passes, so a peer never resolves the alias to an app that is
           // still binding.
           if (plan.attached) {
-            await dockerNetworkDisconnectImpl(plan.networkName, target.id);
+            await dockerNetworkDisconnectImpl(plan.networkName, plan.endpointId);
             plan.attached = false;
           }
-          await attachToSharedNetwork(target.id, plan, plan.publishesHostPorts);
+          await attachToSharedNetwork(plan, plan.publishesHostPorts);
         }
-        await dockerStartImpl(target.id);
+        await dockerStartImpl(target.id, { joinedForwarder: target.joined });
       } catch (err) {
         throw new EcsServiceRunnerError(
           `softReloadReplica: docker stop / start of ${displayIdent(target.name)} (${target.id}) ` +
@@ -1981,9 +2031,9 @@ export async function softReloadReplica(args: {
         await waitForContainerListening(target.id, target.port, aliasDeadline);
       }
       try {
-        await dockerNetworkDisconnectImpl(plan.networkName, target.id);
+        await dockerNetworkDisconnectImpl(plan.networkName, plan.endpointId);
         plan.attached = false;
-        await attachToSharedNetwork(target.id, plan, true);
+        await attachToSharedNetwork(plan, true);
       } catch (err) {
         throw new EcsServiceRunnerError(
           `softReloadReplica: restoring the network aliases of ${displayIdent(target.name)} (${target.id}) ` +
@@ -2041,7 +2091,8 @@ export async function softReloadReplica(args: {
     // IP for it and would never re-attach it. Put the boot-time aliases
     // back, best-effort; the registries stay drained (the thrown message
     // says so) until the next save.
-    for (const [id, plan] of attachPlans) {
+    for (const plan of attachPlans.values()) {
+      const id = plan.endpointId;
       if (plan.aliasesAttached) continue;
       try {
         if (plan.attached) {
@@ -2049,7 +2100,7 @@ export async function softReloadReplica(args: {
           plan.attached = false;
         }
         try {
-          await attachToSharedNetwork(id, plan, true);
+          await attachToSharedNetwork(plan, true);
         } catch {
           // The old IP may have been taken while the container was off
           // the network: any IP beats none.
@@ -2171,13 +2222,20 @@ const defaultDockerStopImpl = async (containerId: string): Promise<void> => {
   await promisify(execFile)(getDockerCmd(), ['stop', containerId]);
 };
 
-const defaultDockerStartImpl = async (containerId: string): Promise<void> => {
+const defaultDockerStartImpl = async (
+  containerId: string,
+  opts: { joinedForwarder?: boolean } = {}
+): Promise<void> => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const { getDockerCmd } = await import('../utils/docker-cmd.js');
   await promisify(execFile)(getDockerCmd(), ['start', containerId]);
-  // The loopback forwarder shares the container's pid namespace, so the stop
-  // ended it; start a fresh one for the restarted container.
+  // Issue #878 — a container in a namespace-owning forwarder's namespace
+  // restarts inside it: that forwarder never stopped, so its listener is up
+  // before the restarted app's first AWS call.
+  if (opts.joinedForwarder) return;
+  // A forwarder attached after start shares the container's pid namespace, so
+  // the stop ended it; start a fresh one for the restarted container.
   const { getActiveWorkloadAwsWiring } = await import('./workload-aws-wiring.js');
   const wiring = getActiveWorkloadAwsWiring();
   if (wiring) {
@@ -2187,7 +2245,8 @@ const defaultDockerStartImpl = async (containerId: string): Promise<void> => {
 };
 
 let dockerStopImpl: (containerId: string) => Promise<void> = defaultDockerStopImpl;
-let dockerStartImpl: (containerId: string) => Promise<void> = defaultDockerStartImpl;
+let dockerStartImpl: (containerId: string, opts?: { joinedForwarder?: boolean }) => Promise<void> =
+  defaultDockerStartImpl;
 
 /**
  * Test-only hooks to substitute the `docker stop` / `docker start`
@@ -2204,7 +2263,7 @@ export function __setDockerStopImpl(
 
 /** @internal — see {@link __setDockerStopImpl}. */
 export function __setDockerStartImpl(
-  impl: ((containerId: string) => Promise<void>) | undefined
+  impl: ((containerId: string, opts?: { joinedForwarder?: boolean }) => Promise<void>) | undefined
 ): void {
   dockerStartImpl = impl ?? defaultDockerStartImpl;
 }
@@ -2216,6 +2275,11 @@ export function __setDockerStartImpl(
  * `--add-host` entry) and the boot-time alias set.
  */
 interface SharedNetworkAttachPlan {
+  /**
+   * The docker id network ops target: the container, or the loopback
+   * forwarder whose namespace it joined (issue #878).
+   */
+  endpointId: string;
   networkName: string;
   ip: string;
   aliases: string[];
@@ -2239,13 +2303,13 @@ interface SharedNetworkAttachPlan {
  * then proceeds without the alias drain, as it did before #660.
  */
 async function detachFromSharedNetwork(
-  target: { name: string; id: string; aliases: string[] },
+  target: { name: string; id: string; endpoint: string; joined: boolean; aliases: string[] },
   networkName: string
 ): Promise<SharedNetworkAttachPlan | undefined> {
   const logger = getLogger().child('ecs-service');
   let ip: string | undefined;
   try {
-    ip = await getContainerNetworkIp(target.id, networkName);
+    ip = await getContainerNetworkIp(target.endpoint, networkName);
   } catch {
     ip = undefined;
   }
@@ -2258,14 +2322,25 @@ async function detachFromSharedNetwork(
   }
   let publishesHostPorts: boolean;
   try {
-    publishesHostPorts = await dockerInspectPublishesHostPortsImpl(target.id);
+    publishesHostPorts = await dockerInspectPublishesHostPortsImpl(target.endpoint);
   } catch {
     // Unknown -> assume it does: re-attaching while stopped is safe
     // either way, re-attaching a running publisher is not.
     publishesHostPorts = true;
   }
+  if (target.joined && publishesHostPorts) {
+    // Issue #878 — the forwarder holding this container's endpoint keeps
+    // running across the container's restart (stopping it would cut the
+    // container's network), so it could only be re-attached RUNNING, which
+    // drops the published host ports it holds. Keep it attached instead.
+    logger.debug(
+      `Soft-reload: ${displayIdent(target.name)} (${target.id}) publishes host ports through its ` +
+        'loopback forwarder; restarting it in place without detaching its network aliases first.'
+    );
+    return undefined;
+  }
   try {
-    await dockerNetworkDisconnectImpl(networkName, target.id);
+    await dockerNetworkDisconnectImpl(networkName, target.endpoint);
   } catch (err) {
     logger.debug(
       `Soft-reload: detaching ${displayIdent(target.name)} (${target.id}) from ${networkName} failed: ` +
@@ -2274,6 +2349,7 @@ async function detachFromSharedNetwork(
     return undefined;
   }
   return {
+    endpointId: target.endpoint,
     networkName,
     ip,
     aliases: target.aliases,
@@ -2315,9 +2391,10 @@ export function __setReloadDrainMs(ms: number | undefined): void {
  */
 async function reattachForDrain(plans: Map<string, SharedNetworkAttachPlan>): Promise<boolean> {
   let any = false;
-  for (const [id, plan] of plans) {
+  for (const plan of plans.values()) {
+    const id = plan.endpointId;
     try {
-      await attachToSharedNetwork(id, plan, false);
+      await attachToSharedNetwork(plan, false);
       any = true;
     } catch (err) {
       getLogger()
@@ -2333,11 +2410,10 @@ async function reattachForDrain(plans: Map<string, SharedNetworkAttachPlan>): Pr
 
 /** Re-attach a detached target at its old IP, with or without its aliases. */
 async function attachToSharedNetwork(
-  containerId: string,
   plan: SharedNetworkAttachPlan,
   withAliases: boolean
 ): Promise<void> {
-  await dockerNetworkConnectImpl(plan.networkName, containerId, {
+  await dockerNetworkConnectImpl(plan.networkName, plan.endpointId, {
     ip: plan.ip,
     aliases: withAliases ? plan.aliases : [],
   });
@@ -2451,11 +2527,20 @@ async function disconnectOldFromSharedNetwork(
   const networkName = network.networkName;
   // Issue #813 — read each app container's IP BEFORE the disconnect, so the
   // drain below can put it back at the same address, IP only.
+  // Issue #878 — a container in a loopback forwarder's namespace holds no
+  // endpoint: its forwarder does, so the forwarder is detached instead.
+  const targets = [
+    ...new Set(
+      oldInstance.state.startedContainers.map((c) =>
+        networkEndpointId(oldInstance.state, c.name, c.id)
+      )
+    ),
+  ];
   const drainIps = new Map<string, string>();
   if (opts.drain) {
-    for (const c of oldInstance.state.startedContainers) {
-      const ip = await getContainerNetworkIp(c.id, networkName).catch(() => undefined);
-      if (ip) drainIps.set(c.id, ip);
+    for (const id of targets) {
+      const ip = await getContainerNetworkIp(id, networkName).catch(() => undefined);
+      if (ip) drainIps.set(id, ip);
     }
   }
   // Disconnect every started container so wget's Docker DNS lookup
@@ -2466,7 +2551,6 @@ async function disconnectOldFromSharedNetwork(
   // task-metadata / credentials endpoint — disconnecting it cut every
   // surviving replica (and the new shadow) off from its task-role
   // credentials after a single rolling reload.
-  const targets: string[] = oldInstance.state.startedContainers.map((c) => c.id);
   for (const id of targets) {
     try {
       // `--force` so a stop-then-disconnect race (rare; cleanupEcsRun
@@ -2654,7 +2738,10 @@ async function waitForReplicaTcpReady(
     } else {
       if (ip === undefined) {
         try {
-          ip = await getContainerNetworkIp(started.id, networkName);
+          ip = await getContainerNetworkIp(
+            networkEndpointId(replica.state, started.name, started.id),
+            networkName
+          );
         } catch (err) {
           logger.warn(
             `${label}: TCP-ready probe could not resolve docker IP: ` +

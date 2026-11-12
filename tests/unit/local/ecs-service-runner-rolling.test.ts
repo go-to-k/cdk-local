@@ -31,6 +31,10 @@ const { hoisted } = vi.hoisted(() => ({
     publishCount: 0,
     cleanedStates: [] as Array<{ ipsRegistered: number; networkName: string | undefined }>,
     failBootOnCount: -1, // -1 = never fail
+    // Issue #878 — boot each container inside a namespace-owning forwarder
+    // `fid-<n>`, and record the ids the endpoint reads inspect.
+    joinForwarder: false,
+    inspectIds: [] as string[],
     // Records every `docker network disconnect --force <net> <id>`
     // call the rolling primitive emits — lets the multi-replica test
     // prove the new disconnect-first step actually fires (reviewer
@@ -77,6 +81,16 @@ vi.mock('../../../src/local/ecs-task-runner.js', () => ({
       name: 'web',
       id: `cid-${hoisted.bootCount}`,
     });
+    if (hoisted.joinForwarder) {
+      state['forwarders'] = [
+        {
+          containerName: 'web',
+          name: `fwd-${hoisted.bootCount}`,
+          id: `fid-${hoisted.bootCount}`,
+          joined: true,
+        },
+      ];
+    }
     return { exitCode: 0, state };
   },
 }));
@@ -84,8 +98,17 @@ vi.mock('../../../src/local/ecs-task-runner.js', () => ({
 vi.mock('../../../src/local/docker-inspect.js', () => ({
   // Each successive replica gets a distinct fake IP so we can detect
   // which replica's endpoint the registry / pool currently holds.
-  getContainerNetworkIp: async () => `172.20.0.${10 + hoisted.bootCount}`,
-  getPublishedHostPort: async () => hoisted.publishedPorts[hoisted.publishCount++] ?? 5999,
+  getContainerNetworkIp: async (id: string) => {
+    hoisted.inspectIds.push(`ip ${id}`);
+    // A container in a forwarder's namespace has no endpoint of its own.
+    if (hoisted.joinForwarder && id.startsWith('cid-')) return undefined;
+    return `172.20.0.${10 + hoisted.bootCount}`;
+  },
+  getPublishedHostPort: async (id: string) => {
+    hoisted.inspectIds.push(`port ${id}`);
+    if (hoisted.joinForwarder && id.startsWith('cid-')) return undefined;
+    return hoisted.publishedPorts[hoisted.publishCount++] ?? 5999;
+  },
 }));
 
 const {
@@ -180,6 +203,8 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     hoisted.failBootOnCount = -1;
     hoisted.disconnectCalls = [];
     hoisted.taskOptions = [];
+    hoisted.joinForwarder = false;
+    hoisted.inspectIds = [];
     __setSleepImpl(() => Promise.resolve()); // skip restart backoff
     __setWaitForExitImpl(() => new Promise<number>(() => {})); // replicas never exit
     __setTcpProbeImpl(() => Promise.resolve()); // shadow is always TCP-ready
@@ -739,6 +764,22 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       expect(shadowRegistered).toBe(true);
     });
 
+    it('attaches a joined shadow\'s withheld aliases on its FORWARDER (issue #878)', async () => {
+      hoisted.joinForwarder = true;
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      const { ops, shadowRegistered } = await rollWithGate(opts, false);
+      expect(ops.filter((o) => / net-3 /.test(o))).toEqual([
+        'disconnect net-3 fid-3',
+        'connect net-3 fid-3 ip=172.20.0.13 aliases=web,svc,svc.cdkl.local',
+      ]);
+      expect(shadowRegistered).toBe(true);
+    });
+
     it('keeps a host-port publisher\'s aliases from boot (no running re-attach) but still gates its front-door + Cloud Map entries', async () => {
       const registry = new CloudMapRegistry();
       const pool = new FrontDoorEndpointPool();
@@ -1125,6 +1166,39 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
       'sleep 4321 cleaned=', // the old replica is NOT torn down yet
     ]);
     expect(hoisted.cleanedStates.map((c) => c.networkName)).toContain('net-1');
+    await controller.shutdown();
+  });
+
+  // Issue #878 — under a loopback AWS endpoint the container joins a forwarder
+  // that holds its network endpoint: IP, published port, and the shared
+  // network membership the retirement detaches are all the forwarder's.
+  it('reads + detaches the FORWARDER of a container in an owning forwarder', async () => {
+    hoisted.joinForwarder = true;
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = frontDoorOptions(pool, registry) as any;
+    const ops: string[] = [];
+    __setDockerNetworkConnectImpl(async (net, id, o) => {
+      ops.push(`connect ${net} ${id} aliases=${o.aliases.join(',')}`);
+    });
+    __setDockerNetworkDisconnectImpl(async (net, id) => {
+      ops.push(`disconnect ${net} ${id}`);
+    });
+    const controller = await startEcsService(fakeServiceConnectService(), opts, createServiceRunState());
+    await rollServiceReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: fakeServiceConnectService(),
+      newOptions: opts,
+    });
+    expect(ops.filter((o) => o.includes('net-1'))).toEqual([
+      'disconnect net-1 fid-1',
+      'connect net-1 fid-1 aliases=',
+    ]);
+    expect(hoisted.inspectIds.length).toBeGreaterThan(0);
+    expect(hoisted.inspectIds.every((o) => / fid-\d+$/.test(o))).toBe(true);
+    expect(hoisted.inspectIds.some((o) => o.startsWith('port '))).toBe(true);
     await controller.shutdown();
   });
 
