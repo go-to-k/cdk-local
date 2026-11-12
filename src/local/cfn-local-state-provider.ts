@@ -260,8 +260,15 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       // `--from-cfn-stack` state load used (issue #628 / #94). A second
       // credential resolution path would risk reading SSM from the
       // default account while CFn read from the named profile's account.
+      // In AWS Emulator mixed mode an SSM-backed parameter's value follows the
+      // SSM route, like a `{{resolve:ssm:...}}`; the stack reads above stay on
+      // the side this provider was built for (`createMixedModeStateProvider`
+      // resolves names per service).
       this.ssmClient = new SSMClient({
-        ...workloadClientConfig({ profile: this.clientOptions.profile }),
+        ...workloadClientConfig({
+          profile: this.clientOptions.profile,
+          ...(this.endpointOverride ? {} : { service: 'SSM' }),
+        }),
         ...this.overrideClientConfig(),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),

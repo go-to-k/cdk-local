@@ -399,8 +399,9 @@ if echo "${DOCKER_RUN_LINE}" | grep -q "${SSM_API_KEY_VALUE}"; then
   exit 1
 fi
 # Control: a plain String SSM param keeps the inline `-e KEY=VALUE` form (not
-# over-routed); the debug line masks every -e value, so it reads `-e DB_HOST=***`.
-echo "${DOCKER_RUN_LINE}" | grep -qF -- "-e DB_HOST=***" || {
+# over-routed); the debug line masks every -e value and shell-quotes the masked
+# pair, so it reads `-e "DB_HOST=***"` (unquoted accepted too).
+echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e "?DB_HOST=\*\*\*"?( |$)' || {
   echo "[verify] FAIL: expected the plain String DB_HOST to stay inline as -e DB_HOST=<value> (control), got: ${DOCKER_RUN_LINE}"
   exit 1
 }
@@ -450,7 +451,7 @@ echo "${DEBUG_OUT}" | grep -q 'Resolved secretsmanager dynamic reference' || {
 # issue #784: a deployed-env fill whose template value cannot be a secret
 # (the GetAtt-recovered SIBLING_ARN) stays inline as configuration. The debug
 # line masks every -e value, so the inline FORM reads `-e SIBLING_ARN=***`.
-echo "${DOCKER_RUN_LINE}" | grep -qF -- "-e SIBLING_ARN=***" || {
+echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e "?SIBLING_ARN=\*\*\*"?( |$)' || {
   echo "[verify] FAIL: expected the GetAtt fill inline as -e SIBLING_ARN=<value> (masked on the debug line as ***; the value itself is asserted on the function response): ${DOCKER_RUN_LINE}"
   exit 1
 }

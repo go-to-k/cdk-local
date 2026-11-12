@@ -48,7 +48,7 @@ import { isLoopbackHostname } from '../utils/loopback-host.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { describeCredentialLoadFailure } from './credential-error.js';
-import { setAwsEndpointOverride } from '../utils/aws-proxy.js';
+import { setAwsEmulatorServiceRouting, setAwsEndpointOverride } from '../utils/aws-proxy.js';
 import { assumedRoleRecorded } from '../utils/workload-identity.js';
 import type { CallerCredentials } from '../utils/workload-identity.js';
 import type { AwsCredentialIdentityProvider } from '@smithy/types';
@@ -374,7 +374,9 @@ export interface MixedModeWiring {
   resignConfigHostPath: string;
   /**
    * For host-side clients that must read the emulator (per-service name
-   * resolution): its endpoint, CA and keys. Never installed process-wide.
+   * resolution, and every own client of a routed service): its endpoint, CA
+   * and keys. Never installed process-wide; `activateWorkloadAwsWiring`
+   * installs it only for the routed services (`setAwsEmulatorServiceRouting`).
    */
   emulatorClientOverride: AwsEndpointOverride;
 }
@@ -1140,6 +1142,7 @@ export function resetWorkloadAwsWiringForTest(): void {
   chainProviders.clear();
   chainMisses.clear();
   setAwsEndpointOverride(undefined);
+  setAwsEmulatorServiceRouting(undefined);
 }
 
 /** Options a container command passes to {@link activateWorkloadAwsWiring}. */
@@ -1188,7 +1191,10 @@ export function resolveAwsEmulatorOption(
  * before any AWS client is built. `envVars` (the command's `--env-vars` file)
  * is scanned for `aws-emulator` sentinels: one without `--aws-emulator` is an
  * error, and with it they select mixed mode, where cdk-local's own clients
- * stay on real AWS.
+ * route per service like the workload's calls: a client of a sentinel-routed
+ * service talks to the emulator directly from the host (its keys and CA), every
+ * other client stays on real AWS with the real identity
+ * (`awsClientConfigForService`).
  *
  * Host-side use case: a host CLI's container commands call this with their
  * own options; the env var follows the embed config's `envPrefix`.
@@ -1208,14 +1214,21 @@ export async function activateWorkloadAwsWiring(
   });
   setActiveWorkloadAwsWiring(wiring);
   if (wiring.mixed) {
-    // Mixed mode: cdk-local's own clients stay on real AWS; only the
-    // per-service name resolution reads the emulator, with its own clients.
+    // Mixed mode: cdk-local's own clients route per service, like the
+    // workload's: a routed service reads the emulator directly (no sidecar on
+    // the host), every other one stays on real AWS.
     setAwsEndpointOverride(undefined);
+    setAwsEmulatorServiceRouting({
+      services: wiring.mixed.services,
+      override: wiring.mixed.emulatorClientOverride,
+    });
     getLogger().info(
       `Mixed mode: ${wiring.mixed.services.join(', ')} go to AWS Emulator at ${wiring.mixed.emulatorEndpoint.url} ` +
-        `(re-signed with its keys); every other AWS call uses your real credentials.`
+        `(signed with its keys), for the workload and for ${getEmbedConfig().productName}'s own calls; ` +
+        'every other AWS call uses your real credentials.'
     );
   } else if (wiring.mode === 'emulator' && wiring.emulatorEndpoint) {
+    setAwsEmulatorServiceRouting(undefined);
     setAwsEndpointOverride({
       endpoint: wiring.emulatorEndpoint.url,
       ...(wiring.caHostPath ? { caPem: readFileSync(wiring.caHostPath, 'utf8') } : {}),
@@ -1226,6 +1239,7 @@ export async function activateWorkloadAwsWiring(
     );
   } else {
     setAwsEndpointOverride(undefined);
+    setAwsEmulatorServiceRouting(undefined);
   }
   return wiring;
 }

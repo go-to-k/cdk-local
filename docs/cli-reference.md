@@ -168,7 +168,8 @@ Containers then keep your real credentials, and a re-signing sidecar signs
 each emulator-bound request again with the emulator's keys, so the emulator
 keeps its signature checking. S3 streaming uploads are re-signed up to
 100 MiB per request. `--from-cfn-stack` resolves the routed services' names
-from the emulator. The sentinel without `--aws-emulator` is an error. Full
+from the emulator, and cdk-local's own reads for a workload
+(`{{resolve:...}}`, ECS `Secrets`) take the same per-service route. The sentinel without `--aws-emulator` is an error. Full
 rules, the credential model and the two setups it is made for:
 [local-emulation.md#mixed-mode-chosen-services-in-aws-emulator-the-rest-in-real-aws](./local-emulation.md#mixed-mode-chosen-services-in-aws-emulator-the-rest-in-real-aws).
 

@@ -85,14 +85,14 @@ export async function resolveEcsSecrets(
   const secretsClient =
     options.secretsManagerClient ??
     new SecretsManagerClient({
-      ...workloadClientConfig({ profile: options.profile }),
+      ...workloadClientConfig({ profile: options.profile, service: 'SECRETS_MANAGER' }),
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
     });
   const ssmClient =
     options.ssmClient ??
     new SSMClient({
-      ...workloadClientConfig({ profile: options.profile }),
+      ...workloadClientConfig({ profile: options.profile, service: 'SSM' }),
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
     });

@@ -496,7 +496,7 @@ export class DynamicReferenceResolver {
       c =
         this.options.secretsManagerClientFactory?.(region) ??
         new SecretsManagerClient({
-          ...workloadClientConfig({ profile: this.options.profile }),
+          ...workloadClientConfig({ profile: this.options.profile, service: 'SECRETS_MANAGER' }),
           ...(region && { region }),
           ...(this.options.profile && { profile: this.options.profile }),
         });
@@ -512,7 +512,7 @@ export class DynamicReferenceResolver {
       c =
         this.options.ssmClientFactory?.(region) ??
         new SSMClient({
-          ...workloadClientConfig({ profile: this.options.profile }),
+          ...workloadClientConfig({ profile: this.options.profile, service: 'SSM' }),
           ...(region && { region }),
           ...(this.options.profile && { profile: this.options.profile }),
         });

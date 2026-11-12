@@ -26,7 +26,12 @@ const {
 const { findAwsEmulatorSentinels, MIXED_MODE_RESIGN_PORT } = await import(
   '../../../src/local/aws-emulator-mixed-mode.js'
 );
-const { getAwsEndpointOverride, setAwsEndpointOverride } = await import('../../../src/utils/aws-proxy.js');
+const {
+  getAwsEmulatorServiceRouting,
+  getAwsEndpointOverride,
+  isAwsServiceRoutedToEmulator,
+  setAwsEndpointOverride,
+} = await import('../../../src/utils/aws-proxy.js');
 const { createMixedModeTlsMaterials } = await import('../../../src/local/mixed-mode-tls.js');
 const { buildLoopbackForwarderDockerArgs, buildNamespaceOwnerForwarderDockerArgs } = await import(
   '../../../src/local/loopback-forwarder.js'
@@ -272,7 +277,7 @@ describe('activateWorkloadAwsWiring — sentinels in --env-vars', () => {
     expect(w.mixed).toBeUndefined();
   });
 
-  it("keeps cdk-local's own clients on real AWS in mixed mode", async () => {
+  it("routes cdk-local's own clients per service in mixed mode (#898)", async () => {
     // A healthy fake emulator, found through HOME like a real run.
     const tls = createMixedModeTlsMaterials();
     const server = createHttpsServer({ key: tls.keyPem, cert: tls.certPem }, (_req, res) => {
@@ -291,7 +296,17 @@ describe('activateWorkloadAwsWiring — sentinels in --env-vars', () => {
       const f = envFile({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
       const w = await activateWorkloadAwsWiring({ envVars: f, awsEmulator: `https://127.0.0.1:${port}` });
       expect(w.mixed?.services).toEqual(['DYNAMODB']);
+      // No process-wide override: only the routed service reads the emulator.
       expect(getAwsEndpointOverride()).toBeUndefined();
+      expect(getAwsEmulatorServiceRouting()).toEqual({
+        services: ['DYNAMODB'],
+        override: w.mixed!.emulatorClientOverride,
+      });
+      expect(isAwsServiceRoutedToEmulator('DYNAMODB')).toBe(true);
+      expect(isAwsServiceRoutedToEmulator('SECRETS_MANAGER')).toBe(false);
+      // A later run without sentinels clears it.
+      await activateWorkloadAwsWiring({});
+      expect(getAwsEmulatorServiceRouting()).toBeUndefined();
     } finally {
       process.env['HOME'] = savedHome;
       await new Promise((r) => server.close(r));

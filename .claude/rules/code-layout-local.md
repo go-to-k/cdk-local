@@ -96,6 +96,12 @@ a log line, and a served HTTP response body.
   on argv; the per-run CA key (`mixed-mode-tls.ts`) is never written.
   `createLocalStateProvider` wraps `--from-cfn-stack` in
   `createMixedModeStateProvider` when the active wiring is mixed.
+  `activateWorkloadAwsWiring` installs `setAwsEmulatorServiceRouting`, and
+  every own client passes its endpoint service id to
+  `buildProxyClientConfig` / `workloadClientConfig` (`service`), so a routed
+  service's client reads the emulator (go-to-k/cdk-local#898). A client that
+  must stay real passes none and is listed, with its reason, in
+  `tests/unit/utils/own-aws-client-routing.test.ts`.
 
 ## AgentCore
 
