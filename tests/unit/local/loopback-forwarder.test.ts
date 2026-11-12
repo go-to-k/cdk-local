@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vite-plus/test';
 import {
   LOOPBACK_FORWARDER_IMAGE,
   buildLoopbackForwarderDockerArgs,
+  buildNamespaceOwnerForwarderDockerArgs,
   describeForwarderFailure,
   parseForwarderStatus,
 } from '../../../src/local/loopback-forwarder.js';
@@ -102,5 +103,51 @@ describe('describeForwarderFailure', () => {
     expect(
       describeForwarderFailure({ name: 'n', ok: false, failedPort: 8080, reason: 'LISTEN_EADDRINUSE' }, 'X')
     ).toMatch(/already uses port 8080/);
+  });
+});
+
+describe('buildNamespaceOwnerForwarderDockerArgs', () => {
+  it('owns the namespace on the task network with the workload network identity, no pid join', () => {
+    const args = buildNamespaceOwnerForwarderDockerArgs({
+      name: 'fwd',
+      namespace: {
+        network: 'task-net',
+        networkAliases: ['app', 'app.local'],
+        publish: ['127.0.0.1:8080:80/tcp'],
+        addHosts: ['host.docker.internal:192.168.65.254'],
+        links: ['db:database'],
+      },
+      ports: [9297, 4566],
+      probe: 'health',
+      caHostPath: '/tmp/ca.pem',
+      skipPull: true,
+    });
+    const image = args.indexOf(LOOPBACK_FORWARDER_IMAGE);
+    expect(args.slice(0, image)).toEqual([
+      'run', '-d', '--rm', '--name', 'fwd', '--network', 'task-net',
+      '--network-alias', 'app', '--network-alias', 'app.local',
+      '-p', '127.0.0.1:8080:80/tcp',
+      '--add-host', 'host.docker.internal:192.168.65.254',
+      '--link', 'db:database',
+      '--pull', 'never',
+      '-v', '/tmp/ca.pem:/cdkl-forwarder/ca.pem:ro',
+      '--entrypoint', 'node',
+    ]);
+    expect(args).not.toContain('--pid');
+    expect(args.slice(image + 3)).toEqual(['9297,4566', 'health', '/cdkl-forwarder/ca.pem']);
+  });
+
+  it('carries only the network for a bare namespace, with a TCP probe', () => {
+    const args = buildNamespaceOwnerForwarderDockerArgs({
+      name: 'fwd',
+      namespace: { network: 'n' },
+      ports: [9297],
+      probe: 'health',
+    });
+    const image = args.indexOf(LOOPBACK_FORWARDER_IMAGE);
+    expect(args.slice(0, image)).toEqual([
+      'run', '-d', '--rm', '--name', 'fwd', '--network', 'n', '--entrypoint', 'node',
+    ]);
+    expect(args.slice(image + 3)).toEqual(['9297', 'tcp']);
   });
 });

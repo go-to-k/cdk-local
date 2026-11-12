@@ -14,7 +14,7 @@ vi.mock('node:child_process', () => ({
 const { pullImageMock } = vi.hoisted(() => ({ pullImageMock: vi.fn(async () => undefined) }));
 vi.mock('../../../src/local/docker-runner.js', () => ({ pullImage: pullImageMock }));
 
-const { startLoopbackForwarder, resetLoopbackForwarderForTest } = await import(
+const { startLoopbackForwarder, awaitLoopbackForwarderStatus, resetLoopbackForwarderForTest } = await import(
   '../../../src/local/loopback-forwarder.js'
 );
 
@@ -63,5 +63,36 @@ describe('startLoopbackForwarder', () => {
       a[0] === 'run' ? { error: new Error('conflicting options') } : { stdout: '' }
     );
     await expect(startLoopbackForwarder(opts)).rejects.toThrow(/Could not start the loopback forwarder container: conflicting options/);
+  });
+});
+
+describe('awaitLoopbackForwarderStatus', () => {
+  it('resolves with a FAIL result naming the forwarder, without removing it', async () => {
+    execFileMock.mockImplementation((_c: string, a: string[]) =>
+      a[0] === 'logs' ? { stdout: 'CDKL-FWD FAIL 9297 ECONNREFUSED 172.18.0.1\n' } : { stdout: '' }
+    );
+    await expect(awaitLoopbackForwarderStatus('fwd')).resolves.toEqual({
+      name: 'fwd',
+      ok: false,
+      failedPort: 9297,
+      reason: 'ECONNREFUSED',
+      upstream: '172.18.0.1',
+    });
+    expect(execFileMock.mock.calls.map((c) => c[1][0])).toEqual(['logs']);
+  });
+
+  it('polls until the status line appears', async () => {
+    let n = 0;
+    execFileMock.mockImplementation((_c: string, a: string[]) =>
+      a[0] === 'logs' ? { stdout: ++n < 3 ? '' : 'CDKL-FWD READY x\n' } : { stdout: '' }
+    );
+    await expect(awaitLoopbackForwarderStatus('fwd')).resolves.toMatchObject({ ok: true });
+    expect(n).toBe(3);
+  });
+
+  it('removes the forwarder by name and rejects on timeout', async () => {
+    execFileMock.mockImplementation(() => ({ stdout: '' }));
+    await expect(awaitLoopbackForwarderStatus('fwd', 0)).rejects.toThrow(/did not report/);
+    expect(execFileMock.mock.calls.some((c) => c[1].join(' ') === 'rm -f fwd')).toBe(true);
   });
 });

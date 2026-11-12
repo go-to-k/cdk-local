@@ -18,6 +18,17 @@
 // kernel kills it when the workload's init exits, and `--rm` removes it — no
 // separate cleanup path is needed for any of the commands that start
 // workloads.
+//
+// The forwarder can also OWN the namespace instead
+// ({@link buildNamespaceOwnerForwarderDockerArgs}): it starts first, on the
+// workload's Docker network with the workload's network aliases, port
+// publishes, host mappings and links, and the workload starts afterwards with
+// `--network container:<forwarder>`. The listener is then up before the
+// workload's first instruction runs, so an app that calls AWS at once cannot
+// race it. Docker cannot join a created-but-not-running container's
+// namespace, so this order is the only race-free one. An owning forwarder does
+// not share the workload's PID namespace (the workload keeps PID 1), so it
+// outlives the workload: the caller removes it, after the workload.
 
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -158,7 +169,75 @@ export function buildLoopbackForwarderDockerArgs(
   // `--no-pull`: a missing image fails the forwarder instead of an implicit pull.
   if (opts.skipPull) args.push('--pull', 'never');
   if (opts.caHostPath) args.push('-v', `${opts.caHostPath}:${FORWARDER_CA_PATH}:ro`);
-  args.push(
+  args.push(...forwarderCommand(opts));
+  return args;
+}
+
+/**
+ * The network identity a namespace-owning forwarder carries for the workload
+ * that joins it. Docker refuses each of these on a container started with
+ * `--network container:<id>`, so they move from the workload to the owner.
+ */
+export interface LoopbackForwarderNamespace {
+  /** The Docker network the forwarder (and through it the workload) joins. */
+  network: string;
+  /** `--network-alias` values: the names the workload is reachable by. */
+  networkAliases?: readonly string[];
+  /** `-p` values (`[ip:]hostPort:containerPort[/proto]`): the workload's port publishes. */
+  publish?: readonly string[];
+  /** `--add-host` values (`name:ip`). */
+  addHosts?: readonly string[];
+  /** `--link` values. */
+  links?: readonly string[];
+}
+
+/** Options of {@link buildNamespaceOwnerForwarderDockerArgs}. */
+export interface NamespaceOwnerForwarderOptions {
+  /** The forwarder container's name: the workload joins `container:<name>`. */
+  name: string;
+  namespace: LoopbackForwarderNamespace;
+  /** Loopback ports to forward (each to the same port upstream). */
+  ports: readonly number[];
+  /** As {@link StartLoopbackForwarderOptions.probe}. */
+  probe: 'tcp' | 'health';
+  /** Host path of a CA bundle the health probe trusts. */
+  caHostPath?: string;
+  /** `--no-pull`: do not pull the forwarder image. */
+  skipPull?: boolean;
+}
+
+/**
+ * Build the `docker run` argv for a forwarder that OWNS the network namespace
+ * a workload joins afterwards with `--network container:<name>` (see the
+ * file header). The argv carries no secret: a network name, aliases, port
+ * publishes, host mappings, links, ports, a probe mode and a CA path.
+ *
+ * Host-side use case: a host CLI that starts its own workload containers
+ * runs this argv, waits with {@link awaitLoopbackForwarderStatus}, and starts
+ * the workload in the forwarder's namespace only on READY, so the workload's
+ * first AWS call cannot race the forwarder. The caller removes the forwarder
+ * after the workload (`docker rm -f`: node ignores SIGTERM as PID 1).
+ */
+export function buildNamespaceOwnerForwarderDockerArgs(
+  opts: NamespaceOwnerForwarderOptions
+): string[] {
+  const ns = opts.namespace;
+  const args = ['run', '-d', '--rm', '--name', opts.name, '--network', ns.network];
+  for (const a of ns.networkAliases ?? []) args.push('--network-alias', a);
+  for (const p of ns.publish ?? []) args.push('-p', p);
+  for (const h of ns.addHosts ?? []) args.push('--add-host', h);
+  for (const l of ns.links ?? []) args.push('--link', l);
+  if (opts.skipPull) args.push('--pull', 'never');
+  if (opts.caHostPath) args.push('-v', `${opts.caHostPath}:${FORWARDER_CA_PATH}:ro`);
+  args.push(...forwarderCommand(opts));
+  return args;
+}
+
+/** The forwarder's `--entrypoint`, image and script argv, shared by both modes. */
+function forwarderCommand(
+  opts: Pick<NamespaceOwnerForwarderOptions, 'ports' | 'probe' | 'caHostPath'>
+): string[] {
+  return [
     '--entrypoint',
     'node',
     LOOPBACK_FORWARDER_IMAGE,
@@ -166,9 +245,8 @@ export function buildLoopbackForwarderDockerArgs(
     LOOPBACK_FORWARDER_SCRIPT,
     opts.ports.join(','),
     opts.probe === 'health' && opts.caHostPath ? 'health' : 'tcp',
-    ...(opts.caHostPath ? [FORWARDER_CA_PATH] : [])
-  );
-  return args;
+    ...(opts.caHostPath ? [FORWARDER_CA_PATH] : []),
+  ];
 }
 
 let imageReady: Promise<void> | undefined;
@@ -237,15 +315,34 @@ export async function startLoopbackForwarder(
       `Could not start the loopback forwarder container: ${displayToolOutput(err.stderr?.trim() || describeExitWithoutArgv(error))}`
     );
   }
-  const deadline = Date.now() + (opts.timeoutMs ?? 20_000);
+  return awaitLoopbackForwarderStatus(name, opts.timeoutMs);
+}
+
+/**
+ * Wait until the started forwarder `name` reports READY or FAIL, and resolve
+ * with the result either way. Rejects when the forwarder exits without
+ * reporting, or when it does not report within `timeoutMs` (default 20 s; it
+ * is then removed).
+ *
+ * Host-side use case: a host that runs {@link buildNamespaceOwnerForwarderDockerArgs}
+ * with its own docker client (to track the container it created) waits with
+ * this before starting the workload.
+ */
+export async function awaitLoopbackForwarderStatus(
+  name: string,
+  timeoutMs = 20_000
+): Promise<LoopbackForwarderResult> {
+  const logger = getLogger().child('forwarder');
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     let logs = '';
     try {
       const r = await execFileAsync(getDockerCmd(), ['logs', name]);
       logs = `${r.stdout}\n${r.stderr}`;
     } catch (error) {
-      // The forwarder is gone (`--rm` after an exit): its namespaces' owner
-      // stopped, or node crashed before printing.
+      // The forwarder is gone (`--rm` after an exit): the workload whose
+      // namespaces it joined stopped, node crashed before printing, or the
+      // caller removed it.
       const err = error as { stderr?: string };
       throw new Error(
         `The loopback forwarder container exited before reporting: ${displayToolOutput(err.stderr?.trim() || describeExitWithoutArgv(error))}`
