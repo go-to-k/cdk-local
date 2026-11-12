@@ -379,6 +379,21 @@ describe('--aws-emulator: Java trust store', () => {
     w.dispose();
   });
 
+  it('an unreadable truststore.p12 skips only the Java wiring, with a warning', async () => {
+    const dir = writeEmulatorRun(9297);
+    mkdirSync(path.join(dir, 'truststore.p12')); // EISDIR on read
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    try {
+      expect(w.env['JAVA_TOOL_OPTIONS']).toBeUndefined();
+      expect(w.mounts.map((m) => m.containerPath)).toEqual(['/cdk-local-aws/ca-bundle.pem']);
+      expect(warn.mock.calls.some((c) => /truststore\.p12 cannot be read/.test(String(c[0])))).toBe(true);
+    } finally {
+      warn.mockRestore();
+      w.dispose();
+    }
+  });
+
   it("appends to a container's own JAVA_TOOL_OPTIONS instead of replacing it", async () => {
     writeEmulatorRun(9297, { truststore: true });
     const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });

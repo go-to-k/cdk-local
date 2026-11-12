@@ -97,7 +97,8 @@ vi.mock('node:child_process', async (importOriginal) => {
         cb(null, { stdout: '', stderr: '' });
         return undefined;
       }
-      return (actual.execFile as (...a: unknown[]) => unknown)(cmd, args, ...rest);
+      // Nothing else here may reach a real docker; fail loudly if a new path does.
+      throw new Error(`unexpected execFile in soft-reload test: ${cmd} ${args.join(' ')}`);
     }) as typeof actual.execFile,
   };
 });

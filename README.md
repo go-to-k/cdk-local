@@ -129,7 +129,7 @@ cdkl studio --watch                          # serves started from the UI hot-re
 cdkl studio --stack 'dev/*'                  # scope the displayed target list (multi-stack apps)
 ```
 
-`--from-cfn-stack` / `--assume-role` / `--watch` are session-global and also editable live from the Session bar — they apply to every invoke / serve you start from the UI. The standard synth flags (`--app` / `--profile` / `--region` / `-c`) work here too — including `--app ./cdk.out` to open the console straight from a pre-synthesized assembly.
+`--from-cfn-stack` / `--assume-role` / `--watch` are session-global and also editable live from the Session bar — they apply to every invoke / serve you start from the UI. `--aws-emulator` / `--ca-bundle` are forwarded to every child command as well. The standard synth flags (`--app` / `--profile` / `--region` / `-c`) work here too — including `--app ./cdk.out` to open the console straight from a pre-synthesized assembly.
 
 Each target's composer surfaces its per-run options as controls:
 

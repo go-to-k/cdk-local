@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 
 // `cdkl studio --aws-emulator` / `--ca-bundle`: studio activates the wiring
@@ -19,7 +20,10 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   },
 }));
 
-const { createLocalStudioCommand } = await import('../../../src/cli/commands/local-studio.js');
+const { createLocalStudioCommand, studioEndpointChildConfig } = await import(
+  '../../../src/cli/commands/local-studio.js'
+);
+const { resolve } = await import('node:path');
 
 afterEach(() => {
   activateMock.mockReset();
@@ -37,6 +41,30 @@ async function runStudio(args: string[]): Promise<void> {
     .parseAsync(['--app', 'node app.js', '--no-open', ...args], { from: 'user' })
     .catch(() => undefined);
 }
+
+describe('studioEndpointChildConfig (what studio forwards to each child)', () => {
+  const emulator = {
+    mode: 'emulator' as const,
+    emulatorEndpoint: { url: 'https://127.0.0.1:9301', hostname: '127.0.0.1', port: 9301, loopback: true },
+  };
+
+  it('forwards the resolved emulator URL and the CA bundle as an absolute path', () => {
+    expect(studioEndpointChildConfig(emulator, 'ca.pem')).toEqual({
+      awsEmulator: 'https://127.0.0.1:9301',
+      caBundle: resolve('ca.pem'),
+    });
+  });
+
+  it('expands a literal ~/ in --ca-bundle like the wiring does', () => {
+    expect(studioEndpointChildConfig({ mode: 'forward' }, '~/ca.pem').caBundle).toBe(
+      resolve(homedir(), 'ca.pem')
+    );
+  });
+
+  it('forwards nothing in forward mode without a CA bundle', () => {
+    expect(studioEndpointChildConfig({ mode: 'forward' }, undefined)).toEqual({});
+  });
+});
 
 describe('cdkl studio --aws-emulator / --ca-bundle', () => {
   it('activates the wiring with both flags before synthesizing', async () => {

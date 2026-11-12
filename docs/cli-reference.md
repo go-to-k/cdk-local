@@ -123,7 +123,7 @@ runs a command against a local AWS Emulator. The URL defaults to
   so a handler that misses the endpoint fails instead of reaching real AWS.
 - The run's `ca.pem` (or `--ca-bundle` / `AWS_CA_BUNDLE`) is mounted as
   above; certificate verification stays on.
-- For Java, a copy of the run's `truststore.p12` is mounted read-only at
+- For Java, when the URL is https and the run wrote a `truststore.p12`, a copy of it is mounted read-only at
   `/cdk-local-aws/truststore.p12` and `JAVA_TOOL_OPTIONS` gets
   `-Djavax.net.ssl.trustStore=/cdk-local-aws/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12`,
   appended to the container's own `JAVA_TOOL_OPTIONS` (left alone when that

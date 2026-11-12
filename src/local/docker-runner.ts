@@ -373,29 +373,50 @@ async function isContainerRunning(containerId: string): Promise<boolean> {
  * any other listener's async shutdown can exit the process. When no other
  * listener exists, Node's default (exit on the signal) is kept: exit 130 / 143.
  */
+/** Containers {@link removeOnSignalWhile} removes on a signal, with their claim counts. */
+const signalGuarded = new Map<string, number>();
+let signalListeners: { signal: 'SIGINT' | 'SIGTERM'; listener: () => void }[] = [];
+
 async function removeOnSignalWhile<T>(
   containers: readonly string[],
   fn: () => Promise<T>
 ): Promise<T> {
-  const listeners = (['SIGINT', 'SIGTERM'] as const).map((signal) => {
-    const listener = (): void => {
-      try {
-        execFileSync(getDockerCmd(), ['rm', '-f', ...containers], {
-          stdio: 'ignore',
-          timeout: 15_000,
-        });
-      } catch {
-        // Best effort: a container already gone makes `rm -f` exit non-zero.
-      }
-      if (process.listenerCount(signal) === 1) process.exit(signal === 'SIGINT' ? 130 : 143);
-    };
-    process.on(signal, listener);
-    return { signal, listener };
-  });
+  // One listener per signal for the whole process, shared by every attach in
+  // flight (`start-api --warm` attaches several at once): each would otherwise
+  // see the others and decide someone else exits.
+  if (signalListeners.length === 0) {
+    signalListeners = (['SIGINT', 'SIGTERM'] as const).map((signal) => {
+      const listener = (): void => {
+        const names = [...signalGuarded.keys()];
+        if (names.length > 0) {
+          try {
+            execFileSync(getDockerCmd(), ['rm', '-f', ...names], {
+              stdio: 'ignore',
+              timeout: 15_000,
+            });
+          } catch {
+            // Best effort: a container already gone makes `rm -f` exit non-zero.
+          }
+        }
+        if (process.listenerCount(signal) === 1) process.exit(signal === 'SIGINT' ? 130 : 143);
+      };
+      process.on(signal, listener);
+      return { signal, listener };
+    });
+  }
+  for (const c of containers) signalGuarded.set(c, (signalGuarded.get(c) ?? 0) + 1);
   try {
     return await fn();
   } finally {
-    for (const { signal, listener } of listeners) process.off(signal, listener);
+    for (const c of containers) {
+      const n = (signalGuarded.get(c) ?? 1) - 1;
+      if (n > 0) signalGuarded.set(c, n);
+      else signalGuarded.delete(c);
+    }
+    if (signalGuarded.size === 0) {
+      for (const { signal, listener } of signalListeners) process.off(signal, listener);
+      signalListeners = [];
+    }
   }
 }
 

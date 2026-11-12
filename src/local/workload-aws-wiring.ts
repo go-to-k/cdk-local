@@ -362,12 +362,15 @@ export function mergeJavaToolOptions(existing: string | undefined, wiring: strin
 /**
  * Copy the emulator's `truststore.p12` into a fresh temp file, mode 0644: the
  * run directory is private to the host user, and the container user may be
- * another one. A trust store holds certificates only.
+ * another one. Unlike {@link writeCaBundleFile} it copies the file as-is (it is
+ * binary PKCS12): AWS Emulator's `truststore.p12` holds the run's CA
+ * certificate only, no private key.
  */
 function copyTruststoreFile(source: string): { hostPath: string; dispose: () => void } {
+  const bytes = readFileSync(source);
   const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().productName}-truststore-`));
   const hostPath = path.join(dir, 'truststore.p12');
-  writeFileSync(hostPath, readFileSync(source), { mode: 0o644 });
+  writeFileSync(hostPath, bytes, { mode: 0o644 });
   return { hostPath, dispose: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -530,13 +533,24 @@ export async function resolveWorkloadAwsWiring(
       // the same CA and point the JVM at it.
       let java: { mount: WorkloadMount; env: Record<string, string> } | undefined;
       if (run.truststorePath && ep.url.startsWith('https:')) {
-        const file = copyTruststoreFile(run.truststorePath);
-        disposers.push(file.dispose);
-        const containerPath = getContainerJavaTruststorePath();
-        java = {
-          mount: { hostPath: file.hostPath, containerPath },
-          env: { JAVA_TOOL_OPTIONS: javaTruststoreToolOptions(containerPath) },
-        };
+        // Optional: an unreadable trust store skips only the Java wiring.
+        let file: { hostPath: string; dispose: () => void } | undefined;
+        try {
+          file = copyTruststoreFile(run.truststorePath);
+        } catch (err) {
+          getLogger().warn(
+            `--aws-emulator: ${run.truststorePath} cannot be read (${(err as NodeJS.ErrnoException).code ?? 'error'}); ` +
+              'Java workloads get no JAVA_TOOL_OPTIONS trust store.'
+          );
+        }
+        if (file) {
+          disposers.push(file.dispose);
+          const containerPath = getContainerJavaTruststorePath();
+          java = {
+            mount: { hostPath: file.hostPath, containerPath },
+            env: { JAVA_TOOL_OPTIONS: javaTruststoreToolOptions(containerPath) },
+          };
+        }
       }
       return {
         mode: 'emulator',

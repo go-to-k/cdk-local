@@ -136,13 +136,64 @@ describe('signal during the loopback forwarder readiness wait', () => {
     });
   });
 
+  it('concurrent waits share one listener: one SIGINT removes every workload and exits 130', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    await withoutRunnerListeners('SIGINT', async () => {
+      const a = attachLoopbackForwarder('wl-a', wiring, [9297]);
+      const b = attachLoopbackForwarder('wl-b', wiring, [9297]);
+      await polled;
+      expect(process.listenerCount('SIGINT')).toBe(1);
+      process.emit('SIGINT');
+      expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+      const argv = (execFileSyncMock.mock.calls[0] as [string, string[]])[1];
+      expect(argv.slice(0, 2)).toEqual(['rm', '-f']);
+      expect(argv).toEqual(expect.arrayContaining(['wl-a', 'wl-b']));
+      expect(argv).toHaveLength(6);
+      expect(exit).toHaveBeenCalledWith(130);
+      gate.reported = true;
+      await Promise.all([a, b]);
+      expect(process.listenerCount('SIGINT')).toBe(0);
+    });
+  });
+
+  it('SIGTERM with no other listener exits 143', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    await withoutRunnerListeners('SIGTERM', async () => {
+      const attach = attachLoopbackForwarder('wl-id', wiring, [9297]);
+      await polled;
+      process.emit('SIGTERM');
+      expect(exit).toHaveBeenCalledWith(143);
+      gate.reported = true;
+      await attach;
+    });
+  });
+
   it('removes its listeners once the forwarder is ready; a later signal removes nothing', async () => {
-    const sigint = process.listenerCount('SIGINT');
-    const sigterm = process.listenerCount('SIGTERM');
-    gate.reported = true;
-    await attachLoopbackForwarder('wl-id', wiring, [9297]);
-    expect(process.listenerCount('SIGINT')).toBe(sigint);
-    expect(process.listenerCount('SIGTERM')).toBe(sigterm);
-    expect(execFileSyncMock).not.toHaveBeenCalled();
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    await withoutRunnerListeners('SIGINT', async () => {
+      gate.reported = true;
+      await attachLoopbackForwarder('wl-id', wiring, [9297]);
+      expect(process.listenerCount('SIGINT')).toBe(0);
+      expect(process.listenerCount('SIGTERM')).toBeLessThanOrEqual(1); // the runner's own
+      const probe = vi.fn();
+      process.on('SIGINT', probe);
+      try {
+        process.emit('SIGINT');
+      } finally {
+        process.off('SIGINT', probe);
+      }
+      expect(execFileSyncMock).not.toHaveBeenCalled();
+      expect(exit).not.toHaveBeenCalled();
+    });
+  });
+
+  it('removes its listeners when the forwarder fails to start', async () => {
+    await withoutRunnerListeners('SIGINT', async () => {
+      execFileMock.mockImplementation((_c: string, a: string[]) =>
+        a[0] === 'logs' ? { stdout: 'CDKL-FWD FAIL 9297 ECONNREFUSED 192.168.65.254\n' } : { stdout: '' }
+      );
+      await expect(attachLoopbackForwarder('wl-id', wiring, [9297])).rejects.toThrow(/9297/);
+      expect(process.listenerCount('SIGINT')).toBe(0);
+    });
   });
 });
