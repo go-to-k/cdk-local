@@ -1299,7 +1299,10 @@ export {
  * resolve it with `resolveWorkloadAwsWiring`, apply it with
  * `applyWorkloadAwsWiringToEnv` (env) + the wiring's `mounts`, and call
  * `startLoopbackForwarder` right after `docker run` when `loopbackPorts` is
- * non-empty. The env var is `awsEmulatorEnvName()` (`<envPrefix>_AWS_EMULATOR`;
+ * non-empty — or, so a workload that calls AWS at once cannot race the
+ * forwarder, start an owning forwarder FIRST
+ * (`buildNamespaceOwnerForwarderDockerArgs` + `awaitLoopbackForwarderStatus`)
+ * and the workload with `--network container:<forwarder>`. The env var is `awsEmulatorEnvName()` (`<envPrefix>_AWS_EMULATOR`;
  * `CDK_LOCAL_AWS_EMULATOR` standalone).
  */
 export {
@@ -1339,11 +1342,16 @@ export {
 export {
   LOOPBACK_FORWARDER_IMAGE,
   buildLoopbackForwarderDockerArgs,
+  buildNamespaceOwnerForwarderDockerArgs,
+  awaitLoopbackForwarderStatus,
+  newLoopbackForwarderName,
   ensureForwarderImage,
   describeForwarderFailure,
   startLoopbackForwarder,
   type LoopbackForwarderResult,
   type StartLoopbackForwarderOptions,
+  type LoopbackForwarderNamespace,
+  type NamespaceOwnerForwarderOptions,
 } from './local/loopback-forwarder.js';
 export {
   getAwsEndpointOverride,
