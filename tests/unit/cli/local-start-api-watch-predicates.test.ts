@@ -41,6 +41,9 @@ describe('createWatchPredicates', () => {
       expect(ignored(p)).toBe(true);
       expect(shouldTrigger(p)).toBe(false);
     }
+    // Anchored at the root: a same-named user path deeper in the tree still fires.
+    expect(shouldTrigger(abs('src', '.tmp', 'handler.ts'))).toBe(true);
+    expect(shouldTrigger(abs('sub', 'cdk.context.json'))).toBe(true);
     // A user-owned file is NOT cdkl's to exclude: it fires until the user lists it.
     expect(shouldTrigger(abs('app.log'))).toBe(true);
     const withUser = createWatchPredicates({

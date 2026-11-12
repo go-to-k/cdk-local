@@ -1407,7 +1407,7 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
       new Option(
         '--watch',
         "Hot-reload: re-synth + re-resolve the distribution when the CDK app's source changes (honors cdk.json " +
-          'watch.include/exclude; cdk.out, node_modules, .git are always excluded). The server keeps the previous ' +
+          'watch.include/exclude; cdk.out, cdk.context.json, node_modules, .git are always excluded). The server keeps the previous ' +
           'version serving when synth fails mid-reload.'
       ).default(false)
     );

@@ -1504,7 +1504,14 @@ export function createWatchPredicates(args: {
     'cdk.context.json',
   ];
   const excludePatterns = [...mandatoryExcludes, 'node_modules', '.git', ...watchConfig.exclude];
-  const excludeMatcher = createGlobMatcher(excludePatterns);
+  const globMatcher = createGlobMatcher([
+    ...excludePatterns.filter((p) => !mandatoryExcludes.includes(p)),
+  ]);
+  // cdk-local's own paths are anchored at the watch root: a glob without a `/`
+  // would match that basename at ANY depth and hide a user's `src/tmp/...`.
+  const isOwn = (rel: string): boolean =>
+    mandatoryExcludes.some((own) => rel === own || rel.startsWith(`${own}/`));
+  const excludeMatcher = (rel: string): boolean => isOwn(rel) || globMatcher(rel);
   const includeMatcher = createGlobMatcher(watchConfig.include);
   const ignored = (absPath: string): boolean => {
     const rel = toRel(absPath);
@@ -4213,7 +4220,7 @@ export function addStartApiSpecificOptions(cmd: Command): Command {
       .addOption(
         new Option(
           '--watch',
-          "Hot-reload: re-synth + re-discover routes when the CDK app's source changes (honors cdk.json watch.include/exclude; cdk.out, node_modules, .git are always excluded). Off by default; the server keeps the previous version serving when synth fails mid-reload."
+          "Hot-reload: re-synth + re-discover routes when the CDK app's source changes (honors cdk.json watch.include/exclude; cdk.out, cdk.context.json, node_modules, .git are always excluded). Off by default; the server keeps the previous version serving when synth fails mid-reload."
         ).default(false)
       )
       .addOption(
