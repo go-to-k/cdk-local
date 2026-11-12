@@ -1,4 +1,6 @@
 import { execFile as execFileCb } from 'node:child_process';
+import { addAwsEndpointOptions } from '../options.js';
+import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path, { dirname } from 'node:path';
@@ -334,6 +336,7 @@ async function localInvokeAgentCoreCommand(
   );
 
   try {
+    await activateWorkloadAwsWiring(options);
     await applyRoleArnIfSet({
       roleArn: options.roleArn,
       region: options.region,
@@ -2609,6 +2612,7 @@ export function createLocalInvokeAgentCoreCommand(
  * in three `--help` clusters. Chainable: returns `cmd`.
  */
 export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
+  addAwsEndpointOptions(cmd);
   return cmd
     .addOption(new Option('-e, --event <file>', 'JSON event payload file (default: {})'))
     .addOption(new Option('--event-stdin', 'Read event JSON from stdin').default(false))

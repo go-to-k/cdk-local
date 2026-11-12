@@ -1,4 +1,6 @@
 import { readFileSync } from 'fs';
+import { addAwsEndpointOptions } from '../options.js';
+import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   appOptions,
@@ -314,6 +316,7 @@ async function localStartMicrovmCommand(
   // last control-endpoint terminate) awaits the SAME teardown.
   const teardown = (): Promise<void> => (teardownPromise ??= doTeardown());
 
+  await activateWorkloadAwsWiring(options);
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -598,6 +601,7 @@ export function createLocalStartMicrovmCommand(
  * factory, so a new `start-microvm`-only flag lands here once. Chainable.
  */
 export function addStartMicrovmSpecificOptions(cmd: Command): Command {
+  addAwsEndpointOptions(cmd);
   return cmd
     .addOption(
       new Option('--count <n>', 'Number of independent MicroVMs to run, each with its own URL.')

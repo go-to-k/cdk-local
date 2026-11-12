@@ -1288,3 +1288,54 @@ export {
   type DynamicReferenceResolverOptions,
   type ResolveEnvDynamicReferencesOptions,
 } from './local/dynamic-reference-resolver.js';
+
+/**
+ * AWS endpoint / trust / credential wiring for workload containers
+ * (go-to-k/cdkd#6129-#6132). A host CLI's container commands either call
+ * `activateWorkloadAwsWiring` with their `--emulator-endpoint` / `--ca-bundle`
+ * / `--profile` options (cdk-local's docker-run layer then applies it to every
+ * workload container it starts, and cdk-local's own AWS clients follow the
+ * endpoint), or, for containers the host starts with its own docker code,
+ * resolve it with `resolveWorkloadAwsWiring`, apply it with
+ * `applyWorkloadAwsWiringToEnv` (env) + the wiring's `mounts`, and call
+ * `startLoopbackForwarder` right after `docker run` when `loopbackPorts` is
+ * non-empty. The endpoint env var is `${envPrefix}_EMULATOR_ENDPOINT`.
+ */
+export {
+  AUTH_OFF_PLACEHOLDER_CREDENTIALS,
+  CA_TRUST_ENV_KEYS,
+  EMULATOR_SCRUBBED_ENV_KEYS,
+  activateWorkloadAwsWiring,
+  applyWorkloadAwsWiringToEnv,
+  collectHostEndpointOverrides,
+  emulatorEndpointEnvName,
+  getActiveWorkloadAwsWiring,
+  getContainerCaBundlePath,
+  parseAwsEndpoint,
+  readEmulatorRunFiles,
+  readProfileEndpointSettings,
+  resolveHostDefaultCredentials,
+  resolveWorkloadAwsWiring,
+  setActiveWorkloadAwsWiring,
+  writeCaBundleFile,
+  type EmulatorRunFiles,
+  type ParsedAwsEndpoint,
+  type ResolveWorkloadAwsWiringOptions,
+  type WorkloadAwsWiring,
+  type WorkloadAwsWiringCommandOptions,
+  type WorkloadMount,
+} from './local/workload-aws-wiring.js';
+export {
+  LOOPBACK_FORWARDER_IMAGE,
+  buildLoopbackForwarderDockerArgs,
+  describeForwarderFailure,
+  startLoopbackForwarder,
+  type LoopbackForwarderResult,
+  type StartLoopbackForwarderOptions,
+} from './local/loopback-forwarder.js';
+export {
+  getAwsEndpointOverride,
+  setAwsEndpointOverride,
+  type AwsEndpointOverride,
+} from './utils/aws-proxy.js';
+export { awsEndpointOptions, addAwsEndpointOptions } from './cli/options.js';

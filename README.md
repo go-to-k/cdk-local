@@ -229,6 +229,10 @@ DynamoDB and S3 calls resolve to the local endpoint; Secrets Manager, SSM Parame
 
 `host.docker.internal` resolves to the host from inside the container — Docker Desktop (macOS / Windows) provides it natively, and on Linux native dockerd `cdkl` adds the `host-gateway` alias for you on the `invoke` / `run-task` / `start-service` / `start-alb` container runs (Docker 20.10+). On an older daemon the alias is skipped; use the Docker bridge address (e.g. `http://172.17.0.1:8000`) or put the local server on the same Docker network.
 
+### Local AWS endpoints
+
+An `AWS_ENDPOINT_URL` / `AWS_ENDPOINT_URL_<SERVICE>` exported in your shell (or a profile's `endpoint_url`) is forwarded to every workload container by default, together with your `AWS_CA_BUNDLE`; a `127.0.0.1` endpoint keeps working inside the container unchanged, TLS verification included. To run a whole command against a local AWS endpoint such as AWS Emulator — cdk-local's own `--from-cfn-stack` reads included, containers given only that endpoint's credentials — pass `--emulator-endpoint https://127.0.0.1:9297`. Rules: [docs/cli-reference.md#aws-endpoints-ca-bundles-and-credentials-inside-containers](docs/cli-reference.md#aws-endpoints-ca-bundles-and-credentials-inside-containers).
+
 ## Hot reload — `--watch`
 
 ```bash

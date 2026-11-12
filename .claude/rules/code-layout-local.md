@@ -59,6 +59,22 @@ a log line, and a served HTTP response body.
   `Secrets` entry the override names (#848); the key stays in the sensitive set. A token in an argv field (ECS `Command` /
   `EntryPoint` / health check) is refused, never resolved onto the `docker run` argv.
 
+## `workload-aws-wiring` + `loopback-forwarder` — what every container gets
+
+- One process-wide wiring (`activateWorkloadAwsWiring`, called by each
+  container command before `applyRoleArnIfSet`) is applied at the docker-run
+  layer only: `runDetached` and ECS `buildDockerRunArgs` / the start loop.
+  Never add per-command endpoint / CA / default-credential code.
+- `--emulator-endpoint` replaces the credential triple LAST and scrubs every
+  host credential source (env, `--profile` file mount); `forward` mode only
+  fills keys the container env lacks, so `--assume-role` > `--profile` >
+  default chain holds by construction. Credentials stay on the
+  value-from-process-env path.
+- The endpoint override for cdk-local's own clients lives in the
+  `buildProxyClientConfig` seam (`setAwsEndpointOverride`), so the client
+  audit keeps covering it. The forwarder joins the workload's network AND
+  pid namespaces: it dies with the workload, so it has no cleanup path.
+
 ## AgentCore
 
 - **agentcore-resolver** (target + container-URI resolution),

@@ -1,4 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
+import {
+  resetWorkloadAwsWiringForTest,
+  setActiveWorkloadAwsWiring,
+} from '../../../src/local/workload-aws-wiring.js';
 import { resolveSidecarCredentials } from '../../../src/cli/commands/local-run-task.js';
 
 // cdkd#658: `cdkl run-task --profile <p>` (without
@@ -8,8 +12,8 @@ import { resolveSidecarCredentials } from '../../../src/cli/commands/local-run-t
 // hit `169.254.170.2/role/<role>` got a credential-provider failure.
 // This test exercises the small `resolveSidecarCredentials` helper that
 // drives the new precedence: assumed-creds win when set; otherwise the
-// profile chain is resolved; otherwise undefined (the pre-existing
-// "sidecar uses its own default chain" path).
+// profile chain is resolved; otherwise the host's default chain
+// (cdkd#6129), undefined when it finds nothing.
 //
 // Same gap class as cdkd#654/#655 (which shipped for `cdkl start-api`'s
 // Lambda container env overlay); the helper-extraction pattern mirrors
@@ -29,11 +33,19 @@ vi.mock('@aws-sdk/client-sts', () => ({
   }),
 }));
 
+const defaultChainMock = vi.fn();
+vi.mock('@aws-sdk/credential-provider-node', () => ({
+  defaultProvider: vi.fn(() => defaultChainMock),
+}));
+
+
 describe('resolveSidecarCredentials (cdkd#658)', () => {
   beforeEach(() => {
     credsProviderMock.mockReset();
     stsDestroyMock.mockReset();
     stsCtorMock.mockReset();
+    defaultChainMock.mockReset();
+    resetWorkloadAwsWiringForTest();
   });
 
   it('returns the assumed credentials verbatim when --assume-task-role is effective (assume wins over --profile)', async () => {
@@ -68,13 +80,36 @@ describe('resolveSidecarCredentials (cdkd#658)', () => {
     expect(stsDestroyMock).toHaveBeenCalledOnce();
   });
 
-  it('returns undefined when neither --profile nor --assume-task-role is set (sidecar falls back to its own default chain)', async () => {
+  it('falls back to the host default credential chain when no credential flag is set (cdkd#6129)', async () => {
+    defaultChainMock.mockResolvedValue({ accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' });
+    const result = await resolveSidecarCredentials({}, undefined);
+    expect(result).toEqual({ accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' });
+    expect(stsCtorMock).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined when the host default chain finds nothing', async () => {
+    defaultChainMock.mockRejectedValue(new Error('Could not load credentials from any providers'));
     const result = await resolveSidecarCredentials({}, undefined);
     expect(result).toBeUndefined();
-    // No AWS calls at all — pre-existing "lowest precedence" path.
-    expect(stsCtorMock).not.toHaveBeenCalled();
-    expect(credsProviderMock).not.toHaveBeenCalled();
   });
+
+  it('returns only the emulator credentials under --emulator-endpoint', async () => {
+    const emulatorCredentials = { accessKeyId: 'EMULATOR0000', secretAccessKey: 'EMU-SECRET' };
+    setActiveWorkloadAwsWiring({
+      mode: 'emulator',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      emulatorCredentials,
+      dispose: () => undefined,
+    });
+    const result = await resolveSidecarCredentials({}, undefined);
+    expect(result).toBe(emulatorCredentials);
+    expect(defaultChainMock).not.toHaveBeenCalled();
+  });
+
 
   it('propagates resolveProfileCredentials errors (expired SSO etc.) — no silent fallback', async () => {
     credsProviderMock.mockRejectedValue(

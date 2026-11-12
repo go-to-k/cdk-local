@@ -1,4 +1,5 @@
 import { InvalidArgumentError, Option } from 'commander';
+import type { Command } from 'commander';
 import { getEmbedConfig } from '../local/embed-config.js';
 import { isIamRoleArn } from '../utils/role-arn.js';
 
@@ -41,6 +42,34 @@ export function commonOptions(): Option[] {
       'Automatically answer interactive prompts with the recommended response'
     ).default(false),
   ];
+}
+
+/**
+ * `--emulator-endpoint` / `--ca-bundle`, registered by every command that
+ * starts workload containers (inside its `add<Cmd>SpecificOptions` helper).
+ * Built per-call so the env-var hint reflects the active embed config.
+ */
+export function awsEndpointOptions(): Option[] {
+  const { envPrefix } = getEmbedConfig();
+  return [
+    new Option(
+      '--emulator-endpoint <url>',
+      "Local AWS endpoint (e.g. https://127.0.0.1:9297) for this command's own AWS calls (--from-cfn-stack " +
+        'included) and every workload container; containers get only its credentials and trust its CA ' +
+        `(env: ${envPrefix}_EMULATOR_ENDPOINT)`
+    ),
+    new Option(
+      '--ca-bundle <file>',
+      'PEM CA bundle mounted read-only into every workload container, with AWS_CA_BUNDLE / NODE_EXTRA_CA_CERTS / ' +
+        'REQUESTS_CA_BUNDLE / SSL_CERT_FILE pointed at it (default: the host AWS_CA_BUNDLE)'
+    ),
+  ];
+}
+
+/** Add {@link awsEndpointOptions} to `cmd`. */
+export function addAwsEndpointOptions(cmd: Command): Command {
+  for (const opt of awsEndpointOptions()) cmd.addOption(opt);
+  return cmd;
 }
 
 /**

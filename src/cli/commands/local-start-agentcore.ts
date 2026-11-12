@@ -1,4 +1,6 @@
 import { Command, InvalidArgumentError, Option } from 'commander';
+import { addAwsEndpointOptions } from '../options.js';
+import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import {
   appOptions,
   commonOptions,
@@ -268,6 +270,7 @@ async function localStartAgentCoreCommand(
     }
   };
 
+  await activateWorkloadAwsWiring(options);
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -781,6 +784,7 @@ export function createLocalStartAgentCoreCommand(
  * `.addOption(...)` blocks. Chainable: returns `cmd`.
  */
 export function addStartAgentCoreSpecificOptions(cmd: Command): Command {
+  addAwsEndpointOptions(cmd);
   return cmd
     .addOption(
       new Option(

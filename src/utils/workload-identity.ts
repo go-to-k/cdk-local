@@ -185,6 +185,9 @@ export function workloadClientConfig(
   const base = buildProxyClientConfig({ profile: opts.profile });
   const rec = callerRecord();
   if (!rec) return base;
+  // Under an endpoint override (`--emulator-endpoint`) the endpoint's own
+  // credentials are the only identity; the caller's real triple must not reach it.
+  if (base.endpoint !== undefined) return base;
   const profile = opts.profile || process.env['AWS_PROFILE'];
   if (profile) return base;
   if (rec.caller) {

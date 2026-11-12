@@ -1,4 +1,6 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { addAwsEndpointOptions } from '../options.js';
+import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import * as path from 'node:path';
@@ -298,6 +300,7 @@ async function localInvokeCommand(
   );
 
   try {
+    await activateWorkloadAwsWiring(options);
     await applyRoleArnIfSet({
       roleArn: options.roleArn,
       region: options.region,
@@ -1614,6 +1617,7 @@ export function createLocalInvokeCommand(opts: CreateLocalInvokeCommandOptions =
  * `--help` clusters. Chainable: returns `cmd`.
  */
 export function addInvokeSpecificOptions(cmd: Command): Command {
+  addAwsEndpointOptions(cmd);
   return cmd
     .addOption(new Option('-e, --event <file>', 'JSON event payload file (default: {})'))
     .addOption(new Option('--event-stdin', 'Read event JSON from stdin').default(false))

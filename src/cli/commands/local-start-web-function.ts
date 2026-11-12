@@ -1,4 +1,6 @@
 import { Command, InvalidArgumentError, Option } from 'commander';
+import { addAwsEndpointOptions } from '../options.js';
+import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import {
   appOptions,
   commonOptions,
@@ -82,6 +84,7 @@ async function localStartWebFunctionCommand(
 
   const forever = (): Promise<never> => new Promise<never>(() => undefined);
 
+  await activateWorkloadAwsWiring(options);
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -271,6 +274,7 @@ export function createLocalStartWebFunctionCommand(
  * factory, so a new `start-web-function`-only flag lands here once. Chainable.
  */
 export function addStartWebFunctionSpecificOptions(cmd: Command): Command {
+  addAwsEndpointOptions(cmd);
   return cmd
     .addOption(
       new Option(

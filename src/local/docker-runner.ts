@@ -19,6 +19,13 @@ import { getLogger } from '../utils/logger.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { getEmbedConfig } from './embed-config.js';
+import { describeForwarderFailure, startLoopbackForwarder } from './loopback-forwarder.js';
+import {
+  applyWorkloadAwsWiringToEnv,
+  getActiveWorkloadAwsWiring,
+  resolveHostDefaultCredentials,
+} from './workload-aws-wiring.js';
+import type { WorkloadAwsWiring } from './workload-aws-wiring.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -265,6 +272,85 @@ export async function pullImage(
  *     is cleaned up on any error path including SIGINT.
  */
 export async function runDetached(opts: DockerRunOptions): Promise<string> {
+  // The process-wide AWS wiring (endpoint forwarding, CA bundle, default-chain
+  // credentials, `--emulator-endpoint`) applies to every workload container
+  // started here; see `workload-aws-wiring.ts`.
+  const wiring = opts.network === 'host' ? undefined : getActiveWorkloadAwsWiring();
+  if (!wiring) return runDetachedContainer(opts);
+  const id = await runDetachedContainer(await withWorkloadAwsWiring(opts, wiring));
+  await attachLoopbackForwarder(id, wiring);
+  return id;
+}
+
+/**
+ * {@link DockerRunOptions} with the wiring applied: env entries, the CA
+ * mount, default-chain credentials when the env has none, and — under
+ * `--emulator-endpoint` — no host profile-credentials mount. Exported for
+ * unit tests.
+ */
+export async function withWorkloadAwsWiring(
+  opts: DockerRunOptions,
+  wiring: WorkloadAwsWiring
+): Promise<DockerRunOptions> {
+  const defaults =
+    wiring.mode === 'forward' && !opts.env['AWS_ACCESS_KEY_ID']
+      ? await resolveHostDefaultCredentials()
+      : undefined;
+  const env = applyWorkloadAwsWiringToEnv(opts.env, wiring, defaults);
+  // The `--profile` credentials file's in-container path (local-profile-credentials-file.ts).
+  const credsPath = `${getEmbedConfig().awsBindMountPath}/credentials`;
+  const extra = (opts.extraMounts ?? []).filter(
+    (m) => wiring.mode !== 'emulator' || m.containerPath !== credsPath
+  );
+  const taken = new Set([...opts.mounts, ...extra].map((m) => m.containerPath));
+  for (const m of wiring.mounts) {
+    if (!taken.has(m.containerPath)) extra.push({ ...m, readOnly: true });
+  }
+  return { ...opts, env, extraMounts: extra };
+}
+
+const warnedForwarderPorts = new Set<number>();
+
+/**
+ * Start the loopback forwarder for `containerId` when the wiring has loopback
+ * ports. A failed probe is fatal under `--emulator-endpoint` (the container is
+ * removed and the error names the fix) and a once-per-port warning otherwise.
+ */
+export async function attachLoopbackForwarder(
+  containerId: string,
+  wiring: WorkloadAwsWiring
+): Promise<void> {
+  if (wiring.loopbackPorts.length === 0) return;
+  let result;
+  try {
+    result = await startLoopbackForwarder({
+      workloadContainer: containerId,
+      ports: wiring.loopbackPorts,
+      probe: wiring.probeHealth ? 'health' : 'tcp',
+      ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
+    });
+  } catch (err) {
+    await removeContainer(containerId);
+    throw new DockerRunnerError((err as Error).message);
+  }
+  if (result.ok) return;
+  const label =
+    wiring.mode === 'emulator'
+      ? `--emulator-endpoint ${wiring.emulatorEndpoint?.url ?? ''}`
+      : 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
+  const message = describeForwarderFailure(result, label);
+  if (wiring.mode === 'emulator') {
+    await removeContainer(containerId);
+    throw new DockerRunnerError(message);
+  }
+  const port = result.failedPort ?? 0;
+  if (!warnedForwarderPorts.has(port)) {
+    warnedForwarderPorts.add(port);
+    getLogger().warn(message);
+  }
+}
+
+async function runDetachedContainer(opts: DockerRunOptions): Promise<string> {
   const args: string[] = opts.autoRemove === false ? ['run', '-d'] : ['run', '-d', '--rm'];
 
   if (opts.name) {

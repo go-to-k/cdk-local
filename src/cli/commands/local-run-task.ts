@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { addAwsEndpointOptions } from '../options.js';
 import { DynamicReferenceResolver } from '../../local/dynamic-reference-resolver.js';
 import { Command, Option } from 'commander';
 import {
@@ -20,6 +21,11 @@ import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { resolveProfileCredentials } from './local-start-api.js';
+import {
+  activateWorkloadAwsWiring,
+  getActiveWorkloadAwsWiring,
+  resolveHostDefaultCredentials,
+} from '../../local/workload-aws-wiring.js';
 import { accountLookupStsClientConfig } from '../../utils/workload-identity.js';
 import {
   writeProfileCredentialsFile,
@@ -233,6 +239,7 @@ async function localRunTaskCommand(
   };
 
   try {
+    await activateWorkloadAwsWiring(options);
     await applyRoleArnIfSet({
       roleArn: options.roleArn,
       region: options.region,
@@ -822,10 +829,12 @@ function readEnvOverridesFile(
  *   2. `--profile <p>` → resolved via {@link resolveProfileCredentials}
  *      (the SDK's default credential provider chain — SSO / IAM
  *      Identity Center / fromIni / role-assumption). NEW in this PR.
- *   3. Neither set → `undefined`; the sidecar runs with its own
- *      default credential chain (typically empty inside a fresh
- *      container — user containers will get 4xx from the credentials
- *      endpoint, mimicking IAM-misconfigured prod).
+ *   3. Neither set → the host's default credential chain
+ *      (`AWS_PROFILE`, the shared files, SSO — go-to-k/cdkd#6129);
+ *      `undefined` when it finds nothing, and the user containers then
+ *      get 4xx from the credentials endpoint.
+ *
+ * Under `--emulator-endpoint` the endpoint's credentials replace all three.
  *
  * Extracted as an exported helper so a unit test can exercise every
  * branch without having to mock the full Synth + Docker + AWS pipeline
@@ -837,9 +846,11 @@ export async function resolveSidecarCredentials(
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
     | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
+  const wiring = getActiveWorkloadAwsWiring();
+  if (wiring?.mode === 'emulator') return wiring.emulatorCredentials;
   if (assumedCredentials) return assumedCredentials;
   if (options.profile) return resolveProfileCredentials(options.profile);
-  return undefined;
+  return resolveHostDefaultCredentials();
 }
 
 export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions = {}): Command {
@@ -1031,6 +1042,7 @@ export async function resolveRunTaskImageOverride(args: {
 }
 
 export function addRunTaskSpecificOptions(cmd: Command): Command {
+  addAwsEndpointOptions(cmd);
   cmd
     // Issue #249 / C12 — `--cluster` default sourced from the shared
     // helper so the embed-prefix default is defined exactly once.
