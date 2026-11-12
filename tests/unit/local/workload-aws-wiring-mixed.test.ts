@@ -20,6 +20,8 @@ const {
   loopbackForwarderPlan,
   resetWorkloadAwsWiringForTest,
   resolveWorkloadAwsWiring,
+  sweepStaleResignDirs,
+  STALE_RESIGN_DIR_AGE_MS,
 } = await import('../../../src/local/workload-aws-wiring.js');
 const { findAwsEmulatorSentinels, MIXED_MODE_RESIGN_PORT } = await import(
   '../../../src/local/aws-emulator-mixed-mode.js'
@@ -340,5 +342,49 @@ describe('forwarder argv with the re-signing sidecar', () => {
     });
     expect(args[args.indexOf('-e') + 1]).not.toContain('startResigner(cfgPath)');
     expect(args.slice(args.indexOf('-e') + 2)).toEqual(['9297', 'tcp']);
+  });
+});
+
+describe('sweepStaleResignDirs (a SIGKILLed run left its keys behind)', () => {
+  it('removes only this user\'s old resign dirs whose owner process is gone', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const { utimesSync } = await import('node:fs');
+    // A pid that existed and is now gone.
+    const deadPid = spawnSync(process.execPath, ['-e', '0']).pid!;
+    const root = mkdtempSync(path.join(tmpdir(), 'sweep-'));
+    const old = (Date.now() - STALE_RESIGN_DIR_AGE_MS - 60_000) / 1000;
+    const make = (name: string, pid: number | undefined, age: 'old' | 'new'): string => {
+      const d = path.join(root, name);
+      mkdirSync(d);
+      writeFileSync(path.join(d, 'resign.json'), '{}');
+      if (pid !== undefined) writeFileSync(path.join(d, 'owner.pid'), String(pid));
+      if (age === 'old') utimesSync(d, old, old);
+      return d;
+    };
+    try {
+      const stale = make('cdk-local-resign-dead', deadPid, 'old');
+      const live = make('cdk-local-resign-live', process.pid, 'old');
+      const fresh = make('cdk-local-resign-fresh', deadPid, 'new');
+      const noPid = make('cdk-local-resign-nopid', undefined, 'old');
+      const other = make('other-tool-resign-x', deadPid, 'old');
+      expect(sweepStaleResignDirs(Date.now(), root)).toEqual([stale]);
+      expect(existsSync(stale)).toBe(false);
+      for (const kept of [live, fresh, noPid, other]) expect(existsSync(kept)).toBe(true);
+      // Nothing to read: no throw.
+      expect(sweepStaleResignDirs(Date.now(), path.join(root, 'missing'))).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('the mixed wiring records its owner pid next to the config', async () => {
+    const w = await mixed(9365);
+    try {
+      const pidFile = path.join(path.dirname(w.mixed!.resignConfigHostPath), 'owner.pid');
+      expect(readFileSync(pidFile, 'utf8')).toBe(String(process.pid));
+      expect(statSync(pidFile).mode & 0o777).toBe(0o600);
+    } finally {
+      w.dispose();
+    }
   });
 });

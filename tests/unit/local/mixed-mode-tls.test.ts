@@ -34,6 +34,31 @@ describe('createMixedModeTlsMaterials', () => {
     expect(m.certPem).not.toMatch(/PRIVATE/);
   });
 
+  it('name-constrains the CA to loopback: a leaf it signed for another name is refused', async () => {
+    // The test seam issues a leaf that ALSO names evil.example; the CA's
+    // permitted subtrees (127.0.0.1/32, ::1/128, localhost) exclude it.
+    const m = createMixedModeTlsMaterials(new Date(), ['localhost', 'evil.example']);
+    const server = createServer({ key: m.keyPem, cert: m.certPem }, (_req, res) => res.end('ok'));
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const err = await new Promise<NodeJS.ErrnoException | undefined>((resolve) => {
+        const req = request(
+          { host: '127.0.0.1', port, path: '/', ca: [m.caCertPem], servername: 'evil.example' },
+          (res) => {
+            res.resume();
+            resolve(undefined);
+          }
+        );
+        req.on('error', (e) => resolve(e));
+        req.end();
+      });
+      expect(err?.message).toMatch(/permitted subtree violation/);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
   it('makes a fresh CA every run', () => {
     expect(createMixedModeTlsMaterials().caCertPem).not.toBe(createMixedModeTlsMaterials().caCertPem);
   });

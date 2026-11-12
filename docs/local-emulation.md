@@ -309,11 +309,14 @@ The rules:
   (`AWS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`,
   `SSL_CERT_FILE`) trusts that CA, the emulator's `ca.pem` and any
   `--ca-bundle` / `AWS_CA_BUNDLE`, plus the public roots, so real AWS still
-  verifies. A template or `--env-vars` value for one of those variables
-  wins, as everywhere, and then has to trust the run's CA itself. The CA's private key is discarded once it has
-  signed the sidecar's certificate. The sidecar's key and the emulator's
+  verifies. The run's CA is name-constrained to `127.0.0.1`, `::1` and
+  `localhost`, and its private key is discarded once it has signed the
+  sidecar's certificate. A template or `--env-vars` value for one of those variables
+  wins, as everywhere, and then has to trust the run's CA itself. The sidecar's key and the emulator's
   keys sit in a `0600` file in a private temp directory, mounted read-only
-  into the sidecar and removed when the command ends. A JVM reads none of
+  into the sidecar and removed when the command ends (a later run removes
+  one that a killed run left behind, after three hours). The sidecar listens
+  on the workload's loopback only. A JVM reads none of
   these variables, and the emulator's `truststore.p12` does not hold the
   run's CA, so a Java handler needs its own trust store for a
   sentinel-routed service. Mixed mode sets no `JAVA_TOOL_OPTIONS`, because
@@ -325,7 +328,8 @@ The rules:
   the AWS SDK for JavaScript use for `PutObject`) are decoded and re-signed
   as an ordinary request, with the trailing checksum moved into a header. A
   signature covers the body's hash, so the sidecar holds each body in
-  memory, and caps it at 100 MiB. That is where AWS recommends multipart
+  memory, and caps it at 100 MiB (about 200 MiB across concurrent requests;
+  past that a request gets 503 `SlowDown` and the SDK retries it). That is where AWS recommends multipart
   upload, and every SDK's managed uploader (boto3 `upload_file`,
   `@aws-sdk/lib-storage`, the Java transfer manager) switches to multipart
   parts far smaller than that. Past the cap, the request fails with HTTP

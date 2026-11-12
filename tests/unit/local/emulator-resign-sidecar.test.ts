@@ -4,7 +4,9 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpsServer } from 'node:https';
 import type { Server, IncomingMessage } from 'node:http';
+import { connect } from 'node:net';
 import type { AddressInfo } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
@@ -364,6 +366,7 @@ describe('the sidecar server, end to end with the AWS SDK', () => {
   let upstream: Server;
   let sidecar: ChildProcess;
   let sidecarOut = '';
+  let started: { port: number; address: string } | undefined;
   let dir: string;
   const port = 47000 + Math.floor(Math.random() * 900);
   const tls = createMixedModeTlsMaterials();
@@ -390,8 +393,14 @@ describe('the sidecar server, end to end with the AWS SDK', () => {
             res.writeHead(200, { 'content-type': 'application/x-amz-json-1.0' });
             res.end('{}');
           } else {
-            res.writeHead(200, { etag: '"e"' });
-            res.end();
+            // `/slow` holds its response, so the request's body stays in flight.
+            setTimeout(
+              () => {
+                res.writeHead(200, { etag: '"e"' });
+                res.end();
+              },
+              req.url?.startsWith('/b/slow') ? 1500 : 0
+            );
           }
         });
       });
@@ -421,7 +430,11 @@ describe('the sidecar server, end to end with the AWS SDK', () => {
     sidecar.stdout!.on('data', (d: Buffer) => (sidecarOut += d.toString()));
     await new Promise<void>((resolve, reject) => {
       sidecar.stdout!.on('data', (d: Buffer) => {
-        if (d.toString().includes('STARTED {"port"')) resolve();
+        const m = /STARTED (\{"port".*\})/.exec(d.toString());
+        if (m) {
+          started = JSON.parse(m[1]!) as { port: number; address: string };
+          resolve();
+        }
         else if (d.toString().includes('STARTED')) reject(new Error(d.toString()));
       });
     });
@@ -553,6 +566,56 @@ describe('the sidecar server, end to end with the AWS SDK', () => {
     expect(r).toMatchObject({ code: 413, sentBody: false });
     expect(r.body).toContain('EntityTooLarge');
     expect(received.length).toBe(before);
+  });
+
+  it('listens on loopback only: the signing oracle is never reachable from the network', async () => {
+    expect(started?.address).toBe('127.0.0.1');
+    const external = Object.values(networkInterfaces())
+      .flat()
+      .find((i) => i && i.family === 'IPv4' && !i.internal)?.address;
+    if (external) {
+      const code = await new Promise<string | undefined>((resolve) => {
+        const sock = connect(port, external);
+        sock.once('connect', () => {
+          sock.destroy();
+          resolve(undefined);
+        });
+        sock.once('error', (e: NodeJS.ErrnoException) => resolve(e.code));
+      });
+      expect(code).toBe('ECONNREFUSED');
+    }
+  });
+
+  it('charges a held body twice: a second large body while one is in flight gets 503', async () => {
+    const put = (p: string, size: number) =>
+      new Promise<number>((resolve, reject) => {
+        const req = httpsRequest(
+          {
+            host: '127.0.0.1',
+            port,
+            method: 'PUT',
+            path: p,
+            ca: [tls.caCertPem],
+            headers: {
+              authorization: REAL_AUTH.replace('dynamodb', 's3'),
+              'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
+            },
+          },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve(res.statusCode!));
+          }
+        );
+        req.on('error', reject);
+        req.end(Buffer.alloc(size, 1));
+      });
+    const size = 3 * 1024 * 1024; // under the 4 MiB cap; 2 x 3 MiB x 2 bodies > 2 x rawCap (10 MiB)
+    const slow = put('/b/slow', size);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(await put('/b/second', size)).toBe(503);
+    expect(await slow).toBe(200);
+    // Once the first response is over its charge is released.
+    expect(await put('/b/third', size)).toBe(200);
   });
 
   it('serves its certificate for 127.0.0.1 from the per-run CA (a client without that CA refuses it)', async () => {

@@ -244,20 +244,26 @@ function startResigner(cfgPath){return new Promise(function(done){
     return s?s.service:undefined;
   }
   // Bodies held at once, across concurrent requests: twice the per-request cap.
+  // Each held byte is charged twice: building the request body briefly keeps
+  // two copies alive (the received chunks while they are joined, then the
+  // joined body while an aws-chunked body is decoded), so the charged total
+  // bounds the real peak by inflightCap.
   var inflight=0,inflightCap=2*rawCap(cfg.capBytes);
   function handle(req,resp){
     // held counts toward inflight until the response is over; seen is the
     // body size for the 413 message.
     var chunks=[],held=0,seen=0,over=false,busy=false,limit=rawCap(cfg.capBytes);
-    var drop=function(){inflight-=held;held=0;chunks=[];};
-    req.on('data',function(c){seen+=c.length;if(over||busy)return;if(inflight+c.length>inflightCap){busy=true;drop();return;}held+=c.length;inflight+=c.length;if(seen>limit){over=true;drop();return;}chunks.push(c);});
+    var drop=function(){inflight-=2*held;held=0;chunks=[];};
+    req.on('data',function(c){seen+=c.length;if(over||busy)return;if(seen>limit){over=true;drop();return;}if(inflight+2*c.length>inflightCap){busy=true;drop();return;}held+=c.length;inflight+=2*c.length;chunks.push(c);});
     req.on('error',function(){drop();resp.destroy();});
     resp.on('close',drop);
     req.on('end',function(){
       if(busy){send(resp,503,{code:'SlowDown',message:'cdk-local mixed mode: the AWS Emulator re-signing sidecar is holding too many request bodies at once; retry.'},serviceOf(req));return;}
       if(over){process.stdout.write('CDKL-RESIGN rejected a streamed request body over the cap without holding it\n');send(resp,413,tooLargeError(seen,cfg.capBytes,serviceOf(req)),serviceOf(req));return;}
       var p;
-      try{p=prepareResign(req,Buffer.concat(chunks),cfg,new Date());}catch(e){p={error:{status:400,code:'InvalidRequest',message:'cdk-local mixed mode: the request could not be re-signed.'}};}
+      var joined=Buffer.concat(chunks);chunks=[];
+      try{p=prepareResign(req,joined,cfg,new Date());}catch(e){p={error:{status:400,code:'InvalidRequest',message:'cdk-local mixed mode: the request could not be re-signed.'}};}
+      joined=null;
       if(p.error){if(p.error.status===413)process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,p.error.status,p.error,serviceOf(req));return;}
       var r;
       try{r=mod.request({host:up.hostname.replace(/^\[|\]$/g,''),port:up.port||(secure?443:80),method:req.method,path:p.path,headers:p.headers,agent:agent},function(ur){
@@ -282,7 +288,8 @@ function startResigner(cfgPath){return new Promise(function(done){
     handle(req,resp);
   });
   srv.once('error',function(e){done({error:e.code||'ERROR',port:cfg.port});});
-  srv.listen(cfg.port,'127.0.0.1',function(){done({port:cfg.port});});
+  // Loopback only: it signs with the emulator's keys for whoever connects.
+  srv.listen(cfg.port,'127.0.0.1',function(){done({port:cfg.port,address:srv.address().address});});
 });}
 `;
 

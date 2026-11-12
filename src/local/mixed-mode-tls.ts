@@ -92,6 +92,7 @@ const OID_SAN = '2.5.29.17';
 const OID_BASIC_CONSTRAINTS = '2.5.29.19';
 const OID_AKI = '2.5.29.35';
 const OID_EKU = '2.5.29.37';
+const OID_NAME_CONSTRAINTS = '2.5.29.30';
 const OID_SERVER_AUTH = '1.3.6.1.5.5.7.3.1';
 
 const name = (cn: string): Buffer => seq(set(seq(oid(OID_CN), utf8(cn))));
@@ -152,7 +153,11 @@ function issue(spec: CertSpec): string {
  * Host-side use case: a host CLI that starts its own re-signing sidecar
  * (mixed mode) without going through `resolveWorkloadAwsWiring`.
  */
-export function createMixedModeTlsMaterials(now: Date = new Date()): MixedModeTlsMaterials {
+export function createMixedModeTlsMaterials(
+  now: Date = new Date(),
+  /** Test seam: the leaf's DNS names. Production uses `localhost` only. */
+  leafDnsNames: readonly string[] = ['localhost']
+): MixedModeTlsMaterials {
   const notBefore = new Date(now.getTime() - 60 * 60 * 1000);
   const notAfter = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
   const ca = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -175,13 +180,38 @@ export function createMixedModeTlsMaterials(now: Date = new Date()): MixedModeTl
       extension(OID_KEY_USAGE, true, bits(Buffer.from([0x06]), 1)),
       extension(OID_SKI, false, octets(caKeyId)),
       extension(OID_AKI, false, aki(caKeyId)),
+      // Defence in depth: even a leaked CA could only vouch for loopback.
+      // permittedSubtrees [0]: 127.0.0.1/32, ::1/128, DNS localhost.
+      extension(
+        OID_NAME_CONSTRAINTS,
+        true,
+        seq(
+          der(
+            0xa0,
+            Buffer.concat([
+              seq(der(0x87, Buffer.from([127, 0, 0, 1, 255, 255, 255, 255]))),
+              seq(
+                der(
+                  0x87,
+                  Buffer.from([
+                    ...new Array<number>(15).fill(0),
+                    1,
+                    ...new Array<number>(16).fill(255),
+                  ])
+                )
+              ),
+              seq(der(0x82, Buffer.from('localhost', 'ascii'))),
+            ])
+          )
+        )
+      ),
     ],
   });
 
   const san = seq(
     der(0x87, Buffer.from([127, 0, 0, 1])),
     der(0x87, Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])),
-    der(0x82, Buffer.from('localhost', 'ascii'))
+    ...leafDnsNames.map((n) => der(0x82, Buffer.from(n, 'ascii')))
   );
   const certPem = issue({
     subject: '127.0.0.1',

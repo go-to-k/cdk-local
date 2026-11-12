@@ -29,7 +29,15 @@
 // each command only activates it; a host CLI that embeds cdk-local calls the
 // same exported functions.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { rootCertificates } from 'node:tls';
@@ -587,6 +595,54 @@ function describeEmulatorUnreachable(ep: ParsedAwsEndpoint, reason: string): str
   );
 }
 
+/** How old an orphaned re-signing config dir must be before a later run removes it. */
+export const STALE_RESIGN_DIR_AGE_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Remove re-signing config dirs (emulator keys + the sidecar's TLS key) that a
+ * killed run left behind: `<tmpdir>/<product>-resign-*` owned by this user,
+ * older than {@link STALE_RESIGN_DIR_AGE_MS}, whose owning process (its
+ * `owner.pid`) is gone. A running sidecar already holds its config in memory,
+ * so removing the file cannot break one. Best effort: never throws, never
+ * touches another user's dir or one without a readable dead owner.
+ */
+export function sweepStaleResignDirs(now: number = Date.now(), dir: string = tmpdir()): string[] {
+  const removed: string[] = [];
+  const prefix = `${getEmbedConfig().productName}-resign-`;
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return removed;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const full = path.join(dir, name);
+    try {
+      const st = statSync(full);
+      if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) continue;
+      if (now - st.mtimeMs < STALE_RESIGN_DIR_AGE_MS) continue;
+      const pid = Number(readFileSync(path.join(full, 'owner.pid'), 'utf8').trim());
+      if (!Number.isInteger(pid) || pid <= 0 || processAlive(pid)) continue;
+      rmSync(full, { recursive: true, force: true });
+      removed.push(full);
+    } catch {
+      // Unreadable, no owner.pid, or gone meanwhile: leave it.
+    }
+  }
+  return removed;
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 /**
  * The mixed-mode branch of {@link resolveWorkloadAwsWiring}: per-run TLS
  * material for the re-signing sidecar, its 0600 config, and a CA bundle that
@@ -628,8 +684,11 @@ function resolveMixedModeWiring(args: {
   disposers.push(bundle.dispose);
   // Secrets (the sidecar's TLS key, the emulator's keys): a 0700 directory
   // holding one 0600 file, mounted read-only, removed by `dispose`.
+  // A SIGKILLed run cannot dispose: clean up what such runs left behind.
+  sweepStaleResignDirs();
   const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().productName}-resign-`));
   disposers.push(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(path.join(dir, 'owner.pid'), String(process.pid), { mode: 0o600 });
   const resignConfigHostPath = path.join(dir, 'resign.json');
   const config: ResignSidecarConfig = {
     port: MIXED_MODE_RESIGN_PORT,
