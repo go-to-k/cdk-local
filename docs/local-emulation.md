@@ -161,7 +161,8 @@ same two flags and forwards them to every command it starts:
   forwarder joins within moments of it, so an app there that calls AWS in
   its very first instant relies on its SDK's connection retry; that
   forwarder stops with the workload (and is restarted after a `--watch` soft
-  reload). Ctrl-C while a forwarder is still starting removes it. When
+  reload). Ctrl-C while a forwarder is still starting removes it (and,
+  for a forwarder attached after start, the workload too). When
   containers cannot reach the port, cdk-local warns with the fix. On Linux
   the endpoint must ALSO listen on the Docker bridge gateway: run AWS
   Emulator's Docker image with `-p 127.0.0.1:9297:9297 -p 172.17.0.1:9297:9297`
@@ -1949,7 +1950,10 @@ and routes the firing through one of two per-replica primitives:
   at its old IP is answered rather than left hanging, and it keeps
   that IP across the restart; its aliases come back only after the
   probe passes (or while it is stopped, for a container publishing a
-  host port, which a running re-attach would drop). Latency is
+  host port, which a running re-attach would drop). Under a loopback
+  AWS endpoint, a container that publishes a host port restarts with
+  its aliases in place: the forwarder holding them keeps running, so
+  it is not detached (its front-door entry is still drained). Latency is
   dominated by the app's own stop and start time. The reload-log line surfaces the
   verdict as `verdict=soft-reload (...)` and per-replica completion as
   `Soft-reloaded replica r<i> ... restart + TCP-ready probe complete;

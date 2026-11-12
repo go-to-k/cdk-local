@@ -18,6 +18,7 @@ import {
   DockerRunnerError,
   pullImage,
   removeContainer,
+  rememberForwardedPorts,
   startNamespaceOwnerForwarder,
   appendEnvFlags,
   describeRefusedSensitiveEnvKeys,
@@ -350,7 +351,8 @@ export interface EcsRunState {
   publishedEndpoints: PublishedHostEndpoint[];
   /**
    * Loopback forwarders that OWN a task container's network namespace (issue
-   * #878), recorded as soon as each one's `docker run` returns. `joined` once
+   * #878), recorded once each one reports READY (until then a signal guard
+   * removes it on Ctrl-C). `joined` once
    * its container started in that namespace: the forwarder then holds the
    * container's network endpoint (IP, aliases, published ports), and teardown
    * removes it AFTER the container.
@@ -848,6 +850,9 @@ export async function runEcsTask(
     }
     state.startedContainers.push({ name: container.name, id });
     if (joined) joined.joined = true;
+    // Without one, a `--watch` restart attaches a forwarder for exactly the
+    // ports this container's env points at (none when the task overrode it).
+    else if (wiring) rememberForwardedPorts(id, wiring, loopbackPorts);
     startedByName.set(container.name, { id, container });
 
     if (!options.detach) {

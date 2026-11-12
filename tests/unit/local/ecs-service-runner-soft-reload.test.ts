@@ -149,6 +149,7 @@ const {
   __setDockerInspectPublishesHostPortsImpl,
   __setListenProbeImpl,
   __setReloadDrainMs,
+  networkEndpointId,
   SOFT_RELOAD_COMPLETION_LOG_SUFFIX,
 } = await import('../../../src/local/ecs-service-runner.js');
 const { setActiveWorkloadAwsWiring, resetWorkloadAwsWiringForTest } = await import(
@@ -1133,7 +1134,9 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     });
 
     it('joined host-port publisher: keeps its forwarder attached (a running re-attach drops its ports)', async () => {
-      hoisted.publishesHostPorts = true;
+      // The publish read must hit the FORWARDER: a joined container has no
+      // port bindings of its own.
+      __setDockerInspectPublishesHostPortsImpl(async (id) => id === 'cid-7');
       const { cid, controller } = await bootAndReload(joinForwarder);
       await softReloadReplica({
         controller,
@@ -1492,5 +1495,20 @@ describe('Cloud Map publish warns render identifiers (#761)', () => {
     expect(warnWith('ServiceRegistries[].cloudMapServiceLogicalId=')).toBe(
       'ECS Service "a\' b" ServiceRegistries[].cloudMapServiceLogicalId="x [2Kforged" did not resolve to an AWS::ServiceDiscovery::Service in stack "stack\' x". Skipping this registration.'
     );
+  });
+});
+
+describe('networkEndpointId (issue #878)', () => {
+  it('is the joined forwarder of that container, else the container itself', () => {
+    const state = {
+      forwarders: [
+        { containerName: 'web', name: 'f1', id: 'fid-1', joined: true },
+        { containerName: 'side', name: 'f2', id: 'fid-2', joined: false },
+      ],
+    };
+    expect(networkEndpointId(state, 'web', 'cid-1')).toBe('fid-1');
+    expect(networkEndpointId(state, 'side', 'cid-2')).toBe('cid-2');
+    expect(networkEndpointId(state, 'other', 'cid-3')).toBe('cid-3');
+    expect(networkEndpointId({} as never, 'web', 'cid-1')).toBe('cid-1');
   });
 });

@@ -81,7 +81,8 @@ same two flags and forwards them to every command it starts:
   forwarder joins within moments of it, so an app there that calls AWS in
   its very first instant relies on its SDK's connection retry; that
   forwarder stops with the workload (and is restarted after a `--watch` soft
-  reload). Ctrl-C while a forwarder is still starting removes it. When
+  reload). Ctrl-C while a forwarder is still starting removes it (and,
+  for a forwarder attached after start, the workload too). When
   containers cannot reach the port, cdk-local warns with the fix. On Linux
   the endpoint must ALSO listen on the Docker bridge gateway: run AWS
   Emulator's Docker image with `-p 127.0.0.1:9297:9297 -p 172.17.0.1:9297:9297`
@@ -1491,8 +1492,9 @@ dependsOn relation start in template order.
 stay running for the caller to manage. cdk-local prints the network
 name on exit so you can `docker ps --filter network=<name>` to inspect.
 
-`--keep-running` skips step 2 only. The network + sidecar are still
-torn down. Use to `docker exec` into a stopped container post-mortem.
+`--keep-running` skips step 2 only, and keeps the loopback forwarder
+each kept container runs in (under a loopback AWS endpoint). The
+network + sidecar are still torn down. Use to `docker exec` into a stopped container post-mortem.
 
 ### `cdkl run-task` exit codes
 

@@ -10,7 +10,7 @@ import {
 // a namespace-owning loopback forwarder that is already up.
 const { execFileMock, stubs } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
-  stubs: { createTaskNetwork: vi.fn(), startFwd: vi.fn() },
+  stubs: { createTaskNetwork: vi.fn(), startFwd: vi.fn(), remember: vi.fn() },
 }));
 
 vi.mock('node:child_process', () => ({
@@ -39,6 +39,7 @@ vi.mock('../../../src/local/ecs-network.js', async (importOriginal) => ({
 vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/local/docker-runner.js')>()),
   startNamespaceOwnerForwarder: stubs.startFwd,
+  rememberForwardedPorts: stubs.remember,
 }));
 
 const { buildDockerRunArgs, cleanupEcsRun, createEcsRunState, runEcsTask } =
@@ -109,9 +110,26 @@ describe('buildDockerRunArgs: the namespace-owning forwarder (issue #878)', () =
     ],
     links: ['db:db'],
     user: '1000',
+    privileged: true,
+    readonlyRootFilesystem: true,
+    workingDirectory: '/srv',
+    ulimits: [{ name: 'nofile', softLimit: 1024, hardLimit: 2048 }],
+    entryPoint: ['/bin/sh', '-c'],
+    command: ['serve'],
+    mountPoints: [
+      { sourceVolume: 'data', containerPath: '/data', readOnly: true },
+      { sourceVolume: 'scratch', containerPath: '/scratch', readOnly: false },
+      { sourceVolume: 'named', containerPath: '/named', readOnly: false },
+    ],
     healthCheck: { command: ['CMD-SHELL', 'true'], interval: 5 },
   } as unknown as Partial<ResolvedEcsContainer>);
   const extra = {
+    platformOverride: 'linux/amd64',
+    volumeByName: new Map([
+      ['data', { kind: 'host', name: 'data', hostPath: '/host/data' }],
+      ['scratch', { kind: 'host', name: 'scratch' }],
+      ['named', { kind: 'docker', name: 'named', dockerVolumeName: 'cdkl-vol-named' }],
+    ]),
     networkAliases: ['api.local'],
     addHostFlags: ['--add-host', 'peer.ns:10.0.0.9', '--add-host', 'host.docker.internal:host-gateway'],
     ephemeralPublishContainerPorts: [9000],
@@ -149,6 +167,13 @@ describe('buildDockerRunArgs: the namespace-owning forwarder (issue #878)', () =
       return out;
     };
     expect(strip(fwd.args)).toEqual(strip(built.args));
+    // The fixture exercises every shared flag family (a missing one would
+    // make the equality above vacuous for it).
+    for (const v of ['/host/data:/data:ro', '/scratch', 'cdkl-vol-named:/named', 'linux/amd64',
+      '/srv', 'nofile=1024:2048', '--privileged', '--read-only', '--entrypoint', 'serve',
+      '/tmp/ca/ca-bundle.pem:/cdk-local-aws/ca-bundle.pem:ro']) {
+      expect(fwd.args).toContain(v);
+    }
     expect(fwd.args).toContain('AWS_ENDPOINT_URL=https://127.0.0.1:9351');
     expect(fwd.args.join(' ')).not.toContain('EMUSECRET');
   });
@@ -217,6 +242,7 @@ describe('runEcsTask: forwarder first, container in its namespace (issue #878)',
       sidecarContainerId: 'sc',
       sidecarIp: '169.254.171.2',
     });
+    stubs.remember.mockReset();
     stubs.startFwd.mockReset();
     stubs.startFwd.mockImplementation(async (o: { name: string }) => {
       order.push(`fwd ${o.name}`);
@@ -236,6 +262,7 @@ describe('runEcsTask: forwarder first, container in its namespace (issue #878)',
     const [first] = stubs.startFwd.mock.calls[0]!;
     expect(first).toMatchObject({ ports: [9351], wiring, workloadLabel: 'container app' });
     expect(first.namespace.network).toBe('cdkl-task-x');
+    expect(stubs.remember).not.toHaveBeenCalled();
     expect(order.filter((o) => o.startsWith('fwd') || o.startsWith('run'))).toEqual([
       `fwd ${state.forwarders[0]!.name}`,
       `run container:${state.forwarders[0]!.name}`,
@@ -256,6 +283,20 @@ describe('runEcsTask: forwarder first, container in its namespace (issue #878)',
     await runEcsTask(makeTask([container()]), options(['app']), state);
     expect(order).toContain('run cdkl-task-x');
     expect(state.forwarders).toEqual([]);
+    // A later --watch restart attaches a forwarder for these ports only.
+    expect(stubs.remember).toHaveBeenCalledWith(state.startedContainers[0]!.id, expect.anything(), [9351]);
+  });
+
+  it('records an empty port set for a container whose env replaced the loopback endpoint', async () => {
+    setActiveWorkloadAwsWiring({ ...wiring, mode: 'forward' });
+    const state = createEcsRunState();
+    await runEcsTask(
+      makeTask([container({ environment: { AWS_ENDPOINT_URL: 'http://task-declared:1' } })]),
+      options(['app']),
+      state
+    );
+    expect(stubs.startFwd).not.toHaveBeenCalled();
+    expect(stubs.remember).toHaveBeenCalledWith(state.startedContainers[0]!.id, expect.anything(), []);
   });
 
   it('propagates an --aws-emulator forwarder failure before the container starts', async () => {

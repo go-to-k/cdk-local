@@ -100,10 +100,13 @@ vi.mock('../../../src/local/docker-inspect.js', () => ({
   // which replica's endpoint the registry / pool currently holds.
   getContainerNetworkIp: async (id: string) => {
     hoisted.inspectIds.push(`ip ${id}`);
+    // A container in a forwarder's namespace has no endpoint of its own.
+    if (hoisted.joinForwarder && id.startsWith('cid-')) return undefined;
     return `172.20.0.${10 + hoisted.bootCount}`;
   },
   getPublishedHostPort: async (id: string) => {
     hoisted.inspectIds.push(`port ${id}`);
+    if (hoisted.joinForwarder && id.startsWith('cid-')) return undefined;
     return hoisted.publishedPorts[hoisted.publishCount++] ?? 5999;
   },
 }));
@@ -757,6 +760,22 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
         'listen cid-3 registry=false pool=false', // its own port, gating its aliases
         'disconnect net-3 cid-3',
         'connect net-3 cid-3 ip=172.20.0.13 aliases=web,svc,svc.cdkl.local',
+      ]);
+      expect(shadowRegistered).toBe(true);
+    });
+
+    it('attaches a joined shadow\'s withheld aliases on its FORWARDER (issue #878)', async () => {
+      hoisted.joinForwarder = true;
+      const registry = new CloudMapRegistry();
+      const opts = {
+        ...frontDoorOptions(new FrontDoorEndpointPool(), registry),
+        frontDoor: undefined,
+        discovery: { registry, cloudMapIndexByStack: new Map(), sharedNetwork },
+      };
+      const { ops, shadowRegistered } = await rollWithGate(opts, false);
+      expect(ops.filter((o) => / net-3 /.test(o))).toEqual([
+        'disconnect net-3 fid-3',
+        'connect net-3 fid-3 ip=172.20.0.13 aliases=web,svc,svc.cdkl.local',
       ]);
       expect(shadowRegistered).toBe(true);
     });

@@ -522,8 +522,8 @@ export async function startNamespaceOwnerForwarder(opts: {
   getLogger()
     .child('docker')
     .debug(`Starting loopback forwarder ${name} for ports ${opts.ports.join(',')}`);
-  const fail = async (key: string, message: string): Promise<undefined> => {
-    await removeContainer(name);
+  const fail = async (key: string, message: string, remove = true): Promise<undefined> => {
+    if (remove) await removeContainer(name);
     if (wiring.mode === 'emulator') throw new DockerRunnerError(message);
     warnForwarderOnce(key, message);
     return undefined;
@@ -537,11 +537,17 @@ export async function startNamespaceOwnerForwarder(opts: {
       // ports, so a host port already in use fails HERE. A failed `run -d`
       // can still have created the container: `fail` removes it.
       const err = error as { stderr?: string };
+      // A name conflict means a container this run did NOT create holds the
+      // name (a `--detach` leftover, a peer run): never remove it.
+      const conflict = /is already in use by container|Conflict\. The container name/.test(
+        err.stderr ?? ''
+      );
       return fail(
         'start',
         `${label}: could not start the loopback forwarder for ${opts.workloadLabel} ` +
           `(it holds the ${opts.workloadLabel}'s network aliases and published ports): ` +
-          displayToolOutput(err.stderr?.trim() || describeExitWithoutArgv(error))
+          displayToolOutput(err.stderr?.trim() || describeExitWithoutArgv(error)),
+        !conflict
       );
     }
     let result: LoopbackForwarderResult;
@@ -553,6 +559,21 @@ export async function startNamespaceOwnerForwarder(opts: {
     if (result.ok) return id || name;
     return fail(String(result.failedPort ?? 0), describeForwarderFailure(result, label));
   });
+}
+
+/**
+ * Record the loopback ports `containerId`'s env points at when it started
+ * WITHOUT a forwarder (none needed, or a failed owning forwarder outside
+ * `--aws-emulator`), so a later restart's {@link attachLoopbackForwarder}
+ * serves exactly those ports, none for an empty set.
+ */
+export function rememberForwardedPorts(
+  containerId: string,
+  wiring: WorkloadAwsWiring,
+  ports: readonly number[]
+): void {
+  if (samePorts(ports, wiring.loopbackPorts)) forwardedPortsByContainer.delete(containerId);
+  else forwardedPortsByContainer.set(containerId, ports);
 }
 
 function forwarderEndpointLabel(wiring: WorkloadAwsWiring): string {
