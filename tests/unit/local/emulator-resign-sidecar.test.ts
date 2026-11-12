@@ -627,8 +627,10 @@ describe('the forwarder script with the sidecar (the code a mixed-mode container
     await new Promise<void>((r) => emu.listen(0, '127.0.0.1', () => r()));
     try {
       const line = await run((emu.address() as AddressInfo).port, 46000 + Math.floor(Math.random() * 900));
-      expect(line).toBe('CDKL-FWD READY none');
-      expect(parseForwarderStatus(line)).toEqual({ ok: true });
+      // The upstream is `none` where nothing resolves (macOS) and the default
+      // gateway on Linux; with no TCP port it is unused either way.
+      expect(line).toMatch(/^CDKL-FWD READY \S+$/);
+      expect(parseForwarderStatus(line)?.ok).toBe(true);
     } finally {
       await new Promise((r) => emu.close(r));
     }
