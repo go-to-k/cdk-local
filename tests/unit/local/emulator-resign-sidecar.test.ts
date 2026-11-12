@@ -243,6 +243,40 @@ describe('prepareResign', () => {
     expect(v).toMatchObject({ ok: true, service: 's3', region: 'ap-northeast-1' });
   });
 
+  it('strips presign parameters even when the request also carries a header signature', () => {
+    const p = core.prepareResign(
+      {
+        method: 'GET',
+        url: '/b/k?X-Amz-Security-Token=REALTOKEN&X-Amz-Signature=abcd&X-Amz-Credential=REALKEYID%2Fx&partNumber=1',
+        headers: { authorization: REAL_AUTH.replace('dynamodb', 's3') },
+      },
+      Buffer.alloc(0),
+      cfg,
+      now
+    );
+    expect(p.path).toBe('/b/k?partNumber=1');
+    expect(JSON.stringify(p)).not.toContain('REALTOKEN');
+  });
+
+  it('refuses a trailer whose name or value is not a valid header (never forwarded)', () => {
+    for (const trailer of ['bad name:x', 'x-amz-checksum-crc32:a\u0000b']) {
+      const p = core.prepareResign(
+        {
+          method: 'PUT',
+          url: '/b/k',
+          headers: {
+            authorization: REAL_AUTH.replace('dynamodb', 's3'),
+            'x-amz-content-sha256': 'STREAMING-UNSIGNED-PAYLOAD-TRAILER',
+          },
+        },
+        Buffer.from(`1\r\na\r\n0\r\n${trailer}\r\n\r\n`, 'latin1'),
+        cfg,
+        now
+      );
+      expect(p.error).toMatchObject({ status: 400, code: 'IncompleteBody' });
+    }
+  });
+
   it('non-S3 paths are double-encoded the way the SDKs sign them', async () => {
     const p = core.prepareResign(
       {

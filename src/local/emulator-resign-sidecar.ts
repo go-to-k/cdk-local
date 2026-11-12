@@ -23,7 +23,7 @@
 //   - SigV4 (`AWS4-HMAC-SHA256`, header or presigned query) and SigV4a
 //     (`AWS4-ECDSA-P256-SHA256`): the service and region come from the
 //     original credential scope (SigV4a: `X-Amz-Region-Set`, else the
-//     configured region). Every signing header and presign parameter is
+//     `us-east-1`). Every signing header and presign parameter is
 //     dropped, including the real `X-Amz-Security-Token`, and the request is
 //     signed again with header auth.
 //   - S3 `aws-chunked` bodies (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`, its
@@ -138,7 +138,9 @@ function decodeAwsChunked(buf){
     if(c<=0)continue;
     var k=line.slice(0,c).trim().toLowerCase();
     if(k==='x-amz-trailer-signature')continue;
-    trailers[k]=line.slice(c+1).trim();
+    var v=line.slice(c+1).trim();
+    if(!/^[!#$%&'*+.^_|~0-9a-z-]+$/.test(k)||/[^	 -~]/.test(v))throw new Error('aws-chunked body: invalid trailer');
+    trailers[k]=v;
   }
   return {body:Buffer.concat(parts),trailers:trailers};
 }
@@ -170,17 +172,17 @@ function prepareResign(req,body,cfg,now){
   var url=String(req.url||'/'),qi=url.indexOf('?');
   var path=qi<0?url:url.slice(0,qi),query=qi<0?'':url.slice(qi+1);
   var incoming=req.headers,scope,signedRequest=false;
+  var pairs=splitQuery(query),cred,algo;
+  pairs.forEach(function(p){var lk=p.k.toLowerCase();if(lk==='x-amz-credential')cred=p.v;if(lk==='x-amz-algorithm')algo=p.v;});
+  // Presign parameters (a real token or signature among them) never go upstream,
+  // whether or not the request ALSO carries a header signature.
+  query=pairs.filter(function(p){return !PRESIGN_PARAMS.has(p.k.toLowerCase());}).map(function(p){return p.raw;}).join('&');
   if(incoming['authorization']!==undefined){
     signedRequest=true;
     scope=parseAuthScope(incoming['authorization']);
-  }else{
-    var pairs=splitQuery(query),cred,algo;
-    pairs.forEach(function(p){var lk=p.k.toLowerCase();if(lk==='x-amz-credential')cred=p.v;if(lk==='x-amz-algorithm')algo=p.v;});
-    if(cred!==undefined){
-      signedRequest=true;
-      scope=parseCredentialScope(algo||'AWS4-HMAC-SHA256',cred);
-      query=pairs.filter(function(p){return !PRESIGN_PARAMS.has(p.k.toLowerCase());}).map(function(p){return p.raw;}).join('&');
-    }
+  }else if(cred!==undefined){
+    signedRequest=true;
+    scope=parseCredentialScope(algo||'AWS4-HMAC-SHA256',cred);
   }
   if(signedRequest&&!scope)return {error:{status:400,code:'IncompleteSignature',message:'cdk-local mixed mode: the request signature has no credential scope the AWS Emulator re-signing sidecar can read.'}};
   var service=scope?scope.service:undefined;
@@ -234,23 +236,34 @@ function startResigner(cfgPath){return new Promise(function(done){
     resp.writeHead(status,{'content-type':b.type,'content-length':Buffer.byteLength(b.text),'connection':'close'});
     resp.end(b.text);
   }
-  function serviceOf(req){var s=parseAuthScope(req.headers['authorization']||'');return s?s.service:undefined;}
+  function serviceOf(req){
+    var s=parseAuthScope(req.headers['authorization']||'');
+    if(!s){var m=/[?&]X-Amz-Credential=([^&]*)/i.exec(String(req.url||''));if(m)s=parseCredentialScope('AWS4-HMAC-SHA256',safeDecode(m[1]));}
+    return s?s.service:undefined;
+  }
+  // Bodies held at once, across concurrent requests: twice the per-request cap.
+  var inflight=0,inflightCap=2*rawCap(cfg.capBytes);
   function handle(req,resp){
-    var chunks=[],size=0,over=false,limit=rawCap(cfg.capBytes);
-    req.on('data',function(c){if(over)return;size+=c.length;if(size>limit){over=true;chunks=[];return;}chunks.push(c);});
-    req.on('error',function(){resp.destroy();});
+    var chunks=[],size=0,over=false,busy=false,limit=rawCap(cfg.capBytes);
+    var release=function(){inflight-=size;size=0;release=function(){};};
+    req.on('data',function(c){if(over||busy)return;if(inflight+c.length>inflightCap){busy=true;inflight-=size;size=0;chunks=[];return;}size+=c.length;inflight+=c.length;if(size>limit){over=true;inflight-=size;chunks=[];return;}chunks.push(c);});
+    req.on('error',function(){release();resp.destroy();});
+    req.on('close',function(){release();});
     req.on('end',function(){
+      if(busy){send(resp,503,{code:'SlowDown',message:'cdk-local mixed mode: the AWS Emulator re-signing sidecar is holding too many request bodies at once; retry.'},serviceOf(req));return;}
       if(over){process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,413,tooLargeError(size,cfg.capBytes,serviceOf(req)),serviceOf(req));return;}
       var p;
       try{p=prepareResign(req,Buffer.concat(chunks),cfg,new Date());}catch(e){p={error:{status:400,code:'InvalidRequest',message:'cdk-local mixed mode: the request could not be re-signed.'}};}
       if(p.error){if(p.error.status===413)process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,p.error.status,p.error,serviceOf(req));return;}
-      var r=mod.request({host:up.hostname.replace(/^\[|\]$/g,''),port:up.port||(secure?443:80),method:req.method,path:p.path,headers:p.headers,agent:agent},function(ur){
+      var r;
+      try{r=mod.request({host:up.hostname.replace(/^\[|\]$/g,''),port:up.port||(secure?443:80),method:req.method,path:p.path,headers:p.headers,agent:agent},function(ur){
         var h={};
         Object.keys(ur.headers).forEach(function(k){if(k==='connection'||k==='keep-alive'||k==='transfer-encoding')return;h[k]=ur.headers[k];});
         resp.writeHead(ur.statusCode||502,h);
         ur.pipe(resp);
         ur.on('error',function(){resp.destroy();});
-      });
+      });}catch(e){release();send(resp,400,{code:'InvalidRequest',message:'cdk-local mixed mode: the request has a header the AWS Emulator re-signing sidecar cannot forward.'},p.service);return;}
+      release();
       r.on('error',function(e){process.stdout.write('CDKL-RESIGN upstream error '+(e.code||'ERROR')+'\n');send(resp,502,{code:'BadGateway',message:'cdk-local mixed mode: the AWS Emulator at '+cfg.upstream+' did not answer ('+(e.code||'ERROR')+').'},p.service);});
       r.end(p.body);
     });
@@ -287,7 +300,7 @@ export interface ResignSidecarConfig {
   keyPem: string;
   /** The emulator's keys: every forwarded request is signed with these. */
   credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
-  /** Fallback region for a SigV4a request with no single region. */
+  /** Fallback region for a SigV4a request with no single region (default `us-east-1`). */
   region?: string;
   /** {@link MIXED_MODE_RESIGN_BODY_CAP_BYTES} unless a test lowers it. */
   capBytes: number;

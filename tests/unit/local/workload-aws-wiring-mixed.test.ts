@@ -126,6 +126,31 @@ describe('resolveWorkloadAwsWiring — mixed mode', () => {
     expect(existsSync(w.caHostPath!)).toBe(false);
   });
 
+  it('--ca-bundle is trusted NEXT TO the run ca.pem, never instead of it', async () => {
+    writeEmulatorRun(9364);
+    const extra = createMixedModeTlsMaterials().caCertPem;
+    const extraPath = path.join(home, 'corp.pem');
+    writeFileSync(extraPath, extra);
+    const w = await resolveWorkloadAwsWiring({
+      awsEmulator: 'https://127.0.0.1:9364',
+      awsEmulatorSentinels: SENTINELS,
+      caBundle: extraPath,
+      homeDir: home,
+      env: {},
+      probeHealth: healthy,
+    });
+    try {
+      const cfg = JSON.parse(readFileSync(w.mixed!.resignConfigHostPath, 'utf8'));
+      expect(cfg.upstreamCaPem).toContain(EMU_CA.trim());
+      expect(cfg.upstreamCaPem).toContain(extra.trim());
+      const bundle = readFileSync(w.caHostPath!, 'utf8');
+      expect(bundle).toContain(EMU_CA.trim());
+      expect(bundle).toContain(extra.trim());
+    } finally {
+      w.dispose();
+    }
+  });
+
   it('signs with the auth-off placeholders when the emulator has no keys file', async () => {
     const w = await mixed(9362, false);
     try {

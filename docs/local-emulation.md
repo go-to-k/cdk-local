@@ -303,11 +303,14 @@ The rules:
   checking (no `-a off`), and no signature made with real keys reaches it.
   Real-AWS traffic never passes through the sidecar. It logs no header,
   body or key.
-- **TLS stays verified on both legs.** The sidecar's certificate for
+- **TLS stays verified on both legs** (with an `https` emulator URL; an
+  `http` one is forwarded as plain HTTP). The sidecar's certificate for
   `127.0.0.1` comes from a CA made for each run. The containers' CA bundle
   (`AWS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`,
-  `SSL_CERT_FILE`) trusts that CA and the emulator's, plus the public roots,
-  so real AWS still verifies. The CA's private key is discarded once it has
+  `SSL_CERT_FILE`) trusts that CA, the emulator's `ca.pem` and any
+  `--ca-bundle` / `AWS_CA_BUNDLE`, plus the public roots, so real AWS still
+  verifies. A template or `--env-vars` value for one of those variables
+  wins, as everywhere, and then has to trust the run's CA itself. The CA's private key is discarded once it has
   signed the sidecar's certificate. The sidecar's key and the emulator's
   keys sit in a `0600` file in a private temp directory, mounted read-only
   into the sidecar and removed when the command ends. A JVM reads none of
@@ -334,7 +337,10 @@ The rules:
   `--env-vars` values still win. The routed set is the whole run's: a
   service that any workload routes resolves from the emulator for every
   workload. When the emulator has no such stack, those resources keep their
-  real names, with a warning. cdk-local's other AWS calls stay on real AWS.
+  real names, with a warning. cdk-local's other AWS calls stay on real AWS:
+  `cdkl start-cloudfront` with S3 routed resolves an S3 origin's bucket name
+  from the emulator but still reads the objects from real S3, so name such a
+  bucket in `--env-vars` or do not route S3 there.
 - Port `47297` is reserved for the sidecar inside a workload that uses a
   sentinel, and a host-network workload cannot use one. `cdkl studio`
   passes `--env-vars` and `--aws-emulator` to the commands it starts, but

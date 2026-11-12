@@ -599,26 +599,30 @@ function resolveMixedModeWiring(args: {
   ep: ParsedAwsEndpoint;
   services: string[];
   credentials: CallerCredentials;
-  caSource: string | undefined;
+  /** Every CA the emulator's certificate may chain to: the run's `ca.pem`, `--ca-bundle`, `AWS_CA_BUNDLE`. */
+  caSources: string[];
   disposers: (() => void)[];
   dispose: () => void;
   skipPull: boolean | undefined;
 }): WorkloadAwsWiring {
-  const { ep, services, credentials, caSource, disposers } = args;
-  let upstreamCaPem: string | undefined;
-  if (caSource !== undefined) {
+  const { ep, services, credentials, caSources, disposers } = args;
+  // Kept together, never one instead of another: a `--ca-bundle` for a
+  // corporate proxy must not drop the trust in the emulator's own CA.
+  const caPems: string[] = [];
+  for (const source of caSources) {
     try {
-      upstreamCaPem = pemCertificates(readFileSync(caSource, 'utf8')).join('\n');
+      caPems.push(...pemCertificates(readFileSync(source, 'utf8')));
     } catch (err) {
       throw new Error(
-        `--aws-emulator: the emulator's CA ${displayUntrustedValue(caSource)} cannot be read ` +
+        `--aws-emulator: the CA bundle ${displayUntrustedValue(source)} cannot be read ` +
           `(${(err as NodeJS.ErrnoException).code ?? 'error'}).`
       );
     }
   }
+  const upstreamCaPem = caPems.length > 0 ? caPems.join('\n') : undefined;
   // The CA's private key never leaves createMixedModeTlsMaterials.
   const tls = createMixedModeTlsMaterials();
-  const bundle = writeCaBundleFile(caSource, [tls.caCertPem]);
+  const bundle = writeCaBundleFile(undefined, [...caPems, tls.caCertPem]);
   disposers.push(bundle.dispose);
   // Secrets (the sidecar's TLS key, the emulator's keys): a 0700 directory
   // holding one 0600 file, mounted read-only, removed by `dispose`.
@@ -744,8 +748,15 @@ export async function resolveWorkloadAwsWiring(
           ep,
           services: mixedServices,
           credentials,
-          caSource:
-            caSource && ep.url.startsWith('https:') ? expandHome(caSource, homeDir) : undefined,
+          caSources: ep.url.startsWith('https:')
+            ? [
+                ...new Set(
+                  [run.caPath, opts.caBundle, env['AWS_CA_BUNDLE']]
+                    .filter((c): c is string => typeof c === 'string' && c !== '')
+                    .map((c) => expandHome(c, homeDir))
+                ),
+              ]
+            : [],
           disposers,
           dispose,
           skipPull: opts.skipPull,
