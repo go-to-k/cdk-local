@@ -88,6 +88,7 @@ export {
   resolveCfnStackName,
   LocalStateSourceError,
   type ExtraStateProviders,
+  type LocalStateProviderBehavior,
   type LocalStateProviderFactory,
   type LocalStateSourceOptions,
 } from './cli/commands/local-state-source.js';

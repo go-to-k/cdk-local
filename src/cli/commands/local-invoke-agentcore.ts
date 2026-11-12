@@ -60,6 +60,7 @@ import {
   AGENTCORE_A2A_PROTOCOL,
   AGENTCORE_AGUI_PROTOCOL,
   AGENTCORE_MCP_PROTOCOL,
+  agentCoreTargetWorkload,
   pickAgentCoreCandidateStack,
   resolveAgentCoreTarget,
   type AgentCoreCodeArtifact,
@@ -92,7 +93,11 @@ import {
 } from '../../local/agentcore-a2a-client.js';
 import { invokeAgentCoreWs, type AgentCoreWsResult } from '../../local/agentcore-ws-client.js';
 import { createJwksCache, verifyJwtViaDiscovery } from '../../local/cognito-jwt.js';
-import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
+import {
+  readEnvVarsFileText,
+  resolveEnvVars,
+  type EnvOverrideFile,
+} from '../../local/env-resolver.js';
 import {
   substituteAgainstStateAsync,
   substituteEnvVarsFromStateAsync,
@@ -402,7 +407,9 @@ async function localInvokeAgentCoreCommand(
       options,
       candidate?.stackName ?? '',
       await resolveCfnFallbackRegion(options, candidate?.region),
-      extraStateProviders
+      extraStateProviders,
+      // Mixed mode: names resolve by this runtime's own sentinels.
+      { workload: agentCoreTargetWorkload(resolvedTarget, stacks) }
     );
     const { context: imageContext, loaded: loadedState } =
       stateProvider && candidate
@@ -1290,8 +1297,11 @@ export async function buildContainerEnv(
   loaded: LocalStateRecord | undefined,
   imageContext: ImageResolutionContext | undefined
 ): Promise<{ env: Record<string, string>; sensitiveEnvKeys: Set<string> }> {
+  // Mixed mode: this runtime's own sentinels route its `{{resolve:...}}`
+  // fetches, as they route its runtime calls.
   const dynamicRefs = new DynamicReferenceResolver({
     ...(options.profile !== undefined && { profile: options.profile }),
+    workload: { logicalId: resolved.logicalId, cdkPath: readCdkPathOrUndefined(resolved.resource) },
   });
   try {
     return await buildContainerEnvWith(
@@ -2031,7 +2041,7 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
   if (!filePath) return undefined;
   let raw: string;
   try {
-    raw = readFileSync(filePath, 'utf-8');
+    raw = readEnvVarsFileText(filePath);
   } catch (err) {
     throw new Error(
       `Failed to read --env-vars file '${filePath}': ${err instanceof Error ? err.message : String(err)}`

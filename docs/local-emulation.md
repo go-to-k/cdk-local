@@ -288,7 +288,12 @@ The rules:
   which names the emulator: its endpoint, keys and CA in
   `~/.aws/emulator/<port>/`. Without it, the command stops and names the
   flag. A sentinel on the bare `AWS_ENDPOINT_URL` is refused: for every
-  service, use `--aws-emulator` with no sentinel. A literal URL (for example
+  service, use `--aws-emulator` with no sentinel. So is a sentinel on a
+  variable the AWS SDKs do not read: the suffix must be the service's SDK
+  endpoint id, its `serviceId` uppercased with spaces as underscores
+  (`AWS_ENDPOINT_URL_SECRETS_MANAGER`, not `AWS_ENDPOINT_URL_SECRETSMANAGER`;
+  `AWS_ENDPOINT_URL_SFN` for Step Functions), and the error names the right
+  spelling when one matches. A literal URL (for example
   `"https://127.0.0.1:9297"`) is passed through as it is and is never
   re-signed.
 - **Containers keep your real identity.** With at least one sentinel, a
@@ -342,18 +347,26 @@ The rules:
   parts far smaller than that. Past the cap, the request fails with HTTP
   413 (`EntityTooLarge`) and a message that names the cap. A presigned URL
   that the handler fetches itself is re-signed too.
-- **cdk-local's own calls follow the same routes.** Values cdk-local reads
-  for a workload before it starts take the workload's route for their
-  service: a `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` /
-  `{{resolve:ssm-secure:...}}` reference, an ECS task's `Secrets`
-  (`ValueFrom`), an `AWS::SSM::Parameter::Value<...>` template parameter
-  under `--from-cfn-stack`, and an HTTP API's direct service integration
-  (SQS, SNS, EventBridge, Kinesis, Step Functions, SSM). With
-  `AWS_ENDPOINT_URL_SECRETS_MANAGER` routed, the secret comes from the
-  emulator (called from the host with the emulator's keys and CA, no
-  sidecar); otherwise from real AWS with your real credentials. As for names,
-  the routed set is the whole run's: a service any workload routes is read
-  from the emulator for every workload. These stay
+- **cdk-local's own calls follow the same routes.** A value cdk-local reads
+  for a workload before it starts takes THAT workload's route for its
+  service: the sentinels its own env ends up with (`Parameters` plus its own
+  sections; a `null` or a literal URL in its section takes a `Parameters`
+  sentinel away, as it does in the env). That covers a
+  `{{resolve:secretsmanager:...}}` / `{{resolve:ssm:...}}` /
+  `{{resolve:ssm-secure:...}}` reference in a function's, an AgentCore
+  runtime's or an ECS container's environment (a cross-stack value's
+  included), and an ECS container's `Secrets` (`ValueFrom`). With
+  `AWS_ENDPOINT_URL_SECRETS_MANAGER` routed for a workload, its secret comes
+  from the emulator (called from the host with the emulator's keys and CA,
+  no sidecar); a workload without that sentinel reads the same reference
+  from real AWS with your real credentials. A call that serves no single
+  workload follows every sentinel in the file (a service any section routes):
+  an `AWS::SSM::Parameter::Value<...>` template parameter under
+  `--from-cfn-stack` in a command that reads one stack for several workloads
+  (listed under the next rule; for one function or runtime it follows that
+  workload's route), and an HTTP API's
+  direct service integration (SQS, SNS, EventBridge, Kinesis, Step
+  Functions, SSM), which API Gateway makes, not a function. These stay
   on real AWS whatever you route: STS (your identity, `--assume-role` and the
   account lookup), the deployed artifacts (the ECR image, a `fromS3` code
   bundle, a layer ARN) and the stack read behind `--from-cfn-stack`.
@@ -363,10 +376,17 @@ The rules:
   `--env-vars` values still win. An output or deployed-function value that
   equals a real resource's physical ID takes the emulator's ID; an ARN or
   URL that merely contains it is left as it is, so name those in
-  `--env-vars`. The routed set is the whole run's: a
-  service that any workload routes resolves from the emulator for every
-  workload. When the emulator has no such stack, those resources keep their
-  real names, with a warning. `cdkl start-cloudfront` serves S3 origins and
+  `--env-vars`. `cdkl invoke` (and a Lambda behind `start-cloudfront` or
+  `start-alb`), `invoke-agentcore` and `start-agentcore` resolve names for
+  their one function or runtime, by its own sentinels. Commands that read a
+  stack once for several workloads (`start-api`, `run-task`, `start-service`,
+  `start-alb`'s ECS targets, `studio`) use the whole run's set:
+  a service any section routes resolves from the emulator for every
+  workload there. When the emulator has no such stack, those resources keep their
+  real names, with a warning. When only the emulator has it, the resources of
+  the other services stay unresolved, with a warning naming them. Both sides
+  are read under the same stack name, so deploy the stack to AWS Emulator and
+  to real AWS with the same CDK context (for example `-c stage=dev` on both). `cdkl start-cloudfront` serves S3 origins and
   KeyValueStores from real AWS, under their real names. Mixed mode does not set
   `AWS_DISABLE_HOST_PREFIX_INJECTION` (it would apply to real AWS calls too),
   so an operation with a host prefix, such as Step Functions'

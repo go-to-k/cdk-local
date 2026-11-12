@@ -34,6 +34,7 @@
 import { CfnLocalStateProvider } from '../../local/cfn-local-state-provider.js';
 import { createMixedModeStateProvider } from '../../local/aws-emulator-mixed-mode.js';
 import { getActiveWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
+import { awsEmulatorRoutedServices, type AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
 import { getEmbedConfig } from '../../local/embed-config.js';
 import { resolveProfileRegion } from '../../utils/profile-region.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
@@ -67,11 +68,37 @@ export interface LocalStateSourceOptions {
 }
 
 /**
+ * What the caller of {@link createLocalStateProvider} asks of the provider.
+ * Passed through to a host factory unchanged (go-to-k/cdk-local#892).
+ */
+export interface LocalStateProviderBehavior {
+  /**
+   * The caller reads the resolved resources itself with cdk-local's own
+   * real-AWS clients (`start-cloudfront`'s S3 origins), so AWS Emulator mixed
+   * mode must not hand it the emulator's names.
+   */
+  realAwsOnly?: boolean;
+  /**
+   * The one workload the names are resolved for. In mixed mode the emulated
+   * services are then that workload's own (`Parameters` plus its own
+   * `--env-vars` sections), as its runtime calls go; without it, the run's.
+   */
+  workload?: AwsEmulatorWorkload | undefined;
+}
+
+/**
  * Factory function signature for a host-supplied state provider. The
  * dispatcher invokes the matching factory with the full parsed options
- * bag so the factory can read its own option fields directly.
+ * bag so the factory can read its own option fields directly, and with the
+ * caller's {@link LocalStateProviderBehavior} (an empty object when the
+ * caller asked for nothing): a host provider that resolves per service in
+ * mixed mode honors `realAwsOnly` and `workload` the way `--from-cfn-stack`
+ * does.
  */
-export type LocalStateProviderFactory = (options: LocalStateSourceOptions) => LocalStateProvider;
+export type LocalStateProviderFactory = (
+  options: LocalStateSourceOptions,
+  behavior: LocalStateProviderBehavior
+) => LocalStateProvider;
 
 /**
  * Registry of host-supplied state-provider factories.
@@ -303,12 +330,8 @@ export function createLocalStateProvider(
   stackName: string,
   synthRegion: string | undefined,
   extraStateProviders?: ExtraStateProviders,
-  /**
-   * `realAwsOnly`: the caller reads the resolved resources itself with
-   * cdk-local's own (real-AWS) clients, e.g. `start-cloudfront`'s S3 origins,
-   * so AWS Emulator mixed mode must not hand it the emulator's names.
-   */
-  behavior: { realAwsOnly?: boolean } = {}
+  /** {@link LocalStateProviderBehavior}; also handed to a host factory. */
+  behavior: LocalStateProviderBehavior = {}
 ): LocalStateProvider | undefined {
   const cfnStackOpt = options.fromCfnStack;
   const cfnFlagPresent = isCfnFlagPresent(options);
@@ -356,12 +379,17 @@ export function createLocalStateProvider(
       cfnStackName,
       region,
       ...(options.profile !== undefined && { profile: options.profile }),
+      // An SSM-backed template parameter follows this workload's SSM route.
+      ...(behavior.workload !== undefined && { workload: behavior.workload }),
     });
     // Mixed mode (an `aws-emulator` sentinel in --env-vars): resources of the
     // emulated services resolve from the stack deployed into AWS Emulator,
     // the rest from real AWS.
     const mixed = behavior.realAwsOnly ? undefined : getActiveWorkloadAwsWiring()?.mixed;
     if (!mixed) return real;
+    const emulatedServices = awsEmulatorRoutedServices(behavior.workload) ?? mixed.services;
+    // A workload whose own sentinels route nothing reads every name from real AWS.
+    if (emulatedServices.length === 0) return real;
     return createMixedModeStateProvider({
       real,
       emulator: new CfnLocalStateProvider({
@@ -370,14 +398,14 @@ export function createLocalStateProvider(
         endpointOverride: mixed.emulatorClientOverride,
         label: '--from-cfn-stack (AWS Emulator)',
       }),
-      emulatedServices: mixed.services,
+      emulatedServices,
     });
   }
 
   if (activeExtras.length === 1) {
     const key = activeExtras[0]!;
     const factory = extraStateProviders![key]!;
-    return factory(options);
+    return factory(options, behavior);
   }
 
   return undefined;

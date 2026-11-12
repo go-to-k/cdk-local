@@ -105,7 +105,7 @@ export {
  * warn-and-drop unless `--from-*` substituted them upstream). Exposed only as
  * the consuming host's `import` statements require them.
  */
-export { resolveEnvVars, type EnvOverrideFile } from './local/env-resolver.js';
+export { readEnvVarsFileText, resolveEnvVars, type EnvOverrideFile } from './local/env-resolver.js';
 
 /**
  * `start-api` per-API Stage selection — builds the stage map and attaches
@@ -1364,25 +1364,36 @@ export {
 /**
  * Per-service routing of a host's OWN AWS clients in AWS Emulator mixed mode
  * (go-to-k/cdk-local#898). `activateWorkloadAwsWiring` installs it; spread
- * `awsClientConfigForService('<ID>', { profile })` FIRST in a client's config
+ * `awsClientConfigForService('<ID>', { profile, workload })` FIRST in a client's config
  * (`<ID>` is the `AWS_ENDPOINT_URL_<ID>` suffix, e.g. `SECRETS_MANAGER`, or
  * the SDK's `serviceId`) and the client reads AWS Emulator exactly when a
  * sentinel routed that service — under `--aws-emulator` alone always, without
  * it never. When the fragment carries `endpoint`, add no credentials of your
  * own. For a read made FOR the workload (a secret or parameter it receives),
- * use `workloadClientConfig({ profile, service })`, which also honors
+ * use `workloadClientConfig({ profile, service, workload })`, which also honors
  * `workloadIdentity: 'caller'`. Keep STS off both: it carries the real
- * identity. A host that resolves the wiring itself
- * installs it with `setAwsEmulatorServiceRouting({ services:
- * wiring.mixed.services, override: wiring.mixed.emulatorClientOverride })`.
+ * identity.
+ *
+ * `workload` ({@link AwsEmulatorWorkload}: a function's `logicalId` +
+ * `cdkPath`, or an ECS `containerName`) routes by THAT workload's own
+ * sentinels (`Parameters` plus its own `--env-vars` sections), exactly as its
+ * runtime calls go (go-to-k/cdk-local#902). Omit it only for a call that
+ * serves no single workload; that call follows every sentinel in the file.
+ * `awsEmulatorRoutedServices(workload)` lists the routed ids (for per-service
+ * name resolution). A host that resolves the wiring itself installs it with
+ * `setAwsEmulatorServiceRouting({ services: wiring.mixed.services, override:
+ * wiring.mixed.emulatorClientOverride, envOverrides: <parsed --env-vars> })`;
+ * without `envOverrides` every call routes by the run's set.
  */
 export {
   awsClientConfigForService,
+  awsEmulatorRoutedServices,
   isAwsServiceRoutedToEmulator,
   normalizeAwsEndpointServiceId,
   setAwsEmulatorServiceRouting,
   getAwsEmulatorServiceRouting,
   type AwsEmulatorServiceRouting,
+  type AwsEmulatorWorkload,
 } from './utils/aws-proxy.js';
 /**
  * AWS Emulator mixed mode (go-to-k/cdkd#6150): an `aws-emulator` sentinel on
@@ -1390,8 +1401,11 @@ export {
  * emulator through a re-signing sidecar, while the workload keeps the real
  * identity. `activateWorkloadAwsWiring({ envVars })` does it all for a host
  * that uses cdk-local's docker-run layer. A host that reads `--env-vars`
- * itself scans with `findAwsEmulatorSentinels`, refuses bad ones with
- * `validateAwsEmulatorSentinels`, and passes them to `resolveWorkloadAwsWiring`
+ * itself scans with `findAwsEmulatorSentinels` (or `readAwsEmulatorEnvVarsFile`,
+ * which reads a pipe-backed path once; read the file's text through
+ * `readEnvVarsFileText` so the host's own read sees the same text), refuses bad
+ * ones with `validateAwsEmulatorSentinels` (a bare `AWS_ENDPOINT_URL`, a
+ * suffix outside `AWS_ENDPOINT_SERVICE_IDS`, no `--aws-emulator`), and passes them to `resolveWorkloadAwsWiring`
  * (`awsEmulatorSentinels`); the wiring's `mixed` then carries the sidecar
  * endpoint and config, and `loopbackForwarderPlan` splits a container's ports.
  * Per-service name resolution: `createMixedModeStateProvider` over a real and
@@ -1404,15 +1418,19 @@ export {
   AWS_EMULATOR_SENTINEL,
   MIXED_MODE_RESIGN_PORT,
   createMixedModeStateProvider,
+  emulatedServicesForWorkload,
   emulatedServicesOf,
   findAwsEmulatorSentinels,
   isAwsEmulatorSentinel,
+  readAwsEmulatorEnvVarsFile,
   readAwsEmulatorSentinelsFromFile,
   resourceTypeMatchesEmulatedService,
   validateAwsEmulatorSentinels,
+  type AwsEmulatorEnvVarsScan,
   type AwsEmulatorSentinel,
   type MixedModeStateProviderOptions,
 } from './local/aws-emulator-mixed-mode.js';
+export { AWS_ENDPOINT_SERVICE_IDS } from './local/aws-endpoint-service-ids.js';
 export { createMixedModeTlsMaterials, type MixedModeTlsMaterials } from './local/mixed-mode-tls.js';
 export {
   MIXED_MODE_RESIGN_BODY_CAP_BYTES,

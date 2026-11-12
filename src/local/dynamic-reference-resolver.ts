@@ -1,6 +1,7 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { workloadClientConfig } from '../utils/workload-identity.js';
+import { isAwsServiceRoutedToEmulator, type AwsEmulatorWorkload } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -389,9 +390,38 @@ export interface DynamicReferenceResolverOptions {
    * region chain). Production leaves both unset.
    */
   secretsManagerClientFactory?: (
-    region: string | undefined
+    region: string | undefined,
+    route: DynamicReferenceRoute
   ) => Pick<SecretsManagerClient, 'send' | 'destroy'>;
-  ssmClientFactory?: (region: string | undefined) => Pick<SSMClient, 'send' | 'destroy'>;
+  ssmClientFactory?: (
+    region: string | undefined,
+    route: DynamicReferenceRoute
+  ) => Pick<SSMClient, 'send' | 'destroy'>;
+  /**
+   * The workload the values are resolved for. In AWS Emulator mixed mode a
+   * fetch then goes where that workload's own runtime calls go (its
+   * `Parameters` plus own-section sentinels); without it, a sentinel in any
+   * section routes the service. A per-call {@link ResolveStringOptions.workload}
+   * wins over it.
+   */
+  workload?: AwsEmulatorWorkload | undefined;
+}
+
+/**
+ * Where a client factory's client must send its fetches. The resolver keys
+ * clients and cached values by it, so a host factory that builds its own
+ * clients routes by it too: `awsClientConfigForService(id, { workload })`.
+ */
+export interface DynamicReferenceRoute {
+  /** The workload the fetch is for, when known. */
+  workload: AwsEmulatorWorkload | undefined;
+  /** Whether mixed mode (or `--aws-emulator`) sends this fetch to AWS Emulator. */
+  emulator: boolean;
+}
+
+/** Where one fetch goes: the region, and in mixed mode the workload and its route. */
+interface FetchTarget extends DynamicReferenceRoute {
+  region: string | undefined;
 }
 
 export interface ResolveStringOptions {
@@ -409,6 +439,8 @@ export interface ResolveStringOptions {
    * boundary that runs before overrides are applied.
    */
   overridable?: boolean;
+  /** The workload this value is for (see {@link DynamicReferenceResolverOptions.workload}). */
+  workload?: AwsEmulatorWorkload | undefined;
 }
 
 /**
@@ -460,13 +492,21 @@ export class DynamicReferenceResolver {
       );
     }
     const region = firstUsableRegion(ref.arnRegion, opts.region);
-    const cacheKey = `${region ?? ''}\u0000${raw}`;
+    // Mixed mode: the same reference can resolve from AWS Emulator for one
+    // workload and from real AWS for another, so the route is part of the key.
+    const workload = opts.workload ?? this.options.workload;
+    const emulator = isAwsServiceRoutedToEmulator(
+      ref.service === 'secretsmanager' ? 'SECRETS_MANAGER' : 'SSM',
+      workload
+    );
+    const cacheKey = `${emulator ? 'emulator' : 'aws'}\u0000${region ?? ''}\u0000${raw}`;
     let pending = this.cache.get(cacheKey);
     if (!pending) {
+      const target: FetchTarget = { region, workload, emulator };
       pending =
         ref.service === 'secretsmanager'
-          ? this.fetchSecret(ref, region)
-          : this.fetchParameter(ref, region);
+          ? this.fetchSecret(ref, target)
+          : this.fetchParameter(ref, target);
       this.cache.set(cacheKey, pending);
       // A failed fetch is not cached: the error propagates to its callers,
       // and a later call (a --watch rebuild) retries.
@@ -489,14 +529,22 @@ export class DynamicReferenceResolver {
     );
   }
 
-  private smClient(region: string | undefined): Pick<SecretsManagerClient, 'send' | 'destroy'> {
-    const key = region ?? '';
+  private smClient(target: FetchTarget): Pick<SecretsManagerClient, 'send' | 'destroy'> {
+    const { region, workload } = target;
+    const key = `${target.emulator ? 'emulator' : 'aws'}\u0000${region ?? ''}`;
     let c = this.smClients.get(key);
     if (!c) {
       c =
-        this.options.secretsManagerClientFactory?.(region) ??
+        this.options.secretsManagerClientFactory?.(region, {
+          workload,
+          emulator: target.emulator,
+        }) ??
         new SecretsManagerClient({
-          ...workloadClientConfig({ profile: this.options.profile, service: 'SECRETS_MANAGER' }),
+          ...workloadClientConfig({
+            profile: this.options.profile,
+            service: 'SECRETS_MANAGER',
+            workload,
+          }),
           ...(region && { region }),
           ...(this.options.profile && { profile: this.options.profile }),
         });
@@ -505,14 +553,15 @@ export class DynamicReferenceResolver {
     return c;
   }
 
-  private ssmClient(region: string | undefined): Pick<SSMClient, 'send' | 'destroy'> {
-    const key = region ?? '';
+  private ssmClient(target: FetchTarget): Pick<SSMClient, 'send' | 'destroy'> {
+    const { region, workload } = target;
+    const key = `${target.emulator ? 'emulator' : 'aws'}\u0000${region ?? ''}`;
     let c = this.ssmClients.get(key);
     if (!c) {
       c =
-        this.options.ssmClientFactory?.(region) ??
+        this.options.ssmClientFactory?.(region, { workload, emulator: target.emulator }) ??
         new SSMClient({
-          ...workloadClientConfig({ profile: this.options.profile, service: 'SSM' }),
+          ...workloadClientConfig({ profile: this.options.profile, service: 'SSM', workload }),
           ...(region && { region }),
           ...(this.options.profile && { profile: this.options.profile }),
         });
@@ -550,14 +599,12 @@ export class DynamicReferenceResolver {
     );
   }
 
-  private async fetchSecret(
-    ref: SecretsManagerReference,
-    region: string | undefined
-  ): Promise<string> {
-    const operation = 'SecretsManager GetSecretValue';
+  private async fetchSecret(ref: SecretsManagerReference, target: FetchTarget): Promise<string> {
+    const { region } = target;
+    const operation = `SecretsManager GetSecretValue${target.emulator ? ' on AWS Emulator' : ''}`;
     let secretString: string | undefined;
     try {
-      const resp = await this.smClient(region).send(
+      const resp = await this.smClient(target).send(
         new GetSecretValueCommand({
           SecretId: ref.secretId,
           ...(ref.versionStage && { VersionStage: ref.versionStage }),
@@ -610,12 +657,13 @@ export class DynamicReferenceResolver {
     return typeof value === 'string' ? value : JSON.stringify(value);
   }
 
-  private async fetchParameter(ref: SsmReference, region: string | undefined): Promise<string> {
-    const operation = 'SSM GetParameter';
+  private async fetchParameter(ref: SsmReference, target: FetchTarget): Promise<string> {
+    const { region } = target;
+    const operation = `SSM GetParameter${target.emulator ? ' on AWS Emulator' : ''}`;
     let value: string | undefined;
     let type: string | undefined;
     try {
-      const resp = await this.ssmClient(region).send(
+      const resp = await this.ssmClient(target).send(
         new GetParameterCommand({
           Name: ref.version !== undefined ? `${ref.name}:${ref.version}` : ref.name,
           WithDecryption: ref.service === 'ssm-secure',
@@ -659,6 +707,27 @@ export interface ResolveEnvDynamicReferencesOptions extends DynamicReferenceReso
   skipKeys?: ReadonlySet<string>;
   /** Reuse an existing resolver (and its cache); otherwise one is created and disposed. */
   resolver?: DynamicReferenceResolver;
+}
+
+/**
+ * The `SubstitutionContext.resolveDynamicReferences` hook an ECS command
+ * (`run-task`, `start-service` / `start-alb`) hands the cross-stack post-pass:
+ * a `{{resolve:...}}` in a producer's value resolves in the PRODUCER's region,
+ * for the container `applyCrossStackResolverToTask` names (`workload`), so in
+ * AWS Emulator mixed mode it is read where that container's runtime calls go.
+ * Not overridable: `--env-vars` applies later, at docker-run time.
+ */
+export function crossStackDynamicReferenceHook(
+  resolver: Pick<DynamicReferenceResolver, 'resolveString'>,
+  consumer: string
+): (value: string, producerRegion: string, workload?: AwsEmulatorWorkload) => Promise<string> {
+  return (value, producerRegion, workload) =>
+    resolver.resolveString(value, {
+      region: producerRegion,
+      workload,
+      consumer,
+      overridable: false,
+    });
 }
 
 /**
@@ -709,6 +778,8 @@ export async function resolveDynamicReferencesInEnv(
         resolver.resolveString(env[k]!, {
           region: options.region,
           consumer: `${options.label} env var ${displayUntrustedValue(k)}`,
+          // Also with a shared `resolver`, whose own `workload` is not this env's.
+          ...(options.workload !== undefined && { workload: options.workload }),
         })
       )
     );

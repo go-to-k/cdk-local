@@ -231,7 +231,7 @@ describe('createLocalStateProvider — mutual exclusion', () => {
     );
     expect(provider).toBe(fakeExtraProvider);
     expect(factory).toHaveBeenCalledOnce();
-    expect(factory).toHaveBeenCalledWith(expect.objectContaining({ fromFake: true }));
+    expect(factory).toHaveBeenCalledWith(expect.objectContaining({ fromFake: true }), {});
   });
 
   it('allows --from-cfn-stack alone (returns CfnLocalStateProvider)', () => {
@@ -355,7 +355,20 @@ describe('createLocalStateProvider — extraStateProviders dispatcher', () => {
       profile: 'dev',
     };
     createLocalStateProvider(opts, 'X', 'us-east-1', { fromFake: factory });
-    expect(factory).toHaveBeenCalledWith(opts);
+    expect(factory).toHaveBeenCalledWith(opts, {});
+  });
+
+  // go-to-k/cdk-local#892: a host factory sees what the caller asked for, so
+  // it can keep `start-cloudfront`'s S3-origin reads on real AWS (and resolve
+  // per workload) the way `--from-cfn-stack` does.
+  it("passes the caller's behavior (realAwsOnly, workload) to the factory", () => {
+    const factory = vi.fn(() => fakeExtraProvider);
+    const opts: LocalStateSourceOptions = { fromFake: true };
+    createLocalStateProvider(opts, 'X', 'us-east-1', { fromFake: factory }, { realAwsOnly: true });
+    expect(factory).toHaveBeenLastCalledWith(opts, { realAwsOnly: true });
+    const workload = { logicalId: 'Fn', cdkPath: 'S/Fn/Resource' };
+    createLocalStateProvider(opts, 'X', 'us-east-1', { fromFake: factory }, { workload });
+    expect(factory).toHaveBeenLastCalledWith(opts, { workload });
   });
 
   it('mutex error mentions both --from-cfn-stack and the extra flag in kebab-case', () => {
@@ -456,5 +469,55 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
     );
     expect(real).toBeInstanceOf(CfnLocalStateProvider);
     real!.dispose();
+
+    // The --from-cfn-stack path shares the merge: a stack only the emulator
+    // has warns that the real-routed resources are unresolved.
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const load = vi
+      .spyOn(CfnLocalStateProvider.prototype, 'load')
+      .mockImplementation(async function (this: CfnLocalStateProvider) {
+        if (!this.label.includes('AWS Emulator')) return undefined;
+        return {
+          resources: {
+            Table: { physicalId: 't', resourceType: 'AWS::DynamoDB::Table', properties: {} },
+            Secret: { physicalId: 's', resourceType: 'AWS::SecretsManager::Secret', properties: {} },
+          },
+          outputs: {},
+          region: 'us-east-1',
+        } as never;
+      });
+    try {
+      const p = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
+      const rec = await p!.load('S', 'us-east-1');
+      expect(Object.keys(rec!.resources)).toEqual(['Table']);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/^--from-cfn-stack: stack .*S.* could not be read from real AWS.*Secret \(.*AWS::SecretsManager::Secret/)
+      );
+      p!.dispose();
+    } finally {
+      load.mockRestore();
+      warn.mockRestore();
+    }
+
+    // go-to-k/cdk-local#902: names resolved for ONE workload follow its own
+    // sentinels. B routes nothing, so it reads every name from real AWS.
+    const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');
+    setAwsEmulatorServiceRouting({
+      services: ['DYNAMODB'],
+      override: { endpoint: 'https://127.0.0.1:9297' },
+      envOverrides: { FnA: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } },
+    });
+    try {
+      const opts = { fromCfnStack: true, stackRegion: 'us-east-1' };
+      const forA = createLocalStateProvider(opts, 'S', undefined, undefined, { workload: { logicalId: 'FnA' } });
+      expect(forA).not.toBeInstanceOf(CfnLocalStateProvider);
+      forA!.dispose();
+      const forB = createLocalStateProvider(opts, 'S', undefined, undefined, { workload: { logicalId: 'FnB' } });
+      expect(forB).toBeInstanceOf(CfnLocalStateProvider);
+      forB!.dispose();
+    } finally {
+      setAwsEmulatorServiceRouting(undefined);
+    }
   });
 });

@@ -297,3 +297,175 @@ describe('mixed mode: own pre-start calls route per service (#898)', () => {
     expect(awsClientConfigForService('SSM').endpoint).toBeUndefined();
   });
 });
+
+// go-to-k/cdk-local#902: a call made FOR one workload routes by that
+// workload's own sentinels (`Parameters` plus its own sections, a section's
+// `null` / literal clearing a `Parameters` sentinel), exactly as its runtime
+// calls go; a call with no workload context keeps the run-wide set.
+describe('mixed mode: own pre-start calls route per workload (#902)', () => {
+  const FN_A = { logicalId: 'FnA1234', cdkPath: 'Stack/FnA/Resource' };
+  const FN_B = { logicalId: 'FnB5678', cdkPath: 'Stack/FnB/Resource' };
+  const ENV_OVERRIDES = {
+    Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' },
+    // A's section by its L2 path (prefix of the L1 path, as the env merge matches).
+    'Stack/FnA': {
+      AWS_ENDPOINT_URL_SSM: 'aws-emulator',
+      AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator',
+    },
+    // B by logical ID: clears the Parameters sentinel for itself.
+    FnB5678: { AWS_ENDPOINT_URL_DYNAMODB: null, OTHER: 'x' },
+    app: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator' },
+    sidecar: { AWS_ENDPOINT_URL_DYNAMODB: 'http://localhost:8000' },
+  };
+  const install = (envOverrides?: Record<string, unknown>): void =>
+    setAwsEmulatorServiceRouting({
+      services: ['DYNAMODB', 'SECRETS_MANAGER', 'SSM'],
+      override: OVERRIDE,
+      ...(envOverrides && { envOverrides }),
+    });
+
+  async function sideOfResolve(
+    token: string,
+    cls: string,
+    workload?: Record<string, string>
+  ): Promise<Side> {
+    ctorArgs.length = 0;
+    const r = new DynamicReferenceResolver(workload ? { workload } : {});
+    await r.resolveString(token, { region: REGION, consumer: 'test' });
+    r.dispose();
+    const built = ctorArgs.filter((c) => c.cls === cls);
+    expect(built).toHaveLength(1);
+    return sideOf(built[0]!.cfg);
+  }
+
+  const MATRIX: Array<{
+    what: string;
+    service: string;
+    workload: Record<string, string> | undefined;
+    side: Side;
+  }> = [
+    { what: 'A (own SSM sentinel)', service: 'SSM', workload: FN_A, side: 'emulator' },
+    { what: 'B (no SSM sentinel)', service: 'SSM', workload: FN_B, side: 'real' },
+    { what: 'A (own Secrets Manager sentinel)', service: 'SECRETS_MANAGER', workload: FN_A, side: 'emulator' },
+    { what: 'B (no Secrets Manager sentinel)', service: 'SECRETS_MANAGER', workload: FN_B, side: 'real' },
+    { what: 'A (Parameters DynamoDB sentinel)', service: 'DYNAMODB', workload: FN_A, side: 'emulator' },
+    { what: 'B (clears the Parameters sentinel with null)', service: 'DYNAMODB', workload: FN_B, side: 'real' },
+    { what: 'container app (own sentinel)', service: 'SECRETS_MANAGER', workload: { containerName: 'app' }, side: 'emulator' },
+    { what: 'container sidecar (literal URL replaces the Parameters sentinel)', service: 'DYNAMODB', workload: { containerName: 'sidecar' }, side: 'real' },
+    { what: 'container other (Parameters only)', service: 'DYNAMODB', workload: { containerName: 'other' }, side: 'emulator' },
+    { what: 'container other (no own sentinel)', service: 'SSM', workload: { containerName: 'other' }, side: 'real' },
+    { what: 'no workload context (run-wide)', service: 'SSM', workload: undefined, side: 'emulator' },
+  ];
+  for (const row of MATRIX) {
+    it(`awsClientConfigForService(${row.service}) for ${row.what}: ${row.side}`, async () => {
+      install(ENV_OVERRIDES);
+      const cfg = awsClientConfigForService(row.service, row.workload ? { workload: row.workload } : {});
+      expect(await sideOf(cfg as Record<string, unknown>)).toBe(row.side);
+    });
+  }
+
+  it('{{resolve:ssm}} / {{resolve:secretsmanager}}: A reads the emulator, B real AWS', async () => {
+    install(ENV_OVERRIDES);
+    expect(await sideOfResolve('{{resolve:ssm:/p}}', 'SSMClient', FN_A)).toBe('emulator');
+    expect(await sideOfResolve('{{resolve:ssm:/p}}', 'SSMClient', FN_B)).toBe('real');
+    expect(await sideOfResolve('{{resolve:secretsmanager:s}}', 'SecretsManagerClient', FN_A)).toBe('emulator');
+    expect(await sideOfResolve('{{resolve:secretsmanager:s}}', 'SecretsManagerClient', FN_B)).toBe('real');
+    // No workload: the run-wide set (a sentinel in any section).
+    expect(await sideOfResolve('{{resolve:ssm:/p}}', 'SSMClient')).toBe('emulator');
+  });
+
+  it('a shared resolver fetches the same reference once per route, never reusing A\'s value for B', async () => {
+    install(ENV_OVERRIDES);
+    ctorArgs.length = 0;
+    const r = new DynamicReferenceResolver();
+    await r.resolveString('{{resolve:ssm:/p}}', { region: REGION, consumer: 'a', workload: FN_A });
+    await r.resolveString('{{resolve:ssm:/p}}', { region: REGION, consumer: 'b', workload: FN_B });
+    await r.resolveString('{{resolve:ssm:/p}}', { region: REGION, consumer: 'a2', workload: FN_A });
+    r.dispose();
+    const built = ctorArgs.filter((c) => c.cls === 'SSMClient');
+    expect(built).toHaveLength(2);
+    expect((await Promise.all(built.map((b) => sideOf(b.cfg)))).sort()).toEqual(['emulator', 'real']);
+  });
+
+  it('ECS task Secrets: each container reads where its own runtime calls go', async () => {
+    install(ENV_OVERRIDES);
+    ctorArgs.length = 0;
+    const arn = `arn:aws:secretsmanager:${REGION}:123456789012:secret:probe-AbCdEf`;
+    await resolveEcsSecrets(
+      [
+        { containerName: 'app', name: 'A', valueFrom: arn },
+        { containerName: 'other', name: 'B', valueFrom: arn },
+      ],
+      { region: REGION }
+    );
+    const built = ctorArgs.filter((c) => c.cls === 'SecretsManagerClient');
+    expect(built).toHaveLength(2);
+    expect((await Promise.all(built.map((b) => sideOf(b.cfg)))).sort()).toEqual(['emulator', 'real']);
+  });
+
+  it('--from-cfn-stack SSM-backed template parameter follows the provider workload', async () => {
+    install(ENV_OVERRIDES);
+    const sideFor = async (workload?: Record<string, string>): Promise<Side> => {
+      ctorArgs.length = 0;
+      const p = new CfnLocalStateProvider({ cfnStackName: 'S', region: REGION, workload });
+      await p.resolveTemplateSsmParameters({
+        Parameters: { P: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/probe' } },
+        Resources: {},
+      } as never);
+      p.dispose();
+      return sideOf(ctorArgs.find((c) => c.cls === 'SSMClient')!.cfg);
+    };
+    expect(await sideFor(FN_A)).toBe('emulator');
+    expect(await sideFor(FN_B)).toBe('real');
+    expect(await sideFor()).toBe('emulator');
+  });
+
+  it('resolveDynamicReferencesInEnv passes the env\'s workload to a SHARED resolver', async () => {
+    install(ENV_OVERRIDES);
+    const { resolveDynamicReferencesInEnv } = await import(
+      '../../../src/local/dynamic-reference-resolver.js'
+    );
+    ctorArgs.length = 0;
+    const shared = new DynamicReferenceResolver();
+    for (const workload of [FN_A, FN_B]) {
+      await resolveDynamicReferencesInEnv(
+        { P: '{{resolve:ssm:/p}}' },
+        { region: REGION, label: 'x', resolver: shared, workload }
+      );
+    }
+    shared.dispose();
+    const built = ctorArgs.filter((c) => c.cls === 'SSMClient');
+    expect((await Promise.all(built.map((b) => sideOf(b.cfg)))).sort()).toEqual(['emulator', 'real']);
+  });
+
+  it('a client factory receives the route its client must take', async () => {
+    install(ENV_OVERRIDES);
+    const routes: unknown[] = [];
+    const r = new DynamicReferenceResolver({
+      ssmClientFactory: (_region, route) => {
+        routes.push(route);
+        return { send: async () => ({ Parameter: { Value: 'v' } }), destroy: () => undefined } as never;
+      },
+    });
+    await r.resolveString('{{resolve:ssm:/p}}', { region: REGION, consumer: 'a', workload: FN_A });
+    await r.resolveString('{{resolve:ssm:/p}}', { region: REGION, consumer: 'b', workload: FN_B });
+    r.dispose();
+    expect(routes).toEqual([
+      { workload: FN_A, emulator: true },
+      { workload: FN_B, emulator: false },
+    ]);
+  });
+
+  it('awsEmulatorRoutedServices: per workload with the --env-vars file, run-wide without it', async () => {
+    const { awsEmulatorRoutedServices } = await import('../../../src/utils/aws-proxy.js');
+    expect(awsEmulatorRoutedServices(FN_A)).toBeUndefined();
+    install(ENV_OVERRIDES);
+    expect(awsEmulatorRoutedServices(FN_A)).toEqual(['DYNAMODB', 'SECRETS_MANAGER', 'SSM']);
+    expect(awsEmulatorRoutedServices(FN_B)).toEqual([]);
+    expect(awsEmulatorRoutedServices()).toEqual(['DYNAMODB', 'SECRETS_MANAGER', 'SSM']);
+    // A host that installs routing without the file keeps the run-wide set.
+    install();
+    expect(awsEmulatorRoutedServices(FN_B)).toEqual(['DYNAMODB', 'SECRETS_MANAGER', 'SSM']);
+    expect(await sideOf(awsClientConfigForService('SSM', { workload: FN_B }) as never)).toBe('emulator');
+  });
+});

@@ -101,7 +101,18 @@ a log line, and a served HTTP response body.
   `buildProxyClientConfig` / `workloadClientConfig` (`service`), so a routed
   service's client reads the emulator (go-to-k/cdk-local#898). A client that
   must stay real passes none and is listed, with its reason, in
-  `tests/unit/utils/own-aws-client-routing.test.ts`.
+  `tests/unit/utils/own-aws-client-routing.test.ts`. The routing carries the
+  parsed `--env-vars` file, so a call made for ONE workload passes
+  `workload` (`AwsEmulatorWorkload`: logical ID + CDK path, or an ECS
+  container name) and routes by that workload's own sentinels
+  (`emulatedServicesForWorkload`), as its runtime calls do; a call with no
+  workload context routes by every sentinel (go-to-k/cdk-local#902). Keep
+  the route in any cache key (`DynamicReferenceResolver` keys its clients
+  and values by it). `validateAwsEmulatorSentinels` refuses a suffix outside
+  the pinned `aws-endpoint-service-ids.ts`. `--env-vars` is read through
+  `readEnvVarsFileText`, which keeps a pipe-backed path's text so the
+  sentinel scan and the command's reader both see it
+  (go-to-k/cdk-local#894).
 
 ## AgentCore
 

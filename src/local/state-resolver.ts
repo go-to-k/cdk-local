@@ -108,6 +108,7 @@ import { displayIdent } from '../utils/ident-display.js';
 import type { ResourceState } from '../types/state.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { containsDynamicReference } from './dynamic-reference-resolver.js';
+import type { AwsEmulatorWorkload } from '../utils/aws-proxy.js';
 
 /**
  * Result of substituting a single env-var value against state.
@@ -246,8 +247,16 @@ export interface SubstitutionContext {
    * `docker run` argv. Throws on failure — a dynamic reference never degrades
    * to its token. Optional; when unset the token flows through and the
    * container-env builder resolves it against the consumer's region.
+   *
+   * `workload` is the workload the value is for, when the caller knows a
+   * narrower one than the context's (an ECS task resolves per container): in
+   * AWS Emulator mixed mode it decides where the fetch goes.
    */
-  resolveDynamicReferences?: (value: string, producerRegion: string) => Promise<string>;
+  resolveDynamicReferences?: (
+    value: string,
+    producerRegion: string,
+    workload?: AwsEmulatorWorkload
+  ) => Promise<string>;
 }
 
 /**

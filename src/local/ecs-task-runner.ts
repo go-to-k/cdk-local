@@ -652,6 +652,8 @@ export async function runEcsTask(
           label: `Container ${c.name}`,
           skipKeys: new Set(Object.keys(c.environment).filter((k) => !tokenKeys.has(k))),
           resolver: dynamicRefs,
+          // Mixed mode: this container's own sentinels route the fetches.
+          workload: { containerName: c.name },
         })
       );
     }

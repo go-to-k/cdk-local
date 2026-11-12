@@ -221,6 +221,33 @@ export function resolveAgentCoreTarget(
 }
 
 /**
+ * The AWS Emulator mixed-mode workload of an AgentCore Runtime target (its
+ * logical ID and `aws:cdk:path`), found BEFORE full resolution so the
+ * `--from-cfn-stack` provider built ahead of it resolves names by this
+ * runtime's own sentinels. `undefined` when the target does not resolve;
+ * {@link resolveAgentCoreTarget} then reports why.
+ */
+export function agentCoreTargetWorkload(
+  target: string,
+  stacks: StackInfo[]
+): { logicalId: string; cdkPath: string | undefined } | undefined {
+  try {
+    const parsed = parseTarget(target);
+    const stack = pickStack(parsed, stacks, target);
+    const { logicalId, resource } = matchRuntime(
+      parsed,
+      target,
+      stack,
+      stack.template.Resources ?? {}
+    );
+    const path = resource.Metadata?.['aws:cdk:path'];
+    return { logicalId, cdkPath: typeof path === 'string' ? path : undefined };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Best-effort pick of the candidate stack a target lives in, BEFORE full
  * resolution — so the command can build a `--from-cfn-stack` image-resolution
  * context (state load + pseudo parameters) and thread it into

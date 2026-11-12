@@ -42,6 +42,16 @@ The dispatcher enforces mutual exclusion across `--from-cfn-stack` and
 every registered extra flag, so users get one consistent error message
 when they pass conflicting flags.
 
+A factory also receives the caller's `LocalStateProviderBehavior` as its
+second argument (an empty object when the caller asked for nothing). In AWS
+Emulator mixed mode, honor it the way `--from-cfn-stack` does: with
+`realAwsOnly` (`start-cloudfront`'s S3 origins) return real-AWS names only;
+otherwise resolve the routed services' resources from the emulator, using
+`awsEmulatorRoutedServices(behavior.workload)` from `cdk-local/internal` for
+the routed set (the named workload's own sentinels, or the run's when
+`workload` is absent) and `createMixedModeStateProvider` to combine the two
+sides.
+
 A registered flag reaches every state-backed path of the command it is
 passed to, exactly where `--from-cfn-stack` would: on `start-cloudfront` that
 is the deployed-S3 origin, KeyValueStore reads, and the Function URL origin /

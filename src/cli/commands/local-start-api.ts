@@ -6,7 +6,7 @@ import {
 } from '../../local/dynamic-reference-resolver.js';
 import { addAwsEndpointOptions } from '../options.js';
 import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { Command, Option } from 'commander';
@@ -115,7 +115,11 @@ import {
   groupRoutesByServer,
   type ApiServerGroup,
 } from '../../local/api-server-grouping.js';
-import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
+import {
+  readEnvVarsFileText,
+  resolveEnvVars,
+  type EnvOverrideFile,
+} from '../../local/env-resolver.js';
 import {
   assetPathDirs,
   extractEphemeralStorageMb,
@@ -2549,6 +2553,8 @@ export async function buildContainerSpec(args: {
     label: `Lambda ${logicalId}`,
     skipKeys: plaintextKeys,
     ...(profile !== undefined && { profile }),
+    // Mixed mode: this function's own sentinels route the fetches.
+    workload: { logicalId, cdkPath: lambdaCdkPath },
   });
 
   const dockerEnv: Record<string, string> = {
@@ -3362,7 +3368,7 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
   if (!filePath) return undefined;
   let raw: string;
   try {
-    raw = readFileSync(filePath, 'utf-8');
+    raw = readEnvVarsFileText(filePath);
   } catch (err) {
     throw new Error(
       `Failed to read --env-vars file '${filePath}': ${err instanceof Error ? err.message : String(err)}`

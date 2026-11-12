@@ -32,7 +32,7 @@ import { buildProxyClientConfig, buildProxyRequestHandler } from './aws-proxy.js
 // A function-only import cycle (the wiring reads `assumedRoleRecorded`): both
 // are called at run time, never during module evaluation.
 import { getActiveWorkloadAwsWiring } from '../local/workload-aws-wiring.js';
-import type { AwsProxyClientConfig } from './aws-proxy.js';
+import type { AwsEmulatorWorkload, AwsProxyClientConfig } from './aws-proxy.js';
 import { getLogger } from './logger.js';
 
 /** A static credential triple, as read from `AWS_*`. */
@@ -184,12 +184,21 @@ function callerChainWithoutEnv(proxied: boolean): AwsCredentialIdentityProvider 
  *
  * `service` is the client's endpoint service id: in AWS Emulator mixed mode a
  * sentinel-routed service gets the emulator's fragment (see
- * `buildProxyClientConfig`).
+ * `buildProxyClientConfig`). `workload` is the workload the read is for: the
+ * routing then follows that workload's own sentinels, as its runtime calls do.
  */
 export function workloadClientConfig(
-  opts: { profile?: string | undefined; service?: string | undefined } = {}
+  opts: {
+    profile?: string | undefined;
+    service?: string | undefined;
+    workload?: AwsEmulatorWorkload | undefined;
+  } = {}
 ): AwsProxyClientConfig {
-  const base = buildProxyClientConfig({ profile: opts.profile, service: opts.service });
+  const base = buildProxyClientConfig({
+    profile: opts.profile,
+    service: opts.service,
+    workload: opts.workload,
+  });
   const rec = callerRecord();
   if (!rec) return base;
   // Under an endpoint override (`--aws-emulator`) the endpoint's own
