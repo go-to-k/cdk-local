@@ -356,13 +356,19 @@ async function isContainerRunning(containerId: string): Promise<boolean> {
       containerId,
     ]);
     return stdout.trim() === 'true';
-  } catch {
-    return false;
+  } catch (err) {
+    // Only a container that no longer exists counts as not running; any other
+    // inspect failure keeps the caller on its error path.
+    return !/no such (object|container)/i.test((err as { stderr?: string }).stderr ?? '');
   }
 }
 
+/** Ports each workload's forwarder serves, so a restart re-attaches the same set. */
+const forwardedPortsByContainer = new Map<string, readonly number[]>();
+
 /**
  * Start the loopback forwarder for `containerId` on `ports` (default: the
+ * ports this container's forwarder served before — a restart — else the
  * wiring's). A failure is fatal under `--aws-emulator` (the container is
  * removed and the error names the fix) and a once-per-port warning otherwise.
  * A workload that already exited (a short task) is left alone.
@@ -373,8 +379,9 @@ async function isContainerRunning(containerId: string): Promise<boolean> {
 export async function attachLoopbackForwarder(
   containerId: string,
   wiring: WorkloadAwsWiring,
-  ports: readonly number[] = wiring.loopbackPorts
+  ports: readonly number[] = forwardedPortsByContainer.get(containerId) ?? wiring.loopbackPorts
 ): Promise<void> {
+  forwardedPortsByContainer.set(containerId, ports);
   if (ports.length === 0) return;
   const label =
     wiring.mode === 'emulator'

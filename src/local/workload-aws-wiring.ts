@@ -454,7 +454,11 @@ export async function resolveWorkloadAwsWiring(
         ep.url = ep.url.replace('//localhost', '//127.0.0.1');
       }
       const run = readEmulatorRunFiles(ep.port, homeDir);
-      const failure = await (opts.probeHealth ?? probeAwsEmulatorHealth)(ep.url, run.caPath);
+      const caSource = opts.caBundle || run.caPath || env['AWS_CA_BUNDLE'];
+      const failure = await (opts.probeHealth ?? probeAwsEmulatorHealth)(
+        ep.url,
+        caSource ? expandHome(caSource, homeDir) : undefined
+      );
       if (failure) throw new Error(describeEmulatorUnreachable(ep, failure));
       let credentials: CallerCredentials;
       if (run.credentials) credentials = run.credentials;
@@ -467,7 +471,6 @@ export async function resolveWorkloadAwsWiring(
             'so it runs with --auth off; workload containers get placeholder credentials.'
         );
       }
-      const caSource = opts.caBundle || run.caPath || env['AWS_CA_BUNDLE'];
       const ca = caSource && ep.url.startsWith('https:') ? caMount(caSource) : undefined;
       return {
         mode: 'emulator',

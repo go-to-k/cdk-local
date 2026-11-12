@@ -29,7 +29,9 @@ vi.mock('node:child_process', () => ({
 const { defaultChainMock } = vi.hoisted(() => ({ defaultChainMock: vi.fn() }));
 vi.mock('@aws-sdk/credential-provider-node', () => ({ defaultProvider: vi.fn(() => defaultChainMock) }));
 
-const { runDetached, withWorkloadAwsWiring } = await import('../../../src/local/docker-runner.js');
+const { attachLoopbackForwarder, runDetached, withWorkloadAwsWiring } = await import(
+  '../../../src/local/docker-runner.js'
+);
 const { resetWorkloadAwsWiringForTest, setActiveWorkloadAwsWiring } = await import(
   '../../../src/local/workload-aws-wiring.js'
 );
@@ -197,6 +199,17 @@ describe('runDetached forwarder failure policy', () => {
     setActiveWorkloadAwsWiring(emulatorWiring({ mode: 'forward', scrubEnvKeys: [] }));
     execFileMock.mockReturnValue({ stdout: 'id\n' });
     await runDetached({ ...baseRun, env: { AWS_ENDPOINT_URL: 'http://task-declared:1', AWS_ACCESS_KEY_ID: 'K', AWS_SECRET_ACCESS_KEY: 'S' } });
+    expect(execFileMock.mock.calls.some((c) => c[1].includes('--pid'))).toBe(false);
+  });
+
+  it('a restart re-attaches the same port set the first start used', async () => {
+    const w = emulatorWiring({ mode: 'forward', scrubEnvKeys: [] });
+    setActiveWorkloadAwsWiring(w);
+    execFileMock.mockReturnValue({ stdout: 'restart-id\n' });
+    // First start: the task replaced the endpoint, so no forwarder.
+    await runDetached({ ...baseRun, env: { AWS_ENDPOINT_URL: 'http://task-declared:1', AWS_ACCESS_KEY_ID: 'K', AWS_SECRET_ACCESS_KEY: 'S' } });
+    // Soft reload re-attach with no explicit ports: still none.
+    await attachLoopbackForwarder('restart-id', w);
     expect(execFileMock.mock.calls.some((c) => c[1].includes('--pid'))).toBe(false);
   });
 });

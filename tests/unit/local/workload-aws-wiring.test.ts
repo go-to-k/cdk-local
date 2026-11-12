@@ -487,14 +487,17 @@ describe('scrub and CA details', () => {
   it('emulator mode: --ca-bundle beats the run ca.pem; an http URL mounts no CA; localhost becomes 127.0.0.1', async () => {
     writeEmulatorRun(9297);
     writeFileSync(path.join(home, 'flag.pem'), PEM.replace('fake', 'flag'));
+    const probe = vi.fn(healthy);
     const flagged = await resolveWorkloadAwsWiring({
       awsEmulator: 'https://localhost:9297',
       caBundle: path.join(home, 'flag.pem'),
       env: {},
       homeDir: home,
-      probeHealth: healthy,
+      probeHealth: probe,
     });
     expect(flagged.emulatorEndpoint?.url).toBe('https://127.0.0.1:9297');
+    // The host probe trusts the same bundle that gets mounted.
+    expect(probe).toHaveBeenCalledWith('https://127.0.0.1:9297', path.join(home, 'flag.pem'));
     expect(readFileSync(flagged.caHostPath!, 'utf8')).toContain('MIIBflag');
     flagged.dispose();
     writeEmulatorRun(9302);

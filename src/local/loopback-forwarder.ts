@@ -166,12 +166,15 @@ export function buildLoopbackForwarderDockerArgs(
 }
 
 let imageReady: Promise<void> | undefined;
+let pullFailure: { at: number; error: unknown } | undefined;
+const PULL_FAILURE_TTL_MS = 60_000;
 
 /**
  * Pull the forwarder image once per process when it is not present yet. Call
  * it before starting a workload so the forwarder starts without a pull.
  */
 export async function ensureForwarderImage(): Promise<void> {
+  if (pullFailure && Date.now() - pullFailure.at < PULL_FAILURE_TTL_MS) throw pullFailure.error;
   imageReady ??= (async () => {
     try {
       await execFileAsync(getDockerCmd(), ['image', 'inspect', LOOPBACK_FORWARDER_IMAGE]);
@@ -179,7 +182,10 @@ export async function ensureForwarderImage(): Promise<void> {
       await pullImage(LOOPBACK_FORWARDER_IMAGE, false);
     }
   })().catch((err: unknown) => {
+    // Remember a failed pull briefly: behind a proxy that times out, every
+    // container start would otherwise pay the timeout again.
     imageReady = undefined;
+    pullFailure = { at: Date.now(), error: err };
     throw err;
   });
   return imageReady;
@@ -188,6 +194,7 @@ export async function ensureForwarderImage(): Promise<void> {
 /** Test hook: forget the memoized image check. */
 export function resetLoopbackForwarderForTest(): void {
   imageReady = undefined;
+  pullFailure = undefined;
 }
 
 /**
