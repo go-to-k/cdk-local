@@ -22,6 +22,7 @@ import { CdkLocalError, LocalStartServiceError } from '../../utils/error-handler
 import { resolveMultiTarget } from '../../local/target-picker.js';
 import type { TargetEntry } from '../../local/target-lister.js';
 import { singleFlight } from '../../utils/single-flight.js';
+import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
 import {
   Synthesizer,
   type CdkAppSynthesizer,
@@ -31,6 +32,7 @@ import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import { createReloadQueue, stopWatchReloads, type ReloadQueue } from '../../local/reload-queue.js';
 import { resolveProfileCredentials, createWatchPredicates } from './local-start-api.js';
 import {
   activateWorkloadAwsWiring,
@@ -552,7 +554,7 @@ export async function runEcsServiceEmulator(
   let perTarget: PerTarget[] = [];
 
   let sigintHandler: (() => void) | undefined;
-  let sigintCount = 0;
+  let sigtermHandler: (() => void) | undefined;
   let sharedNetwork: TaskNetwork | undefined;
   let profileCredsFile: ProfileCredentialsFile | undefined;
   // Host-side ALB front-door servers (one per listener port), shared across the
@@ -566,30 +568,31 @@ export async function runEcsServiceEmulator(
   // vanished container.
   let frontDoorLambdaRunners: FrontDoorLambdaRunner[] = [];
   // Phase 1 of issue #214 — `cdkl start-service --watch` file watcher + the
-  // chain promise that serializes reload events. Set when the watcher is wired
-  // (only when `options.watch && strategy.supportsWatch`); the cleanup path
-  // closes the watcher AND awaits the in-flight reload before tearing down
-  // services so a reload never races shutdown.
+  // queue that serializes (and, since #882, coalesces) reload events. Set when
+  // the watcher is wired (only when `options.watch && strategy.supportsWatch`);
+  // the cleanup path closes the watcher, cancels the pending reload and waits
+  // only for the in-flight one before tearing down services, so a reload never
+  // races shutdown and a busy watched tree cannot keep the shutdown waiting.
   let watcher: FileWatcher | undefined;
-  let reloadChain: Promise<unknown> = Promise.resolve();
+  let reloadQueue: ReloadQueue | undefined;
 
   const cleanup = singleFlight(
     async (): Promise<void> => {
-      // Phase 1 of issue #214 — close the watcher BEFORE awaiting the
-      // existing reload-chain so no new reload is queued after shutdown
-      // started, then drain the in-flight reload so cleanup doesn't race
-      // a partial `pt.controller` swap.
-      if (watcher) {
-        try {
-          await watcher.close();
-        } catch (err) {
+      // Phase 1 of issue #214 / #882 — close the watcher so no new reload is
+      // queued after shutdown started, cancel the pending reload (pre-#882 the
+      // cleanup awaited every queued firing, so a busy watched tree kept the
+      // shutdown booting shadow generations for minutes), then wait for the
+      // in-flight reload so cleanup doesn't race a partial replica swap. The
+      // in-flight reload sees its aborted signal and stops at its next step.
+      await stopWatchReloads({
+        watcher,
+        queue: reloadQueue,
+        onWatcherCloseError: (err) =>
           getLogger().warn(
             `watcher.close() failed: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-        watcher = undefined;
-      }
-      await reloadChain.catch(() => undefined);
+          ),
+      });
+      watcher = undefined;
       await Promise.allSettled(
         perTarget.map(async (pt) => {
           if (pt.controller) {
@@ -770,17 +773,21 @@ export async function runEcsServiceEmulator(
       frontDoorLambdaRunners = built.lambdaRunners;
     }
 
-    sigintHandler = (): void => {
-      sigintCount += 1;
-      if (sigintCount >= 2) {
-        process.stderr.write('Force-exit on second ^C; container cleanup skipped.\n');
-        process.exit(130);
-      }
-      logger.info('Stopping service(s)...');
-      void cleanup().then(() => process.exit(130));
-    };
+    // #882: a second ^C no longer skips the cleanup (it used to force-exit and
+    // leave the replicas, the sidecar and the network behind); a third does.
+    const onSignal = createShutdownSignalHandler({
+      cleanup,
+      stoppingMessage: () => 'Stopping service(s)...',
+      forceExitHint:
+        `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' and ` +
+        `'docker network ls --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+      info: (m) => logger.info(m),
+      warn: (m) => logger.warn(m),
+    });
+    sigintHandler = (): void => onSignal('SIGINT', 130);
+    sigtermHandler = (): void => onSignal('SIGTERM', 130);
     process.on('SIGINT', sigintHandler);
-    process.on('SIGTERM', sigintHandler);
+    process.on('SIGTERM', sigtermHandler);
 
     // Issue #238 — resolve `--image-override` (+ the boot prompt for
     // any still-uncovered pinned target in a TTY) BEFORE the boot loop
@@ -934,6 +941,39 @@ export async function runEcsServiceEmulator(
         output: options.output,
         watchConfig: resolveWatchConfig(),
       });
+      reloadQueue = createReloadQueue({
+        run: (changedPaths, signal) =>
+          reloadAllServices({
+            perTarget,
+            synthesizer,
+            synthOpts,
+            strategy,
+            resolvedTargets,
+            cloudMapIndexByStack,
+            options,
+            discovery,
+            skipPull,
+            extraStateProviders,
+            profileCredsFile,
+            frontDoorByService,
+            changedPaths,
+            imageOverrideTags,
+            imageOverrideMap,
+            logger,
+            signal,
+          }),
+        // Surface any unhandled throw from `reloadAllServices` (e.g. a
+        // future refactor adds a step outside the function's existing
+        // synth + per-target try/catches) instead of swallowing it
+        // silently — otherwise the emulator goes quietly stale.
+        onError: (err) =>
+          logger.error(
+            `reloadAllServices threw: ${err instanceof Error ? err.message : String(err)}`
+          ),
+        onCoalesced: (n) =>
+          logger.debug(`Reload in progress; ${n} changed path(s) queued for one follow-up reload.`),
+      });
+      const queue = reloadQueue;
       watcher = createFileWatcher({
         paths: [watchRoot],
         ignored,
@@ -942,35 +982,7 @@ export async function runEcsServiceEmulator(
           logger.info(
             `Detected source change (${changedPaths.length} path(s)); reloading service(s)...`
           );
-          const next = reloadChain.then(() =>
-            reloadAllServices({
-              perTarget,
-              synthesizer,
-              synthOpts,
-              strategy,
-              resolvedTargets,
-              cloudMapIndexByStack,
-              options,
-              discovery,
-              skipPull,
-              extraStateProviders,
-              profileCredsFile,
-              frontDoorByService,
-              changedPaths,
-              imageOverrideTags,
-              imageOverrideMap,
-              logger,
-            })
-          );
-          // Surface any unhandled throw from `reloadAllServices` (e.g. a
-          // future refactor adds a step outside the function's existing
-          // synth + per-target try/catches) instead of swallowing it
-          // silently — otherwise the emulator goes quietly stale.
-          reloadChain = next.catch((err) => {
-            logger.error(
-              `reloadAllServices threw: ${err instanceof Error ? err.message : String(err)}`
-            );
-          });
+          queue.schedule(changedPaths);
         },
       });
       logger.info(
@@ -995,11 +1007,12 @@ export async function runEcsServiceEmulator(
       /* resolved only by the SIGINT/SIGTERM handler's process.exit */
     });
   } finally {
-    if (sigintHandler) {
-      process.off('SIGINT', sigintHandler);
-      process.off('SIGTERM', sigintHandler);
-    }
+    // #882: keep the signal handlers installed until the cleanup has finished,
+    // so a ^C during a non-signal exit's cleanup joins it (single-flight)
+    // instead of killing the process with the default handler mid-teardown.
     await cleanup();
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
   }
 }
 
@@ -1051,8 +1064,11 @@ export async function runEcsServiceEmulator(
  * live (the shadow was torn down by `rollServiceReplica`), the
  * remaining replicas are still rolled, and the failure is surfaced
  * via the logger so the user can fix the source + save again.
+ *
+ * @internal — exported for the #882 cancellation unit rows only; not part of
+ * the semver-covered surface.
  */
-async function reloadAllServices(args: {
+export async function reloadAllServices(args: {
   perTarget: Array<{
     boot: ServiceBoot;
     runState: ServiceRunState;
@@ -1106,8 +1122,16 @@ async function reloadAllServices(args: {
    */
   imageOverrideMap: ImageOverrideMap;
   logger: ReturnType<typeof getLogger>;
+  /**
+   * Issue #882 — aborted when shutdown starts. Checked between steps (after
+   * the synth, between image-override rebuilds, before each target's roll,
+   * and between replicas) so a signal stops the reload before any further
+   * Docker work; a step already running finishes first.
+   */
+  signal?: AbortSignal;
 }): Promise<void> {
   const {
+    signal,
     perTarget,
     synthesizer,
     synthOpts,
@@ -1143,6 +1167,7 @@ async function reloadAllServices(args: {
     );
     return;
   }
+  if (reloadCancelled(signal, logger)) return;
 
   // Issue #262 — re-build each covered `--image-override` Dockerfile so
   // a source edit under the override Dockerfile's context propagates.
@@ -1161,6 +1186,7 @@ async function reloadAllServices(args: {
   // stable post-boot, so re-validating would be a tautology).
   const imageOverrideTags = new Map<string, string>(boottimeImageOverrideTags);
   for (const [target, entry] of imageOverrideMap.entries()) {
+    if (reloadCancelled(signal, logger)) return;
     try {
       const oneTagMap = await runImageOverrideBuilds(new Map([[target, entry]]));
       const newTag = oneTagMap.get(target);
@@ -1220,6 +1246,7 @@ async function reloadAllServices(args: {
 
   // Per-target sequential reload — keep docker churn predictable.
   for (const pt of perTarget) {
+    if (reloadCancelled(signal, logger)) return;
     const newBoot = newBootByTarget.get(pt.boot.target);
     if (!newBoot) {
       logger.warn(
@@ -1336,10 +1363,25 @@ async function reloadAllServices(args: {
         imageOverrideTag: imageOverrideTags.get(newBoot.target) as string,
       }),
       logger,
+      ...(signal && { signal }),
     });
   }
+  if (reloadCancelled(signal, logger)) return;
 
   logger.info('Reload complete.');
+}
+
+/**
+ * Issue #882 — true (and logged once per check) when shutdown has aborted the
+ * reload, so the caller returns before starting further Docker work.
+ */
+function reloadCancelled(
+  signal: AbortSignal | undefined,
+  logger: ReturnType<typeof getLogger>
+): boolean {
+  if (!signal?.aborted) return false;
+  logger.info('Reload cancelled: shutting down.');
+  return true;
 }
 
 /**
@@ -1549,8 +1591,11 @@ async function rollOneTarget(args: {
    */
   imageOverrideTag?: string;
   logger: ReturnType<typeof getLogger>;
+  /** Issue #882 — aborted on shutdown; checked before each replica's roll. */
+  signal?: AbortSignal;
 }): Promise<void> {
   const {
+    signal,
     controller,
     newBoot,
     stacks,
@@ -1658,6 +1703,7 @@ async function rollOneTarget(args: {
     }
 
     for (const oldInstance of oldReplicas) {
+      if (signal?.aborted) return;
       const idx = controller.runState.replicas.indexOf(oldInstance);
       if (idx === -1) {
         // The watcher tore this replica down between snapshot + roll.

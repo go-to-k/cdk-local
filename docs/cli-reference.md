@@ -1035,6 +1035,9 @@ and non-integer values pre-container.
   `error` (MCP), OR a cdk-local-side error: Docker not installed, image
   build / pull failed, target not found, the agent never became ready within
   the readiness window, or the container exited before responding.
+- `130` / `143` — stopped by `^C` (SIGINT) / SIGTERM. Both remove the agent
+  container first (under `--watch`, after the running reload stops). A second
+  signal waits for that; a third exits 130 at once and skips it.
 
 ## `cdkl start-agentcore` (serve an AgentCore Runtime's HTTP contract + `/ws` locally)
 
@@ -1504,8 +1507,9 @@ dependsOn relation start in template order.
    removed.
 4. cdk-local exits with the essential container's exit code.
 
-`^C` triggers the same teardown. Double-`^C` exits 130 immediately
-(skipping container cleanup — same pattern as `cdkl start-api`).
+`^C` triggers the same teardown. A second `^C` lets it finish; a third
+exits 130 immediately, skipping container cleanup (same pattern as
+`cdkl start-api`).
 
 `--detach` skips steps 1, 2, and 4. The sidecar and user containers
 stay running for the caller to manage. cdk-local prints the network
@@ -1631,8 +1635,9 @@ Plus the [common flags](#common-flags): `-a/--app`, `--output`,
 `^C` (SIGINT) and SIGTERM trigger a graceful shutdown across every
 replica in parallel — each replica's docker containers + per-replica
 network + metadata sidecar are torn down via the same cleanup path
-`cdkl run-task` uses. Double-`^C` bypasses cleanup and exits 130
-immediately so users have an escape hatch when docker hangs.
+`cdkl run-task` uses. A second `^C` lets that teardown finish; a third
+bypasses it and exits 130 immediately so users have an escape hatch when
+docker hangs.
 
 ### `awsvpc` network mode
 

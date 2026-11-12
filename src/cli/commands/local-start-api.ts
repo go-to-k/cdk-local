@@ -139,6 +139,8 @@ import {
   type ResolvedStage,
 } from '../../local/stage-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import { createReloadQueue, stopWatchReloads, type ReloadQueue } from '../../local/reload-queue.js';
+import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
 import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,
@@ -1246,7 +1248,9 @@ async function localStartApiCommand(
   // Adding/removing an entire API across a reload is not supported —
   // the user is warned and the server set stays static until restart.
   let watcher: FileWatcher | undefined;
-  let reloadChain: Promise<unknown> = Promise.resolve();
+  // Serializes + coalesces reloads; the shutdown cancels the pending one and
+  // waits for the in-flight one before disposing the pools (#882).
+  let reloadQueue: ReloadQueue | undefined;
   if (options.watch) {
     // Watch the CDK app's source tree (the synth working directory, where
     // `cdk.json` lives) so editing handler / construct source re-synths
@@ -1258,21 +1262,26 @@ async function localStartApiCommand(
       output: options.output,
       watchConfig: resolveWatchConfig(),
     });
+    const queue = createReloadQueue({
+      run: (_changedPaths, signal) =>
+        reloadAllServers({
+          synthesizeAndBuild,
+          servers,
+          buildPool,
+          logger,
+          signal,
+        }),
+      onError: (err) =>
+        logger.warn(`Reload failed: ${err instanceof Error ? err.message : String(err)}`),
+    });
+    reloadQueue = queue;
     watcher = createFileWatcher({
       paths: [watchRoot],
       ignored,
       shouldTrigger,
-      onChange: () => {
+      onChange: (changedPaths) => {
         logger.info('Detected source change; reloading...');
-        const next = reloadChain.then(() =>
-          reloadAllServers({
-            synthesizeAndBuild,
-            servers,
-            buildPool,
-            logger,
-          })
-        );
-        reloadChain = next.catch(() => undefined);
+        queue.schedule(changedPaths);
       },
     });
     logger.info(
@@ -1281,8 +1290,9 @@ async function localStartApiCommand(
   }
 
   // Graceful shutdown: SIGINT / SIGTERM / uncaughtException /
-  // unhandledRejection all run the same dispose path. Double-^C
-  // bypasses dispose and exits immediately so the user can escape a
+  // unhandledRejection all run the same dispose path. A second signal
+  // keeps the dispose running (#882 — it used to force-exit and leave
+  // containers behind); a third bypasses it so the user can escape a
   // hung Docker daemon.
   //
   // Single-flight contract (closes the SIGINT-during-SIGTERM /
@@ -1294,21 +1304,18 @@ async function localStartApiCommand(
   // otherwise double-`server.close()` and corrupt the
   // mid-iteration tmpdir set). The first signal's `signal` + `exitCode`
   // win — subsequent signals' arguments are intentionally dropped.
-  // The double-^C force-exit feature is preserved by tracking the
-  // started + completed state separately from the in-flight cleanup.
-  let shutdownStarted = false;
-  let firstSignal: string | undefined;
-  let firstExitCode = 0;
-  let forceExitArmed = false;
+  // The force-exit escape is kept in `createShutdownSignalHandler`, which
+  // counts signals separately from the in-flight cleanup.
   const runCleanup = singleFlight(async (): Promise<void> => {
-    logger.info(`Received ${firstSignal}, shutting down...`);
-    if (watcher) {
-      try {
-        await watcher.close();
-      } catch (err) {
-        logger.warn(`watcher.close() failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
+    // #882: close the watcher, cancel the pending reload, and wait for the
+    // in-flight one BEFORE disposing the pools — a reload that swapped in a
+    // fresh pool after the dispose would leave its containers behind.
+    await stopWatchReloads({
+      watcher,
+      queue: reloadQueue,
+      onWatcherCloseError: (err) =>
+        logger.warn(`watcher.close() failed: ${err instanceof Error ? err.message : String(err)}`),
+    });
     // Close every server in parallel, then dispose every (possibly hot-
     // reload-swapped) pool. Each pool's dispose() waits for in-flight
     // requests to drain; running them in parallel is the right shape
@@ -1411,41 +1418,31 @@ async function localStartApiCommand(
       }
     }
   });
-  const shutdown = async (signal: string, exitCode: number): Promise<void> => {
-    if (shutdownStarted) {
-      if (!forceExitArmed) {
-        forceExitArmed = true;
-        logger.warn(
-          `Received second ${signal}; force-exiting. Orphan containers may remain — run 'docker ps --filter name=${getEmbedConfig().resourceNamePrefix}-' and 'docker rm -f' to clean up.`
-        );
-        process.exit(130);
-      }
-      return;
-    }
-    shutdownStarted = true;
-    firstSignal = signal;
-    firstExitCode = exitCode;
-    await runCleanup();
-    process.exit(firstExitCode);
-  };
+  const shutdown = createShutdownSignalHandler({
+    cleanup: runCleanup,
+    stoppingMessage: (signal) => `Received ${signal}, shutting down...`,
+    forceExitHint: `Orphan containers may remain — run 'docker ps --filter name=${getEmbedConfig().resourceNamePrefix}-' and 'docker rm -f' to clean up.`,
+    info: (m) => logger.info(m),
+    warn: (m) => logger.warn(m),
+  });
 
   process.on('SIGINT', () => {
-    void shutdown('SIGINT', 130);
+    shutdown('SIGINT', 130);
   });
   process.on('SIGTERM', () => {
-    void shutdown('SIGTERM', 0);
+    shutdown('SIGTERM', 0);
   });
   process.on('uncaughtException', (err) => {
     logger.error(
       `Uncaught exception: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`
     );
-    void shutdown('uncaughtException', 1);
+    shutdown('uncaughtException', 1);
   });
   process.on('unhandledRejection', (reason) => {
     logger.error(
       `Unhandled rejection: ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`
     );
-    void shutdown('unhandledRejection', 1);
+    shutdown('unhandledRejection', 1);
   });
 
   // Block forever — the signal handlers exit the process.
@@ -3642,8 +3639,10 @@ async function reloadAllServers(args: {
   servers: readonly BootedApiServer[];
   buildPool: (specs: Map<string, ContainerSpec>) => ContainerPool;
   logger: ReturnType<typeof getLogger>;
+  /** #882 — aborted on shutdown: skip the pool swap after a slow synth. */
+  signal?: AbortSignal;
 }): Promise<void> {
-  const { synthesizeAndBuild, servers, buildPool, logger } = args;
+  const { synthesizeAndBuild, servers, buildPool, logger, signal } = args;
   let material: NextStateMaterial;
   try {
     material = await synthesizeAndBuild();
@@ -3651,6 +3650,10 @@ async function reloadAllServers(args: {
     logger.warn(
       `cdk synth failed during reload; keeping previous version. (${err instanceof Error ? err.message : String(err)})`
     );
+    return;
+  }
+  if (signal?.aborted) {
+    logger.info('Reload cancelled: shutting down.');
     return;
   }
   const newGroups = groupRoutesByServer(material.routes);

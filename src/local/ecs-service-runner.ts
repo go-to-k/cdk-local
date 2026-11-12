@@ -1371,7 +1371,7 @@ export function __setShadowReadyConfig(
  *   1. Locate the old replica by `oldReplicaIndex` (rejects when it's
  *      already shutting down or missing — the reloader must not race
  *      itself across overlapping firings, which the emulator's
- *      `reloadChain` serializer guarantees externally).
+ *      reload queue (`createReloadQueue`) guarantees externally).
  *   2. Allocate a shadow {@link ServiceReplicaInstance} with the same
  *      logical `index` and `generation = old.generation + 1`. Appended
  *      to `runState.replicas` so a SIGTERM mid-roll tears it down too.
@@ -1434,7 +1434,7 @@ export async function rollServiceReplica(args: {
     // log + skip and let the next save start a fresh boot from a
     // clean state. The "concurrent roll" pathology the original guard
     // protected against is already prevented externally by the
-    // emulator's `reloadChain` serializer.
+    // emulator's reload queue (`createReloadQueue`).
     logger.warn(
       `Rolling replica r${oldInstance.index} (gen ${oldInstance.generation}): retired by its ` +
         'own watcher mid-roll (essential container exited). Skipping this slot; save again to ' +

@@ -1110,6 +1110,12 @@ is where `cdk.json` lives. Editing handler or construct source and
 saving triggers a debounced (500ms window) reload, so no separate
 `cdk watch` / `cdk synth` process is needed.
 
+Reloads run one at a time. Changes that land while a reload is running
+are collected into ONE follow-up reload, so a directory that keeps
+changing never queues more than one. `^C` / SIGTERM stops the watcher,
+drops that follow-up, lets the running reload stop at its next step, and
+then tears everything down. This holds for every `--watch` command.
+
 The watch set honors `cdk.json`'s `watch.include` / `watch.exclude`
 globs (mirroring `cdk watch`); `watch.include` defaults to `**` and a
 missing `watch` block is not an error. Three paths are ALWAYS excluded:
@@ -1281,9 +1287,10 @@ container (tolerating per-container removal failures — logged at warn,
 loop continues). The verify-time `docker ps --filter` sweep is the
 defense-in-depth backstop.
 
-Double-`^C` bypasses dispose and exits immediately so the user can
-escape a hung Docker daemon. The skipped containers are reported with
-the `docker ps` cleanup command in the warning.
+A second `^C` does not abandon the dispose: it reports that the
+shutdown is still running. A third `^C` bypasses dispose and exits
+immediately so the user can escape a hung Docker daemon; the skipped
+containers are reported with the `docker ps` cleanup command.
 
 ### `start-api` exit codes
 
@@ -1847,8 +1854,9 @@ dependsOn relation start in template order.
    removed.
 4. cdk-local exits with the essential container's exit code.
 
-`^C` triggers the same teardown. Double-`^C` exits 130 immediately
-(skipping container cleanup — same pattern as `cdkl start-api`).
+`^C` triggers the same teardown. A second `^C` lets it finish; a third
+exits 130 immediately, skipping container cleanup (same pattern as
+`cdkl start-api`).
 
 `--detach` skips steps 1, 2, and 4. The sidecar and user containers
 stay running for the caller to manage. cdk-local prints the network
@@ -2317,8 +2325,9 @@ the TCP-ready probe passes.
 `^C` (SIGINT) and SIGTERM trigger a graceful shutdown across every
 replica in parallel — each replica's docker containers + per-replica
 network + metadata sidecar are torn down via the same `cleanupEcsRun`
-path `run-task` uses. Double-`^C` bypasses cleanup and exits 130
-immediately so users have an escape hatch when docker hangs.
+path `run-task` uses. A second `^C` lets that teardown finish; a third
+bypasses it and exits 130 immediately so users have an escape hatch when
+docker hangs.
 
 ### `start-service` scope (deferred follow-ups)
 

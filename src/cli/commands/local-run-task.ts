@@ -10,6 +10,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
 import { describeAwsFailureForWarn } from '../../local/credential-error.js';
 import { displayUntrustedValue } from '../../utils/assembly-path.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
@@ -196,7 +197,7 @@ async function localRunTaskCommand(
 
   const state: EcsRunState = createEcsRunState();
   let sigintHandler: (() => void) | undefined;
-  let sigintCount = 0;
+  let sigtermHandler: (() => void) | undefined;
   // The active state provider (--from-cfn-stack or a host-injected
   // extra). Hoisted so the outer `finally` can dispose it even if the
   // body throws between provider creation and the normal exit path.
@@ -360,18 +361,22 @@ async function localRunTaskCommand(
     // Tear the task containers + network down on SIGINT (Ctrl-C) AND SIGTERM
     // (issue #366 — studio's serve-manager SIGTERMs a task-def Run to stop it;
     // without a SIGTERM handler the process would die WITHOUT cleanup, orphaning
-    // the containers + network). A second stop signal force-exits immediately.
-    sigintHandler = (): void => {
-      sigintCount += 1;
-      if (sigintCount >= 2) {
-        process.stderr.write('Force-exit on second stop signal; container cleanup skipped.\n');
-        process.exit(130);
-      }
-      logger.info('Stopping task...');
-      void cleanup().then(() => process.exit(130));
-    };
+    // the containers + network). A second stop signal keeps the cleanup
+    // running (#882 — a terminal ^C followed by studio's SIGTERM used to
+    // force-exit and leave them behind); a third force-exits.
+    const onSignal = createShutdownSignalHandler({
+      cleanup,
+      stoppingMessage: () => 'Stopping task...',
+      forceExitHint:
+        `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' and ` +
+        `'docker network ls --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+      info: (m) => logger.info(m),
+      warn: (m) => logger.warn(m),
+    });
+    sigintHandler = (): void => onSignal('SIGINT', 130);
+    sigtermHandler = (): void => onSignal('SIGTERM', 130);
     process.on('SIGINT', sigintHandler);
-    process.on('SIGTERM', sigintHandler);
+    process.on('SIGTERM', sigtermHandler);
 
     // `--assume-task-role` branches: bare flag (boolean `true`) uses the
     // task definition's resolved `TaskRoleArn`; otherwise the
@@ -527,8 +532,8 @@ async function localRunTaskCommand(
             `Remove them before the forwarders (${joinedForwarders.map((f) => f.name).join(', ')}).`
         );
       }
-      // Detach mode skips cleanup — the caller manages container lifecycle.
-      sigintCount = 99;
+      // Detach mode skips cleanup — the caller manages container lifecycle
+      // (the `finally` below removes the signal handlers).
       return;
     }
 
@@ -541,12 +546,13 @@ async function localRunTaskCommand(
       process.exitCode = result.exitCode;
     }
   } finally {
-    if (sigintHandler) {
-      process.off('SIGINT', sigintHandler);
-      process.off('SIGTERM', sigintHandler);
-    }
     if (stateProvider) stateProvider.dispose();
+    // #882: keep the signal handlers installed until the cleanup has finished,
+    // so a ^C during a non-signal exit's cleanup joins it (single-flight)
+    // instead of killing the process with the default handler mid-teardown.
     if (!options.detach) await cleanup();
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
   }
 }
 
