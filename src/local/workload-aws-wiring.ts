@@ -323,7 +323,12 @@ export interface ResolveWorkloadAwsWiringOptions {
   probeHealth?: (url: string, caPath: string | undefined) => Promise<string | undefined>;
 }
 
-/** Path of the AWS Emulator's Java trust store inside workload containers. */
+/**
+ * Path of the AWS Emulator's Java trust store inside workload containers.
+ *
+ * Host-side use case: a host CLI that assembles its own container mounts
+ * names the same path.
+ */
 export function getContainerJavaTruststorePath(): string {
   return `${getEmbedConfig().awsBindMountPath}/truststore.p12`;
 }
@@ -332,6 +337,8 @@ export function getContainerJavaTruststorePath(): string {
  * The `JAVA_TOOL_OPTIONS` that point a JVM at a password-less PKCS12 trust
  * store. The JVM reads none of the PEM variables in {@link CA_TRUST_ENV_KEYS},
  * so the AWS SDK for Java needs this to trust AWS Emulator's certificate.
+ *
+ * Host-side use case: a host CLI's own `--aws-emulator` env for a JVM it starts.
  */
 export function javaTruststoreToolOptions(containerPath: string): string {
   return `-Djavax.net.ssl.trustStore=${containerPath} -Djavax.net.ssl.trustStoreType=PKCS12`;
@@ -341,6 +348,9 @@ export function javaTruststoreToolOptions(containerPath: string): string {
  * Combine a container's own `JAVA_TOOL_OPTIONS` with the wiring's. A value
  * that already names a trust store wins as-is (the user chose one); any other
  * value keeps its options and gets the wiring's appended.
+ *
+ * Host-side use case: a host CLI that sets `JAVA_TOOL_OPTIONS` on a container
+ * env it assembles itself, without dropping the function's own JVM options.
  */
 export function mergeJavaToolOptions(existing: string | undefined, wiring: string): string {
   const own = (existing ?? '').trim();
