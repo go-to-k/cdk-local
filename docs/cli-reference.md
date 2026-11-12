@@ -100,8 +100,11 @@ same two flags and forwards them to every command it starts:
 - **Credentials default to your credential chain.** With no credential
   flag, a container gets what the host's default chain resolves
   (`AWS_PROFILE`, the shared credentials / config files, SSO). The
-  precedence is `--assume-role` > `--profile` > the default chain; for ECS
-  tasks the metadata sidecar serves them.
+  precedence is `--assume-role` > `--profile` > the default chain. A
+  `run-task` container reads `--profile` or default-chain credentials from
+  a mounted shared credentials file (`[<profile>]` or `[default]`, named by
+  `AWS_PROFILE`); only an assumed task role is served by the metadata
+  sidecar.
 - **`AWS_DEFAULT_REGION` follows `AWS_REGION`**, as on Lambda and ECS, so
   boto3 finds the region.
 
@@ -1369,7 +1372,10 @@ For every task invocation cdk-local:
    and (when `--assume-role` / `--assume-task-role` is set)
    `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`. The sidecar holds the
    assumed role's credentials and serves them at `/creds`, so an AWS SDK in
-   the container runs as the task role.
+   the container runs as the task role. Without a task role, the `--profile`
+   or default-chain credentials are mounted read-only as a shared
+   credentials file, with `AWS_SHARED_CREDENTIALS_FILE` and `AWS_PROFILE`
+   pointing at it (not under `--aws-emulator`).
 
 AWS SDKs read `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` only from the fixed
 address `169.254.170.2`, so a run with a task role always uses

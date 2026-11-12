@@ -3,7 +3,10 @@ import {
   resetWorkloadAwsWiringForTest,
   setActiveWorkloadAwsWiring,
 } from '../../../src/local/workload-aws-wiring.js';
-import { resolveSidecarCredentials } from '../../../src/cli/commands/local-run-task.js';
+import {
+  containerCredentialsFileProfile,
+  resolveSidecarCredentials,
+} from '../../../src/cli/commands/local-run-task.js';
 
 // cdkd#658: `cdkl run-task --profile <p>` (without
 // `--assume-task-role`) used to resolve the profile for cdk-local's OWN
@@ -118,5 +121,69 @@ describe('resolveSidecarCredentials (cdkd#658)', () => {
     await expect(
       resolveSidecarCredentials({ profile: 'expired-sso' }, undefined)
     ).rejects.toThrow(/SSO session.*expired/);
+  });
+});
+
+// Issue #883: without a task role, nothing advertises the sidecar's `/creds`
+// route to the containers (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` is set only
+// for a role, and a no-role run is not on 169.254.170.0/24), so the
+// credentials reach them through the mounted credentials file. This pins which
+// section that file carries, or that there is none.
+describe('containerCredentialsFileProfile (#883)', () => {
+  const chain = { accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' };
+  const assumed = { accessKeyId: 'AKIA-ASSUMED', secretAccessKey: 'SECRET-ASSUMED' };
+
+  beforeEach(() => {
+    resetWorkloadAwsWiringForTest();
+  });
+
+  it('mounts the host default chain under [default] when no credential flag is set', () => {
+    expect(containerCredentialsFileProfile({}, chain, undefined)).toBe('default');
+  });
+
+  it('mounts --profile credentials under the profile name', () => {
+    expect(containerCredentialsFileProfile({ profile: 'my-sso' }, chain, undefined)).toBe(
+      'my-sso'
+    );
+  });
+
+  it('mounts no file when a task role was assumed (the sidecar serves it; a file would win)', () => {
+    expect(containerCredentialsFileProfile({}, assumed, assumed)).toBeUndefined();
+    expect(containerCredentialsFileProfile({ profile: 'my-sso' }, assumed, assumed)).toBeUndefined();
+  });
+
+  it('mounts no file when no credentials were resolved', () => {
+    expect(containerCredentialsFileProfile({}, undefined, undefined)).toBeUndefined();
+  });
+
+  it('mounts no file under --aws-emulator full mode, with or without --profile', () => {
+    const emulatorCredentials = { accessKeyId: 'EMULATOR0000', secretAccessKey: 'EMU-SECRET' };
+    setActiveWorkloadAwsWiring({
+      mode: 'emulator',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      emulatorCredentials,
+      dispose: () => undefined,
+    });
+    expect(containerCredentialsFileProfile({}, emulatorCredentials, undefined)).toBeUndefined();
+    expect(
+      containerCredentialsFileProfile({ profile: 'my-sso' }, emulatorCredentials, undefined)
+    ).toBeUndefined();
+  });
+
+  it('keeps the real default chain in forward (mixed-mode) wiring', () => {
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      dispose: () => undefined,
+    });
+    expect(containerCredentialsFileProfile({}, chain, undefined)).toBe('default');
   });
 });

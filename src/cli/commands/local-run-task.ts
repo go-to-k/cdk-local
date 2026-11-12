@@ -420,23 +420,16 @@ async function localRunTaskCommand(
     // Lambda container path.
     const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
 
-    // ECS analogue of the Lambda-container credential fix-back:
-    // when `--profile <p>` is set AND `--assume-task-role` did NOT
-    // produce credentials for this task, synthesize a host-side AWS
-    // shared credentials file under `[<options.profile>]` and bind-
-    // mount it read-only into every user container. Handler code
-    // calling `fromIni({ profile: '<options.profile>' })` then
-    // resolves to the same creds the metadata sidecar serves —
-    // without this, the SDK looks for `[<options.profile>]` in
-    // `~/.aws/credentials` inside the container and fails.
-    //
-    // Gating `!assumedCredentials` preserves the documented
-    // precedence (assume-task-role > profile-file > sidecar): when
-    // `--assume-task-role` won, the sidecar's `/creds` endpoint
-    // already serves the assumed creds and the file env vars must
-    // NOT override them.
-    if (options.profile && sidecarCredentials && !assumedCredentials) {
-      profileCredsFile = await writeProfileCredentialsFile(options.profile, sidecarCredentials);
+    // Without a task role, containers reach these credentials through a
+    // host-side shared credentials file bind-mounted read-only into every
+    // user container (see `containerCredentialsFileProfile`).
+    const credsFileProfile = containerCredentialsFileProfile(
+      options,
+      sidecarCredentials,
+      assumedCredentials
+    );
+    if (credsFileProfile !== undefined && sidecarCredentials) {
+      profileCredsFile = await writeProfileCredentialsFile(credsFileProfile, sidecarCredentials);
     }
 
     const envOverrides = readEnvOverridesFile(options.envVars);
@@ -853,7 +846,10 @@ function readEnvOverridesFile(
  *   3. Neither set → the host's default credential chain
  *      (`AWS_PROFILE`, the shared files, SSO — go-to-k/cdkd#6129);
  *      `undefined` when it finds nothing, and the user containers then
- *      get 4xx from the credentials endpoint.
+ *      get no credentials.
+ *
+ * Without a task role the containers read 2 and 3 from a mounted
+ * credentials file, not the sidecar ({@link containerCredentialsFileProfile}).
  *
  * Under `--aws-emulator` the endpoint's credentials replace all three.
  *
@@ -872,6 +868,32 @@ export async function resolveSidecarCredentials(
   if (assumedCredentials) return assumedCredentials;
   if (options.profile) return resolveProfileCredentials(options.profile);
   return resolveHostDefaultCredentials();
+}
+
+/**
+ * The INI section of the shared credentials file mounted into every task
+ * container, or `undefined` for no file. Only a task role is advertised
+ * through the sidecar (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, which SDKs
+ * resolve against the fixed 169.254.170.2), and a run without one leaves
+ * 169.254.170.0/24 to role runs (issue #850). So the credentials
+ * {@link resolveSidecarCredentials} picked without a role reach the
+ * containers through this file: `[<--profile>]` (handler code calling
+ * `fromIni({ profile })` resolves too), or `[default]` for the host's
+ * default chain (issue #883).
+ *
+ * No file when a role was assumed: its credentials reach the containers
+ * through the sidecar, and a file (`AWS_SHARED_CREDENTIALS_FILE` +
+ * `AWS_PROFILE`) would win over them in the SDK chain. No file under
+ * `--aws-emulator`: the emulator's credentials ride the container env.
+ */
+export function containerCredentialsFileProfile(
+  options: { profile?: string },
+  sidecarCredentials: { accessKeyId: string } | undefined,
+  assumedCredentials: { accessKeyId: string } | undefined
+): string | undefined {
+  if (!sidecarCredentials || assumedCredentials) return undefined;
+  if (getActiveWorkloadAwsWiring()?.mode === 'emulator') return undefined;
+  return options.profile || 'default';
 }
 
 export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions = {}): Command {

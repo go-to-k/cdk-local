@@ -44,5 +44,21 @@ export class LocalRunTaskStack extends cdk.Stack {
       portMappings: [{ containerPort: 80, hostPort: 18081, protocol: ecs.Protocol.TCP }],
       memoryReservationMiB: 64,
     });
+
+    // Issue #883: with no credential flag the container gets the host's
+    // default chain. The task role is a `Fn::GetAtt` (no role ARN resolves
+    // locally), the shape that used to leave the container with nothing.
+    // `aws configure list` resolves the chain without calling AWS and prints
+    // the key masked.
+    const credsTask = new ecs.TaskDefinition(this, 'CredsTask', {
+      compatibility: ecs.Compatibility.EC2,
+      networkMode: ecs.NetworkMode.BRIDGE,
+    });
+    credsTask.addContainer('cli', {
+      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/aws-cli/aws-cli:2.31.0'),
+      essential: true,
+      command: ['configure', 'list'],
+      memoryReservationMiB: 64,
+    });
   }
 }
