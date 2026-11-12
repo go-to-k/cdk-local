@@ -261,6 +261,9 @@ export function resourceTypeMatchesEmulatedService(
   });
 }
 
+/** How many unresolved resources the real-side-missing warning names. */
+const MISSING_LIST_LIMIT = 10;
+
 /** Inputs to {@link createMixedModeStateProvider}. */
 export interface MixedModeStateProviderOptions {
   /** The provider reading real AWS. */
@@ -280,6 +283,9 @@ export interface MixedModeStateProviderOptions {
  *
  * - When the emulator has no such stack, emulated resources keep their real
  *   names, with one warning.
+ * - When real AWS has no such stack but the emulator does, only the emulated
+ *   resources resolve; one warning per stack names the others (now
+ *   unresolved) and the remedy.
  * - Outputs come from real AWS; an output whose value is the real physical ID
  *   of an emulated resource takes the emulator's ID instead. Outputs only the
  *   emulator's stack has are added.
@@ -300,6 +306,7 @@ export function createMixedModeStateProvider(
   const { real, emulator, emulatedServices } = opts;
   const swaps = new Map<string, string>();
   const warned = new Set<string>();
+  const warnedReal = new Set<string>();
   const swap = (v: string): string => swaps.get(v) ?? v;
   const provider: LocalStateProvider = {
     label: real.label,
@@ -329,7 +336,29 @@ export function createMixedModeStateProvider(
         resourceTypeMatchesEmulatedService(res.resourceType, emulatedServices);
       if (!r) {
         const resources: Record<string, ResourceState> = {};
-        for (const [id, res] of Object.entries(e.resources)) if (emulated(res)) resources[id] = res;
+        const dropped: string[] = [];
+        for (const [id, res] of Object.entries(e.resources)) {
+          if (emulated(res)) resources[id] = res;
+          else
+            dropped.push(
+              `${displayUntrustedValue(id)} (${displayUntrustedValue(res.resourceType)})`
+            );
+        }
+        if (dropped.length > 0 && !warnedReal.has(stackName)) {
+          warnedReal.add(stackName);
+          const why = real.getLastLoadError?.();
+          const shown = dropped.slice(0, MISSING_LIST_LIMIT).join(', ');
+          const more =
+            dropped.length > MISSING_LIST_LIMIT
+              ? ` and ${dropped.length - MISSING_LIST_LIMIT} more`
+              : '';
+          getLogger().warn(
+            `${real.label}: stack ${displayUntrustedValue(stackName)} could not be read from real AWS` +
+              `${why ? ` (${why})` : ''}, only from AWS Emulator; resources outside the emulated services ` +
+              `(${emulatedServices.join(', ')}) stay unresolved: ${shown}${more}. Deploy the stack to real AWS ` +
+              'too, under the same stack name (the same CDK context, e.g. -c stage=dev), or override them with --env-vars.'
+          );
+        }
         return { resources, outputs: { ...e.outputs }, region: e.region };
       }
       const resources: Record<string, ResourceState> = { ...r.resources };

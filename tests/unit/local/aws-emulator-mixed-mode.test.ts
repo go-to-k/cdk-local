@@ -350,13 +350,62 @@ describe('createMixedModeStateProvider', () => {
   });
 
   it('with only the emulator copy, returns just the emulated resources', async () => {
-    const p = createMixedModeStateProvider({
-      real: fakeProvider(undefined),
-      emulator: fakeProvider(emuRecord),
-      emulatedServices: ['S3'],
-    });
-    const r = (await p.load('S', undefined))!;
-    expect(Object.keys(r.resources)).toEqual(['Bucket']);
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    try {
+      const p = createMixedModeStateProvider({
+        real: fakeProvider(undefined),
+        emulator: fakeProvider(emuRecord),
+        emulatedServices: ['S3'],
+      });
+      const r = (await p.load('S', undefined))!;
+      expect(Object.keys(r.resources)).toEqual(['Bucket']);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The real-side mirror of the emulator-missing warning: real-routed resources
+  // must not vanish silently when only the emulator has the stack.
+  it('warns once per stack, naming the real side and the unresolved resources, when real AWS has no such stack', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    try {
+      const p = createMixedModeStateProvider({
+        real: fakeProvider(undefined, { getLastLoadError: () => 'Stack S does not exist' }),
+        emulator: fakeProvider({
+          ...emuRecord,
+          resources: { ...emuRecord.resources, Secret: res('AWS::SecretsManager::Secret', 'emu-secret') },
+        }),
+        emulatedServices: ['DYNAMODB'],
+      });
+      const r = (await p.load('S', undefined))!;
+      expect(Object.keys(r.resources)).toEqual(['Table']);
+      await p.load('S', undefined);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const msg = String(warn.mock.calls[0]![0]);
+      expect(msg).toMatch(/could not be read from real AWS \(Stack S does not exist\), only from AWS Emulator/);
+      expect(msg).toMatch(/emulated services \(DYNAMODB\) stay unresolved: /);
+      for (const id of ['Bucket', 'Fn', 'Secret']) expect(msg).toContain(id);
+      expect(msg).toContain('AWS::SecretsManager::Secret');
+      expect(msg).not.toMatch(/Table \(/);
+      expect(msg).toMatch(/Deploy the stack to real AWS too, under the same stack name .*-c stage=dev.*--env-vars/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent when real AWS has no such stack but every emulator resource is emulated', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    try {
+      const p = createMixedModeStateProvider({
+        real: fakeProvider(undefined),
+        emulator: fakeProvider({ ...emuRecord, resources: { Table: emuRecord.resources['Table']! } }),
+        emulatedServices: ['DYNAMODB'],
+      });
+      await p.load('S', undefined);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

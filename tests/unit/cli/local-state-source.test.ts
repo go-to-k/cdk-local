@@ -470,6 +470,36 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
     expect(real).toBeInstanceOf(CfnLocalStateProvider);
     real!.dispose();
 
+    // The --from-cfn-stack path shares the merge: a stack only the emulator
+    // has warns that the real-routed resources are unresolved.
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const load = vi
+      .spyOn(CfnLocalStateProvider.prototype, 'load')
+      .mockImplementation(async function (this: CfnLocalStateProvider) {
+        if (!this.label.includes('AWS Emulator')) return undefined;
+        return {
+          resources: {
+            Table: { physicalId: 't', resourceType: 'AWS::DynamoDB::Table', properties: {} },
+            Secret: { physicalId: 's', resourceType: 'AWS::SecretsManager::Secret', properties: {} },
+          },
+          outputs: {},
+          region: 'us-east-1',
+        } as never;
+      });
+    try {
+      const p = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
+      const rec = await p!.load('S', 'us-east-1');
+      expect(Object.keys(rec!.resources)).toEqual(['Table']);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/^--from-cfn-stack: stack .*S.* could not be read from real AWS.*Secret \(.*AWS::SecretsManager::Secret/)
+      );
+      p!.dispose();
+    } finally {
+      load.mockRestore();
+      warn.mockRestore();
+    }
+
     // go-to-k/cdk-local#902: names resolved for ONE workload follow its own
     // sentinels. B routes nothing, so it reads every name from real AWS.
     const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');

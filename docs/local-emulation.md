@@ -383,7 +383,10 @@ The rules:
   `start-alb`'s ECS targets, `studio`) use the whole run's set:
   a service any section routes resolves from the emulator for every
   workload there. When the emulator has no such stack, those resources keep their
-  real names, with a warning. `cdkl start-cloudfront` serves S3 origins and
+  real names, with a warning. When only the emulator has it, the resources of
+  the other services stay unresolved, with a warning naming them. Both sides
+  are read under the same stack name, so deploy the stack to AWS Emulator and
+  to real AWS with the same CDK context (for example `-c stage=dev` on both). `cdkl start-cloudfront` serves S3 origins and
   KeyValueStores from real AWS, under their real names. Mixed mode does not set
   `AWS_DISABLE_HOST_PREFIX_INJECTION` (it would apply to real AWS calls too),
   so an operation with a host prefix, such as Step Functions'
