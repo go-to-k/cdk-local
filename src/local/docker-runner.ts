@@ -299,8 +299,9 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     // The sidecar listens on the workload's own loopback; on the host network
     // that is the host's, shared by every workload of the run.
     throw new DockerRunnerError(
-      'An aws-emulator sentinel (mixed mode) needs the AWS Emulator re-signing sidecar, which cannot run on the ' +
-        'host network. Drop the host network for this workload, or use --aws-emulator without a sentinel.'
+      'AWS Emulator mixed mode (a "real-aws" exception in --env-vars) needs the re-signing sidecar, which cannot ' +
+        'run on the host network. Drop the host network for this workload, or use --aws-emulator without a ' +
+        '"real-aws" exception.'
     );
   }
   const ports = opts.network === 'host' ? [] : effectiveLoopbackPorts(wired.env, wiring);

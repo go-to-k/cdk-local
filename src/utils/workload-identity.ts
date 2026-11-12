@@ -28,7 +28,12 @@
 
 import type { AwsCredentialIdentityProvider } from '@smithy/types';
 import { getEmbedConfig } from '../local/embed-config.js';
-import { buildProxyClientConfig, buildProxyRequestHandler } from './aws-proxy.js';
+import {
+  buildProxyClientConfig,
+  buildProxyRequestHandler,
+  getAwsEmulatorServiceRouting,
+  isAwsServiceRoutedToEmulator,
+} from './aws-proxy.js';
 // A function-only import cycle (the wiring reads `assumedRoleRecorded`): both
 // are called at run time, never during module evaluation.
 import { getActiveWorkloadAwsWiring } from '../local/workload-aws-wiring.js';
@@ -182,10 +187,11 @@ function callerChainWithoutEnv(proxied: boolean): AwsCredentialIdentityProvider 
  * chain skip the env link, so it already answers as the caller). Then it
  * injects the caller's pre-assume triple, or the caller's chain minus env.
  *
- * `service` is the client's endpoint service id: in AWS Emulator mixed mode a
- * sentinel-routed service gets the emulator's fragment (see
- * `buildProxyClientConfig`). `workload` is the workload the read is for: the
- * routing then follows that workload's own sentinels, as its runtime calls do.
+ * `service` is the client's endpoint service id: in AWS Emulator mixed mode
+ * every service gets the emulator's fragment unless a `"real-aws"` exception
+ * names it (see `buildProxyClientConfig`). `workload` is the workload the read
+ * is for: the routing then follows that workload's own exceptions, as its
+ * runtime calls do.
  */
 export function workloadClientConfig(
   opts: {
@@ -279,12 +285,26 @@ export function deployAccountStsClientConfig(args: {
  *   role ({@link deployAccountStsClientConfig}).
  *
  * Outside caller mode (and standalone `cdkl`) both equal `buildStsClientConfig`.
+ *
+ * In AWS Emulator mixed mode the lookup follows the STS route instead: the
+ * emulator's account (the stack was deployed there), unless the `--env-vars`
+ * `Parameters` except STS to real AWS. The other STS hops (`--role-arn` /
+ * `--assume-role` / `--ecr-role-arn` assumes, profile resolution) stay on real
+ * AWS: they establish the real identity a mixed-mode workload holds for its
+ * excepted services, and write nothing.
  */
 export function accountLookupStsClientConfig(args: {
   region?: string | undefined;
   profile?: string | undefined;
   readFromCfnStack?: boolean | undefined;
 }): { region?: string; profile?: string } & AwsProxyClientConfig {
+  if (getAwsEmulatorServiceRouting() && isAwsServiceRoutedToEmulator('STS')) {
+    // The emulator's keys are the only identity: no profile, no role.
+    return {
+      ...buildProxyClientConfig({ service: 'STS' }),
+      ...(args.region && { region: args.region }),
+    };
+  }
   return args.readFromCfnStack
     ? workloadStsClientConfig({ region: args.region, profile: args.profile })
     : deployAccountStsClientConfig({ region: args.region, profile: args.profile });

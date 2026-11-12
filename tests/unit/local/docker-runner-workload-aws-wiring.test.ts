@@ -449,17 +449,24 @@ describe('startNamespaceOwnerForwarder (issue #878)', () => {
   });
 });
 
-describe('runDetached — mixed mode (aws-emulator sentinel)', () => {
+describe('runDetached — mixed mode (--aws-emulator + a real-aws exception)', () => {
   const RESIGN = 47297;
   function mixedWiring(): Wiring {
     return emulatorWiring({
       mode: 'forward',
       scrubEnvKeys: [],
-      env: { AWS_CA_BUNDLE: '/cdk-local-aws/ca-bundle.pem' },
+      env: {
+        AWS_ENDPOINT_URL: `https://127.0.0.1:${RESIGN}`,
+        AWS_CA_BUNDLE: '/cdk-local-aws/ca-bundle.pem',
+        AWS_EC2_METADATA_DISABLED: 'true',
+        AWS_DISABLE_HOST_PREFIX_INJECTION: 'true',
+      },
       loopbackPorts: [9297, RESIGN],
       emulatorCredentials: undefined,
       mixed: {
-        services: ['DYNAMODB'],
+        realServices: ['DYNAMODB'],
+        emulatorCredentials: EMU,
+        region: 'us-east-1',
         emulatorEndpoint: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
         resignPort: RESIGN,
         resignEndpoint: `https://127.0.0.1:${RESIGN}`,
@@ -469,18 +476,24 @@ describe('runDetached — mixed mode (aws-emulator sentinel)', () => {
     });
   }
   const realEnv = { AWS_ACCESS_KEY_ID: 'AKIAREAL', AWS_SECRET_ACCESS_KEY: 'REALSECRET' };
+  const DDB_REAL = 'https://dynamodb.us-east-1.amazonaws.com';
 
-  it('keeps the real identity, points the sentinel at the sidecar, and starts the forwarder with it', async () => {
+  it('keeps the real identity for an excepted service, sends the rest through the sidecar, and starts the forwarder with it', async () => {
     setActiveWorkloadAwsWiring(mixedWiring());
     execFileMock.mockImplementation((_cmd: string, args: string[]) => {
       if (args[0] === 'run') return { stdout: args.includes('--pid') ? 'fwd\n' : 'workload-id\n' };
       if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
       return { stdout: '' };
     });
-    await runDetached({ ...baseRun, env: { ...realEnv, AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
+    await runDetached({
+      ...baseRun,
+      env: { ...realEnv, AWS_REGION: 'us-east-1', AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' },
+    });
     const calls = execFileMock.mock.calls as [string, string[], { env?: NodeJS.ProcessEnv } | undefined][];
     const run = calls.find((c) => c[1][0] === 'run' && !c[1].includes('--pid'))!;
-    expect(run[1]).toContain(`AWS_ENDPOINT_URL_DYNAMODB=https://127.0.0.1:${RESIGN}`);
+    // The exception becomes the real regional endpoint; everything else rides the global sidecar endpoint.
+    expect(run[1]).toContain(`AWS_ENDPOINT_URL_DYNAMODB=${DDB_REAL}`);
+    expect(run[1]).toContain(`AWS_ENDPOINT_URL=https://127.0.0.1:${RESIGN}`);
     expect(run[2]?.env?.['AWS_SECRET_ACCESS_KEY']).toBe('REALSECRET');
     const fwd = calls.find((c) => c[1][0] === 'run' && c[1].includes('--pid'))!;
     expect(fwd[1]).toContain('/tmp/resign-x/resign.json:/cdkl-forwarder/resign.json:ro');
@@ -499,16 +512,30 @@ describe('runDetached — mixed mode (aws-emulator sentinel)', () => {
       return { stdout: '' };
     });
     await expect(
-      runDetached({ ...baseRun, env: { ...realEnv, AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } })
+      runDetached({
+        ...baseRun,
+        env: { ...realEnv, AWS_REGION: 'us-east-1', AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' },
+      })
     ).rejects.toThrow(/re-signing sidecar could not start on 127\.0\.0\.1:47297.*already listens/);
     expect(execFileMock.mock.calls.some((c) => c[1][0] === 'rm' && c[1].includes('workload-id'))).toBe(true);
   });
 
-  it('a workload without a sentinel starts no forwarder', async () => {
+  it('a workload without an exception still uses the sidecar, with the emulator keys only', async () => {
     setActiveWorkloadAwsWiring(mixedWiring());
-    execFileMock.mockReturnValue({ stdout: 'workload-id\n' });
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: args.includes('--pid') ? 'fwd\n' : 'workload-id\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return { stdout: '' };
+    });
     await runDetached({ ...baseRun, env: realEnv });
-    expect(execFileMock.mock.calls.filter((c) => c[1][0] === 'run')).toHaveLength(1);
+    const calls = execFileMock.mock.calls as [string, string[], { env?: NodeJS.ProcessEnv } | undefined][];
+    const run = calls.find((c) => c[1][0] === 'run' && !c[1].includes('--pid'))!;
+    expect(run[1]).toContain(`AWS_ENDPOINT_URL=https://127.0.0.1:${RESIGN}`);
+    // The real identity is replaced by the emulator's keys.
+    expect(run[2]?.env?.['AWS_ACCESS_KEY_ID']).toBe(EMU.accessKeyId);
+    expect(run[2]?.env?.['AWS_SECRET_ACCESS_KEY']).toBe(EMU.secretAccessKey);
+    expect(JSON.stringify(run)).not.toContain('REALSECRET');
+    expect(calls.some((c) => c[1][0] === 'run' && c[1].includes('--pid'))).toBe(true);
   });
 
   it('ECS owner forwarder (startNamespaceOwnerForwarder): runs the sidecar too, and its failure is fatal', async () => {
@@ -552,10 +579,10 @@ describe('runDetached — mixed mode (aws-emulator sentinel)', () => {
     warn.mockRestore();
   });
 
-  it('refuses a sentinel on the host network (the sidecar cannot share the host loopback)', async () => {
+  it('refuses mixed mode on the host network (the sidecar cannot share the host loopback)', async () => {
     setActiveWorkloadAwsWiring(mixedWiring());
     await expect(
-      runDetached({ ...baseRun, network: 'host', env: { ...realEnv, AWS_ENDPOINT_URL_S3: 'aws-emulator' } })
+      runDetached({ ...baseRun, network: 'host', env: { ...realEnv, AWS_REGION: 'us-east-1', AWS_ENDPOINT_URL_S3: 'real-aws' } })
     ).rejects.toThrow(/cannot run on the host network/);
   });
 });

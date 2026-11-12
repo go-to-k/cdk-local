@@ -114,9 +114,10 @@ describe('resolveDeployedS3Origins', () => {
       expect.objectContaining({ fromState: true, stateBucket: 'b' }),
       'Stack',
       'us-west-2',
-      providers,
-      { realAwsOnly: true }
+      providers
     );
+    // The provider is no longer pinned to real AWS (`realAwsOnly` is gone).
+    expect(createProviderMock.mock.calls.at(-1)).toHaveLength(4);
     expect(dist.origins.get('o1')?.kind).toBe('s3-deployed');
     expect(readers.has('o1')).toBe(true);
     expect(buckets.get('o1')).toBe('host-state-bucket');
@@ -297,10 +298,11 @@ describe('resolveDeployedS3Origins', () => {
       expect.anything(),
       'Stack',
       'us-west-2',
-      extraStateProviders,
-      // S3 origins are read with real-AWS clients: never the mixed-mode provider.
-      { realAwsOnly: true }
+      extraStateProviders
     );
+    // No `realAwsOnly` behaviour argument: the S3 origin client routes per
+    // service (emulator unless S3 is excepted), so its names resolve per service.
+    expect(createProviderMock.mock.calls.at(-1)).toHaveLength(4);
   });
 
   it('threads cache: true into the reader only when --cache-origin is set', async () => {

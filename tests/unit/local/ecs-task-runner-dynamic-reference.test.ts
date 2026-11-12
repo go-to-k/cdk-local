@@ -188,15 +188,15 @@ describe('runEcsTask — dynamic references in Environment (#784)', () => {
     expect(execOpts.env?.['DB_PASSWORD']).toBe(PLAINTEXT);
   });
 
-  // go-to-k/cdk-local#902: the container is the workload, so its own sentinel
-  // decides where its `{{resolve}}` is read in AWS Emulator mixed mode.
-  it("mixed mode: reads from the emulator only when the container's own section routes the service", async () => {
+  // go-to-k/cdk-local#902: the container is the workload, so its own `real-aws`
+  // exception decides where its `{{resolve}}` is read in AWS Emulator mixed mode.
+  it("mixed mode: reads from real AWS only when the container's own section excepts the service", async () => {
     const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');
     const route = (section: string): void =>
       setAwsEmulatorServiceRouting({
-        services: ['SECRETS_MANAGER'],
+        realServices: [],
         override: { endpoint: 'https://127.0.0.1:9395' },
-        envOverrides: { [section]: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator' } },
+        envOverrides: { [section]: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } },
       });
     try {
       for (const section of ['app', 'other']) {
@@ -204,7 +204,7 @@ describe('runEcsTask — dynamic references in Environment (#784)', () => {
         const task = makeTask([makeContainer({ environment: { DB_PASSWORD: TOKEN } })]);
         await runEcsTask(task, runnableOptions(task), createEcsRunState());
       }
-      expect(smEndpoints).toEqual(['https://127.0.0.1:9395', undefined]);
+      expect(smEndpoints).toEqual([undefined, 'https://127.0.0.1:9395']);
     } finally {
       setAwsEmulatorServiceRouting(undefined);
     }

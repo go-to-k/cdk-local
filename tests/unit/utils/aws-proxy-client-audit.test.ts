@@ -80,7 +80,11 @@ const CLIENT_NAME = /^[A-Z][A-Za-z0-9_$]*Client$/;
 // `deployAccountStsClientConfig(` is the `${AWS::AccountId}` lookup spelling: it equals
 // `buildStsClientConfig(` unless caller mode recorded a role, and spreads the proxy
 // fragment in both branches. `accountLookupStsClientConfig(` picks between the two.
-const PROXY_SEAMS = ['buildProxyClientConfig(', 'workloadClientConfig('] as const;
+const PROXY_SEAMS = [
+  'buildProxyClientConfig(',
+  'workloadClientConfig(',
+  'deployArtifactClientConfig(',
+] as const;
 const STS_SEAMS = [
   'buildStsClientConfig(',
   'workloadStsClientConfig(',

@@ -12,6 +12,7 @@ import {
 } from '@aws-sdk/client-cloudfront-keyvaluestore';
 import { getLogger } from '../utils/logger.js';
 import { workloadClientConfig } from '../utils/workload-identity.js';
+import { isAwsServiceRoutedToEmulator } from '../utils/aws-proxy.js';
 import {
   describeAwsFailureForWarn,
   flattenToOneLine,
@@ -71,9 +72,13 @@ export function createDeployedKvsDataSource(
   options: CreateDeployedKvsDataSourceOptions
 ): KvsDataSource {
   const client = new CloudFrontKeyValueStoreClient({
-    ...workloadClientConfig(),
+    ...workloadClientConfig({ service: 'CLOUDFRONT_KEYVALUESTORE' }),
     region: options.region ?? 'us-east-1',
-    ...(options.credentials !== undefined && { credentials: options.credentials }),
+    // Under AWS Emulator the emulator's keys are the only identity.
+    ...(options.credentials !== undefined &&
+      !isAwsServiceRoutedToEmulator('CLOUDFRONT_KEYVALUESTORE') && {
+        credentials: options.credentials,
+      }),
   });
   return {
     label: `deployed:${options.kvsArn}`,
@@ -124,9 +129,10 @@ export async function resolveDeployedKvsArnByName(
   options: { region?: string; credentials?: KvsClientCredentials } = {}
 ): Promise<{ arn: string; id?: string } | undefined> {
   const client = new CloudFrontClient({
-    ...workloadClientConfig(),
+    ...workloadClientConfig({ service: 'CLOUDFRONT' }),
     region: options.region ?? 'us-east-1',
-    ...(options.credentials !== undefined && { credentials: options.credentials }),
+    ...(options.credentials !== undefined &&
+      !isAwsServiceRoutedToEmulator('CLOUDFRONT') && { credentials: options.credentials }),
   });
   try {
     for await (const page of paginateListKeyValueStores({ client }, {})) {

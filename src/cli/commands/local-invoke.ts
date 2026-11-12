@@ -1,6 +1,9 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { addAwsEndpointOptions } from '../options.js';
-import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
+import {
+  activateWorkloadAwsWiring,
+  takeAwsEmulatorStateSourceHint,
+} from '../../local/workload-aws-wiring.js';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import * as path from 'node:path';
@@ -1058,7 +1061,7 @@ export async function resolveLambdaContainerEnv(
 ): Promise<LambdaContainerEnvResult> {
   // One resolver per container env, shared by the cross-stack boundary and
   // the final env pass so each (reference, region) is fetched once (#784).
-  // Mixed mode: this function's own sentinels route its `{{resolve:...}}`
+  // Mixed mode: this function's own exceptions route its `{{resolve:...}}`
   // fetches, as they route its runtime calls.
   const dynamicRefs = new DynamicReferenceResolver({
     ...(options.profile !== undefined && { profile: options.profile }),
@@ -1204,6 +1207,10 @@ async function resolveLambdaContainerEnvWith(
       `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
         `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to recover deployed values.`
     );
+  }
+  if (envResult.unresolved.length > 0 && !stateAudit) {
+    const hint = takeAwsEmulatorStateSourceHint();
+    if (hint) logger.warn(hint);
   }
 
   // CloudFormation dynamic references (`{{resolve:...}}`), resolved against

@@ -1,6 +1,7 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { addAwsEndpointOptions } from '../options.js';
 import {
+  takeAwsEmulatorStateSourceHint,
   activateWorkloadAwsWiring,
   getActiveWorkloadAwsWiring,
 } from '../../local/workload-aws-wiring.js';
@@ -408,7 +409,7 @@ async function localInvokeAgentCoreCommand(
       candidate?.stackName ?? '',
       await resolveCfnFallbackRegion(options, candidate?.region),
       extraStateProviders,
-      // Mixed mode: names resolve by this runtime's own sentinels.
+      // Mixed mode: names resolve by this runtime's own exceptions.
       { workload: agentCoreTargetWorkload(resolvedTarget, stacks) }
     );
     const { context: imageContext, loaded: loadedState } =
@@ -1297,7 +1298,7 @@ export async function buildContainerEnv(
   loaded: LocalStateRecord | undefined,
   imageContext: ImageResolutionContext | undefined
 ): Promise<{ env: Record<string, string>; sensitiveEnvKeys: Set<string> }> {
-  // Mixed mode: this runtime's own sentinels route its `{{resolve:...}}`
+  // Mixed mode: this runtime's own exceptions route its `{{resolve:...}}`
   // fetches, as they route its runtime calls.
   const dynamicRefs = new DynamicReferenceResolver({
     ...(options.profile !== undefined && { profile: options.profile }),
@@ -1388,6 +1389,10 @@ async function buildContainerEnvWith(
         `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), ` +
         `or pass a state-source flag (e.g. --from-cfn-stack) to recover deployed values.`
     );
+  }
+  if (envResult.unresolved.length > 0 && !stateProvider) {
+    const hint = takeAwsEmulatorStateSourceHint();
+    if (hint) logger.warn(hint);
   }
 
   // CloudFormation dynamic references (`{{resolve:...}}`), resolved against

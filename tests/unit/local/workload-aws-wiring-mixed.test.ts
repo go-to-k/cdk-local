@@ -19,11 +19,14 @@ const {
   effectiveLoopbackPorts,
   loopbackForwarderPlan,
   resetWorkloadAwsWiringForTest,
+  resetAwsEmulatorStateSourceHintForTest,
   resolveWorkloadAwsWiring,
+  setActiveWorkloadAwsWiring,
   sweepStaleResignDirs,
+  takeAwsEmulatorStateSourceHint,
   STALE_RESIGN_DIR_AGE_MS,
 } = await import('../../../src/local/workload-aws-wiring.js');
-const { findAwsEmulatorSentinels, MIXED_MODE_RESIGN_PORT } = await import(
+const { findRealAwsExceptions, MIXED_MODE_RESIGN_PORT } = await import(
   '../../../src/local/aws-emulator-mixed-mode.js'
 );
 const {
@@ -41,9 +44,9 @@ const { MIXED_MODE_RESIGN_BODY_CAP_BYTES } = await import('../../../src/local/em
 const EMU_CA = createMixedModeTlsMaterials().caCertPem;
 const EMU_KEY = { accessKeyId: 'EMULATOR0123456789AB', secretAccessKey: 'A'.repeat(40) };
 const REAL = { AWS_ACCESS_KEY_ID: 'AKIAREAL', AWS_SECRET_ACCESS_KEY: 'real-secret', AWS_SESSION_TOKEN: 'real-tok' };
-const SENTINELS = findAwsEmulatorSentinels({
-  Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' },
-  'Stack/Fn': { AWS_ENDPOINT_URL_S3: 'aws-emulator' },
+const EXCEPTIONS = findRealAwsExceptions({
+  Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' },
+  'Stack/Fn': { AWS_ENDPOINT_URL_STS: 'real-aws' },
 });
 
 let home: string;
@@ -67,7 +70,7 @@ async function mixed(port = 9361, credentials = true, env: NodeJS.ProcessEnv = {
   writeEmulatorRun(port, credentials);
   return resolveWorkloadAwsWiring({
     awsEmulator: `https://127.0.0.1:${port}`,
-    awsEmulatorSentinels: SENTINELS,
+    realAwsExceptions: EXCEPTIONS,
     homeDir: home,
     env,
     probeHealth: healthy,
@@ -85,14 +88,15 @@ afterEach(() => {
 });
 
 describe('resolveWorkloadAwsWiring — mixed mode', () => {
-  it('stays forward mode (real identity) with the sidecar, its config and a two-CA trust bundle', async () => {
+  it('is forward mode with the sidecar as the global endpoint, its config and a two-CA trust bundle', async () => {
     const w = await mixed();
     try {
       expect(w.mode).toBe('forward');
       expect(w.emulatorCredentials).toBeUndefined();
       expect(w.scrubEnvKeys).toEqual([]);
       expect(w.mixed).toMatchObject({
-        services: ['DYNAMODB', 'S3'],
+        realServices: ['SECRETS_MANAGER', 'STS'],
+        emulatorCredentials: EMU_KEY,
         resignPort: MIXED_MODE_RESIGN_PORT,
         resignEndpoint: `https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`,
         emulatorClientOverride: { endpoint: 'https://127.0.0.1:9361', credentials: EMU_KEY },
@@ -100,7 +104,7 @@ describe('resolveWorkloadAwsWiring — mixed mode', () => {
       expect(w.loopbackPorts).toEqual([9361, MIXED_MODE_RESIGN_PORT]);
       expect(w.probeHealth).toBe(true);
       for (const k of CA_TRUST_ENV_KEYS) expect(w.env[k]).toBe('/cdk-local-aws/ca-bundle.pem');
-      expect(w.env['AWS_ENDPOINT_URL']).toBeUndefined();
+      expect(w.env['AWS_ENDPOINT_URL']).toBe(`https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`);
 
       // The bundle: the emulator CA, the sidecar's per-run CA, then the public roots.
       const bundle = readFileSync(w.caHostPath!, 'utf8');
@@ -141,7 +145,7 @@ describe('resolveWorkloadAwsWiring — mixed mode', () => {
     const probe = vi.fn(async () => undefined);
     const w = await resolveWorkloadAwsWiring({
       awsEmulator: 'https://127.0.0.1:9364',
-      awsEmulatorSentinels: SENTINELS,
+      realAwsExceptions: EXCEPTIONS,
       caBundle: extraPath,
       homeDir: home,
       env: {},
@@ -171,23 +175,24 @@ describe('resolveWorkloadAwsWiring — mixed mode', () => {
     }
   });
 
-  it('does not forward host endpoint overrides (a host AWS_ENDPOINT_URL would carry real signatures)', async () => {
+  it('does not forward host endpoint overrides (a host AWS_ENDPOINT_URL_<SERVICE> would take that service around the emulator)', async () => {
     const w = await mixed(9361, true, {
       AWS_ENDPOINT_URL: 'https://127.0.0.1:9361',
       AWS_ENDPOINT_URL_SQS: 'https://127.0.0.1:9361',
     });
     try {
-      expect(Object.keys(w.env).filter((k) => k.startsWith('AWS_ENDPOINT_URL'))).toEqual([]);
+      expect(Object.keys(w.env).filter((k) => k.startsWith('AWS_ENDPOINT_URL'))).toEqual(['AWS_ENDPOINT_URL']);
+      expect(w.env['AWS_ENDPOINT_URL']).toBe(`https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`);
     } finally {
       w.dispose();
     }
   });
 
-  it('without sentinels, --aws-emulator stays full emulator mode', async () => {
+  it('without exceptions, --aws-emulator stays full emulator mode (emulator keys only)', async () => {
     writeEmulatorRun(9363);
     const w = await resolveWorkloadAwsWiring({
       awsEmulator: 'https://127.0.0.1:9363',
-      awsEmulatorSentinels: [],
+      realAwsExceptions: [],
       homeDir: home,
       env: {},
       probeHealth: healthy,
@@ -195,6 +200,10 @@ describe('resolveWorkloadAwsWiring — mixed mode', () => {
     try {
       expect(w.mode).toBe('emulator');
       expect(w.mixed).toBeUndefined();
+      const env = applyWorkloadAwsWiringToEnv({ ...REAL, AWS_REGION: 'us-east-1' }, w);
+      expect(env['AWS_ACCESS_KEY_ID']).toBe(EMU_KEY.accessKeyId);
+      expect(env['AWS_SESSION_TOKEN']).toBeUndefined();
+      expect(env['AWS_ENDPOINT_URL']).toBe('https://127.0.0.1:9363');
     } finally {
       w.dispose();
     }
@@ -202,54 +211,154 @@ describe('resolveWorkloadAwsWiring — mixed mode', () => {
 });
 
 describe('applyWorkloadAwsWiringToEnv — mixed mode', () => {
-  it('replaces each sentinel with the sidecar endpoint and keeps the real identity and literal URLs', async () => {
+  const SIDECAR = `https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`;
+
+  it('one exception: the global endpoint is the sidecar, only that service gets its real endpoint, the real identity stays', async () => {
     const w = await mixed();
     try {
       const env = applyWorkloadAwsWiringToEnv(
-        {
-          ...REAL,
-          AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator',
-          AWS_ENDPOINT_URL_SQS: 'https://127.0.0.1:9361',
-          AWS_REGION: 'us-east-1',
-        },
+        { ...REAL, AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws', AWS_REGION: 'eu-west-1' },
         w
       );
-      expect(env['AWS_ENDPOINT_URL_DYNAMODB']).toBe(`https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`);
-      expect(env['AWS_ENDPOINT_URL_SQS']).toBe('https://127.0.0.1:9361');
+      expect(env['AWS_ENDPOINT_URL']).toBe(SIDECAR);
+      expect(env['AWS_ENDPOINT_URL_SECRETS_MANAGER']).toBe(
+        'https://secretsmanager.eu-west-1.amazonaws.com'
+      );
+      // Every other service has no variable of its own: the global one (the sidecar) wins.
+      expect(Object.keys(env).filter((k) => k.startsWith('AWS_ENDPOINT_URL_'))).toEqual([
+        'AWS_ENDPOINT_URL_SECRETS_MANAGER',
+      ]);
       expect(env).toMatchObject(REAL);
+      expect(env['AWS_EC2_METADATA_DISABLED']).toBe('true');
+      expect(env['AWS_DISABLE_HOST_PREFIX_INJECTION']).toBe('true');
       expect(env['SSL_CERT_FILE']).toBe('/cdk-local-aws/ca-bundle.pem');
+      expect(env['AWS_DEFAULT_REGION']).toBe('eu-west-1');
       // A container without credentials gets the host default chain, as in forward mode.
-      const chain = applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_S3: 'aws-emulator' }, w, {
-        accessKeyId: 'AKIACHAIN',
-        secretAccessKey: 's',
-      });
+      const chain = applyWorkloadAwsWiringToEnv(
+        { AWS_ENDPOINT_URL_STS: 'real-aws', AWS_REGION: 'us-east-1' },
+        w,
+        { accessKeyId: 'AKIACHAIN', secretAccessKey: 's' }
+      );
       expect(chain['AWS_ACCESS_KEY_ID']).toBe('AKIACHAIN');
+      expect(chain['AWS_ENDPOINT_URL_STS']).toBe('https://sts.us-east-1.amazonaws.com');
     } finally {
       w.dispose();
     }
   });
 
-  it('refuses a sentinel that reaches a container outside mixed mode', async () => {
+  it('a workload whose env keeps no exception gets the emulator keys only, never the real identity', async () => {
+    const w = await mixed();
+    try {
+      const env = applyWorkloadAwsWiringToEnv(
+        { ...REAL, AWS_PROFILE: 'prod', AWS_ROLE_ARN: 'arn:aws:iam::1:role/r', AWS_REGION: 'us-east-1' },
+        w,
+        { accessKeyId: 'AKIACHAIN', secretAccessKey: 's' }
+      );
+      expect(env['AWS_ACCESS_KEY_ID']).toBe(EMU_KEY.accessKeyId);
+      expect(env['AWS_SECRET_ACCESS_KEY']).toBe(EMU_KEY.secretAccessKey);
+      expect(env['AWS_SESSION_TOKEN']).toBeUndefined();
+      expect(env['AWS_PROFILE']).toBeUndefined();
+      expect(env['AWS_ROLE_ARN']).toBeUndefined();
+      expect(env['AWS_ENDPOINT_URL']).toBe(SIDECAR);
+      expect(JSON.stringify(env)).not.toContain('AKIAREAL');
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it('a literal URL is passed through as-is, never re-signed, and signed with the real identity', async () => {
+    const w = await mixed();
+    try {
+      const env = applyWorkloadAwsWiringToEnv(
+        {
+          ...REAL,
+          AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws',
+          AWS_ENDPOINT_URL_SQS: 'https://sqs.example.test',
+          AWS_REGION: 'us-east-1',
+        },
+        w
+      );
+      expect(env['AWS_ENDPOINT_URL_SQS']).toBe('https://sqs.example.test');
+      expect(env['AWS_ACCESS_KEY_ID']).toBe('AKIAREAL');
+      expect(effectiveLoopbackPorts(env, w)).toEqual([9361, MIXED_MODE_RESIGN_PORT]);
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it("names the real endpoint from the env's region, else the host's, and refuses without one", async () => {
+    const w = await mixed(9361, true, { AWS_REGION: 'ap-northeast-1' });
+    try {
+      expect(
+        applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_SSM: 'real-aws' }, w)['AWS_ENDPOINT_URL_SSM']
+      ).toBe('https://ssm.ap-northeast-1.amazonaws.com');
+      expect(
+        applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_SSM: 'real-aws', AWS_DEFAULT_REGION: 'us-west-2' }, w)[
+          'AWS_ENDPOINT_URL_SSM'
+        ]
+      ).toBe('https://ssm.us-west-2.amazonaws.com');
+    } finally {
+      w.dispose();
+    }
+    const noRegion = await mixed(9365);
+    try {
+      expect(() => applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_SSM: 'real-aws' }, noRegion)).toThrow(
+        /needs the workload's region/
+      );
+      // A global service outside its signing region cannot be signed right.
+      expect(() =>
+        applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_IAM: 'real-aws', AWS_REGION: 'eu-west-1' }, noRegion)
+      ).toThrow(/accepts only requests signed for us-east-1/);
+    } finally {
+      noRegion.dispose();
+    }
+  });
+
+  it('without --aws-emulator "real-aws" is dropped (a no-op), on a service variable and on the bare one', async () => {
+    const forward = await resolveWorkloadAwsWiring({ env: {}, homeDir: home });
+    const env = applyWorkloadAwsWiringToEnv(
+      { ...REAL, AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws', AWS_ENDPOINT_URL: 'real-aws', TABLE_NAME: 't' },
+      forward
+    );
+    expect(env).toEqual({ ...REAL, TABLE_NAME: 't' });
+  });
+
+  it('refuses "real-aws" under --aws-emulator without mixed-mode wiring, and the old sentinel anywhere', async () => {
+    writeEmulatorRun(9366);
+    const full = await resolveWorkloadAwsWiring({
+      awsEmulator: 'https://127.0.0.1:9366',
+      homeDir: home,
+      env: {},
+      probeHealth: healthy,
+    });
+    try {
+      expect(() => applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_STS: 'real-aws' }, full)).toThrow(
+        /under --aws-emulator without mixed-mode wiring/
+      );
+      expect(() => applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_STS: 'aws-emulator' }, full)).toThrow(
+        /no longer supported/
+      );
+    } finally {
+      full.dispose();
+    }
     const forward = await resolveWorkloadAwsWiring({ env: {}, homeDir: home });
     expect(() =>
       applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' }, forward)
-    ).toThrow(/outside mixed mode.*--aws-emulator/);
+    ).toThrow(/no longer supported/);
   });
 
-  it('effectiveLoopbackPorts adds the emulator port when the env uses the sidecar, and the plan splits them', async () => {
+  it('every workload uses the sidecar: effectiveLoopbackPorts adds the emulator port and the plan splits them', async () => {
     const w = await mixed();
     try {
-      const wired = applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' }, w);
+      const wired = applyWorkloadAwsWiringToEnv({ AWS_REGION: 'us-east-1' }, w);
       const ports = effectiveLoopbackPorts(wired, w);
       expect(ports).toEqual([9361, MIXED_MODE_RESIGN_PORT]);
       expect(loopbackForwarderPlan(w, ports)).toEqual({
         ports: [9361],
         resignConfigHostPath: w.mixed!.resignConfigHostPath,
       });
-      // A workload with no sentinel needs no forwarder at all.
-      expect(effectiveLoopbackPorts(applyWorkloadAwsWiringToEnv({}, w), w)).toEqual([]);
-      // A literal emulator URL gets the TCP forwarder only (no re-signing).
-      const literal = effectiveLoopbackPorts({ AWS_ENDPOINT_URL_SQS: 'https://127.0.0.1:9361' }, w);
+      // A container env that replaced the global endpoint with a literal needs only the TCP forwarder.
+      const literal = effectiveLoopbackPorts({ AWS_ENDPOINT_URL: 'https://127.0.0.1:9361' }, w);
       expect(loopbackForwarderPlan(w, literal)).toEqual({ ports: [9361] });
     } finally {
       w.dispose();
@@ -257,27 +366,38 @@ describe('applyWorkloadAwsWiringToEnv — mixed mode', () => {
   });
 });
 
-describe('activateWorkloadAwsWiring — sentinels in --env-vars', () => {
+describe('activateWorkloadAwsWiring — exceptions in --env-vars', () => {
   function envFile(content: unknown): string {
     const f = path.join(home, 'env.json');
     writeFileSync(f, JSON.stringify(content));
     return f;
   }
 
-  it('refuses a sentinel without --aws-emulator, naming the flag', async () => {
-    const f = envFile({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
-    await expect(activateWorkloadAwsWiring({ envVars: f })).rejects.toThrow(
-      /AWS_ENDPOINT_URL_DYNAMODB.*needs --aws-emulator \[url\] \(or CDK_LOCAL_AWS_EMULATOR\)/
-    );
+  it('without --aws-emulator a "real-aws" file is accepted and changes nothing', async () => {
+    const f = envFile({
+      Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws', AWS_ENDPOINT_URL: 'real-aws' },
+    });
+    const w = await activateWorkloadAwsWiring({ envVars: f });
+    expect(w.mode).toBe('forward');
+    expect(w.mixed).toBeUndefined();
+    expect(getAwsEmulatorServiceRouting()).toBeUndefined();
   });
 
-  it('a file without sentinels changes nothing', async () => {
+  it('refuses the old "aws-emulator" sentinel with or without the flag', async () => {
+    const f = envFile({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
+    await expect(activateWorkloadAwsWiring({ envVars: f })).rejects.toThrow(/no longer supported/);
+    await expect(
+      activateWorkloadAwsWiring({ envVars: f, awsEmulator: 'https://127.0.0.1:1' })
+    ).rejects.toThrow(/no longer supported/);
+  });
+
+  it('a file without exceptions changes nothing', async () => {
     const f = envFile({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'https://example.com' } });
     const w = await activateWorkloadAwsWiring({ envVars: f });
     expect(w.mixed).toBeUndefined();
   });
 
-  it("routes cdk-local's own clients per service in mixed mode (#898)", async () => {
+  it("routes cdk-local's own clients per service in mixed mode: everything but the exceptions reads the emulator", async () => {
     // A healthy fake emulator, found through HOME like a real run.
     const tls = createMixedModeTlsMaterials();
     const server = createHttpsServer({ key: tls.keyPem, cert: tls.certPem }, (_req, res) => {
@@ -293,26 +413,54 @@ describe('activateWorkloadAwsWiring — sentinels in --env-vars', () => {
     process.env['HOME'] = home;
     setAwsEndpointOverride({ endpoint: 'https://stale' });
     try {
-      const f = envFile({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
+      const file = {
+        Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' },
+        Fn: { AWS_ENDPOINT_URL_STS: 'real-aws' },
+      };
+      const f = envFile(file);
       const w = await activateWorkloadAwsWiring({ envVars: f, awsEmulator: `https://127.0.0.1:${port}` });
-      expect(w.mixed?.services).toEqual(['DYNAMODB']);
-      // No process-wide override: only the routed service reads the emulator.
+      expect(w.mixed?.realServices).toEqual(['SECRETS_MANAGER', 'STS']);
+      // No process-wide override: each client picks its side per service.
       expect(getAwsEndpointOverride()).toBeUndefined();
       expect(getAwsEmulatorServiceRouting()).toEqual({
-        services: ['DYNAMODB'],
+        realServices: ['SECRETS_MANAGER', 'STS'],
         override: w.mixed!.emulatorClientOverride,
-        // The parsed file, so a call made for one workload routes by its own sentinels (#902).
-        envOverrides: { Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } },
+        // The parsed file, so a call made for one workload routes by its own exceptions (#902).
+        envOverrides: file,
       });
       expect(isAwsServiceRoutedToEmulator('DYNAMODB')).toBe(true);
       expect(isAwsServiceRoutedToEmulator('SECRETS_MANAGER')).toBe(false);
-      // A later run without sentinels clears it.
+      // A per-section exception routes only that workload's calls real.
+      expect(isAwsServiceRoutedToEmulator('STS')).toBe(true);
+      expect(isAwsServiceRoutedToEmulator('STS', { logicalId: 'Fn' })).toBe(false);
+      // A later run without exceptions clears it.
       await activateWorkloadAwsWiring({});
       expect(getAwsEmulatorServiceRouting()).toBeUndefined();
     } finally {
       process.env['HOME'] = savedHome;
       await new Promise((r) => server.close(r));
     }
+  });
+});
+
+describe('takeAwsEmulatorStateSourceHint (Plan A)', () => {
+  it('answers once under --aws-emulator, naming the state-source flags and --env-vars; never without it', async () => {
+    resetAwsEmulatorStateSourceHintForTest();
+    expect(takeAwsEmulatorStateSourceHint()).toBeUndefined();
+    writeEmulatorRun(9367);
+    const w = await resolveWorkloadAwsWiring({
+      awsEmulator: 'https://127.0.0.1:9367',
+      homeDir: home,
+      env: {},
+      probeHealth: healthy,
+    });
+    setActiveWorkloadAwsWiring(w);
+    const hint = takeAwsEmulatorStateSourceHint();
+    expect(hint).toMatch(/--from-state \(the stack deployed into AWS Emulator with that host's own deploy\)/);
+    expect(hint).toMatch(/--from-cfn-stack \(the stack deployed into AWS Emulator with `cdk deploy`\)/);
+    expect(hint).toMatch(/--env-vars/);
+    expect(takeAwsEmulatorStateSourceHint()).toBeUndefined();
+    resetAwsEmulatorStateSourceHintForTest();
   });
 });
 

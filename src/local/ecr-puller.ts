@@ -8,7 +8,7 @@ import {
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
-import { buildProxyClientConfig } from '../utils/aws-proxy.js';
+import { deployArtifactClientConfig, deployArtifactsReadEmulator } from '../utils/aws-proxy.js';
 import { workloadStsClientConfig } from '../utils/workload-identity.js';
 import { buildStsClientConfig } from '../utils/profile-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -316,12 +316,21 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // Authenticate against the URI's region (NOT the caller region).
   // When `assumed` is set, the ECR client uses those temporary
   // credentials; otherwise the default credential chain.
+  // Under --aws-emulator the token comes from the emulator, where the stack
+  // was deployed, whatever the "real-aws" exceptions; its keys are then the
+  // only identity.
   const ecr = new ECRClient({
-    ...buildProxyClientConfig({ profile: options.profile }),
+    ...deployArtifactClientConfig({ profile: options.profile }),
     region: parsed.region,
     // Assumed-role creds (the `ecrRoleArn` path) take precedence; otherwise
     // authenticate as the supplied `--profile` rather than the default chain.
-    ...(assumed ? { credentials: assumed } : options.profile ? { profile: options.profile } : {}),
+    ...(deployArtifactsReadEmulator()
+      ? {}
+      : assumed
+        ? { credentials: assumed }
+        : options.profile
+          ? { profile: options.profile }
+          : {}),
   });
   try {
     await ecrLogin(ecr, {

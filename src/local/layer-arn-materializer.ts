@@ -5,7 +5,11 @@ import { dirname, join, normalize, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
-import { proxyAwareFetch } from '../utils/aws-proxy.js';
+import {
+  deployArtifactClientConfig,
+  deployArtifactsReadEmulator,
+  proxyAwareFetch,
+} from '../utils/aws-proxy.js';
 import { workloadClientConfig } from '../utils/workload-identity.js';
 import { getLogger } from '../utils/logger.js';
 import type { ResolvedArnLambdaLayer } from './lambda-resolver.js';
@@ -378,18 +382,21 @@ async function defaultLambdaClientFactory(): Promise<
 > {
   const { LambdaClient } = await import('@aws-sdk/client-lambda');
   return (region, credentials) =>
+    // Under --aws-emulator the layer is read from the emulator, where the
+    // stack was deployed; its keys are then the only identity.
     new LambdaClient({
-      ...workloadClientConfig(),
+      ...(deployArtifactsReadEmulator() ? deployArtifactClientConfig() : workloadClientConfig()),
       region,
-      ...(credentials && {
-        credentials: {
-          accessKeyId: credentials.accessKeyId,
-          secretAccessKey: credentials.secretAccessKey,
-          ...(credentials.sessionToken !== undefined && {
-            sessionToken: credentials.sessionToken,
-          }),
-        },
-      }),
+      ...(credentials &&
+        !deployArtifactsReadEmulator() && {
+          credentials: {
+            accessKeyId: credentials.accessKeyId,
+            secretAccessKey: credentials.secretAccessKey,
+            ...(credentials.sessionToken !== undefined && {
+              sessionToken: credentials.sessionToken,
+            }),
+          },
+        }),
     });
 }
 

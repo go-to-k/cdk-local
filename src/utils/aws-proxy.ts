@@ -14,7 +14,7 @@ import { getLogger } from './logger.js';
 import { formatAuthority } from './url-authority.js';
 import { isLoopbackHost } from './loopback-host.js';
 // Function-only import: the matcher runs at call time, never at module load.
-import { emulatedServicesForWorkload } from '../local/aws-emulator-mixed-mode.js';
+import { realAwsServicesForWorkload } from '../local/aws-emulator-mixed-mode.js';
 
 // Re-exported for this module's existing importers; the implementation is
 // shared with `local/studio-proxy` in `utils/loopback-host` (issue #666).
@@ -424,23 +424,24 @@ export function getAwsEndpointOverride(): AwsEndpointOverride | undefined {
 /**
  * AWS Emulator mixed mode for cdk-local's OWN clients: the endpoint service
  * ids (`AWS_ENDPOINT_URL_<ID>` suffixes, {@link normalizeAwsEndpointServiceId})
- * an `--env-vars` sentinel routed to the emulator, and the emulator's
- * endpoint, CA and keys. A client built for one of these services talks to the
- * emulator directly from the host; every other client stays on real AWS with
- * the real identity.
+ * an `--env-vars` `"real-aws"` exception sends to real AWS, and the emulator's
+ * endpoint, CA and keys. A client built for any OTHER service talks to the
+ * emulator directly from the host (its keys and CA); a client of an excepted
+ * service stays on real AWS with the real identity.
  */
 export interface AwsEmulatorServiceRouting {
   /**
-   * Every service a sentinel routes, in any section: the set for a call made
-   * with no workload context.
+   * The services excepted to real AWS for a call made with no workload
+   * context: the `Parameters` exceptions when {@link envOverrides} is given,
+   * else exactly this list.
    */
-  services: readonly string[];
+  realServices: readonly string[];
   override: AwsEndpointOverride;
   /**
    * The parsed `--env-vars` file. With it, a call made FOR one workload
-   * ({@link AwsEmulatorWorkload}) routes by that workload's own sentinels
-   * (`emulatedServicesForWorkload`), as its runtime calls do; without it, by
-   * {@link services}.
+   * ({@link AwsEmulatorWorkload}) routes by that workload's own exceptions
+   * (`realAwsServicesForWorkload`), as its runtime calls do, and a call with
+   * no workload by the `Parameters` exceptions alone.
    */
   envOverrides?: Readonly<Record<string, unknown>> | undefined;
 }
@@ -449,8 +450,8 @@ export interface AwsEmulatorServiceRouting {
  * The workload a call is made for, by the keys its `--env-vars` sections
  * match: a Lambda function or an AgentCore runtime by `logicalId` and
  * `cdkPath` (`aws:cdk:path`), an ECS container by `containerName`. In AWS
- * Emulator mixed mode such a call routes by that workload's own sentinels
- * (`Parameters` plus its own sections) instead of the run's.
+ * Emulator mixed mode such a call routes by that workload's own exceptions
+ * (`Parameters` plus its own sections) instead of the `Parameters` ones.
  */
 export interface AwsEmulatorWorkload {
   logicalId?: string | undefined;
@@ -460,7 +461,7 @@ export interface AwsEmulatorWorkload {
 
 let serviceRouting:
   | {
-      services: ReadonlySet<string>;
+      realServices: ReadonlySet<string>;
       override: AwsEndpointOverride;
       envOverrides: Readonly<Record<string, unknown>> | undefined;
     }
@@ -470,7 +471,7 @@ let serviceRouting:
  * The `AWS_ENDPOINT_URL_<ID>` form of an endpoint service id, as the AWS SDKs
  * derive it from a client's `serviceId`: spaces become underscores, then
  * uppercase (`Secrets Manager` -> `SECRETS_MANAGER`). Exact, like the SDKs: a
- * spelling the SDK would not read (`SECRETSMANAGER`) routes nothing.
+ * spelling the SDK would not read (`SECRETSMANAGER`) matches nothing.
  */
 export function normalizeAwsEndpointServiceId(serviceId: string): string {
   return serviceId.trim().replace(/ /g, '_').toUpperCase();
@@ -483,7 +484,7 @@ export function normalizeAwsEndpointServiceId(serviceId: string): string {
 export function setAwsEmulatorServiceRouting(r: AwsEmulatorServiceRouting | undefined): void {
   serviceRouting = r
     ? {
-        services: new Set(r.services.map(normalizeAwsEndpointServiceId)),
+        realServices: new Set(r.realServices.map(normalizeAwsEndpointServiceId)),
         override: r.override,
         envOverrides: r.envOverrides,
       }
@@ -494,7 +495,7 @@ export function setAwsEmulatorServiceRouting(r: AwsEmulatorServiceRouting | unde
 export function getAwsEmulatorServiceRouting(): AwsEmulatorServiceRouting | undefined {
   return serviceRouting
     ? {
-        services: [...serviceRouting.services].sort(),
+        realServices: [...serviceRouting.realServices].sort(),
         override: serviceRouting.override,
         ...(serviceRouting.envOverrides && { envOverrides: serviceRouting.envOverrides }),
       }
@@ -502,33 +503,32 @@ export function getAwsEmulatorServiceRouting(): AwsEmulatorServiceRouting | unde
 }
 
 /**
- * The endpoint service ids mixed mode routes to AWS Emulator: for `workload`
- * when given (its own sentinels, when the routing carries the `--env-vars`
- * file), else the run's. `undefined` outside mixed mode.
+ * The endpoint service ids mixed mode excepts to real AWS: for `workload`
+ * when given (its own exceptions), else the `Parameters` ones (when the
+ * routing carries the `--env-vars` file). `undefined` outside mixed mode.
+ * Every service NOT in the list goes to AWS Emulator.
  *
  * Host-side use case: a host's per-service name resolution for one workload
- * (`createMixedModeStateProvider`'s `emulatedServices`).
+ * (`createMixedModeStateProvider`'s `realServices`).
  */
-export function awsEmulatorRoutedServices(workload?: AwsEmulatorWorkload): string[] | undefined {
+export function awsEmulatorRealServices(workload?: AwsEmulatorWorkload): string[] | undefined {
   if (!serviceRouting) return undefined;
-  if (workload === undefined || serviceRouting.envOverrides === undefined) {
-    return [...serviceRouting.services].sort();
-  }
-  return emulatedServicesForWorkload(serviceRouting.envOverrides, workload);
+  if (serviceRouting.envOverrides === undefined) return [...serviceRouting.realServices].sort();
+  return realAwsServicesForWorkload(serviceRouting.envOverrides, workload ?? {});
 }
 
-/** Whether mixed mode routes `serviceId` to the emulator, for `workload` when given. */
+/** Whether mixed mode sends `serviceId` to the emulator (it is not excepted), for `workload` when given. */
 function mixedModeRoutes(serviceId: string, workload: AwsEmulatorWorkload | undefined): boolean {
-  return (
-    awsEmulatorRoutedServices(workload)?.includes(normalizeAwsEndpointServiceId(serviceId)) ?? false
-  );
+  const real = awsEmulatorRealServices(workload);
+  return real !== undefined && !real.includes(normalizeAwsEndpointServiceId(serviceId));
 }
 
 /**
  * Whether a client for `serviceId` talks to AWS Emulator: always under a
- * process-wide {@link AwsEndpointOverride} (`--aws-emulator` alone), and in
- * mixed mode exactly when an `--env-vars` sentinel routed that service — for
- * `workload` when given (its own sentinels), else in any section.
+ * process-wide {@link AwsEndpointOverride} (`--aws-emulator` with no
+ * exception), and in mixed mode unless an `--env-vars` `"real-aws"` exception
+ * names that service — for `workload` when given (its own exceptions), else
+ * the `Parameters` ones.
  */
 export function isAwsServiceRoutedToEmulator(
   serviceId: string,
@@ -541,24 +541,23 @@ export function isAwsServiceRoutedToEmulator(
 /**
  * The client-config fragment for an AWS SDK client of `serviceId`
  * (`SECRETS_MANAGER`, or the SDK's own `Secrets Manager`), spread FIRST in the
- * client's config. Under `--aws-emulator` alone it points at the emulator; in
- * mixed mode it points at the emulator (endpoint, CA, the emulator's keys) when
- * a sentinel routed `serviceId`, and otherwise equals
- * {@link buildProxyClientConfig}: real AWS, the proxy environment and the
- * default credential chain. When the fragment carries `endpoint`, add no
+ * client's config. Under `--aws-emulator` with no exception it points at the
+ * emulator; in mixed mode it points at the emulator (endpoint, CA, the
+ * emulator's keys) UNLESS a `"real-aws"` exception names `serviceId`, and then
+ * equals {@link buildProxyClientConfig}: real AWS, the proxy environment and
+ * the default credential chain. When the fragment carries `endpoint`, add no
  * credentials of your own: the emulator's keys are its only identity.
  *
  * `workload` names the workload the call is made for ({@link
  * AwsEmulatorWorkload}): mixed mode then routes by that workload's own
- * sentinels (`Parameters` plus its own sections), exactly as its runtime calls
- * go. Without it, a sentinel in ANY section routes the service: that is the
- * set for a call that serves no single workload.
+ * exceptions (`Parameters` plus its own sections), exactly as its runtime
+ * calls go. Without it, the `Parameters` exceptions alone: a call that serves
+ * no single workload reaches real AWS only for a service excepted for every
+ * workload.
  *
- * Keep STS (and anything that establishes the real identity) off this path,
- * or pass no service: routing STS would replace the real identity mixed mode
- * promises with the emulator's. A read made FOR the workload (a secret or a
- * parameter it receives) goes through `workloadClientConfig({ service })`
- * instead, which also honors `workloadIdentity: 'caller'`.
+ * A read made FOR the workload (a secret or a parameter it receives) goes
+ * through `workloadClientConfig({ service })` instead, which also honors
+ * `workloadIdentity: 'caller'`.
  *
  * Host-side use case: a host CLI (cdkd) building its own clients next to
  * cdk-local's — `--from-state` reads, for example — makes the same
@@ -576,12 +575,34 @@ export function awsClientConfigForService(
  * it process-wide: the endpoint, an https agent trusting its CA, and its
  * credentials.
  *
- * Host-side use case: mixed mode (`--aws-emulator` plus an `aws-emulator`
- * sentinel) keeps the process on real AWS and builds only the clients that
- * read the emulator (per-service name resolution) with this.
+ * Host-side use case: mixed mode (`--aws-emulator` plus a `"real-aws"`
+ * exception) keeps the process on real AWS and builds the clients that read
+ * the emulator (per-service name resolution) with this.
  */
 export function awsEndpointOverrideClientConfig(o: AwsEndpointOverride): AwsProxyClientConfig {
   return endpointOverrideClientConfig(o);
+}
+
+/** Whether {@link deployArtifactClientConfig} answers with the emulator (`--aws-emulator` is on). */
+export function deployArtifactsReadEmulator(): boolean {
+  return endpointOverride !== undefined || serviceRouting !== undefined;
+}
+
+/**
+ * The client config for a DEPLOY ARTIFACT read (the ECR image token, a fromS3
+ * code bundle, a literal layer ARN): under `--aws-emulator` these always read
+ * the emulator, where the stack was deployed, whatever `"real-aws"`
+ * exceptions the `--env-vars` file holds (exceptions route data the workload
+ * reads and writes, not the code it runs). Otherwise {@link
+ * buildProxyClientConfig}. When the fragment carries `endpoint`, add no
+ * credentials of your own.
+ */
+export function deployArtifactClientConfig(
+  opts: { profile?: string | undefined } = {}
+): AwsProxyClientConfig {
+  if (!endpointOverride && serviceRouting)
+    return endpointOverrideClientConfig(serviceRouting.override);
+  return buildProxyClientConfig(opts);
 }
 
 function endpointOverrideClientConfig(o: AwsEndpointOverride): AwsProxyClientConfig {
@@ -661,11 +682,12 @@ export function buildProxyRequestHandler(): NodeHttpHandler {
  * `requestHandler` stays.
  *
  * `service` is the client's endpoint service id ({@link
- * awsClientConfigForService}): in AWS Emulator mixed mode a routed service
- * gets the emulator's fragment instead, judged for `workload` when given. Omit it only for a client that must
- * stay on real AWS in mixed mode (identity: STS; deploy artifacts such as the
- * ECR image, a fromS3 bundle or a layer; `--from-cfn-stack`'s real side;
- * `start-cloudfront`, which reads its origins by their real names);
+ * awsClientConfigForService}): in AWS Emulator mixed mode every service gets
+ * the emulator's fragment unless a `"real-aws"` exception names it, judged for
+ * `workload` when given. Omit it only for a client that must stay on real AWS
+ * in mixed mode (the STS hops that establish the workload's real identity;
+ * `--from-cfn-stack`'s real side); deploy artifacts use
+ * {@link deployArtifactClientConfig}.
  * `tests/unit/utils/own-aws-client-routing.test.ts` enumerates every client.
  *
  * Host-side use case: a host CLI (e.g. cdkd) constructing its own AWS SDK

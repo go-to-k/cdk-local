@@ -127,6 +127,10 @@ runs a command against a local AWS Emulator. The URL defaults to
 - cdk-local's own AWS calls — `--from-cfn-stack` reads, `{{resolve:...}}`,
   STS — go to the emulator, so a stack deployed there with `cdk deploy`
   binds with `--from-cfn-stack`.
+- With no state source, a template environment variable that references a
+  resource is dropped with a warning, and one hint follows: pass
+  `--from-cfn-stack` (a stack deployed into the emulator with `cdk deploy`),
+  a host CLI's `--from-state`, or `--env-vars`.
 - Containers get `AWS_ENDPOINT_URL=<url>`, `AWS_EC2_METADATA_DISABLED=true`
   and `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, and only the emulator's
   credentials: the keys in `~/.aws/emulator/<port>/emulator_credentials`,
@@ -153,25 +157,34 @@ runs a command against a local AWS Emulator. The URL defaults to
 Deploy and destroy are not part of cdk-local; deploy into the emulator with
 your usual tool.
 
-### Mixed mode (`"aws-emulator"` in `--env-vars`)
+### Mixed mode (`"real-aws"` in `--env-vars`)
 
-To send only some services to AWS Emulator and the rest to real AWS, set
-`AWS_ENDPOINT_URL_<SERVICE>` to `"aws-emulator"` in the `--env-vars` file
-(under `Parameters` for every workload, or under one resource's section)
-and pass `--aws-emulator`:
+`--aws-emulator` makes the emulator the target for everything; `"real-aws"`
+carves out exceptions. To keep chosen services on real AWS, set their
+`AWS_ENDPOINT_URL_<SERVICE>` to `"real-aws"` in the `--env-vars` file (under
+`Parameters` for every workload, or under one resource's section) and pass
+`--aws-emulator`:
 
 ```json
-{ "Parameters": { "AWS_ENDPOINT_URL_DYNAMODB": "aws-emulator" } }
+{ "Parameters": { "AWS_ENDPOINT_URL_SECRETS_MANAGER": "real-aws" } }
 ```
 
-Containers then keep your real credentials, and a re-signing sidecar signs
-each emulator-bound request again with the emulator's keys, so the emulator
-keeps its signature checking. S3 streaming uploads are re-signed up to
-100 MiB per request. `--from-cfn-stack` resolves the routed services' names
-from the emulator, and cdk-local's own reads for a workload
-(`{{resolve:...}}`, ECS `Secrets`) take the same per-service route. The sentinel without `--aws-emulator` is an error. Full
-rules, the credential model and the two setups it is made for:
-[local-emulation.md#mixed-mode-chosen-services-in-aws-emulator-the-rest-in-real-aws](./local-emulation.md#mixed-mode-chosen-services-in-aws-emulator-the-rest-in-real-aws).
+Every other service stays on the emulator, so a forgotten entry fails
+closed. A container that keeps an exception then holds your real
+credentials: its excepted services get their real regional endpoint, and
+every other request goes through a re-signing sidecar that signs it again with
+the emulator's keys, so the emulator keeps its signature checking. S3
+streaming uploads are re-signed up to 100 MiB per request.
+`--from-cfn-stack` resolves the excepted services' names from the stack
+deployed to real AWS and every other name from the emulator's copy, so deploy
+the stack to both under the same name; cdk-local's own reads for a workload
+(`{{resolve:...}}`, ECS `Secrets`) take the same per-service route. Without
+`--aws-emulator` a `"real-aws"` entry is a no-op, so one `env.json` works with
+and without the flag. **Breaking change:** the old `"aws-emulator"` value
+(which sent one service to the emulator) is refused with a migration message.
+Full rules, the value table, the credential model and the two setups it is
+made for:
+[local-emulation.md#mixed-mode-everything-in-aws-emulator-chosen-services-in-real-aws](./local-emulation.md#mixed-mode-everything-in-aws-emulator-chosen-services-in-real-aws).
 
 ## Extra arguments are rejected, not discarded
 

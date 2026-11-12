@@ -1,6 +1,7 @@
 import { getEmbedConfig } from './embed-config.js';
 import { getLogger } from '../utils/logger.js';
 import { workloadClientConfig } from '../utils/workload-identity.js';
+import { isAwsServiceRoutedToEmulator } from '../utils/aws-proxy.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import {
@@ -219,17 +220,19 @@ function defaultFetchObject(
       init = (async () => {
         const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
         const client = new S3Client({
-          ...workloadClientConfig(),
+          ...workloadClientConfig({ service: 'S3' }),
           ...(options.region && { region: options.region }),
-          ...(options.credentials && {
-            credentials: {
-              accessKeyId: options.credentials.accessKeyId,
-              secretAccessKey: options.credentials.secretAccessKey,
-              ...(options.credentials.sessionToken && {
-                sessionToken: options.credentials.sessionToken,
-              }),
-            },
-          }),
+          // Under AWS Emulator the emulator's keys are the only identity.
+          ...(options.credentials &&
+            !isAwsServiceRoutedToEmulator('S3') && {
+              credentials: {
+                accessKeyId: options.credentials.accessKeyId,
+                secretAccessKey: options.credentials.secretAccessKey,
+                ...(options.credentials.sessionToken && {
+                  sessionToken: options.credentials.sessionToken,
+                }),
+              },
+            }),
         });
         return {
           client: client as unknown as S3Access['client'],

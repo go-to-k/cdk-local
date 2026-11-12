@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 // go-to-k/cdk-local#898: in AWS Emulator mixed mode, cdk-local's OWN pre-start
-// AWS calls route per service exactly like the workload's runtime calls — a
-// sentinel-routed service reads the emulator (its endpoint, CA and keys) from
-// the host, every other service stays on real AWS with the real identity.
-// The matrix: each own call site × {service emulated, not emulated}, plus the
-// two modes that must not change (no emulator; `--aws-emulator` alone).
+// AWS calls route per service exactly like the workload's runtime calls — every
+// service reads the emulator (its endpoint, CA and keys) from the host, except
+// one a `"real-aws"` exception names, which stays on real AWS with the real
+// identity. The matrix: each own call site × {service excepted, not excepted},
+// plus the two modes that must not change (no emulator; `--aws-emulator` alone).
 
 const { ctorArgs, respond } = vi.hoisted(() => {
   const ctorArgs: Array<{ cls: string; cfg: Record<string, unknown> }> = [];
@@ -216,14 +216,14 @@ afterEach(() => {
 
 describe('mixed mode: own pre-start calls route per service (#898)', () => {
   for (const site of SITES) {
-    it(`${site.name}: emulator when ${site.service} is routed`, async () => {
-      setAwsEmulatorServiceRouting({ services: ['DYNAMODB', site.service], override: OVERRIDE });
-      expect(await sideUsedBy(site)).toBe('emulator');
+    it(`${site.name}: real AWS when ${site.service} is excepted`, async () => {
+      setAwsEmulatorServiceRouting({ realServices: ['DYNAMODB', site.service], override: OVERRIDE });
+      expect(await sideUsedBy(site)).toBe('real');
     });
 
-    it(`${site.name}: real AWS when only another service is routed`, async () => {
-      setAwsEmulatorServiceRouting({ services: ['DYNAMODB'], override: OVERRIDE });
-      expect(await sideUsedBy(site)).toBe('real');
+    it(`${site.name}: emulator when only another service is excepted`, async () => {
+      setAwsEmulatorServiceRouting({ realServices: ['DYNAMODB'], override: OVERRIDE });
+      expect(await sideUsedBy(site)).toBe('emulator');
     });
 
     it(`${site.name}: unchanged without the emulator (real) and under --aws-emulator alone (emulator)`, async () => {
@@ -233,11 +233,8 @@ describe('mixed mode: own pre-start calls route per service (#898)', () => {
     });
   }
 
-  it("--from-cfn-stack's real side keeps reading the real stack even when CLOUDFORMATION / LAMBDA are routed", async () => {
-    setAwsEmulatorServiceRouting({
-      services: ['CLOUDFORMATION', 'LAMBDA', 'BEDROCK_AGENTCORE_CONTROL'],
-      override: OVERRIDE,
-    });
+  it("--from-cfn-stack's own CloudFormation / Lambda clients (no service) stay on real AWS, whatever is excepted", async () => {
+    setAwsEmulatorServiceRouting({ realServices: [], override: OVERRIDE });
     const p = new CfnLocalStateProvider({ cfnStackName: 'S', region: REGION });
     ctorArgs.length = 0;
     await p.resolveDeployedFunctionEnv('fn');
@@ -248,10 +245,10 @@ describe('mixed mode: own pre-start calls route per service (#898)', () => {
     for (const c of cfn) expect(await sideOf(c.cfg)).toBe('real');
   });
 
-  it("caller mode with a recorded role, and --profile: a routed service still signs only with the emulator's keys", async () => {
+  it("caller mode with a recorded role, and --profile: a service sent to the emulator still signs only with the emulator's keys", async () => {
     setEmbedConfig({ workloadIdentity: 'caller' });
     recordAssumedRole(REAL_KEY, { accessKeyId: 'assumed-role-key-id', secretAccessKey: 'x'.repeat(40) });
-    setAwsEmulatorServiceRouting({ services: ['SECRETS_MANAGER'], override: OVERRIDE });
+    setAwsEmulatorServiceRouting({ realServices: ['SSM'], override: OVERRIDE });
     ctorArgs.length = 0;
     const r = new DynamicReferenceResolver({ profile: 'dev' });
     await r.resolveString('{{resolve:secretsmanager:probe}}', { region: REGION, consumer: 'test' });
@@ -259,11 +256,11 @@ describe('mixed mode: own pre-start calls route per service (#898)', () => {
     r.dispose();
     const sm = ctorArgs.find((c) => c.cls === 'SecretsManagerClient')!.cfg;
     expect(await sideOf(sm)).toBe('emulator');
-    // Not routed: real AWS, the profile's chain (no injected caller triple under a profile).
+    // Excepted (SSM): real AWS, the profile's chain (no injected caller triple under a profile).
     const ssm = ctorArgs.find((c) => c.cls === 'SSMClient')!.cfg;
     expect(ssm['endpoint']).toBeUndefined();
     expect(ssm['profile']).toBe('dev');
-    // Without a profile, the unrouted client gets the caller's pre-assume triple.
+    // Without a profile, the excepted client gets the caller's pre-assume triple.
     ctorArgs.length = 0;
     const r2 = new DynamicReferenceResolver();
     await r2.resolveString('{{resolve:ssm:/probe}}', { region: REGION, consumer: 'test' });
@@ -276,50 +273,57 @@ describe('mixed mode: own pre-start calls route per service (#898)', () => {
     expect(await sideOf(ctorArgs.find((c) => c.cls === 'SecretsManagerClient')!.cfg)).toBe('emulator');
   });
 
-  it('start-cloudfront keeps its KeyValueStore read on real AWS (real names, realAwsOnly state)', async () => {
-    setAwsEmulatorServiceRouting({ services: ['CLOUDFRONT_KEYVALUESTORE'], override: OVERRIDE });
-    ctorArgs.length = 0;
-    createDeployedKvsDataSource({
+  it('start-cloudfront routes its KeyValueStore read per service: the emulator unless CLOUDFRONT_KEYVALUESTORE is excepted', async () => {
+    const kvs = {
       kvsArn: 'arn:aws:cloudfront::123456789012:key-value-store/x',
       credentials: REAL_KEY,
-    });
+    };
+    setAwsEmulatorServiceRouting({ realServices: ['CLOUDFRONT_KEYVALUESTORE'], override: OVERRIDE });
+    ctorArgs.length = 0;
+    createDeployedKvsDataSource(kvs);
     expect(ctorArgs[0]!.cfg['endpoint']).toBeUndefined();
     expect(ctorArgs[0]!.cfg['credentials']).toEqual(REAL_KEY);
+    // Not excepted: the emulator, signed with its keys only (the caller's keys are not injected).
+    setAwsEmulatorServiceRouting({ realServices: [], override: OVERRIDE });
+    ctorArgs.length = 0;
+    createDeployedKvsDataSource(kvs);
+    expect(await sideOf(ctorArgs[0]!.cfg)).toBe('emulator');
   });
 
   it('the service id matches the SDK spelling exactly, as the workload SDK reads it', async () => {
-    setAwsEmulatorServiceRouting({ services: ['SECRETS_MANAGER'], override: OVERRIDE });
-    expect(awsClientConfigForService('SECRETS_MANAGER').endpoint).toBe(EMU_URL);
-    expect(awsClientConfigForService('Secrets Manager').endpoint).toBe(EMU_URL);
-    expect(awsClientConfigForService('secrets_manager').endpoint).toBe(EMU_URL);
-    // A spelling no SDK reads routes nothing.
-    expect(awsClientConfigForService('SECRETSMANAGER').endpoint).toBeUndefined();
-    expect(awsClientConfigForService('SSM').endpoint).toBeUndefined();
+    setAwsEmulatorServiceRouting({ realServices: ['SECRETS_MANAGER'], override: OVERRIDE });
+    expect(awsClientConfigForService('SECRETS_MANAGER').endpoint).toBeUndefined();
+    expect(awsClientConfigForService('Secrets Manager').endpoint).toBeUndefined();
+    expect(awsClientConfigForService('secrets_manager').endpoint).toBeUndefined();
+    // A spelling no SDK reads is not the exception: it goes to the emulator, like every other service.
+    expect(awsClientConfigForService('SECRETSMANAGER').endpoint).toBe(EMU_URL);
+    expect(awsClientConfigForService('SSM').endpoint).toBe(EMU_URL);
   });
 });
 
 // go-to-k/cdk-local#902: a call made FOR one workload routes by that
-// workload's own sentinels (`Parameters` plus its own sections, a section's
-// `null` / literal clearing a `Parameters` sentinel), exactly as its runtime
-// calls go; a call with no workload context keeps the run-wide set.
+// workload's own `"real-aws"` exceptions (`Parameters` plus its own sections, a
+// section's `null` / literal clearing a `Parameters` exception), exactly as its
+// runtime calls go; a call with no workload context uses the `Parameters`
+// exceptions alone (a per-section exception does not make it real).
 describe('mixed mode: own pre-start calls route per workload (#902)', () => {
   const FN_A = { logicalId: 'FnA1234', cdkPath: 'Stack/FnA/Resource' };
   const FN_B = { logicalId: 'FnB5678', cdkPath: 'Stack/FnB/Resource' };
   const ENV_OVERRIDES = {
-    Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' },
+    Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' },
     // A's section by its L2 path (prefix of the L1 path, as the env merge matches).
     'Stack/FnA': {
-      AWS_ENDPOINT_URL_SSM: 'aws-emulator',
-      AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator',
+      AWS_ENDPOINT_URL_SSM: 'real-aws',
+      AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws',
     },
-    // B by logical ID: clears the Parameters sentinel for itself.
+    // B by logical ID: clears the Parameters exception for itself.
     FnB5678: { AWS_ENDPOINT_URL_DYNAMODB: null, OTHER: 'x' },
-    app: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator' },
+    app: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' },
     sidecar: { AWS_ENDPOINT_URL_DYNAMODB: 'http://localhost:8000' },
   };
   const install = (envOverrides?: Record<string, unknown>): void =>
     setAwsEmulatorServiceRouting({
-      services: ['DYNAMODB', 'SECRETS_MANAGER', 'SSM'],
+      realServices: ['DYNAMODB', 'SECRETS_MANAGER', 'SSM'],
       override: OVERRIDE,
       ...(envOverrides && { envOverrides }),
     });
@@ -344,17 +348,18 @@ describe('mixed mode: own pre-start calls route per workload (#902)', () => {
     workload: Record<string, string> | undefined;
     side: Side;
   }> = [
-    { what: 'A (own SSM sentinel)', service: 'SSM', workload: FN_A, side: 'emulator' },
-    { what: 'B (no SSM sentinel)', service: 'SSM', workload: FN_B, side: 'real' },
-    { what: 'A (own Secrets Manager sentinel)', service: 'SECRETS_MANAGER', workload: FN_A, side: 'emulator' },
-    { what: 'B (no Secrets Manager sentinel)', service: 'SECRETS_MANAGER', workload: FN_B, side: 'real' },
-    { what: 'A (Parameters DynamoDB sentinel)', service: 'DYNAMODB', workload: FN_A, side: 'emulator' },
-    { what: 'B (clears the Parameters sentinel with null)', service: 'DYNAMODB', workload: FN_B, side: 'real' },
-    { what: 'container app (own sentinel)', service: 'SECRETS_MANAGER', workload: { containerName: 'app' }, side: 'emulator' },
-    { what: 'container sidecar (literal URL replaces the Parameters sentinel)', service: 'DYNAMODB', workload: { containerName: 'sidecar' }, side: 'real' },
-    { what: 'container other (Parameters only)', service: 'DYNAMODB', workload: { containerName: 'other' }, side: 'emulator' },
-    { what: 'container other (no own sentinel)', service: 'SSM', workload: { containerName: 'other' }, side: 'real' },
-    { what: 'no workload context (run-wide)', service: 'SSM', workload: undefined, side: 'emulator' },
+    { what: 'A (own SSM exception)', service: 'SSM', workload: FN_A, side: 'real' },
+    { what: 'B (no SSM exception)', service: 'SSM', workload: FN_B, side: 'emulator' },
+    { what: 'A (own Secrets Manager exception)', service: 'SECRETS_MANAGER', workload: FN_A, side: 'real' },
+    { what: 'B (no Secrets Manager exception)', service: 'SECRETS_MANAGER', workload: FN_B, side: 'emulator' },
+    { what: 'A (Parameters DynamoDB exception)', service: 'DYNAMODB', workload: FN_A, side: 'real' },
+    { what: 'B (clears the Parameters exception with null)', service: 'DYNAMODB', workload: FN_B, side: 'emulator' },
+    { what: 'container app (own exception)', service: 'SECRETS_MANAGER', workload: { containerName: 'app' }, side: 'real' },
+    { what: 'container sidecar (literal URL replaces the Parameters exception)', service: 'DYNAMODB', workload: { containerName: 'sidecar' }, side: 'emulator' },
+    { what: 'container other (Parameters only)', service: 'DYNAMODB', workload: { containerName: 'other' }, side: 'real' },
+    { what: 'container other (no own exception)', service: 'SSM', workload: { containerName: 'other' }, side: 'emulator' },
+    { what: 'no workload context (Parameters exceptions only): Parameters exception', service: 'DYNAMODB', workload: undefined, side: 'real' },
+    { what: 'no workload context (a per-section exception does not make it real)', service: 'SSM', workload: undefined, side: 'emulator' },
   ];
   for (const row of MATRIX) {
     it(`awsClientConfigForService(${row.service}) for ${row.what}: ${row.side}`, async () => {
@@ -364,13 +369,13 @@ describe('mixed mode: own pre-start calls route per workload (#902)', () => {
     });
   }
 
-  it('{{resolve:ssm}} / {{resolve:secretsmanager}}: A reads the emulator, B real AWS', async () => {
+  it('{{resolve:ssm}} / {{resolve:secretsmanager}}: A reads real AWS, B the emulator', async () => {
     install(ENV_OVERRIDES);
-    expect(await sideOfResolve('{{resolve:ssm:/p}}', 'SSMClient', FN_A)).toBe('emulator');
-    expect(await sideOfResolve('{{resolve:ssm:/p}}', 'SSMClient', FN_B)).toBe('real');
-    expect(await sideOfResolve('{{resolve:secretsmanager:s}}', 'SecretsManagerClient', FN_A)).toBe('emulator');
-    expect(await sideOfResolve('{{resolve:secretsmanager:s}}', 'SecretsManagerClient', FN_B)).toBe('real');
-    // No workload: the run-wide set (a sentinel in any section).
+    expect(await sideOfResolve('{{resolve:ssm:/p}}', 'SSMClient', FN_A)).toBe('real');
+    expect(await sideOfResolve('{{resolve:ssm:/p}}', 'SSMClient', FN_B)).toBe('emulator');
+    expect(await sideOfResolve('{{resolve:secretsmanager:s}}', 'SecretsManagerClient', FN_A)).toBe('real');
+    expect(await sideOfResolve('{{resolve:secretsmanager:s}}', 'SecretsManagerClient', FN_B)).toBe('emulator');
+    // No workload: the Parameters exceptions alone (A's SSM exception is its own section's).
     expect(await sideOfResolve('{{resolve:ssm:/p}}', 'SSMClient')).toBe('emulator');
   });
 
@@ -415,8 +420,8 @@ describe('mixed mode: own pre-start calls route per workload (#902)', () => {
       p.dispose();
       return sideOf(ctorArgs.find((c) => c.cls === 'SSMClient')!.cfg);
     };
-    expect(await sideFor(FN_A)).toBe('emulator');
-    expect(await sideFor(FN_B)).toBe('real');
+    expect(await sideFor(FN_A)).toBe('real');
+    expect(await sideFor(FN_B)).toBe('emulator');
     expect(await sideFor()).toBe('emulator');
   });
 
@@ -451,21 +456,22 @@ describe('mixed mode: own pre-start calls route per workload (#902)', () => {
     await r.resolveString('{{resolve:ssm:/p}}', { region: REGION, consumer: 'b', workload: FN_B });
     r.dispose();
     expect(routes).toEqual([
-      { workload: FN_A, emulator: true },
-      { workload: FN_B, emulator: false },
+      { workload: FN_A, emulator: false },
+      { workload: FN_B, emulator: true },
     ]);
   });
 
-  it('awsEmulatorRoutedServices: per workload with the --env-vars file, run-wide without it', async () => {
-    const { awsEmulatorRoutedServices } = await import('../../../src/utils/aws-proxy.js');
-    expect(awsEmulatorRoutedServices(FN_A)).toBeUndefined();
+  it('awsEmulatorRealServices: per workload with the --env-vars file, Parameters-only without a workload', async () => {
+    const { awsEmulatorRealServices } = await import('../../../src/utils/aws-proxy.js');
+    expect(awsEmulatorRealServices(FN_A)).toBeUndefined();
     install(ENV_OVERRIDES);
-    expect(awsEmulatorRoutedServices(FN_A)).toEqual(['DYNAMODB', 'SECRETS_MANAGER', 'SSM']);
-    expect(awsEmulatorRoutedServices(FN_B)).toEqual([]);
-    expect(awsEmulatorRoutedServices()).toEqual(['DYNAMODB', 'SECRETS_MANAGER', 'SSM']);
-    // A host that installs routing without the file keeps the run-wide set.
+    expect(awsEmulatorRealServices(FN_A)).toEqual(['DYNAMODB', 'SECRETS_MANAGER', 'SSM']);
+    expect(awsEmulatorRealServices(FN_B)).toEqual([]);
+    // No workload: the Parameters exceptions; A's per-section exceptions do not count.
+    expect(awsEmulatorRealServices()).toEqual(['DYNAMODB']);
+    // A host that installs routing without the file keeps the run-wide list.
     install();
-    expect(awsEmulatorRoutedServices(FN_B)).toEqual(['DYNAMODB', 'SECRETS_MANAGER', 'SSM']);
-    expect(await sideOf(awsClientConfigForService('SSM', { workload: FN_B }) as never)).toBe('emulator');
+    expect(awsEmulatorRealServices(FN_B)).toEqual(['DYNAMODB', 'SECRETS_MANAGER', 'SSM']);
+    expect(await sideOf(awsClientConfigForService('SSM', { workload: FN_B }) as never)).toBe('real');
   });
 });

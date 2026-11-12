@@ -865,14 +865,14 @@ export async function resolveDeployedS3Origins(
 
   const stack = stacks.find((s) => s.stackName === distribution.stackName);
   const synthRegion = stack?.region;
-  // The S3 origins are read on the host with real-AWS clients: their names
-  // must come from real AWS even in AWS Emulator mixed mode.
+  // The S3 origins are read on the host with clients routed per service
+  // (`service: 'S3'`), so in AWS Emulator mixed mode their names resolve per
+  // service too: from real AWS when S3 is excepted, else from the emulator.
   const provider = createLocalStateProvider(
     options as unknown as LocalStateSourceOptions,
     distribution.stackName,
     synthRegion,
-    extraStateProviders,
-    { realAwsOnly: true }
+    extraStateProviders
   );
   let record;
   try {

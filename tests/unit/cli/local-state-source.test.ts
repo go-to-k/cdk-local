@@ -431,12 +431,12 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
     setActiveWorkloadAwsWiring(undefined);
   });
 
-  it('wraps --from-cfn-stack in a per-service provider when the active wiring is mixed', async () => {
+  it('reads --from-cfn-stack from the emulator, with excepted services from real AWS, when the active wiring is mixed', async () => {
     const { setActiveWorkloadAwsWiring } = await import('../../../src/local/workload-aws-wiring.js');
     const plain = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
     expect(plain).toBeInstanceOf(CfnLocalStateProvider);
     plain?.dispose();
-    setActiveWorkloadAwsWiring({
+    const wiringWith = (realServices: string[]): Parameters<typeof setActiveWorkloadAwsWiring>[0] => ({
       mode: 'forward',
       env: {},
       scrubEnvKeys: [],
@@ -445,33 +445,37 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
       probeHealth: false,
       dispose: () => undefined,
       mixed: {
-        services: ['DYNAMODB'],
+        realServices,
         emulatorEndpoint: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
         resignPort: 47297,
         resignEndpoint: 'https://127.0.0.1:47297',
+        emulatorCredentials: { accessKeyId: 'EMU', secretAccessKey: 'e' },
         resignConfigHostPath: '/tmp/x',
         emulatorClientOverride: { endpoint: 'https://127.0.0.1:9297' },
       },
     });
+    setActiveWorkloadAwsWiring(wiringWith(['DYNAMODB']));
     const mixed = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
     expect(mixed).toBeDefined();
     expect(mixed).not.toBeInstanceOf(CfnLocalStateProvider);
-    expect(mixed!.label).toBe('--from-cfn-stack');
+    // The emulator is the primary side.
+    expect(mixed!.label).toBe('--from-cfn-stack (AWS Emulator)');
     expect(typeof mixed!.resolveDeployedFunctionEnv).toBe('function');
     mixed!.dispose();
-    // A caller that reads the resources itself with real-AWS clients opts out.
-    const real = createLocalStateProvider(
+    // No excepted service at all: the emulator provider alone, no composite.
+    setActiveWorkloadAwsWiring(wiringWith([]));
+    const emulatorOnly = createLocalStateProvider(
       { fromCfnStack: true, stackRegion: 'us-east-1' },
       'S',
-      undefined,
-      undefined,
-      { realAwsOnly: true }
+      undefined
     );
-    expect(real).toBeInstanceOf(CfnLocalStateProvider);
-    real!.dispose();
+    expect(emulatorOnly).toBeInstanceOf(CfnLocalStateProvider);
+    expect(emulatorOnly!.label).toBe('--from-cfn-stack (AWS Emulator)');
+    emulatorOnly!.dispose();
+    setActiveWorkloadAwsWiring(wiringWith(['DYNAMODB']));
 
     // The --from-cfn-stack path shares the merge: a stack only the emulator
-    // has warns that the real-routed resources are unresolved.
+    // has warns that the excepted (real-aws) resources keep their emulator names.
     const { getLogger } = await import('../../../src/utils/logger.js');
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const load = vi
@@ -490,9 +494,11 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
     try {
       const p = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
       const rec = await p!.load('S', 'us-east-1');
-      expect(Object.keys(rec!.resources)).toEqual(['Table']);
+      expect(Object.keys(rec!.resources)).toEqual(['Table', 'Secret']);
       expect(warn).toHaveBeenCalledWith(
-        expect.stringMatching(/^--from-cfn-stack: stack .*S.* could not be read from real AWS.*Secret \(.*AWS::SecretsManager::Secret/)
+        expect.stringMatching(
+          /^--from-cfn-stack \(AWS Emulator\): stack .*S.* could not be read from real AWS.*"real-aws" \(DYNAMODB\) keep their AWS Emulator names/
+        )
       );
       p!.dispose();
     } finally {
@@ -500,13 +506,43 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
       warn.mockRestore();
     }
 
+    // The reverse: a stack only real AWS has resolves just the excepted
+    // resources; the rest stay unresolved with a warning.
+    const warn2 = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const load2 = vi
+      .spyOn(CfnLocalStateProvider.prototype, 'load')
+      .mockImplementation(async function (this: CfnLocalStateProvider) {
+        if (this.label.includes('AWS Emulator')) return undefined;
+        return {
+          resources: {
+            Table: { physicalId: 't', resourceType: 'AWS::DynamoDB::Table', properties: {} },
+            Secret: { physicalId: 's', resourceType: 'AWS::SecretsManager::Secret', properties: {} },
+          },
+          outputs: {},
+          region: 'us-east-1',
+        } as never;
+      });
+    try {
+      const p = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
+      const rec = await p!.load('S', 'us-east-1');
+      expect(Object.keys(rec!.resources)).toEqual(['Table']);
+      expect(warn2).toHaveBeenCalledWith(
+        expect.stringMatching(/could not be read from AWS Emulator.*Secret \(.*AWS::SecretsManager::Secret/)
+      );
+      p!.dispose();
+    } finally {
+      load2.mockRestore();
+      warn2.mockRestore();
+    }
+    setActiveWorkloadAwsWiring(wiringWith(['DYNAMODB']));
+
     // go-to-k/cdk-local#902: names resolved for ONE workload follow its own
-    // sentinels. B routes nothing, so it reads every name from real AWS.
+    // exceptions. B excepts nothing, so it reads every name from the emulator.
     const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');
     setAwsEmulatorServiceRouting({
-      services: ['DYNAMODB'],
+      realServices: [],
       override: { endpoint: 'https://127.0.0.1:9297' },
-      envOverrides: { FnA: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } },
+      envOverrides: { FnA: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } },
     });
     try {
       const opts = { fromCfnStack: true, stackRegion: 'us-east-1' };
@@ -515,6 +551,7 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
       forA!.dispose();
       const forB = createLocalStateProvider(opts, 'S', undefined, undefined, { workload: { logicalId: 'FnB' } });
       expect(forB).toBeInstanceOf(CfnLocalStateProvider);
+      expect(forB!.label).toBe('--from-cfn-stack (AWS Emulator)');
       forB!.dispose();
     } finally {
       setAwsEmulatorServiceRouting(undefined);
