@@ -58,6 +58,8 @@ import {
   addImageOverrideOptions,
   ecsClusterOption,
   resolveEcsAssumeRoleOption,
+  loadMixedModeContainerStates,
+  type StateProviderForWorkload,
 } from './ecs-service-emulator.js';
 import {
   parseImageOverrideFlags,
@@ -69,6 +71,7 @@ import {
 import {
   createLocalStateProvider,
   resolveCfnFallbackRegion,
+  UNNAMED_WORKLOAD,
   type ExtraStateProviders,
   isCfnFlagPresent,
 } from './local-state-source.js';
@@ -285,12 +288,19 @@ async function localRunTaskCommand(
     // candidate-stack picker so the same provider drives both the
     // image-context state-load AND the post-pass cross-stack resolver.
     const candidate = pickCandidateStack(resolvedTarget, stacks);
-    stateProvider = createLocalStateProvider(
-      options,
-      candidate?.stackName ?? '',
-      await resolveCfnFallbackRegion(options, candidate?.region),
-      extraStateProviders
-    );
+    const stateRegion = await resolveCfnFallbackRegion(options, candidate?.region);
+    // AWS Emulator mixed mode: the shared names are the `Parameters`-only
+    // ones; a container whose own section routes other services reads its
+    // own (#905).
+    const stateProviderFor: StateProviderForWorkload = (workload) =>
+      createLocalStateProvider(
+        options,
+        candidate?.stackName ?? '',
+        stateRegion,
+        extraStateProviders,
+        { workload }
+      );
+    stateProvider = stateProviderFor(UNNAMED_WORKLOAD);
 
     // Build the optional substitution context BEFORE resolving the
     // target, so `Fn::Sub`-shaped ECR image URIs (pseudo parameters +
@@ -298,7 +308,12 @@ async function localRunTaskCommand(
     // `parseContainerImage`. STS / state-load are lazy — we only fire
     // them when at least one stack's template references the
     // placeholders.
-    const imageContext = await buildEcsImageResolutionContext(candidate, stateProvider, options);
+    const imageContext = await buildEcsImageResolutionContext(
+      candidate,
+      stateProvider,
+      options,
+      stateProviderFor
+    );
     const task = resolveEcsTaskTarget(resolvedTarget, stacks, imageContext);
     logger.info(
       `Target: ${displayStackName(`${task.stack.stackName}/${task.taskDefinitionLogicalId}`)} (family=${displayIdent(task.family)}, containers=${task.containers.length})`
@@ -655,7 +670,13 @@ async function assumeTaskRole(
 export async function buildEcsImageResolutionContext(
   candidate: StackInfo | undefined,
   stateProvider: LocalStateProvider | undefined,
-  options: LocalRunTaskOptions
+  options: LocalRunTaskOptions,
+  /**
+   * AWS Emulator mixed mode: the provider for one workload, so a container
+   * whose own `--env-vars` section routes other services reads its own names
+   * (#905). Omitted, every container reads `stateProvider`'s.
+   */
+  stateProviderFor?: StateProviderForWorkload
 ): Promise<EcsImageResolutionContext | undefined> {
   const logger = getLogger();
   if (!candidate) return undefined;
@@ -735,6 +756,9 @@ export async function buildEcsImageResolutionContext(
       if (ssmParameters.secureStringLogicalIds.length > 0) {
         ctx.stateSensitiveParameters = ssmParameters.secureStringLogicalIds;
       }
+    }
+    if (needs.needsEnvOrSecretSubstitution && stateProviderFor) {
+      await loadMixedModeContainerStates(ctx, candidate, stateProviderFor);
     }
   } else if (!stateProvider && needs.needsStateResources) {
     // Issue #847 — `--image-override` can replace a same-stack ECR image, so

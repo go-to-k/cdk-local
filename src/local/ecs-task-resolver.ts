@@ -8,6 +8,7 @@ import {
   formatStateRemedy,
   substituteImagePlaceholders,
   tryResolveImageFnJoin,
+  contextForContainer,
   type ImageResolutionContext,
 } from './intrinsic-image.js';
 import {
@@ -822,7 +823,8 @@ function parseContainerDefinition(
   const entryPoint = pickStringArray(c['EntryPoint']);
   const workingDirectory = pickString(c['WorkingDirectory']);
 
-  const subContext = buildSubstitutionContextFromImageContext(context);
+  // Mixed mode: this container's own routed services pick its names (#905).
+  const subContext = buildSubstitutionContextFromImageContext(contextForContainer(context, name));
   const environment: Record<string, string> = {};
   const sensitiveEnvKeys: string[] = [];
   const droppedEnvKeys: { key: string; reason: string }[] = [];
@@ -1630,11 +1632,45 @@ export async function applyCrossStackValuesToTask(
       `Task ${task.taskDefinitionLogicalId} cross-stack env value`
     ),
   };
+  // Mixed mode: a container with its own routed state resolves its same-stack
+  // names against it, every field replaced (#905).
+  const containerState = (name: string): ContainerSubstitutionState | undefined => {
+    const own = imageContext?.containerStates;
+    if (!own || !Object.hasOwn(own, name)) return undefined;
+    const state = own[name]!;
+    return {
+      resources: state.stateResources ?? {},
+      parameters: state.stateParameters,
+      sensitiveParameters: state.stateSensitiveParameters?.length
+        ? new Set(state.stateSensitiveParameters)
+        : undefined,
+    };
+  };
   try {
-    await applyCrossStackResolverToTask(task, subContext);
+    await applyCrossStackResolverToTask(task, subContext, containerState);
   } finally {
     dynamicRefs.dispose();
   }
+}
+
+/** The state fields one container resolves against in mixed mode (#905). */
+export interface ContainerSubstitutionState {
+  resources: SubstitutionContext['resources'];
+  parameters: SubstitutionContext['parameters'] | undefined;
+  sensitiveParameters: SubstitutionContext['sensitiveParameters'] | undefined;
+}
+
+/** `context` with its state fields REPLACED by `state` (an absent one cleared). */
+function withContainerState<T extends Omit<SubstitutionContext, 'resolveDynamicReferences'>>(
+  context: T,
+  state: ContainerSubstitutionState
+): T {
+  const out: T = { ...context, resources: state.resources };
+  if (state.parameters) out.parameters = state.parameters;
+  else delete out.parameters;
+  if (state.sensitiveParameters) out.sensitiveParameters = state.sensitiveParameters;
+  else delete out.sensitiveParameters;
+  return out;
 }
 
 /**
@@ -1661,7 +1697,12 @@ export async function applyCrossStackValuesToTask(
  */
 export async function applyCrossStackResolverToTask(
   task: ResolvedEcsTask,
-  context: SubstitutionContext
+  context: SubstitutionContext,
+  /**
+   * The state fields one container resolves against in place of
+   * `context`'s (AWS Emulator mixed mode, #905); `undefined` keeps them.
+   */
+  containerState?: (containerName: string) => ContainerSubstitutionState | undefined
 ): Promise<void> {
   if (!context.crossStackResolver) return;
   const { resolveDynamicReferences: _envOnly, ...secretContext } = context;
@@ -1676,15 +1717,18 @@ export async function applyCrossStackResolverToTask(
     const c = raw as Record<string, unknown>;
     const containerName = pickString(c['Name']) ?? container.name;
     // Mixed mode: a `{{resolve:...}}` in this container's cross-stack value is
-    // fetched where THIS container's runtime calls go.
+    // fetched where THIS container's runtime calls go, and its same-stack
+    // names are the ones its own routed services read (#905).
     const resolveRefs = context.resolveDynamicReferences;
+    const ownState = containerState?.(container.name);
+    const baseContext = ownState ? withContainerState(context, ownState) : context;
     const containerContext: SubstitutionContext = resolveRefs
       ? {
-          ...context,
+          ...baseContext,
           resolveDynamicReferences: (v, region) =>
             resolveRefs(v, region, { containerName: container.name }),
         }
-      : context;
+      : baseContext;
 
     // Track keys the post-pass resolved so we can filter the matching
     // entries out of `container.warnings` (which the sync pass populated
@@ -1740,7 +1784,10 @@ export async function applyCrossStackResolverToTask(
         if (!isCrossStackIntrinsic(valueFromRaw)) continue;
         // A ValueFrom is an ARN, never a value: no dynamic-reference hook, so
         // nothing resolved to plaintext can land where an ARN is echoed (#784).
-        const sub = await substituteAgainstStateAsync(valueFromRaw, secretContext);
+        const sub = await substituteAgainstStateAsync(
+          valueFromRaw,
+          ownState ? withContainerState(secretContext, ownState) : secretContext
+        );
         if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
           container.secrets.push({ name: sName, valueFrom: sub.value });
           resolvedSecretNames.add(sName);

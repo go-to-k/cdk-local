@@ -24,6 +24,8 @@ vi.mock('../../../src/cli/commands/local-state-source.js', () => ({
   rejectExplicitCfnStackWithMultipleStacks: rejectMock,
   isCfnFlagPresent: vi.fn(() => false),
   resolveCfnFallbackRegion: fallbackRegionMock,
+  UNNAMED_WORKLOAD: {},
+  groupWorkloadsRoutedApart: vi.fn(() => []),
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({

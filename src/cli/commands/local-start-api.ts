@@ -45,8 +45,12 @@ import { resolveApp, resolveWatchConfig, type CdkWatchConfig } from '../config-l
 import { createGlobMatcher } from '../../utils/glob-match.js';
 import { readCdkPathOrUndefined, stackForConstructPath } from '../cdk-path.js';
 import { resolveExecutionRoleArnFromState } from './local-invoke.js';
+import type { AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
+import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import {
   createLocalStateProvider,
+  groupWorkloadsRoutedApart,
+  UNNAMED_WORKLOAD,
   isCfnFlagPresent,
   hasExtraStateProviderActive,
   rejectExplicitCfnStackWithMultipleStacks,
@@ -793,7 +797,8 @@ async function localStartApiCommand(
           servedRoutes,
           routesWithAuth,
           options,
-          extraStateProviders
+          extraStateProviders,
+          webSocketApis
         )
       : new Map<string, StackStateBundle>();
 
@@ -2455,7 +2460,11 @@ export async function buildContainerSpec(args: {
   // state-resolver already warned about are suppressed in the downstream
   // env-resolver's generic warn loop so the user sees one warn per key.
   let templateEnv = getTemplateEnv(lambda.resource);
-  const stateBundle = stateByStack.get(lambda.stack.stackName);
+  const stackBundle = stateByStack.get(lambda.stack.stackName);
+  // Mixed mode: this function's own routed services pick its names (#905).
+  const stateBundle =
+    stackBundle?.byLambda?.get(logicalId) ??
+    (stackBundle?.withoutSharedState ? undefined : stackBundle);
   let stateAudit: ReturnType<typeof substituteEnvVarsFromState>['audit'] | undefined;
   const plaintextKeys = new Set<string>();
   const deployedSecretKeys: string[] = [];
@@ -2574,7 +2583,8 @@ export async function buildContainerSpec(args: {
     logicalId,
     assumeRole,
     lambdaResource: lambda.resource,
-    stateBundle,
+    // The execution role is assumed through real STS: the stack's names.
+    stateBundle: stackBundle?.withoutSharedState ? undefined : stackBundle,
   });
   if (roleArn) {
     const creds = await assumeLambdaExecutionRole(roleArn, stsRegion, profile);
@@ -3791,6 +3801,18 @@ export interface StackStateBundle {
    * `docker run` argv (issue #99). `undefined`/absent when none.
    */
   ssmSecureStringLogicalIds?: string[];
+  /**
+   * AWS Emulator mixed mode (go-to-k/cdk-local#905): the bundle a function
+   * whose own `--env-vars` section routes other services than `Parameters`
+   * alone resolves its env against, by logical ID. A function with no entry
+   * uses this bundle.
+   */
+  byLambda?: Map<string, StackStateBundle>;
+  /**
+   * Set when only {@link byLambda} loaded: a function with no entry there
+   * resolves as without a state source.
+   */
+  withoutSharedState?: boolean;
 }
 
 /**
@@ -3832,9 +3854,10 @@ export async function loadStateForRoutedStacks(
   routes: readonly DiscoveredRoute[],
   routesWithAuth: readonly RouteWithAuth[],
   options: LocalStartApiOptions,
-  extraStateProviders: ExtraStateProviders | undefined
+  extraStateProviders: ExtraStateProviders | undefined,
+  /** WebSocket APIs served too: their Lambdas read state like any routed one. */
+  webSocketApis: readonly DiscoveredWebSocketApi[] = []
 ): Promise<Map<string, StackStateBundle>> {
-  const logger = getLogger();
   const out = new Map<string, StackStateBundle>();
 
   // Collect the set of (stackName, region) pairs that contain at least
@@ -3842,7 +3865,7 @@ export async function loadStateForRoutedStacks(
   // resolution mirrors `resolveLambdaByLogicalId`'s walk so we never
   // load state for a stack whose Lambdas are not actually reachable
   // from the discovered API surface.
-  const lambdaIds = uniqueLambdaIds(routes, routesWithAuth);
+  const lambdaIds = uniqueLambdaIds(routes, routesWithAuth, webSocketApis);
   const reachableStackNames = new Set<string>();
   for (const logicalId of lambdaIds) {
     for (const stack of stacks) {
@@ -3886,83 +3909,148 @@ export async function loadStateForRoutedStacks(
   for (const stackName of reachableStackNames) {
     const stack = stacks.find((s) => s.stackName === stackName);
     if (!stack) continue;
-    const provider = createLocalStateProvider(
-      options,
-      stack.stackName,
-      await resolveCfnFallbackRegion(options, stack.region),
-      extraStateProviders
+    const region = await resolveCfnFallbackRegion(options, stack.region);
+    // AWS Emulator mixed mode: the stack's names are the ones a function no
+    // `--env-vars` section names reads (`Parameters` sentinels only); a
+    // function whose own section routes other services reads its own (#905).
+    const providerFor = (workload: AwsEmulatorWorkload): LocalStateProvider | undefined =>
+      createLocalStateProvider(options, stack.stackName, region, extraStateProviders, {
+        workload,
+      });
+    const stackLambdaIds = lambdaIds.filter(
+      (id) => stack.template.Resources?.[id]?.Type === 'AWS::Lambda::Function'
     );
-    if (!provider) continue;
-    try {
-      const loaded = await provider.load(stack.stackName, stack.region);
-      if (!loaded) continue;
-
-      // Synthesize a `StackState` shape from the provider's
-      // `LocalStateRecord` so the downstream `buildContainerSpec` path
-      // (which reads `stateBundle.state.resources`) keeps working
-      // verbatim. Outputs is an unused field at this call site but
-      // populated for completeness; the StackState `version` /
-      // `lastModified` carry placeholder values — the
-      // sync `substituteEnvVarsFromState` resolver only reads
-      // `resources`.
-      const syntheticState: StackState = {
-        version: 1,
-        stackName: stack.stackName,
-        resources: loaded.resources,
-        outputs: loaded.outputs,
-        lastModified: 0,
-      };
-      const bundle: StackStateBundle = { state: syntheticState, region: loaded.region };
-      if (stackHasIntrinsicEnv(stackName)) {
-        const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
-        if (pseudo) bundle.pseudoParameters = pseudo;
-      }
-      // Deployed-env fallback source: for each reachable Lambda in this
-      // stack whose template env carries an intrinsic, fetch the deployed
-      // function's already-resolved `Environment.Variables` while the
-      // provider (and its AWS client) is still alive. `buildContainerSpec`
-      // later splices these in for keys static substitution dropped (e.g.
-      // `Fn::GetAtt <Sibling>.Arn`). Only the CFn provider implements
-      // `resolveDeployedFunctionEnv`; `--from-state` carries deploy-time
-      // attributes in its state so its GetAtt resolves statically.
-      if (provider.resolveDeployedFunctionEnv) {
-        const deployedEnvByLambda = new Map<string, Record<string, string>>();
-        for (const logicalId of lambdaIds) {
-          const resource = stack.template.Resources?.[logicalId];
-          if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
-          if (!envHasIntrinsicValue(getTemplateEnv(resource))) continue;
-          const physicalId = loaded.resources[logicalId]?.physicalId;
-          if (!physicalId) continue;
-          const deployedEnv = await provider.resolveDeployedFunctionEnv(physicalId);
-          if (deployedEnv) deployedEnvByLambda.set(logicalId, deployedEnv);
-        }
-        if (deployedEnvByLambda.size > 0) bundle.deployedEnvByLambda = deployedEnvByLambda;
-      }
-      // Resolve SSM-backed template parameters
-      // (`AWS::SSM::Parameter::Value<String>`) once per stack so a `Ref`
-      // to such a parameter in a reachable Lambda's env resolves to its
-      // SSM value (issue #94). Gated on the stack actually having an
-      // intrinsic-valued env entry (same gate as the pseudo-parameter
-      // hop) so literal-only stacks skip the SSM round-trip. Only the
-      // CFn provider implements `resolveTemplateSsmParameters`.
-      if (stackHasIntrinsicEnv(stackName) && provider.resolveTemplateSsmParameters) {
-        const ssmParameters = await provider.resolveTemplateSsmParameters(stack.template);
-        if (Object.keys(ssmParameters.values).length > 0) {
-          bundle.ssmParameters = ssmParameters.values;
-        }
-        if (ssmParameters.secureStringLogicalIds.length > 0) {
-          bundle.ssmSecureStringLogicalIds = ssmParameters.secureStringLogicalIds;
-        }
-      }
-      out.set(stackName, bundle);
-      logger.debug(
-        `${provider.label}: loaded state for ${displayStackName(stackName)} (${loaded.region})`
-      );
-    } finally {
-      provider.dispose();
+    const groups = groupWorkloadsRoutedApart(stackLambdaIds, (logicalId) => ({
+      logicalId,
+      cdkPath: readCdkPathOrUndefined(stack.template.Resources![logicalId]!),
+    }));
+    const grouped = new Set(groups.flatMap((g) => g.items));
+    const shared = await loadStackStateBundle(stack, providerFor(UNNAMED_WORKLOAD), {
+      lambdaIds: stackLambdaIds.filter((id) => !grouped.has(id)),
+      intrinsicEnv: stackHasIntrinsicEnv(stackName),
+      options,
+    });
+    const byLambda = new Map<string, StackStateBundle>();
+    for (const group of groups) {
+      const own = await loadStackStateBundle(stack, providerFor(group.workload), {
+        lambdaIds: group.items,
+        intrinsicEnv: stackHasIntrinsicEnv(stackName),
+        options,
+        ...(shared?.pseudoParameters && { pseudoParameters: shared.pseudoParameters }),
+      });
+      if (own) for (const logicalId of group.items) byLambda.set(logicalId, own);
     }
+    // The shared load can fail while a group's succeeds (a stack only the
+    // emulator has, routed only in functions' own sections): keep the
+    // group's bundles; the other functions resolve as without state.
+    const bundle: StackStateBundle | undefined =
+      shared ??
+      (byLambda.size > 0
+        ? {
+            state: {
+              version: 1,
+              stackName: stack.stackName,
+              resources: {},
+              outputs: {},
+              lastModified: 0,
+            },
+            withoutSharedState: true,
+          }
+        : undefined);
+    if (!bundle) continue;
+    if (byLambda.size > 0) bundle.byLambda = byLambda;
+    out.set(stackName, bundle);
   }
   return out;
+}
+
+/**
+ * One stack's {@link StackStateBundle} from `provider` (disposed here), or
+ * `undefined` when it has no provider or no state. `lambdaIds` are the
+ * stack's reachable functions whose deployed env the fallback reads;
+ * `pseudoParameters` reuses an already-resolved bag instead of STS.
+ */
+async function loadStackStateBundle(
+  stack: StackInfo,
+  provider: LocalStateProvider | undefined,
+  args: {
+    lambdaIds: readonly string[];
+    intrinsicEnv: boolean;
+    options: LocalStartApiOptions;
+    pseudoParameters?: PseudoParameters;
+  }
+): Promise<StackStateBundle | undefined> {
+  if (!provider) return undefined;
+  try {
+    const loaded = await provider.load(stack.stackName, stack.region);
+    if (!loaded) return undefined;
+
+    // Synthesize a `StackState` shape from the provider's
+    // `LocalStateRecord` so the downstream `buildContainerSpec` path
+    // (which reads `stateBundle.state.resources`) keeps working
+    // verbatim. Outputs is an unused field at this call site but
+    // populated for completeness; the StackState `version` /
+    // `lastModified` carry placeholder values — the
+    // sync `substituteEnvVarsFromState` resolver only reads
+    // `resources`.
+    const syntheticState: StackState = {
+      version: 1,
+      stackName: stack.stackName,
+      resources: loaded.resources,
+      outputs: loaded.outputs,
+      lastModified: 0,
+    };
+    const bundle: StackStateBundle = { state: syntheticState, region: loaded.region };
+    if (args.intrinsicEnv) {
+      const pseudo =
+        args.pseudoParameters ??
+        (await resolvePseudoParametersForStartApi(loaded.region, args.options));
+      if (pseudo) bundle.pseudoParameters = pseudo;
+    }
+    // Deployed-env fallback source: for each reachable Lambda in this
+    // stack whose template env carries an intrinsic, fetch the deployed
+    // function's already-resolved `Environment.Variables` while the
+    // provider (and its AWS client) is still alive. `buildContainerSpec`
+    // later splices these in for keys static substitution dropped (e.g.
+    // `Fn::GetAtt <Sibling>.Arn`). Only the CFn provider implements
+    // `resolveDeployedFunctionEnv`; `--from-state` carries deploy-time
+    // attributes in its state so its GetAtt resolves statically.
+    if (provider.resolveDeployedFunctionEnv) {
+      const deployedEnvByLambda = new Map<string, Record<string, string>>();
+      for (const logicalId of args.lambdaIds) {
+        const resource = stack.template.Resources?.[logicalId];
+        if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
+        if (!envHasIntrinsicValue(getTemplateEnv(resource))) continue;
+        const physicalId = loaded.resources[logicalId]?.physicalId;
+        if (!physicalId) continue;
+        const deployedEnv = await provider.resolveDeployedFunctionEnv(physicalId);
+        if (deployedEnv) deployedEnvByLambda.set(logicalId, deployedEnv);
+      }
+      if (deployedEnvByLambda.size > 0) bundle.deployedEnvByLambda = deployedEnvByLambda;
+    }
+    // Resolve SSM-backed template parameters
+    // (`AWS::SSM::Parameter::Value<String>`) once per stack so a `Ref`
+    // to such a parameter in a reachable Lambda's env resolves to its
+    // SSM value (issue #94). Gated on the stack actually having an
+    // intrinsic-valued env entry (same gate as the pseudo-parameter
+    // hop) so literal-only stacks skip the SSM round-trip. Only the
+    // CFn provider implements `resolveTemplateSsmParameters`.
+    if (args.intrinsicEnv && provider.resolveTemplateSsmParameters) {
+      const ssmParameters = await provider.resolveTemplateSsmParameters(stack.template);
+      if (Object.keys(ssmParameters.values).length > 0) {
+        bundle.ssmParameters = ssmParameters.values;
+      }
+      if (ssmParameters.secureStringLogicalIds.length > 0) {
+        bundle.ssmSecureStringLogicalIds = ssmParameters.secureStringLogicalIds;
+      }
+    }
+    getLogger().debug(
+      `${provider.label}: loaded state for ${displayStackName(stack.stackName)} (${loaded.region})`
+    );
+    return bundle;
+  } finally {
+    provider.dispose();
+  }
 }
 
 /**
