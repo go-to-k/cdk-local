@@ -14,7 +14,7 @@
 //     pointed at it.
 //   - credentials from the host's default chain when the command's own flags
 //     gave the container none.
-//   - under `--emulator-endpoint`: the endpoint, ITS credentials only (the
+//   - under `--aws-emulator`: the endpoint, ITS credentials only (the
 //     host's real ones are scrubbed), its CA, and the emulator hygiene
 //     variables. cdk-local's own AWS clients are pointed at the endpoint too.
 //
@@ -26,6 +26,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'no
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { rootCertificates } from 'node:tls';
+import { get as httpGet } from 'node:http';
+import type { IncomingMessage } from 'node:http';
+import { get as httpsGet } from 'node:https';
 import { isLoopbackHostname } from '../utils/loopback-host.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -33,6 +36,7 @@ import { describeCredentialLoadFailure } from './credential-error.js';
 import { setAwsEndpointOverride } from '../utils/aws-proxy.js';
 import { assumedRoleRecorded } from '../utils/workload-identity.js';
 import type { CallerCredentials } from '../utils/workload-identity.js';
+import type { AwsCredentialIdentityProvider } from '@smithy/types';
 import { getEmbedConfig } from './embed-config.js';
 
 /** Variables a container's runtimes read for a custom CA bundle. */
@@ -44,7 +48,7 @@ export const CA_TRUST_ENV_KEYS = [
 ] as const;
 
 /**
- * Variables removed from a container's env under `--emulator-endpoint`: each
+ * Variables removed from a container's env under `--aws-emulator`: each
  * can point an SDK at real credentials (a host profile name, a host
  * credentials / config file, a web-identity role).
  */
@@ -81,7 +85,7 @@ export interface ParsedAwsEndpoint {
  * user-facing error for anything that is not an `http(s)` URL without
  * credentials, path or query.
  */
-export function parseAwsEndpoint(value: string, label = '--emulator-endpoint'): ParsedAwsEndpoint {
+export function parseAwsEndpoint(value: string, label = '--aws-emulator'): ParsedAwsEndpoint {
   let u: URL;
   try {
     u = new URL(value);
@@ -157,7 +161,7 @@ export interface EmulatorRunFiles {
  * AWS Emulator run writes for its port. Never throws: missing or unreadable
  * files leave the field undefined.
  *
- * Host-side use case: a host CLI's own `--emulator-endpoint` handling reads the
+ * Host-side use case: a host CLI's own `--aws-emulator` handling reads the
  * same credentials for its own clients.
  */
 export function readEmulatorRunFiles(port: number, homeDir: string = homedir()): EmulatorRunFiles {
@@ -263,7 +267,7 @@ export interface WorkloadMount {
 
 /** The resolved wiring. Treat as immutable. */
 export interface WorkloadAwsWiring {
-  /** `emulator` under `--emulator-endpoint`, else `forward`. */
+  /** `emulator` under `--aws-emulator`, else `forward`. */
   mode: 'forward' | 'emulator';
   /** The endpoint under `emulator` mode. */
   emulatorEndpoint?: ParsedAwsEndpoint;
@@ -293,8 +297,11 @@ export interface WorkloadAwsWiring {
 
 /** Inputs to {@link resolveWorkloadAwsWiring}. */
 export interface ResolveWorkloadAwsWiringOptions {
-  /** `--emulator-endpoint` (or the `<envPrefix>_EMULATOR_ENDPOINT` value). */
-  emulatorEndpoint?: string | undefined;
+  /**
+   * `--aws-emulator [url]`: `true` selects {@link DEFAULT_AWS_EMULATOR_URL}; a
+   * URL's port selects the run directory `~/.aws/emulator/<port>/`.
+   */
+  awsEmulator?: string | true | undefined;
   /** `--ca-bundle <file>`. */
   caBundle?: string | undefined;
   /** `--profile`. */
@@ -304,11 +311,10 @@ export interface ResolveWorkloadAwsWiringOptions {
   /** Home directory (default `os.homedir()`). */
   homeDir?: string;
   /**
-   * Fallback credentials for an emulator endpoint that has no
-   * `emulator_credentials` (not an AWS Emulator run). Default: the host's
-   * credential chain WITHOUT its environment link.
+   * Host-side health probe of the emulator (default {@link probeAwsEmulatorHealth}).
+   * Resolves `undefined` when healthy, else a short reason.
    */
-  resolveFallbackCredentials?: () => Promise<CallerCredentials | undefined>;
+  probeHealth?: (url: string, caPath: string | undefined) => Promise<string | undefined>;
 }
 
 /** Path of the CA bundle inside workload containers. */
@@ -336,34 +342,65 @@ export function writeCaBundleFile(source: string): { hostPath: string; dispose: 
       `CA bundle ${displayUntrustedValue(source)} cannot be read (${(err as NodeJS.ErrnoException).code ?? 'error'}).`
     );
   }
-  if (!pem.includes('-----BEGIN CERTIFICATE-----')) {
+  // Certificates only: a "fullchain + key" PEM must not put its PRIVATE KEY
+  // into a world-readable file mounted into every container.
+  const certs = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g);
+  if (!certs) {
     throw new Error(`CA bundle ${displayUntrustedValue(source)} contains no PEM certificate.`);
   }
   const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().productName}-ca-`));
   const hostPath = path.join(dir, 'ca-bundle.pem');
-  writeFileSync(hostPath, `${pem.trimEnd()}\n${rootCertificates.join('\n')}\n`, { mode: 0o644 });
+  writeFileSync(hostPath, `${certs.join('\n')}\n${rootCertificates.join('\n')}\n`, {
+    mode: 0o644,
+  });
   return { hostPath, dispose: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-/** The host chain minus env vars: the profile named by `profile` / `AWS_PROFILE`, else `default`. */
-async function chainWithoutEnv(
-  env: NodeJS.ProcessEnv,
-  profile: string | undefined
-): Promise<CallerCredentials | undefined> {
-  const { defaultProvider } = await import('@aws-sdk/credential-provider-node');
-  try {
-    const c = await defaultProvider({ profile: profileName(env, profile) })();
-    return {
-      accessKeyId: c.accessKeyId,
-      secretAccessKey: c.secretAccessKey,
-      ...(c.sessionToken ? { sessionToken: c.sessionToken } : {}),
+/** The URL `--aws-emulator` uses when given no value: AWS Emulator's default. */
+export const DEFAULT_AWS_EMULATOR_URL = 'https://127.0.0.1:9297';
+
+/**
+ * `GET <url>/__admin/health` from the host, trusting `caPath` (the run's
+ * `ca.pem`) on top of the public roots. Resolves `undefined` on HTTP 200, else
+ * a short reason (`ECONNREFUSED`, `HTTP_503`, a TLS error code). Never throws.
+ *
+ * Host-side use case: a host CLI's own `--aws-emulator` pre-flight.
+ */
+export function probeAwsEmulatorHealth(
+  url: string,
+  caPath: string | undefined
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let ca: string[] | undefined;
+    try {
+      ca = caPath ? [...rootCertificates, readFileSync(caPath, 'utf8')] : undefined;
+    } catch {
+      ca = undefined;
+    }
+    const target = `${url}/__admin/health`;
+    const onResponse = (res: IncomingMessage): void => {
+      res.resume();
+      resolve(res.statusCode === 200 ? undefined : `HTTP_${res.statusCode ?? 0}`);
     };
-  } catch (err) {
-    getLogger().debug(
-      `No credentials from the host profile chain: ${describeCredentialLoadFailure(err)}`
-    );
-    return undefined;
-  }
+    const req = target.startsWith('https:')
+      ? httpsGet(target, { timeout: 3000, ...(ca ? { ca } : {}) }, onResponse)
+      : httpGet(target, { timeout: 3000 }, onResponse);
+    req.on('timeout', () => {
+      req.destroy();
+      resolve('ETIMEDOUT');
+    });
+    req.on('error', (e: NodeJS.ErrnoException) => resolve(e.code ?? 'ERROR'));
+  });
+}
+
+/** The error for an emulator the host cannot reach. */
+function describeEmulatorUnreachable(ep: ParsedAwsEndpoint, reason: string): string {
+  return (
+    `--aws-emulator ${ep.url}: no AWS Emulator answers its health check at ${ep.url}/__admin/health ` +
+    `(${reason}). Check that it is running on port ${ep.port} (\`aws-emulator -p ${ep.port}\`, or its ` +
+    `Docker image published with \`-p 127.0.0.1:${ep.port}:${ep.port}\`), that the URL's port matches, and ` +
+    `that it listens on an address this machine reaches (\`-b\`).`
+  );
 }
 
 /**
@@ -405,23 +442,33 @@ export async function resolveWorkloadAwsWiring(
   };
 
   try {
-    if (opts.emulatorEndpoint) {
-      const ep = parseAwsEndpoint(opts.emulatorEndpoint);
-      const run = ep.loopback ? readEmulatorRunFiles(ep.port, homeDir) : undefined;
-      const caSource = opts.caBundle || run?.caPath || env['AWS_CA_BUNDLE'];
-      const ca = caSource && ep.url.startsWith('https:') ? caMount(caSource) : undefined;
-      let credentials: CallerCredentials | undefined;
-      if (run?.credentials) credentials = run.credentials;
-      else if (run?.present) credentials = AUTH_OFF_PLACEHOLDER_CREDENTIALS;
+    if (opts.awsEmulator) {
+      const ep = parseAwsEndpoint(
+        opts.awsEmulator === true ? DEFAULT_AWS_EMULATOR_URL : opts.awsEmulator,
+        '--aws-emulator'
+      );
+      // AWS Emulator's own guidance: keep the IP. A host NAME (`localhost`)
+      // makes the JS / Java / Go SDKs address S3 virtual-hosted style.
+      if (ep.hostname === 'localhost') {
+        ep.hostname = '127.0.0.1';
+        ep.url = ep.url.replace('//localhost', '//127.0.0.1');
+      }
+      const run = readEmulatorRunFiles(ep.port, homeDir);
+      const failure = await (opts.probeHealth ?? probeAwsEmulatorHealth)(ep.url, run.caPath);
+      if (failure) throw new Error(describeEmulatorUnreachable(ep, failure));
+      let credentials: CallerCredentials;
+      if (run.credentials) credentials = run.credentials;
       else {
-        credentials = await (
-          opts.resolveFallbackCredentials ?? (() => chainWithoutEnv(env, opts.profile))
-        )();
-        getLogger().warn(
-          `--emulator-endpoint: no AWS Emulator run files for port ${ep.port}; workload containers get the ` +
-            `credentials your AWS profile resolves (environment variables are not used). Make sure they are the endpoint's.`
+        // Healthy but no keys file: the emulator runs with `--auth off` and
+        // accepts any signature. Fixed placeholder keys, never real ones.
+        credentials = AUTH_OFF_PLACEHOLDER_CREDENTIALS;
+        getLogger().info(
+          `--aws-emulator: ${path.join(run.dir, 'emulator_credentials')} not found but the emulator is healthy, ` +
+            'so it runs with --auth off; workload containers get placeholder credentials.'
         );
       }
+      const caSource = opts.caBundle || run.caPath || env['AWS_CA_BUNDLE'];
+      const ca = caSource && ep.url.startsWith('https:') ? caMount(caSource) : undefined;
       return {
         mode: 'emulator',
         emulatorEndpoint: ep,
@@ -434,19 +481,29 @@ export async function resolveWorkloadAwsWiring(
         scrubEnvKeys: EMULATOR_SCRUBBED_ENV_KEYS,
         mounts: ca?.mounts ?? [],
         loopbackPorts: ep.loopback ? [ep.port] : [],
-        probeHealth: run?.present === true && ca !== undefined,
+        probeHealth: ca !== undefined,
         ...(ca ? { caHostPath: ca.hostPath } : {}),
-        ...(credentials ? { emulatorCredentials: credentials } : {}),
+        emulatorCredentials: credentials,
         dispose,
       };
     }
 
     const endpoints = collectHostEndpointOverrides(env, { profile: opts.profile, homeDir });
-    const caSource =
-      opts.caBundle ||
-      env['AWS_CA_BUNDLE'] ||
-      readProfileEndpointSettings(env, opts.profile, homeDir).caBundle;
-    const ca = caSource ? caMount(caSource) : undefined;
+    let ca: ReturnType<typeof caMount> | undefined;
+    if (opts.caBundle) ca = caMount(opts.caBundle);
+    else {
+      // A host-configured bundle that cannot be used is skipped with a warning
+      // rather than failing every command (the JS SDK never read it).
+      const hostCa =
+        env['AWS_CA_BUNDLE'] || readProfileEndpointSettings(env, opts.profile, homeDir).caBundle;
+      if (hostCa) {
+        try {
+          ca = caMount(hostCa);
+        } catch (err) {
+          getLogger().warn(`${(err as Error).message} It is not mounted into workload containers.`);
+        }
+      }
+    }
     const ports = new Set<number>();
     for (const v of Object.values(endpoints)) {
       const ep = parseAwsEndpoint(v);
@@ -466,6 +523,28 @@ export async function resolveWorkloadAwsWiring(
     dispose();
     throw err;
   }
+}
+
+/**
+ * The wiring's loopback ports that a container's FINAL env still points at
+ * (`AWS_ENDPOINT_URL*`): when the template or `--env-vars` replaced the
+ * forwarded endpoint, its port needs no forwarder.
+ */
+export function effectiveLoopbackPorts(
+  env: Readonly<Record<string, string>>,
+  wiring: WorkloadAwsWiring
+): number[] {
+  const used = new Set<number>();
+  for (const [k, v] of Object.entries(env)) {
+    if (k !== 'AWS_ENDPOINT_URL' && !k.startsWith('AWS_ENDPOINT_URL_')) continue;
+    try {
+      const ep = parseAwsEndpoint(v, k);
+      if (ep.loopback) used.add(ep.port);
+    } catch {
+      /* not a URL: nothing to forward */
+    }
+  }
+  return wiring.loopbackPorts.filter((p) => used.has(p));
 }
 
 /** True when the wiring adds nothing to a container. */
@@ -536,30 +615,44 @@ export function applyWorkloadAwsWiringToEnv(
  * Host-side use case: the no-flag credential source for a host's own
  * container commands.
  */
-export function resolveHostDefaultCredentials(
+export async function resolveHostDefaultCredentials(
   opts: { profile?: string | undefined } = {}
 ): Promise<CallerCredentials | undefined> {
-  defaultChain ??= (async () => {
-    if (assumedRoleRecorded()) return chainWithoutEnv(process.env, opts.profile);
+  // Without env link after an assume (the env holds the role), else the full chain.
+  const name = assumedRoleRecorded() ? profileName(process.env, opts.profile) : opts.profile;
+  const key = `${assumedRoleRecorded() ? 'noenv' : 'chain'}:${name ?? ''}`;
+  const miss = chainMisses.get(key);
+  if (miss !== undefined && Date.now() - miss < CHAIN_MISS_TTL_MS) return undefined;
+  let provider = chainProviders.get(key);
+  if (!provider) {
     const { defaultProvider } = await import('@aws-sdk/credential-provider-node');
-    try {
-      const c = await defaultProvider(opts.profile ? { profile: opts.profile } : {})();
-      return {
-        accessKeyId: c.accessKeyId,
-        secretAccessKey: c.secretAccessKey,
-        ...(c.sessionToken ? { sessionToken: c.sessionToken } : {}),
-      };
-    } catch (err) {
-      getLogger().debug(
-        `No credentials from the host default chain for workload containers: ${describeCredentialLoadFailure(err)}`
-      );
-      return undefined;
-    }
-  })();
-  return defaultChain;
+    // The SDK provider memoizes and refreshes expiring credentials itself, so
+    // a long-running serve keeps handing new containers live keys.
+    provider = defaultProvider(name ? { profile: name } : {});
+    chainProviders.set(key, provider);
+  }
+  try {
+    const c = await provider();
+    chainMisses.delete(key);
+    return {
+      accessKeyId: c.accessKeyId,
+      secretAccessKey: c.secretAccessKey,
+      ...(c.sessionToken ? { sessionToken: c.sessionToken } : {}),
+    };
+  } catch (err) {
+    // Remember the miss briefly: a machine with no credentials would otherwise
+    // pay the chain's metadata-service timeout on every container start.
+    chainMisses.set(key, Date.now());
+    getLogger().debug(
+      `No credentials from the host default chain for workload containers: ${describeCredentialLoadFailure(err)}`
+    );
+    return undefined;
+  }
 }
 
-let defaultChain: Promise<CallerCredentials | undefined> | undefined;
+const CHAIN_MISS_TTL_MS = 60_000;
+const chainProviders = new Map<string, AwsCredentialIdentityProvider>();
+const chainMisses = new Map<string, number>();
 let active: WorkloadAwsWiring | undefined;
 let exitHookInstalled = false;
 
@@ -586,39 +679,57 @@ export function setActiveWorkloadAwsWiring(wiring: WorkloadAwsWiring | undefined
 export function resetWorkloadAwsWiringForTest(): void {
   active?.dispose();
   active = undefined;
-  defaultChain = undefined;
+  chainProviders.clear();
+  chainMisses.clear();
   setAwsEndpointOverride(undefined);
 }
 
 /** Options a container command passes to {@link activateWorkloadAwsWiring}. */
 export interface WorkloadAwsWiringCommandOptions {
-  emulatorEndpoint?: string | undefined;
+  /** `--aws-emulator [url]` as commander parses it: `true` for the bare flag. */
+  awsEmulator?: string | boolean | undefined;
   caBundle?: string | undefined;
   profile?: string | undefined;
 }
 
-/** The env var naming the emulator endpoint when the flag is absent. */
-export function emulatorEndpointEnvName(): string {
-  return `${getEmbedConfig().envPrefix}_EMULATOR_ENDPOINT`;
+/**
+ * The env var that turns `--aws-emulator` on when the flag is absent:
+ * `CDK_LOCAL_AWS_EMULATOR` for standalone cdk-local, `<envPrefix>_AWS_EMULATOR`
+ * under a host's embed config (cdkd: `CDKD_AWS_EMULATOR`). A value of `1` /
+ * `true` selects the default URL; any other non-empty value is the URL.
+ */
+export function awsEmulatorEnvName(): string {
+  const { envPrefix } = getEmbedConfig();
+  return envPrefix === 'CDKL' ? 'CDK_LOCAL_AWS_EMULATOR' : `${envPrefix}_AWS_EMULATOR`;
+}
+
+/** The `--aws-emulator` value from the flag, else the env var; `undefined` when off. */
+export function resolveAwsEmulatorOption(
+  flag: string | boolean | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): string | true | undefined {
+  if (typeof flag === 'string' && flag !== '') return flag;
+  if (flag === true) return true;
+  const raw = (env[awsEmulatorEnvName()] ?? '').trim();
+  if (raw === '' || /^(0|false)$/i.test(raw)) return undefined;
+  return /^(1|true)$/i.test(raw) ? true : raw;
 }
 
 /**
  * Resolve the wiring from a command's options, install it for the docker-run
- * layer, and — under `--emulator-endpoint` — point cdk-local's own AWS clients
+ * layer, and — under `--aws-emulator` — point cdk-local's own AWS clients
  * (including the CloudFormation client behind `--from-cfn-stack`) at the
- * endpoint with its credentials and CA. Call once at the start of a command,
+ * emulator with its credentials and CA. Call once at the start of a command,
  * before any AWS client is built.
  *
  * Host-side use case: a host CLI's container commands call this with their
- * own options; the endpoint env var follows the embed config's `envPrefix`.
+ * own options; the env var follows the embed config's `envPrefix`.
  */
 export async function activateWorkloadAwsWiring(
   options: WorkloadAwsWiringCommandOptions
 ): Promise<WorkloadAwsWiring> {
-  const envEndpoint = process.env[emulatorEndpointEnvName()];
-  const emulatorEndpoint = options.emulatorEndpoint || (envEndpoint ? envEndpoint : undefined);
   const wiring = await resolveWorkloadAwsWiring({
-    emulatorEndpoint,
+    awsEmulator: resolveAwsEmulatorOption(options.awsEmulator),
     caBundle: options.caBundle,
     profile: options.profile,
   });
@@ -630,7 +741,7 @@ export async function activateWorkloadAwsWiring(
       ...(wiring.emulatorCredentials ? { credentials: wiring.emulatorCredentials } : {}),
     });
     getLogger().info(
-      `Using the AWS endpoint ${wiring.emulatorEndpoint.url} for cdk-local's AWS calls and every workload container.`
+      `Using AWS Emulator at ${wiring.emulatorEndpoint.url} for cdk-local's AWS calls and every workload container.`
     );
   } else {
     setAwsEndpointOverride(undefined);

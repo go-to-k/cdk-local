@@ -2176,6 +2176,14 @@ const defaultDockerStartImpl = async (containerId: string): Promise<void> => {
   const { promisify } = await import('node:util');
   const { getDockerCmd } = await import('../utils/docker-cmd.js');
   await promisify(execFile)(getDockerCmd(), ['start', containerId]);
+  // The loopback forwarder shares the container's pid namespace, so the stop
+  // ended it; start a fresh one for the restarted container.
+  const { getActiveWorkloadAwsWiring } = await import('./workload-aws-wiring.js');
+  const wiring = getActiveWorkloadAwsWiring();
+  if (wiring) {
+    const { attachLoopbackForwarder } = await import('./docker-runner.js');
+    await attachLoopbackForwarder(containerId, wiring);
+  }
 };
 
 let dockerStopImpl: (containerId: string) => Promise<void> = defaultDockerStopImpl;

@@ -19,6 +19,7 @@ import {
   pullImage,
   removeContainer,
   attachLoopbackForwarder,
+  prepareLoopbackForwarder,
   appendEnvFlags,
   describeRefusedSensitiveEnvKeys,
   execEnvForSecrets,
@@ -56,7 +57,11 @@ import {
   type ResolvedEcsVolume,
 } from './ecs-task-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
-import { applyWorkloadAwsWiringToEnv, getActiveWorkloadAwsWiring } from './workload-aws-wiring.js';
+import {
+  applyWorkloadAwsWiringToEnv,
+  effectiveLoopbackPorts,
+  getActiveWorkloadAwsWiring,
+} from './workload-aws-wiring.js';
 import { applyEnvOverrideMap } from './env-resolver.js';
 import { formatAuthority } from '../utils/url-authority.js';
 
@@ -674,7 +679,10 @@ export async function runEcsTask(
 
   // Pre-compute every container's CMD args so the start loop only does
   // docker calls.
-  const dockerCmds = new Map<string, { args: string[]; sensitiveEnv: Record<string, string> }>();
+  const dockerCmds = new Map<
+    string,
+    { args: string[]; sensitiveEnv: Record<string, string>; loopbackPorts: number[] }
+  >();
   for (const container of task.containers) {
     const image = imagePlan.get(container.name);
     if (!image) {
@@ -721,7 +729,11 @@ export async function runEcsTask(
         profileCredentialsFile: options.profileCredentialsFile,
       }),
     });
-    dockerCmds.set(container.name, { args: built.args, sensitiveEnv: built.sensitiveEnv });
+    dockerCmds.set(container.name, {
+      args: built.args,
+      sensitiveEnv: built.sensitiveEnv,
+      loopbackPorts: built.loopbackPorts,
+    });
     // Warn HERE, in the build loop, so every container's dropped keys are
     // reported even when an earlier container's `docker run` fails (#772).
     if (built.collisions.length > 0) {
@@ -747,7 +759,11 @@ export async function runEcsTask(
     const container = task.containers.find((c) => c.name === containerName)!;
     await awaitDependencies(container, startedByName);
 
-    const { args, sensitiveEnv } = dockerCmds.get(container.name)!;
+    const { args, sensitiveEnv, loopbackPorts } = dockerCmds.get(container.name)!;
+    // Pull the forwarder image before the container starts (workload-aws-wiring.ts).
+    const forwarderWiring = getActiveWorkloadAwsWiring();
+    if (loopbackPorts.length > 0 && forwarderWiring)
+      await prepareLoopbackForwarder(forwarderWiring);
     logger.info(
       `Starting container ${displayIdent(container.name)} (image=${displayIdent(imagePlan.get(container.name))})`
     );
@@ -773,7 +789,7 @@ export async function runEcsTask(
     // racing the forwarder's first millisecond fails with a retryable
     // connection error.
     const wiring = getActiveWorkloadAwsWiring();
-    if (wiring) await attachLoopbackForwarder(id, wiring);
+    if (wiring) await attachLoopbackForwarder(id, wiring, loopbackPorts);
 
     if (!options.detach) {
       state.logStoppers.push(attachContainerLogStreamer(`[${displayIdent(container.name)}] `, id));
@@ -1443,6 +1459,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   /** Sensitive keys refused by {@link appendEnvFlags} (issue #772); names only. */
   collisions: string[];
   publishedEndpoints: PublishedHostEndpoint[];
+  /** Loopback ports the final env still points at (the forwarder serves them). */
+  loopbackPorts: number[];
 } {
   const { task, container, image, network, volumeByName, secrets, containerHost, roleArn } = opts;
   const args: string[] = ['run', '-d'];
@@ -1568,7 +1586,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // creds file — docker honors mount-order by container path
   // uniqueness; a later mount at the same target would fail or shadow.
   // The process-wide AWS wiring (workload-aws-wiring.ts): under
-  // `--emulator-endpoint` no host credential file reaches the container.
+  // `--aws-emulator` no host credential file reaches the container.
   const wiring = getActiveWorkloadAwsWiring();
   const profileCredentialsFile =
     wiring?.mode === 'emulator' ? undefined : opts.profileCredentialsFile;
@@ -1609,8 +1627,10 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   //   2. global `Parameters` `--env-vars` entry
   //   3. resolved secrets
   //   4. template literal env
-  //   5. profile credentials file env (AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE)
-  //   6. metadata sidecar env (sidecar URL / role URL)
+  //   5. forwarded AWS endpoint / CA entries (workload-aws-wiring, `forward` mode)
+  //   6. profile credentials file env (AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE)
+  //   7. metadata sidecar env (sidecar URL / role URL)
+  // `--aws-emulator` is applied after all of them and wins over every layer.
   let finalEnv: Record<string, string> = {};
   const metaEnv = buildMetadataEnv({
     containerName: container.name,
@@ -1646,7 +1666,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     applyEnvOverrideMap(finalEnv, overrides['Parameters']);
     applyEnvOverrideMap(finalEnv, overrides[container.name]);
   }
-  // `--emulator-endpoint` is forced last: the endpoint, its credentials only,
+  // `--aws-emulator` is forced last: the endpoint, its credentials only,
   // and the scrub of every variable that could reach real credentials.
   // Under `forward` the entries were applied above; only the region mirror
   // (AWS_DEFAULT_REGION next to AWS_REGION) is left to do here.
@@ -1713,7 +1733,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   }
 
   args.push(image, ...entryPointTail, ...(container.command ?? []));
-  return { args, sensitiveEnv, collisions, publishedEndpoints };
+  const loopbackPorts = wiring ? effectiveLoopbackPorts(finalEnv, wiring) : [];
+  return { args, sensitiveEnv, collisions, publishedEndpoints, loopbackPorts };
 }
 
 /**

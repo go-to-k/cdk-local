@@ -65,7 +65,7 @@ a log line, and a served HTTP response body.
   container command before `applyRoleArnIfSet`) is applied at the docker-run
   layer only: `runDetached` and ECS `buildDockerRunArgs` / the start loop.
   Never add per-command endpoint / CA / default-credential code.
-- `--emulator-endpoint` replaces the credential triple LAST and scrubs every
+- `--aws-emulator` replaces the credential triple LAST and scrubs every
   host credential source (env, `--profile` file mount); `forward` mode only
   fills keys the container env lacks, so `--assume-role` > `--profile` >
   default chain holds by construction. Credentials stay on the

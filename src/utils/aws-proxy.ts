@@ -396,7 +396,7 @@ export interface AwsProxyClientConfig {
 
 /**
  * A process-wide AWS endpoint for cdk-local's OWN clients
- * (`--emulator-endpoint`): every client built through
+ * (`--aws-emulator`): every client built through
  * {@link buildProxyClientConfig} then talks to `endpoint` (one endpoint serves
  * every service), trusts `caPem` on top of the public roots, and signs with
  * `credentials` when given.

@@ -1292,14 +1292,15 @@ export {
 /**
  * AWS endpoint / trust / credential wiring for workload containers
  * (go-to-k/cdkd#6129-#6132). A host CLI's container commands either call
- * `activateWorkloadAwsWiring` with their `--emulator-endpoint` / `--ca-bundle`
+ * `activateWorkloadAwsWiring` with their `--aws-emulator` / `--ca-bundle`
  * / `--profile` options (cdk-local's docker-run layer then applies it to every
  * workload container it starts, and cdk-local's own AWS clients follow the
  * endpoint), or, for containers the host starts with its own docker code,
  * resolve it with `resolveWorkloadAwsWiring`, apply it with
  * `applyWorkloadAwsWiringToEnv` (env) + the wiring's `mounts`, and call
  * `startLoopbackForwarder` right after `docker run` when `loopbackPorts` is
- * non-empty. The endpoint env var is `${envPrefix}_EMULATOR_ENDPOINT`.
+ * non-empty. The env var is `awsEmulatorEnvName()` (`<envPrefix>_AWS_EMULATOR`;
+ * `CDK_LOCAL_AWS_EMULATOR` standalone).
  */
 export {
   AUTH_OFF_PLACEHOLDER_CREDENTIALS,
@@ -1308,7 +1309,11 @@ export {
   activateWorkloadAwsWiring,
   applyWorkloadAwsWiringToEnv,
   collectHostEndpointOverrides,
-  emulatorEndpointEnvName,
+  effectiveLoopbackPorts,
+  DEFAULT_AWS_EMULATOR_URL,
+  awsEmulatorEnvName,
+  probeAwsEmulatorHealth,
+  resolveAwsEmulatorOption,
   getActiveWorkloadAwsWiring,
   getContainerCaBundlePath,
   parseAwsEndpoint,
@@ -1328,6 +1333,7 @@ export {
 export {
   LOOPBACK_FORWARDER_IMAGE,
   buildLoopbackForwarderDockerArgs,
+  ensureForwarderImage,
   describeForwarderFailure,
   startLoopbackForwarder,
   type LoopbackForwarderResult,
@@ -1339,3 +1345,4 @@ export {
   type AwsEndpointOverride,
 } from './utils/aws-proxy.js';
 export { awsEndpointOptions, addAwsEndpointOptions } from './cli/options.js';
+export { attachLoopbackForwarder, withWorkloadAwsWiring } from './local/docker-runner.js';

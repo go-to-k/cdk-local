@@ -167,8 +167,11 @@ export function buildLoopbackForwarderDockerArgs(
 
 let imageReady: Promise<void> | undefined;
 
-/** Pull the forwarder image once per process when it is not present yet. */
-async function ensureForwarderImage(): Promise<void> {
+/**
+ * Pull the forwarder image once per process when it is not present yet. Call
+ * it before starting a workload so the forwarder starts without a pull.
+ */
+export async function ensureForwarderImage(): Promise<void> {
   imageReady ??= (async () => {
     try {
       await execFileAsync(getDockerCmd(), ['image', 'inspect', LOOPBACK_FORWARDER_IMAGE]);

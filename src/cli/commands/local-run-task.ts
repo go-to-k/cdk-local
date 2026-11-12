@@ -834,7 +834,7 @@ function readEnvOverridesFile(
  *      `undefined` when it finds nothing, and the user containers then
  *      get 4xx from the credentials endpoint.
  *
- * Under `--emulator-endpoint` the endpoint's credentials replace all three.
+ * Under `--aws-emulator` the endpoint's credentials replace all three.
  *
  * Extracted as an exported helper so a unit test can exercise every
  * branch without having to mock the full Synth + Docker + AWS pipeline

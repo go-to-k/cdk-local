@@ -74,7 +74,7 @@ describe('describeForwarderFailure', () => {
   it('names the reachability fix for a refused connection', () => {
     const msg = describeForwarderFailure(
       { name: 'n', ok: false, failedPort: 9297, reason: 'ECONNREFUSED', upstream: '172.17.0.1' },
-      '--emulator-endpoint https://127.0.0.1:9297'
+      '--aws-emulator https://127.0.0.1:9297'
     );
     expect(msg).toContain('cannot reach port 9297 on the host via 172.17.0.1:9297 (ECONNREFUSED)');
     expect(msg).toContain('-p 127.0.0.1:9297:9297');

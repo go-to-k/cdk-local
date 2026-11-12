@@ -128,8 +128,8 @@ Shared across all subcommands:
 - `--container-host <ip>` — Bind IP for published ports (default
   `127.0.0.1`). Must be a numeric IP; Docker rejects hostnames in
   `-p <ip>:<port>:<port>`.
-- `--emulator-endpoint <url>` / `--ca-bundle <file>` — Run against a
-  local AWS endpoint / mount a CA bundle into every workload container.
+- `--aws-emulator [url]` / `--ca-bundle <file>` — Run against a local
+  AWS Emulator / mount a CA bundle into every workload container.
   See [AWS endpoints, CA bundles and credentials inside containers](#aws-endpoints-ca-bundles-and-credentials-inside-containers).
 
 ## AWS endpoints, CA bundles and credentials inside containers
@@ -147,7 +147,11 @@ Every command that starts a workload container (`invoke`, `start-api`,
   URL: cdk-local starts a small forwarder container in the workload's
   network namespace that listens on `127.0.0.1:<port>` there and forwards to
   the host, so a certificate issued for `127.0.0.1` still verifies and S3
-  keeps path-style addressing. The forwarder stops with the workload. When
+  keeps path-style addressing. The forwarder image is pulled before the
+  workload starts and the forwarder joins within moments of it; an app that
+  calls AWS in its very first instant relies on its SDK's connection retry.
+  The forwarder stops with the workload (and is restarted after a `--watch`
+  soft reload). When
   containers cannot reach the port, cdk-local warns with the fix (on Linux
   the endpoint must listen on an address the Docker bridge reaches, not only
   on `127.0.0.1`).
@@ -164,32 +168,38 @@ Every command that starts a workload container (`invoke`, `start-api`,
 - **`AWS_DEFAULT_REGION` follows `AWS_REGION`**, as on Lambda and ECS, so
   boto3 finds the region.
 
-### `--emulator-endpoint <url>`
+### `--aws-emulator [url]`
 
-`--emulator-endpoint https://127.0.0.1:9297` (or the
-`CDKL_EMULATOR_ENDPOINT` environment variable) runs a command against a
-local AWS endpoint such as AWS Emulator:
+`--aws-emulator` (or `CDK_LOCAL_AWS_EMULATOR=1`, or `CDK_LOCAL_AWS_EMULATOR=<url>`)
+runs a command against a local AWS Emulator. The URL defaults to
+`https://127.0.0.1:9297`; its port selects the emulator run's files in
+`~/.aws/emulator/<port>/`. For any other local endpoint, use the default
+`AWS_ENDPOINT_URL` forwarding and `--ca-bundle` described above.
 
+- Before anything else, cdk-local checks `GET <url>/__admin/health` with
+  the run's `ca.pem`; when the emulator does not answer, the command stops
+  and says what to check (is it running, on that port, on an address this
+  machine reaches).
 - cdk-local's own AWS calls — `--from-cfn-stack` reads, `{{resolve:...}}`,
-  STS — go to the endpoint, so a stack deployed there with `cdk deploy`
+  STS — go to the emulator, so a stack deployed there with `cdk deploy`
   binds with `--from-cfn-stack`.
 - Containers get `AWS_ENDPOINT_URL=<url>`, `AWS_EC2_METADATA_DISABLED=true`
-  and `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, and only the endpoint's
-  credentials: for an AWS Emulator run on that port, the keys in
-  `~/.aws/emulator/<port>/emulator_credentials` (placeholder keys when it
-  runs with `--auth off`); otherwise what your AWS profile resolves, without
-  environment variables. Host `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
-  `AWS_SESSION_TOKEN` / `AWS_PROFILE` / `AWS_SHARED_CREDENTIALS_FILE` /
-  `AWS_CONFIG_FILE` never reach a container, and the `--profile` credentials
-  file is not mounted, so a handler that misses the endpoint fails instead
-  of reaching real AWS.
-- The run's `~/.aws/emulator/<port>/ca.pem` (or `--ca-bundle` /
-  `AWS_CA_BUNDLE`) is mounted as above; certificate verification stays on.
-- Before the first request, the forwarder checks `GET /__admin/health`
-  through `127.0.0.1:<port>` inside the container network with that CA; a
-  failure stops the command with the fix instead of a handler timeout.
+  and `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, and only the emulator's
+  credentials: the keys in `~/.aws/emulator/<port>/emulator_credentials`,
+  or fixed placeholder keys when that file is missing but the emulator is
+  healthy (it runs with `--auth off`; cdk-local says so in one line). Host
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` /
+  `AWS_PROFILE` / `AWS_SHARED_CREDENTIALS_FILE` / `AWS_CONFIG_FILE` never
+  reach a container, and the `--profile` credentials file is not mounted,
+  so a handler that misses the endpoint fails instead of reaching real AWS.
+- The run's `ca.pem` (or `--ca-bundle` / `AWS_CA_BUNDLE`) is mounted as
+  above; certificate verification stays on.
+- For a loopback URL, the forwarder repeats the health check through
+  `127.0.0.1:<port>` inside the container network with that CA as each
+  container starts; a failure stops the command with the fix instead of a
+  handler timeout.
 
-Deploy and destroy are not part of cdk-local; deploy into the endpoint with
+Deploy and destroy are not part of cdk-local; deploy into the emulator with
 your usual tool.
 
 ## `invoke` (run Lambda functions locally)

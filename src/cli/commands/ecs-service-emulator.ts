@@ -2944,7 +2944,7 @@ export function resolveShadowReadyTimeoutMs(
  * Resolve the credentials forwarded to the AWS-published metadata-endpoints
  * sidecar (shared across every replica boot in one CLI invocation). `--profile`
  * resolves via the SDK default chain; unset resolves the host's default credential chain
- * (`undefined` when it finds nothing); under `--emulator-endpoint` the endpoint's
+ * (`undefined` when it finds nothing); under `--aws-emulator` the endpoint's
  * credentials only. Per-service
  * `--assume-task-role` overrides are intentionally NOT consulted here. Exported
  * for a unit test that exercises both branches.

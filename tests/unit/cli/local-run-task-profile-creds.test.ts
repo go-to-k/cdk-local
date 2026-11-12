@@ -93,7 +93,7 @@ describe('resolveSidecarCredentials (cdkd#658)', () => {
     expect(result).toBeUndefined();
   });
 
-  it('returns only the emulator credentials under --emulator-endpoint', async () => {
+  it('returns only the emulator credentials under --aws-emulator', async () => {
     const emulatorCredentials = { accessKeyId: 'EMULATOR0000', secretAccessKey: 'EMU-SECRET' };
     setActiveWorkloadAwsWiring({
       mode: 'emulator',

@@ -61,7 +61,9 @@ afterEach(() => resetWorkloadAwsWiringForTest());
 describe('buildDockerRunArgs with the AWS wiring', () => {
   it('forward: adds the CA mount and endpoint below the task-declared env', () => {
     setActiveWorkloadAwsWiring(base);
-    const { args } = build({ AWS_ENDPOINT_URL: 'http://task-declared:1' });
+    const { args, loopbackPorts } = build({ AWS_ENDPOINT_URL: 'http://task-declared:1' });
+    // The task replaced the forwarded loopback endpoint: no forwarder needed.
+    expect(loopbackPorts).toEqual([]);
     expect(args).toContain('/tmp/ca/ca-bundle.pem:/cdk-local-aws/ca-bundle.pem:ro');
     expect(args).toContain('/tmp/p/credentials:/cdk-local-aws/credentials:ro');
     expect(args).toContain('AWS_ENDPOINT_URL=http://task-declared:1');
@@ -73,10 +75,16 @@ describe('buildDockerRunArgs with the AWS wiring', () => {
     setActiveWorkloadAwsWiring({
       ...base,
       mode: 'emulator',
-      scrubEnvKeys: ['AWS_PROFILE', 'AWS_SHARED_CREDENTIALS_FILE'],
+      scrubEnvKeys: ['AWS_PROFILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_WEB_IDENTITY_TOKEN_FILE'],
       emulatorCredentials: { accessKeyId: 'EMULATOR0123456789AB', secretAccessKey: 'EMUSECRET' },
     });
-    const { args, sensitiveEnv } = build({ AWS_ENDPOINT_URL: 'https://real.example.com' });
+    const { args, sensitiveEnv, loopbackPorts } = build({
+      AWS_ENDPOINT_URL: 'https://real.example.com',
+      AWS_PROFILE: 'task-declared',
+      AWS_WEB_IDENTITY_TOKEN_FILE: '/x',
+    });
+    expect(loopbackPorts).toEqual([9297]);
+    expect(args.some((a) => a.startsWith('AWS_WEB_IDENTITY_TOKEN_FILE'))).toBe(false);
     expect(args).not.toContain('/tmp/p/credentials:/cdk-local-aws/credentials:ro');
     expect(args).toContain('AWS_ENDPOINT_URL=https://127.0.0.1:9297');
     expect(args.some((a) => a.startsWith('AWS_PROFILE'))).toBe(false);

@@ -1,4 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
@@ -15,6 +17,12 @@ const {
   activateWorkloadAwsWiring,
   applyWorkloadAwsWiringToEnv,
   collectHostEndpointOverrides,
+  EMULATOR_SCRUBBED_ENV_KEYS,
+  effectiveLoopbackPorts,
+  DEFAULT_AWS_EMULATOR_URL,
+  awsEmulatorEnvName,
+  probeAwsEmulatorHealth,
+  resolveAwsEmulatorOption,
   getActiveWorkloadAwsWiring,
   parseAwsEndpoint,
   readEmulatorRunFiles,
@@ -23,9 +31,14 @@ const {
   resolveWorkloadAwsWiring,
   writeCaBundleFile,
 } = await import('../../../src/local/workload-aws-wiring.js');
-const { buildProxyClientConfig, getAwsEndpointOverride } = await import(
+const { buildProxyClientConfig, getAwsEndpointOverride, setAwsEndpointOverride } = await import(
   '../../../src/utils/aws-proxy.js'
 );
+const { recordAssumedRole, resetWorkloadIdentity, workloadClientConfig } = await import(
+  '../../../src/utils/workload-identity.js'
+);
+const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+const { getLogger } = await import('../../../src/utils/logger.js');
 
 const PEM = '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n';
 const EMU_KEY = { accessKeyId: 'EMULATOR0123456789AB', secretAccessKey: 'A'.repeat(40) };
@@ -159,6 +172,20 @@ describe('writeCaBundleFile', () => {
     }
   });
 
+  it('copies certificate blocks only, never a private key', () => {
+    const src = path.join(home, 'fullchain.pem');
+    writeFileSync(src, `${PEM}-----BEGIN PRIVATE KEY-----\nSECRETKEY\n-----END PRIVATE KEY-----\n`);
+    const f = writeCaBundleFile(src);
+    try {
+      const text = readFileSync(f.hostPath, 'utf8');
+      expect(text).toContain('MIIBfake');
+      expect(text).not.toContain('PRIVATE KEY');
+      expect(text).not.toContain('SECRETKEY');
+    } finally {
+      f.dispose();
+    }
+  });
+
   it('refuses a file with no PEM certificate', () => {
     const src = path.join(home, 'x.txt');
     writeFileSync(src, 'nope');
@@ -167,7 +194,7 @@ describe('writeCaBundleFile', () => {
   });
 });
 
-describe('resolveWorkloadAwsWiring — forward mode (no --emulator-endpoint)', () => {
+describe('resolveWorkloadAwsWiring — forward mode (no --aws-emulator)', () => {
   it('is empty when the host carries no override and no CA', async () => {
     const w = await resolveWorkloadAwsWiring({ env: {}, homeDir: home });
     expect(w).toMatchObject({ mode: 'forward', env: {}, mounts: [], loopbackPorts: [] });
@@ -216,15 +243,19 @@ describe('resolveWorkloadAwsWiring — forward mode (no --emulator-endpoint)', (
   });
 });
 
-describe('resolveWorkloadAwsWiring — emulator mode', () => {
+describe('resolveWorkloadAwsWiring — --aws-emulator', () => {
+  const healthy = vi.fn(async () => undefined);
+
   it('uses the run keys and CA, forces the endpoint + hygiene vars, and probes health', async () => {
     writeEmulatorRun(9297);
     const w = await resolveWorkloadAwsWiring({
-      emulatorEndpoint: 'https://127.0.0.1:9297',
+      awsEmulator: 'https://127.0.0.1:9297',
       env: { AWS_ENDPOINT_URL_S3: 'https://elsewhere.example.com' },
       homeDir: home,
+      probeHealth: healthy,
     });
     try {
+      expect(healthy).toHaveBeenCalledWith('https://127.0.0.1:9297', path.join(home, '.aws/emulator/9297/ca.pem'));
       expect(w.mode).toBe('emulator');
       expect(w.emulatorCredentials).toEqual(EMU_KEY);
       expect(w.env).toMatchObject({
@@ -243,9 +274,30 @@ describe('resolveWorkloadAwsWiring — emulator mode', () => {
     }
   });
 
-  it('hands placeholder keys to a run started with --auth off', async () => {
+  it('defaults to https://127.0.0.1:9297 and lets the port select the run directory', async () => {
+    writeEmulatorRun(9297);
+    writeEmulatorRun(9301);
+    const def = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    expect(def.emulatorEndpoint?.url).toBe(DEFAULT_AWS_EMULATOR_URL);
+    def.dispose();
+    const other = await resolveWorkloadAwsWiring({
+      awsEmulator: 'https://127.0.0.1:9301',
+      env: {},
+      homeDir: home,
+      probeHealth: healthy,
+    });
+    expect(other.loopbackPorts).toEqual([9301]);
+    other.dispose();
+  });
+
+  it('hands fixed placeholder keys (never real ones) to a healthy run without a keys file (--auth off)', async () => {
     writeEmulatorRun(9300, { credentials: false });
-    const w = await resolveWorkloadAwsWiring({ emulatorEndpoint: 'https://127.0.0.1:9300', env: {}, homeDir: home });
+    const w = await resolveWorkloadAwsWiring({
+      awsEmulator: 'https://127.0.0.1:9300',
+      env: { AWS_ACCESS_KEY_ID: 'AKIAREAL', AWS_SECRET_ACCESS_KEY: 'real' },
+      homeDir: home,
+      probeHealth: healthy,
+    });
     try {
       expect(w.emulatorCredentials).toEqual(AUTH_OFF_PLACEHOLDER_CREDENTIALS);
     } finally {
@@ -253,18 +305,30 @@ describe('resolveWorkloadAwsWiring — emulator mode', () => {
     }
   });
 
-  it('falls back to the profile chain (never env vars) for an endpoint with no run files', async () => {
-    const fallback = vi.fn(async () => ({ accessKeyId: 'PROFILEKEY', secretAccessKey: 's' }));
-    const w = await resolveWorkloadAwsWiring({
-      emulatorEndpoint: 'http://10.0.0.9:4566',
-      env: { AWS_ACCESS_KEY_ID: 'AKIAREAL', AWS_SECRET_ACCESS_KEY: 'real' },
-      homeDir: home,
-      resolveFallbackCredentials: fallback,
-    });
-    expect(fallback).toHaveBeenCalledOnce();
-    expect(w.emulatorCredentials).toEqual({ accessKeyId: 'PROFILEKEY', secretAccessKey: 's' });
-    expect(w.loopbackPorts).toEqual([]);
-    expect(w.probeHealth).toBe(false);
+  it('fails with actionable advice when the emulator does not answer its health check', async () => {
+    await expect(
+      resolveWorkloadAwsWiring({
+        awsEmulator: 'https://127.0.0.1:9399',
+        env: {},
+        homeDir: home,
+        probeHealth: async () => 'ECONNREFUSED',
+      })
+    ).rejects.toThrow(/no AWS Emulator answers its health check .*ECONNREFUSED.*running on port 9399/);
+  });
+});
+
+describe('resolveAwsEmulatorOption', () => {
+  it('takes the flag first, then CDK_LOCAL_AWS_EMULATOR (1/true = default URL)', () => {
+    expect(awsEmulatorEnvName()).toBe('CDK_LOCAL_AWS_EMULATOR');
+    expect(resolveAwsEmulatorOption('https://127.0.0.1:9300', {})).toBe('https://127.0.0.1:9300');
+    expect(resolveAwsEmulatorOption(true, {})).toBe(true);
+    expect(resolveAwsEmulatorOption(undefined, {})).toBeUndefined();
+    expect(resolveAwsEmulatorOption(undefined, { CDK_LOCAL_AWS_EMULATOR: 'true' })).toBe(true);
+    expect(resolveAwsEmulatorOption(undefined, { CDK_LOCAL_AWS_EMULATOR: '1' })).toBe(true);
+    expect(resolveAwsEmulatorOption(undefined, { CDK_LOCAL_AWS_EMULATOR: 'false' })).toBeUndefined();
+    expect(resolveAwsEmulatorOption(undefined, { CDK_LOCAL_AWS_EMULATOR: 'https://127.0.0.1:9400' })).toBe(
+      'https://127.0.0.1:9400'
+    );
   });
 });
 
@@ -350,7 +414,9 @@ describe('applyWorkloadAwsWiringToEnv', () => {
 });
 
 describe('resolveHostDefaultCredentials (cdkd#6129)', () => {
-  it('resolves the SDK default chain once per process', async () => {
+  afterEach(() => resetWorkloadIdentity());
+
+  it('builds one SDK provider and asks it on every call (the SDK refreshes expiring keys)', async () => {
     defaultChainMock.mockResolvedValue({ accessKeyId: 'K', secretAccessKey: 'S', sessionToken: 'T' });
     await expect(resolveHostDefaultCredentials()).resolves.toEqual({
       accessKeyId: 'K',
@@ -358,48 +424,190 @@ describe('resolveHostDefaultCredentials (cdkd#6129)', () => {
       sessionToken: 'T',
     });
     await resolveHostDefaultCredentials();
-    expect(defaultChainMock).toHaveBeenCalledOnce();
+    expect(defaultProviderMock).toHaveBeenCalledTimes(1);
+    expect(defaultProviderMock).toHaveBeenCalledWith({});
+    expect(defaultChainMock).toHaveBeenCalledTimes(2);
   });
 
-  it('resolves undefined when the chain finds nothing', async () => {
+  it('honours a profile per call', async () => {
+    defaultChainMock.mockResolvedValue({ accessKeyId: 'K', secretAccessKey: 'S' });
+    await resolveHostDefaultCredentials({ profile: 'dev' });
+    expect(defaultProviderMock).toHaveBeenCalledWith({ profile: 'dev' });
+  });
+
+  it('after a --role-arn assume, reads the chain WITHOUT its env link (the env holds the role)', async () => {
+    recordAssumedRole(undefined, { accessKeyId: 'ROLE', secretAccessKey: 'r', sessionToken: 't' });
+    defaultChainMock.mockResolvedValue({ accessKeyId: 'CALLER', secretAccessKey: 'c' });
+    await resolveHostDefaultCredentials();
+    expect(defaultProviderMock).toHaveBeenCalledWith({ profile: 'default' });
+  });
+
+  it('resolves undefined when the chain finds nothing, and remembers the miss briefly', async () => {
     defaultChainMock.mockRejectedValue(new Error('Could not load credentials from any providers'));
     await expect(resolveHostDefaultCredentials()).resolves.toBeUndefined();
+    await expect(resolveHostDefaultCredentials()).resolves.toBeUndefined();
+    expect(defaultChainMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('workloadClientConfig under an endpoint override', () => {
+  afterEach(() => resetWorkloadIdentity());
+
+  it('signs with the emulator keys even in caller mode after an assume', async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    try {
+      recordAssumedRole(
+        { accessKeyId: 'CALLERREAL', secretAccessKey: 'real' },
+        { accessKeyId: 'ROLE', secretAccessKey: 'r', sessionToken: 't' }
+      );
+      setAwsEndpointOverride({ endpoint: 'https://127.0.0.1:9297', credentials: EMU_KEY });
+      await expect(workloadClientConfig().credentials!({})).resolves.toEqual(EMU_KEY);
+    } finally {
+      setEmbedConfig(undefined);
+    }
+  });
+});
+
+describe('scrub and CA details', () => {
+  const healthy = async (): Promise<undefined> => undefined;
+
+  it('emulator mode scrubs every key in EMULATOR_SCRUBBED_ENV_KEYS', async () => {
+    writeEmulatorRun(9297);
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    try {
+      expect(w.scrubEnvKeys).toEqual(EMULATOR_SCRUBBED_ENV_KEYS);
+      const dirty = Object.fromEntries(EMULATOR_SCRUBBED_ENV_KEYS.map((k) => [k, 'x']));
+      const out = applyWorkloadAwsWiringToEnv(dirty, w);
+      for (const k of EMULATOR_SCRUBBED_ENV_KEYS) expect(out[k]).toBeUndefined();
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it('emulator mode: --ca-bundle beats the run ca.pem; an http URL mounts no CA; localhost becomes 127.0.0.1', async () => {
+    writeEmulatorRun(9297);
+    writeFileSync(path.join(home, 'flag.pem'), PEM.replace('fake', 'flag'));
+    const flagged = await resolveWorkloadAwsWiring({
+      awsEmulator: 'https://localhost:9297',
+      caBundle: path.join(home, 'flag.pem'),
+      env: {},
+      homeDir: home,
+      probeHealth: healthy,
+    });
+    expect(flagged.emulatorEndpoint?.url).toBe('https://127.0.0.1:9297');
+    expect(readFileSync(flagged.caHostPath!, 'utf8')).toContain('MIIBflag');
+    flagged.dispose();
+    writeEmulatorRun(9302);
+    const plain = await resolveWorkloadAwsWiring({
+      awsEmulator: 'http://127.0.0.1:9302',
+      env: {},
+      homeDir: home,
+      probeHealth: healthy,
+    });
+    expect(plain.mounts).toEqual([]);
+    expect(plain.probeHealth).toBe(false);
+  });
+
+  it("forward mode mounts the profile's ca_bundle, and skips an unusable host bundle with a warning", async () => {
+    mkdirSync(path.join(home, '.aws'));
+    writeFileSync(path.join(home, 'p.pem'), PEM);
+    writeFileSync(path.join(home, '.aws', 'config'), `[default]\nca_bundle = ${path.join(home, 'p.pem')}\n`);
+    const w = await resolveWorkloadAwsWiring({ env: {}, homeDir: home });
+    expect(w.mounts).toHaveLength(1);
+    w.dispose();
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const skipped = await resolveWorkloadAwsWiring({
+      env: { AWS_CA_BUNDLE: path.join(home, 'missing.pem') },
+      homeDir: home,
+    });
+    expect(skipped.mounts).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/cannot be read.*not mounted/));
+    warn.mockRestore();
+    await expect(
+      resolveWorkloadAwsWiring({ caBundle: path.join(home, 'missing.pem'), env: {}, homeDir: home })
+    ).rejects.toThrow(/cannot be read/);
+  });
+
+  it('effectiveLoopbackPorts drops a forwarded port the final env no longer uses', () => {
+    const w = {
+      mode: 'forward' as const,
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [9297, 9400],
+      probeHealth: false,
+      dispose: () => undefined,
+    };
+    expect(
+      effectiveLoopbackPorts(
+        { AWS_ENDPOINT_URL: 'http://task-declared:1', AWS_ENDPOINT_URL_S3: 'https://localhost:9400' },
+        w
+      )
+    ).toEqual([9400]);
   });
 });
 
 describe('activateWorkloadAwsWiring', () => {
-  it('under --emulator-endpoint, installs the wiring and points cdk-local clients at the endpoint', async () => {
+  it('under --aws-emulator, installs the wiring and points cdk-local clients at the emulator', async () => {
     writeEmulatorRun(9297);
     const prevHome = process.env['HOME'];
     process.env['HOME'] = home;
+    const server = await startHealthServer();
     try {
-      const w = await activateWorkloadAwsWiring({ emulatorEndpoint: 'https://127.0.0.1:9297' });
+      // The health probe must answer: point the flag at a plain-http stand-in
+      // whose port has a run directory.
+      writeEmulatorRun(server.port);
+      const w = await activateWorkloadAwsWiring({ awsEmulator: `http://127.0.0.1:${server.port}` });
       expect(getActiveWorkloadAwsWiring()).toBe(w);
-      expect(getAwsEndpointOverride()).toMatchObject({ endpoint: 'https://127.0.0.1:9297', credentials: EMU_KEY });
+      expect(getAwsEndpointOverride()).toMatchObject({
+        endpoint: `http://127.0.0.1:${server.port}`,
+        credentials: EMU_KEY,
+      });
+      // http URL: no CA to trust.
+      expect(getAwsEndpointOverride()?.caPem).toBeUndefined();
       const cfg = buildProxyClientConfig({ profile: 'prod' });
-      expect(cfg.endpoint).toBe('https://127.0.0.1:9297');
+      expect(cfg.endpoint).toBe(`http://127.0.0.1:${server.port}`);
       expect(cfg.requestHandler).toBeDefined();
       await expect(cfg.credentials!({})).resolves.toEqual(EMU_KEY);
     } finally {
+      await server.close();
       if (prevHome === undefined) delete process.env['HOME'];
       else process.env['HOME'] = prevHome;
     }
   });
 
-  it('reads the endpoint from CDKL_EMULATOR_ENDPOINT when the flag is absent', async () => {
-    process.env['CDKL_EMULATOR_ENDPOINT'] = 'http://10.0.0.9:4566';
-    try {
-      const w = await activateWorkloadAwsWiring({});
-      expect(w.mode).toBe('emulator');
-      expect(w.emulatorEndpoint?.url).toBe('http://10.0.0.9:4566');
-    } finally {
-      delete process.env['CDKL_EMULATOR_ENDPOINT'];
-    }
-  });
-
   it('without the flag, leaves cdk-local clients on their default endpoints', async () => {
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('AWS_CA_BUNDLE', '');
+    vi.stubEnv('AWS_CONFIG_FILE', path.join(home, 'none'));
+    vi.stubEnv('CDK_LOCAL_AWS_EMULATOR', '');
     await activateWorkloadAwsWiring({});
+    vi.unstubAllEnvs();
     expect(getAwsEndpointOverride()).toBeUndefined();
     expect(buildProxyClientConfig().endpoint).toBeUndefined();
+  });
+});
+
+async function startHealthServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = createServer((req, res) => {
+    res.statusCode = req.url === '/__admin/health' ? 200 : 404;
+    res.end('ok');
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  return { port, close: () => new Promise((r) => server.close(() => r())) };
+}
+
+describe('probeAwsEmulatorHealth', () => {
+  it('resolves undefined on 200 and a reason otherwise', async () => {
+    const server = await startHealthServer();
+    try {
+      await expect(probeAwsEmulatorHealth(`http://127.0.0.1:${server.port}`, undefined)).resolves.toBeUndefined();
+    } finally {
+      await server.close();
+    }
+    await expect(probeAwsEmulatorHealth(`http://127.0.0.1:${server.port}`, undefined)).resolves.toBe(
+      'ECONNREFUSED'
+    );
   });
 });

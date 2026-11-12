@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 // The process-wide AWS wiring applied at the docker-run layer: emulator
 // credentials ride the value-from-process-env path (never argv), the host
-// profile-credentials mount is dropped under --emulator-endpoint, the CA mount
+// profile-credentials mount is dropped under --aws-emulator, the CA mount
 // is added, and the loopback forwarder is started after the workload.
 const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn() }));
 
@@ -34,6 +34,7 @@ const { resetWorkloadAwsWiringForTest, setActiveWorkloadAwsWiring } = await impo
   '../../../src/local/workload-aws-wiring.js'
 );
 const { resetLoopbackForwarderForTest } = await import('../../../src/local/loopback-forwarder.js');
+const { getLogger } = await import('../../../src/utils/logger.js');
 type Wiring = import('../../../src/local/workload-aws-wiring.js').WorkloadAwsWiring;
 
 const EMU = { accessKeyId: 'EMULATOR0123456789AB', secretAccessKey: 'EMUSECRETVALUE' };
@@ -149,5 +150,53 @@ describe('runDetached with an active wiring', () => {
     execFileMock.mockReturnValue({ stdout: 'plain-id\n' });
     await expect(runDetached({ ...baseRun, env: {} })).resolves.toBe('plain-id');
     expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runDetached forwarder failure policy', () => {
+  it('forward mode: a forwarder that cannot start only warns, and the workload keeps running', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring({ mode: 'forward', scrubEnvKeys: [] }));
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'run' && args.includes('--pid')) return { error: new Error('pull access denied') };
+      if (args[0] === 'run') return { stdout: 'workload-id\n' };
+      if (args[0] === 'inspect') return { stdout: 'true\n' };
+      return { stdout: '' };
+    });
+    await expect(
+      runDetached({ ...baseRun, env: { AWS_ENDPOINT_URL: 'https://127.0.0.1:9297', AWS_ACCESS_KEY_ID: 'K', AWS_SECRET_ACCESS_KEY: 'S' } })
+    ).resolves.toBe('workload-id');
+    expect(warn).toHaveBeenCalled();
+    expect(execFileMock.mock.calls.some((c) => c[1][0] === 'rm')).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('a workload that already exited is left alone (no error, no removal)', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'run' && args.includes('--pid')) return { error: new Error('cannot join a non running container') };
+      if (args[0] === 'run') return { stdout: 'short-task\n' };
+      if (args[0] === 'inspect') return { stdout: 'false\n' };
+      return { stdout: '' };
+    });
+    await expect(runDetached({ ...baseRun, env: {} })).resolves.toBe('short-task');
+    expect(execFileMock.mock.calls.some((c) => c[1][0] === 'rm')).toBe(false);
+  });
+
+  it('host network: emulator env and scrub still apply, but no forwarder starts', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    execFileMock.mockReturnValue({ stdout: 'host-net\n' });
+    await runDetached({ ...baseRun, network: 'host', env: { AWS_PROFILE: 'prod' } });
+    const runs = execFileMock.mock.calls.filter((c) => c[1][0] === 'run');
+    expect(runs).toHaveLength(1);
+    expect(runs[0]![1]).toContain('AWS_ENDPOINT_URL=https://127.0.0.1:9297');
+    expect(runs[0]![1].some((a: string) => a.startsWith('AWS_PROFILE'))).toBe(false);
+  });
+
+  it('a port the final env no longer points at gets no forwarder', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring({ mode: 'forward', scrubEnvKeys: [] }));
+    execFileMock.mockReturnValue({ stdout: 'id\n' });
+    await runDetached({ ...baseRun, env: { AWS_ENDPOINT_URL: 'http://task-declared:1', AWS_ACCESS_KEY_ID: 'K', AWS_SECRET_ACCESS_KEY: 'S' } });
+    expect(execFileMock.mock.calls.some((c) => c[1].includes('--pid'))).toBe(false);
   });
 });
