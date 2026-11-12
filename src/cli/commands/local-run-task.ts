@@ -209,6 +209,8 @@ async function localRunTaskCommand(
   // handlers using `fromIni({ profile })` resolve to the same creds.
   // Disposed in the cleanup chain below.
   let profileCredsFile: ProfileCredentialsFile | undefined;
+  // `--detach` keeps the file for the containers only once they started.
+  let detachedTaskStarted = false;
 
   // Single-flight cleanup: the SIGINT handler AND the outer `finally` both
   // call this, so we await the first invocation's promise on every later
@@ -505,6 +507,7 @@ async function localRunTaskCommand(
     }
 
     const result = await runEcsTask(task, runOpts, state);
+    detachedTaskStarted = options.detach;
 
     if (options.detach) {
       logger.info(
@@ -553,7 +556,13 @@ async function localRunTaskCommand(
     // #882: keep the signal handlers installed until the cleanup has finished,
     // so a ^C during a non-signal exit's cleanup joins it (single-flight)
     // instead of killing the process with the default handler mid-teardown.
-    if (!options.detach) await cleanup();
+    if (!options.detach) {
+      await cleanup();
+    } else if (!detachedTaskStarted && profileCredsFile) {
+      // A `--detach` run that failed before its containers started leaves no
+      // reader of the `--profile` credentials file.
+      await profileCredsFile.dispose().catch(() => undefined);
+    }
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
   }

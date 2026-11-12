@@ -186,7 +186,10 @@ same two flags and forwards them to every command it starts:
   (`AWS_PROFILE`, the shared credentials / config files, SSO). The
   precedence is `--assume-role` > `--profile` > the default chain. A
   `run-task` container gets default-chain credentials as `AWS_*` env
-  (unless its own env sets `AWS_ACCESS_KEY_ID` or `AWS_PROFILE`), and
+  (unless its own env names a credential source: an `AWS_*` key,
+  `AWS_PROFILE`, `AWS_SHARED_CREDENTIALS_FILE`,
+  `AWS_WEB_IDENTITY_TOKEN_FILE` or an `AWS_CONTAINER_CREDENTIALS_*` URI; an
+  `--env-vars` `"AWS_ACCESS_KEY_ID": null` opts out), and
   `--profile` credentials from a mounted shared credentials file; only an
   assumed task role is served by the metadata sidecar. When the chain finds nothing, it
   is asked again after a minute, so an SSO login during a long `--watch`

@@ -158,24 +158,25 @@ describe('buildDockerRunArgs with default-chain credentials (#883)', () => {
     expect(sensitiveEnv['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
   });
 
-  it('a chain without a session token drops a stale task-declared one', () => {
-    const { sessionToken: _t, ...noToken } = chain;
-    const { sensitiveEnv } = buildDockerRunArgs({
-      task: { family: 'fam' } as unknown as ResolvedEcsTask,
-      container: container({ AWS_SESSION_TOKEN: 'STALE' }),
-      image: 'busybox',
-      network: 'net',
-      volumeByName: new Map(),
-      secrets: [],
-      envOverrides: undefined,
-      containerHost: '127.0.0.1',
-      roleArn: undefined,
-      platformOverride: undefined,
-      region: 'us-east-1',
-      defaultCredentials: noToken,
-    });
-    expect(sensitiveEnv['AWS_ACCESS_KEY_ID']).toBe(chain.accessKeyId);
-    expect(sensitiveEnv['AWS_SESSION_TOKEN']).toBeUndefined();
+  it.each([
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+    'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+    'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  ])('a task-declared %s keeps the chain out', (key) => {
+    const { args, sensitiveEnv } = buildDefault({ [key]: 'task-value' });
+    expect(sensitiveEnv['AWS_ACCESS_KEY_ID']).toBeUndefined();
+    expect(JSON.stringify({ args, sensitiveEnv })).not.toContain('CHAIN');
+  });
+
+  it('an --env-vars "AWS_ACCESS_KEY_ID": null opts the container out', () => {
+    for (const scope of ['app', 'Parameters']) {
+      const { args, sensitiveEnv } = buildDefault({}, { [scope]: { AWS_ACCESS_KEY_ID: null } });
+      expect(sensitiveEnv['AWS_ACCESS_KEY_ID']).toBeUndefined();
+      expect(JSON.stringify({ args, sensitiveEnv })).not.toContain('CHAIN');
+    }
   });
 
   it('emulator full mode: only the emulator keys reach the container', () => {

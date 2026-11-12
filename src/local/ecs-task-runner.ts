@@ -1536,6 +1536,21 @@ export async function resolvePrivilegedHostPortRemaps(opts: {
  * Exported (no-leading-underscore) so the unit tests can assert against
  * the shape directly without spawning a process.
  */
+/**
+ * Env keys that name a container's own credential source. When any is set,
+ * `defaultCredentials` is not filled in (issue #883).
+ */
+const OWN_CREDENTIAL_SOURCE_KEYS = [
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_PROFILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+] as const;
+
 export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   args: string[];
   sensitiveEnv: Record<string, string>;
@@ -1752,7 +1767,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   //   6. profile credentials file env (AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE)
   //   7. metadata sidecar env (sidecar URL / role URL)
   // Default-chain credentials (`defaultCredentials`) then fill an env that
-  // names none of its own. `--aws-emulator` is applied after all of them and wins over every layer.
+  // names no credential source of its own. `--aws-emulator` is applied after all of them and wins over every layer.
   let finalEnv: Record<string, string> = {};
   const metaEnv = buildMetadataEnv({
     containerName: container.name,
@@ -1788,22 +1803,26 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     applyEnvOverrideMap(finalEnv, overrides['Parameters']);
     applyEnvOverrideMap(finalEnv, overrides[container.name]);
   }
-  // Default-chain credentials fill an env that names no credentials of its
-  // own: a template / `--env-vars` key pair or `AWS_PROFILE` wins as a whole
+  // Default-chain credentials fill an env that names no credential source of
+  // its own (a template / `--env-vars` key, profile, credentials file, web
+  // identity or container-credentials URI), which then wins as a whole. An
+  // `--env-vars` `"AWS_ACCESS_KEY_ID": null` opts the container out
   // (issue #883).
   const defaultCredentials = opts.defaultCredentials;
+  const optedOut = [overrides?.['Parameters'], overrides?.[container.name]].some(
+    (m) =>
+      m !== undefined && Object.hasOwn(m, 'AWS_ACCESS_KEY_ID') && m['AWS_ACCESS_KEY_ID'] === null
+  );
   if (
     defaultCredentials &&
     wiring?.mode !== 'emulator' &&
-    !finalEnv['AWS_ACCESS_KEY_ID'] &&
-    !finalEnv['AWS_PROFILE']
+    !optedOut &&
+    !OWN_CREDENTIAL_SOURCE_KEYS.some((k) => finalEnv[k])
   ) {
     finalEnv['AWS_ACCESS_KEY_ID'] = defaultCredentials.accessKeyId;
     finalEnv['AWS_SECRET_ACCESS_KEY'] = defaultCredentials.secretAccessKey;
     if (defaultCredentials.sessionToken) {
       finalEnv['AWS_SESSION_TOKEN'] = defaultCredentials.sessionToken;
-    } else {
-      delete finalEnv['AWS_SESSION_TOKEN'];
     }
   }
   // `--aws-emulator` is forced last: the endpoint, its credentials only,
