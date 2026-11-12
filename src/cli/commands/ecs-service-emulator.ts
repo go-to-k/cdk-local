@@ -2999,7 +2999,8 @@ export function resolveShadowReadyTimeoutMs(
  * one (#849). `undefined` with `--assume-role` (the sidecar serves the role),
  * with `--profile` (its mounted credentials file), under `--aws-emulator` full
  * mode (emulator keys only), or when the chain finds nothing. Resolved per
- * boot, so a `--watch` restart after an SSO login picks up the new keys. The
+ * boot, so a `--watch` rebuild or rolling restart after a miss (an SSO login
+ * that came later) or near the old keys' expiry picks up new keys. The
  * runner fills them only into a container env that names no credential
  * source of its own.
  */

@@ -107,11 +107,13 @@ cleanup
 # Issue #889 — count running task containers (not the metadata sidecar, which
 # holds the same chain) whose env carries the fake default-chain key this run
 # booted with (no credential flag). Other lanes' containers never carry it.
+# Unique per run, so a concurrent run of this fixture never matches.
+FAKE_CHAIN_KEY="FAKEINTEGKEY0889X$$"
 count_default_chain_containers() {
   local n=0 id
   for id in $(docker ps --filter "name=cdkl-" --filter "ancestor=public.ecr.aws/docker/library/python:3.12-alpine" --format '{{.ID}}'); do
     if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${id}" 2>/dev/null \
-      | grep -qx 'AWS_ACCESS_KEY_ID=FAKEINTEGKEY0889'; then
+      | grep -qx "AWS_ACCESS_KEY_ID=${FAKE_CHAIN_KEY}"; then
       n=$((n + 1))
     fi
   done
@@ -123,7 +125,7 @@ echo "==> start-alb: naming the ALB (DesiredCount=2 backing service); HTTP:80 ->
 # so the front-door binds without root (the macOS Docker Desktop privileged-port
 # path). No --tls flag: the HTTPS:443 listener exercises the #198 default —
 # served over plain HTTP locally, with X-Forwarded-Proto: https preserved.
-env -u AWS_PROFILE -u AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID=FAKEINTEGKEY0889 AWS_SECRET_ACCESS_KEY=integ-fake-secret-889 \
+env -u AWS_PROFILE -u AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID="${FAKE_CHAIN_KEY}" AWS_SECRET_ACCESS_KEY=integ-fake-secret-889 \
   ${CDKL} start-alb CdkLocalStartAlbFixture:WebLB \
   --container-host 127.0.0.1 \
   --lb-port "80=${LB_HOST_PORT}" \

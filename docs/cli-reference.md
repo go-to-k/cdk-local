@@ -1567,7 +1567,9 @@ assumed role's credentials at `/creds` (every container gets
 `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`). Without a task role,
 `--profile` credentials are mounted as a shared credentials file, and with no
 credential flag every container gets the host default chain as `AWS_*` env,
-resolved again at each replica start (not under `--aws-emulator`). One sidecar holds one set of
+resolved at startup and at each `--watch` rebuild or rolling restart (a
+crash restart or soft-reload keeps the keys the replica started with; not
+under `--aws-emulator`). One sidecar holds one set of
 credentials, so every service in the run must resolve to the SAME task role —
 when the bare flag resolves different roles for different services, the run
 fails and names both; pass one with `--assume-role <arn>`. Only one run with a

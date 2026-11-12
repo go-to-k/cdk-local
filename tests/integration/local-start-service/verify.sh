@@ -85,11 +85,13 @@ echo "    orphan ${ORPHAN_NET} owns 169.254.171.0/24 (only its metadata sidecar 
 # Issue #889 — count running task containers (not the metadata sidecar, which
 # holds the same chain) whose env carries the fake default-chain key this run
 # booted with (no credential flag). Other lanes' containers never carry it.
+# Unique per run, so a concurrent run of this fixture never matches.
+FAKE_CHAIN_KEY="FAKEINTEGKEY0889X$$"
 count_default_chain_containers() {
   local n=0 id
   for id in $(docker ps --filter "name=cdkl-" --filter "ancestor=${BUSYBOX_IMAGE}" --format '{{.ID}}'); do
     if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${id}" 2>/dev/null \
-      | grep -qx 'AWS_ACCESS_KEY_ID=FAKEINTEGKEY0889'; then
+      | grep -qx "AWS_ACCESS_KEY_ID=${FAKE_CHAIN_KEY}"; then
       n=$((n + 1))
     fi
   done
@@ -97,7 +99,7 @@ count_default_chain_containers() {
 }
 
 echo "==> Booting service (DesiredCount=2) with no credential flag and a fake default chain"
-env -u AWS_PROFILE -u AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID=FAKEINTEGKEY0889 AWS_SECRET_ACCESS_KEY=integ-fake-secret-889 \
+env -u AWS_PROFILE -u AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID="${FAKE_CHAIN_KEY}" AWS_SECRET_ACCESS_KEY=integ-fake-secret-889 \
   ${CDKL} start-service CdkLocalStartServiceFixture:WebService \
   --no-pull --container-host 127.0.0.1 \
   > "${OUT_FILE}" 2>&1 &
