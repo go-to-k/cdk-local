@@ -1125,11 +1125,26 @@ then tears everything down. This holds for every `--watch` command.
 
 The watch set honors `cdk.json`'s `watch.include` / `watch.exclude`
 globs (mirroring `cdk watch`); `watch.include` defaults to `**` and a
-missing `watch` block is not an error. Three paths are ALWAYS excluded:
+missing `watch` block is not an error. These paths are ALWAYS excluded:
 
 - the synth **output directory** (`cdk.out/`, or the `--output` value),
+- `cdk.context.json` (a synth rewrites it when the app does a context lookup),
+- the OS temp directory, when `TMPDIR` points under the project (cdk-local
+  stages its temporary files there),
 - `node_modules`,
 - `.git`.
+
+Those are the files cdk-local itself writes into the watched tree (plus two
+directories skipped for traversal cost), so its own writes can never trigger a
+reload. A file YOU write there is not excluded: for example
+`cdkl start-service ... --watch > app.log` writes `app.log` into the project,
+and each log line would fire a reload. List it in `cdk.json`:
+
+```json
+{ "watch": { "exclude": ["*.log"] } }
+```
+
+or send the log outside the project (`> /tmp/app.log`).
 
 Excluding the output directory is load-bearing for correctness: each
 reload re-synths INTO `cdk.out/`, so watching it would make the reload's
@@ -1301,10 +1316,11 @@ containers are reported with the `docker ps` cleanup command.
 
 ### `start-api` exit codes
 
-- `0` — server started cleanly and shut down on SIGTERM.
 - `1` — startup failure (Docker missing, port bind failed, route
   discovery rejected) OR uncaught exception during the run.
-- `130` — exited via SIGINT.
+- `130` — stopped by SIGINT.
+- `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
+  number) and follow the same graceful shutdown; a clean stop is not `0`.
 
 ### `start-api` authorizers
 
@@ -1866,7 +1882,7 @@ dependsOn relation start in template order.
 4. cdk-local exits with the essential container's exit code.
 
 `^C` triggers the same teardown. A second `^C` lets it finish; a third
-exits 130 immediately, skipping container cleanup (same pattern as
+exits immediately (130 for SIGINT, 143 for SIGTERM), skipping container cleanup (same pattern as
 `cdkl start-api`).
 
 `--detach` skips steps 1, 2, and 4. The sidecar and user containers
@@ -2342,7 +2358,7 @@ the TCP-ready probe passes.
 replica in parallel — each replica's docker containers + per-replica
 network + metadata sidecar are torn down via the same `cleanupEcsRun`
 path `run-task` uses. A second `^C` lets that teardown finish; a third
-bypasses it and exits 130 immediately so users have an escape hatch when
+bypasses it and exits immediately (130 / 143 by the signal) so users have an escape hatch when
 docker hangs.
 
 ### `start-service` scope (deferred follow-ups)

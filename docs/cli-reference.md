@@ -1044,7 +1044,7 @@ and non-integer values pre-container.
   the readiness window, or the container exited before responding.
 - `130` / `143` — stopped by `^C` (SIGINT) / SIGTERM. Both remove the agent
   container first (under `--watch`, after the running reload stops). A second
-  signal waits for that; a third exits 130 at once and skips it.
+  signal waits for that; a third exits at once (130 for SIGINT, 143 for SIGTERM) and skips it.
 
 ## `cdkl start-agentcore` (serve an AgentCore Runtime's HTTP contract + `/ws` locally)
 
@@ -1292,10 +1292,11 @@ region and no `AWS_REGION` env still surfaces that SDK error — set
 
 ### `cdkl start-api` exit codes
 
-- `0` — server started cleanly and shut down on SIGTERM.
 - `1` — startup failure (Docker missing, port bind failed, route
   discovery rejected) OR uncaught exception during the run.
-- `130` — exited via SIGINT (`^C`).
+- `130` — stopped by SIGINT (`^C`).
+- `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
+  number) and follow the same graceful shutdown; a clean stop is not `0`.
 
 Detailed coverage of route discovery, REST v1 non-AWS_PROXY
 integrations, CORS preflight, stage variables, container lifecycle,
@@ -1519,7 +1520,7 @@ dependsOn relation start in template order.
 4. cdk-local exits with the essential container's exit code.
 
 `^C` triggers the same teardown. A second `^C` lets it finish; a third
-exits 130 immediately, skipping container cleanup (same pattern as
+exits immediately (130 for SIGINT, 143 for SIGTERM), skipping container cleanup (same pattern as
 `cdkl start-api`).
 
 `--detach` skips steps 1, 2, and 4. The sidecar and user containers
@@ -1535,6 +1536,8 @@ network + sidecar are still torn down. Use to `docker exec` into a stopped conta
 - `0` — essential container exited 0.
 - N (non-zero) — essential container exited N (cdk-local propagates
   the code).
+- `130` / `143` — stopped by SIGINT (`^C`) / SIGTERM, after the teardown
+  (the shell convention: 128 + the signal number).
 - Various cdk-local-side error codes (Docker missing, target not
   found, network creation failed, secret resolution failed, ...)
   follow the global handler's defaults (typically 1).
@@ -1652,7 +1655,7 @@ Plus the [common flags](#common-flags): `-a/--app`, `--output`,
 replica in parallel — each replica's docker containers + per-replica
 network + metadata sidecar are torn down via the same cleanup path
 `cdkl run-task` uses. A second `^C` lets that teardown finish; a third
-bypasses it and exits 130 immediately so users have an escape hatch when
+bypasses it and exits immediately (130 / 143 by the signal) so users have an escape hatch when
 docker hangs.
 
 ### `awsvpc` network mode
@@ -1670,10 +1673,11 @@ and name the ALB.
 
 ### `cdkl start-service` exit codes
 
-- `0` — server started cleanly and shut down on SIGTERM.
 - `1` — startup failure (Docker missing, target not an ECS Service,
   network creation failed) OR uncaught exception during the run.
-- `130` — exited via SIGINT (`^C`).
+- `130` — stopped by SIGINT (`^C`).
+- `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
+  number) and follow the same graceful shutdown; a clean stop is not `0`.
 
 ## `cdkl start-alb` (run an ALB-fronted service locally)
 
@@ -1904,10 +1908,11 @@ remote, or use a permissive loopback CIDR for local smoke tests.
 
 ### `cdkl start-alb` exit codes
 
-- `0` — front-door + services started cleanly and shut down on SIGTERM.
 - `1` — startup failure (Docker missing, target not an application ALB, no
   frontable ECS service behind it, port bind failure) OR uncaught exception.
-- `130` — exited via SIGINT (`^C`).
+- `130` — stopped by SIGINT (`^C`).
+- `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
+  number) and follow the same graceful shutdown; a clean stop is not `0`.
 
 ## `cdkl start-cloudfront` (serve a CloudFront distribution locally)
 
@@ -2157,7 +2162,7 @@ On top of the [common flags](#common-flags):
 | `--stack-region <region>` | unset | Region of the state record to read; used with `--from-cfn-stack` as the CFn client region. |
 | `--env-vars <file>` | unset | SAM-shape JSON env-var overrides for the Lambda Function URL origins' backing functions and the Lambda Web Function endpoint origins' revisions — the same file and merge as `cdkl invoke --env-vars` ([override keys](#--env-vars-override-keys)): `Parameters` for every such origin, a function's or revision's logical ID / construct path for one, `null` removes a variable. Applied after `--from-cfn-stack` substitution. Not applied to Lambda@Edge functions (AWS does not allow environment variables on them); a distribution with no Function URL / Web Function origin logs a WARN that the flag has no effect. |
 | `--assume-role [arn]` | off | Assume a Function URL origin Lambda's deployed execution role (or a Web Function origin revision's `ServiceConfig.ExecutionRoleArn`, as `start-web-function --assume-role` does) and forward STS temp credentials into its container. `--assume-role <arn>` (explicit); `--assume-role` (bare, auto-resolves from state — requires `--from-cfn-stack`); `--no-assume-role` (opt out). Same semantics as `cdkl invoke --assume-role`. |
-| `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container and a Web Function origin's server container are NOT rebuilt on reload (boot-time only). |
+| `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `cdk.context.json`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container and a Web Function origin's server container are NOT rebuilt on reload (boot-time only). |
 
 ```bash
 # Serve a static-site distribution; pick interactively in a TTY
@@ -2202,10 +2207,11 @@ cdkl start-cloudfront MyStack/SiteDist --from-cfn-stack
 
 ### `cdkl start-cloudfront` exit codes
 
-- `0` — server started cleanly and shut down on SIGTERM.
 - `1` — startup failure (target not a distribution, port bind failure,
   TLS material error) OR uncaught exception.
-- `130` — exited via SIGINT (`^C`).
+- `130` — stopped by SIGINT (`^C`).
+- `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
+  number) and follow the same graceful shutdown; a clean stop is not `0`.
 
 ## `cdkl start-web-function` (serve a Lambda Web Function locally)
 
@@ -2362,7 +2368,7 @@ not rely on it.
 | `GET /_cdkl/microvm` | `{"microvmId", "state", "ports"}` |
 | `POST /_cdkl/microvm/suspend` | `/suspend` hook, then `docker pause` |
 | `POST /_cdkl/microvm/resume` | `docker unpause`, then `/resume` hook; traffic flows after it answers 200 |
-| `POST /_cdkl/microvm/terminate` | waits for an in-flight suspend / resume, unpauses, `/terminate` hook, then the container is removed; the last one ends the command (exit 0) |
+| `POST /_cdkl/microvm/terminate` | waits for an in-flight suspend / resume, unpauses, `/terminate` hook, then the container is removed; the last one ends the command (exit 0, not a signal stop) |
 
 The control path answers only requests addressed to this front door, so a web
 page in a browser cannot drive it; anything else is refused with `403`:
@@ -2388,7 +2394,8 @@ suspended; a failed `/terminate` is reported and the container removed anyway.
 **Shutdown.** SIGINT / SIGTERM calls `/terminate` on every running MicroVM,
 then removes the containers (named `cdkl-microvm-<pid>-<index>-<random>`, run
 without `--rm` so a crashed boot keeps its logs). A second signal is ignored
-while containers are being removed. A container that exits on its own ends the
+while containers are being removed. The command exits 130 on SIGINT and 143 on
+SIGTERM. A container that exits on its own ends the
 command non-zero with its last output lines.
 
 **Environment and credentials.** `EnvironmentVariables` reach every container
@@ -2501,7 +2508,8 @@ through it, because that spawns the real RIE / ECS containers.
 
 ### `cdkl studio` exit codes
 
-- `0` — studio server started cleanly and shut down on SIGTERM.
 - `1` — startup failure (synthesis error, port bind failure) OR uncaught
   exception.
-- `130` — exited via SIGINT (`^C`).
+- `130` — stopped by SIGINT (`^C`).
+- `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
+  number) and follow the same graceful shutdown; a clean stop is not `0`.

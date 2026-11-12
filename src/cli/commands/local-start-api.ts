@@ -1427,10 +1427,10 @@ async function localStartApiCommand(
   });
 
   process.on('SIGINT', () => {
-    shutdown('SIGINT', 130);
+    shutdown('SIGINT');
   });
   process.on('SIGTERM', () => {
-    shutdown('SIGTERM', 0);
+    shutdown('SIGTERM');
   });
   process.on('uncaughtException', (err) => {
     logger.error(
@@ -1463,8 +1463,9 @@ export interface WatchPredicates {
  * Build the `--watch` file-watcher predicates for a source tree rooted
  * at `watchRoot` (the synth working directory).
  *
- * The synth output directory is always excluded so the reload's own
- * re-synth writes never re-trigger the watcher (no loop); `node_modules`
+ * The files cdkl itself writes (the synth output directory,
+ * `cdk.context.json`, a temp dir under the root) are always excluded so
+ * the reload's own writes never re-trigger the watcher (no loop); `node_modules`
  * / `.git` are excluded for traversal cost. `cdk.json` `watch.exclude`
  * globs layer on top, and `watch.include` gates which changes fire a
  * reload. The output dir is only added as a glob when it lives UNDER the
@@ -1479,6 +1480,8 @@ export function createWatchPredicates(args: {
   watchRoot: string;
   output: string;
   watchConfig: CdkWatchConfig;
+  /** Test seam; defaults to `os.tmpdir()`. */
+  tmpDir?: string;
 }): WatchPredicates {
   const { watchRoot, output, watchConfig } = args;
   const toRel = (abs: string): string => path.relative(watchRoot, abs).split(path.sep).join('/');
@@ -1486,7 +1489,20 @@ export function createWatchPredicates(args: {
   // `..`-prefixed path when it is outside — in both cases a watcher rooted
   // at `watchRoot` never traverses it, so it needs no exclude glob.
   const outputRel = toRel(path.resolve(watchRoot, output));
-  const mandatoryExcludes = outputRel !== '' && !outputRel.startsWith('..') ? [outputRel] : [];
+  const underRoot = (rel: string): boolean => rel !== '' && !rel.startsWith('..');
+  // Issue #888: the files cdkl itself writes into the watched tree must never
+  // trigger a reload, or each reload's own writes would fire the next one.
+  // They are: the synth output dir, the `cdk.context.json` a synth rewrites
+  // when the app does a context lookup, and the OS temp dir cdkl stages its
+  // temporary files in (only matters when `TMPDIR` points under the project).
+  // A USER-owned file (e.g. a log from `cdkl start-service --watch > app.log`)
+  // is not cdkl's to exclude: list it in `cdk.json` `watch.exclude`.
+  const tmpRel = toRel(path.resolve(args.tmpDir ?? tmpdir()));
+  const mandatoryExcludes = [
+    ...(underRoot(outputRel) ? [outputRel] : []),
+    ...(underRoot(tmpRel) ? [tmpRel] : []),
+    'cdk.context.json',
+  ];
   const excludePatterns = [...mandatoryExcludes, 'node_modules', '.git', ...watchConfig.exclude];
   const excludeMatcher = createGlobMatcher(excludePatterns);
   const includeMatcher = createGlobMatcher(watchConfig.include);

@@ -18,11 +18,49 @@ describe('createWatchPredicates', () => {
       output: 'cdk.out',
       watchConfig: cfg(),
     });
-    expect(excludePatterns).toEqual(['cdk.out', 'node_modules', '.git']);
+    expect(excludePatterns).toEqual(['cdk.out', 'cdk.context.json', 'node_modules', '.git']);
     expect(ignored(abs('cdk.out', 'asset.123', 'index.js'))).toBe(true);
     expect(ignored(abs('node_modules', 'foo', 'index.js'))).toBe(true);
     expect(ignored(abs('.git', 'HEAD'))).toBe(true);
     expect(ignored(abs('src', 'handler.ts'))).toBe(false);
+  });
+
+  it('excludes every file cdkl itself writes into the tree, by default (#888)', () => {
+    const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
+      watchRoot: ROOT,
+      output: 'out/synth',
+      watchConfig: cfg(),
+      tmpDir: abs('.tmp'),
+    });
+    expect(excludePatterns.slice(0, 3)).toEqual(['out/synth', '.tmp', 'cdk.context.json']);
+    for (const p of [
+      abs('out', 'synth', 'manifest.json'),
+      abs('.tmp', 'cdkl-lambda-zip-x', 'a.js'),
+      abs('cdk.context.json'),
+    ]) {
+      expect(ignored(p)).toBe(true);
+      expect(shouldTrigger(p)).toBe(false);
+    }
+    // A user-owned file is NOT cdkl's to exclude: it fires until the user lists it.
+    expect(shouldTrigger(abs('app.log'))).toBe(true);
+    const withUser = createWatchPredicates({
+      watchRoot: ROOT,
+      output: 'cdk.out',
+      watchConfig: cfg({ exclude: ['*.log'] }),
+    });
+    expect(withUser.shouldTrigger(abs('app.log'))).toBe(false);
+  });
+
+  it('a temp dir outside the root or equal to it adds no exclude', () => {
+    for (const tmpDir of [path.resolve('/elsewhere/tmp'), ROOT]) {
+      const { excludePatterns } = createWatchPredicates({
+        watchRoot: ROOT,
+        output: 'cdk.out',
+        watchConfig: cfg(),
+        tmpDir,
+      });
+      expect(excludePatterns).toEqual(['cdk.out', 'cdk.context.json', 'node_modules', '.git']);
+    }
   });
 
   it('never ignores the watch root itself, and ignores paths outside it', () => {
@@ -77,7 +115,7 @@ describe('createWatchPredicates', () => {
       output: abs('cdk.out'),
       watchConfig: cfg(),
     });
-    expect(excludePatterns).toEqual(['cdk.out', 'node_modules', '.git']);
+    expect(excludePatterns).toEqual(['cdk.out', 'cdk.context.json', 'node_modules', '.git']);
     expect(ignored(abs('cdk.out', 'x'))).toBe(true);
   });
 
@@ -87,7 +125,7 @@ describe('createWatchPredicates', () => {
       output: '.',
       watchConfig: cfg(),
     });
-    expect(excludePatterns).toEqual(['node_modules', '.git']);
+    expect(excludePatterns).toEqual(['cdk.context.json', 'node_modules', '.git']);
   });
 
   it('drops the output exclude when --output is outside the watch root (still loop-safe)', () => {
@@ -97,7 +135,7 @@ describe('createWatchPredicates', () => {
       watchConfig: cfg(),
     });
     // Not added as a glob (it is not under the root)...
-    expect(excludePatterns).toEqual(['node_modules', '.git']);
+    expect(excludePatterns).toEqual(['cdk.context.json', 'node_modules', '.git']);
     // ...but a watcher rooted at ROOT never reaches it, and the `..`
     // guard ignores it anyway, so re-synth writes there can't loop.
     expect(ignored(path.resolve('/shared-out', 'tree.json'))).toBe(true);

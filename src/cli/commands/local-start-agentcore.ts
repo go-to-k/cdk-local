@@ -425,8 +425,8 @@ async function localStartAgentCoreCommand(
     info: (m) => logger.info(m),
     warn: (m) => logger.warn(m),
   });
-  process.on('SIGINT', () => shutdown('SIGINT', 130));
-  process.on('SIGTERM', () => shutdown('SIGTERM', 0));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   // A failure in the post-boot setup (readiness wait or server bind) must stop
   // the booted container before rethrowing.

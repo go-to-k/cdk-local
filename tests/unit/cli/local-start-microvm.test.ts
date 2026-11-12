@@ -290,12 +290,12 @@ describe('cdkl start-microvm', () => {
     await until(() => h.removeContainer.mock.calls.length === 2);
   });
 
-  it('SIGTERM calls /terminate on every MicroVM before removing it, then exits 0', async () => {
+  it('SIGTERM calls /terminate on every MicroVM before removing it, then exits 143', async () => {
     const { exits } = await boot(['Img', '--count', '2']);
     h.hookCalls = [];
     fireSignal('SIGTERM');
     await until(() => exits.length > 0);
-    expect(exits).toEqual([0]);
+    expect(exits).toEqual([143]);
     // Each MicroVM's /terminate runs before its container is removed.
     const tail = h.order.slice(-4);
     expect(tail.indexOf('terminate@41001')).toBeLessThan(tail.indexOf('remove cid-0'));
@@ -436,7 +436,7 @@ describe('cdkl start-microvm', () => {
     expect(exits).toEqual([]); // waits for the in-flight run
     releaseRun('cid-late');
     await until(() => exits.length > 0);
-    expect(exits).toEqual([0]);
+    expect(exits).toEqual([143]);
     expect(h.removeContainer).toHaveBeenCalledWith('cid-late');
     expect(h.pollBuildHook).not.toHaveBeenCalled();
   });

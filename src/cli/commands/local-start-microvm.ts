@@ -16,6 +16,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import { formatAuthority } from '../../utils/url-authority.js';
+import { signalExitCode, type StopSignal } from '../../utils/shutdown-signal.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import {
@@ -374,7 +375,7 @@ async function localStartMicrovmCommand(
   artifact = await resolveMicrovmCodeArtifact(resolved.stack, config);
 
   // Armed as soon as there is anything on the host to clean up.
-  const shutdown = async (signal: 'SIGINT' | 'SIGTERM', exitCode: number): Promise<void> => {
+  const shutdown = async (signal: StopSignal): Promise<void> => {
     if (shuttingDown) {
       // A second signal. Abandon ONLY while teardown waits on an in-flight
       // `docker run`; once it is terminating / removing containers, finish —
@@ -391,16 +392,16 @@ async function localStartMicrovmCommand(
           `credentials. Remove it by its name (this works even if it is created after this ` +
           `exit): docker rm -f ${containerName ?? '<name>'}`
       );
-      process.exit(signal === 'SIGINT' ? 130 : 143);
+      process.exit(signalExitCode(signal));
       return;
     }
     shuttingDown = true;
     logger.info(`Received ${signal}, terminating ${vms.length} MicroVM(s)...`);
     await teardown();
-    process.exit(exitCode);
+    process.exit(signalExitCode(signal));
   };
-  process.on('SIGINT', () => void shutdown('SIGINT', 130));
-  process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
   const recents = new Map<string, RecentOutput>();
   let allTerminated!: () => void;

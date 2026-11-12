@@ -448,7 +448,7 @@ describe('cdkl start-web-function', () => {
     finishRun('cid-late');
     await until(() => exits.length > 0);
     expect(h.removeContainer).toHaveBeenCalledWith('cid-late');
-    expect(exits[0]).toEqual({ code: 0, tmpGone: true });
+    expect(exits[0]).toEqual({ code: 143, tmpGone: true });
     // The main path must not go on to serve the container teardown removes.
     expect(h.streamLogs).not.toHaveBeenCalled();
     expect(h.ready).not.toHaveBeenCalled();
@@ -461,7 +461,7 @@ describe('cdkl start-web-function', () => {
     await until(() => h.pullImage.mock.calls.length > 0);
     ((await handler('SIGTERM')) as () => void)();
     await until(() => exits.length > 0);
-    expect(exits[0]).toEqual({ code: 0, tmpGone: true });
+    expect(exits[0]).toEqual({ code: 143, tmpGone: true });
     finishPull();
     await new Promise((r) => setTimeout(r, 20));
     expect(h.runDetached).not.toHaveBeenCalled();

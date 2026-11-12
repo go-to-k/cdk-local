@@ -3,7 +3,7 @@
  * (issue #882).
  *
  * - The FIRST SIGINT / SIGTERM runs the (single-flight) cleanup, then exits
- *   with the code the caller gives for that signal.
+ *   with the shell-convention code for that signal (`signalExitCode`).
  * - The SECOND one does NOT abandon the cleanup. It used to force-exit with
  *   `container cleanup skipped`, which is exactly when a user presses ^C again:
  *   while the first one's teardown is still removing containers. That left the
@@ -27,17 +27,37 @@ export interface ShutdownSignalOptions {
   writeStderr?: (text: string) => void;
 }
 
-export type ShutdownSignalHandler = (signal: string, exitCode: number) => void;
+export type StopSignal = 'SIGINT' | 'SIGTERM';
+
+/**
+ * The exit status of a command stopped by `signal`: the shell convention
+ * 128 + the signal number (SIGINT 2 -> 130, SIGTERM 15 -> 143). Every
+ * long-running local command exits with it, so a script checking `$?` sees
+ * the same code whichever command it stopped (issue #893).
+ */
+export function signalExitCode(signal: StopSignal): number {
+  return signal === 'SIGINT' ? 130 : 143;
+}
+
+/**
+ * `exitCode` is only for a non-signal trigger (an `uncaughtException` exits 1);
+ * a stop signal always exits with its own {@link signalExitCode}.
+ */
+export type ShutdownSignalHandler = (
+  signal: StopSignal | 'uncaughtException' | 'unhandledRejection',
+  exitCode?: number
+) => void;
 
 export function createShutdownSignalHandler(options: ShutdownSignalOptions): ShutdownSignalHandler {
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const writeStderr = options.writeStderr ?? ((text: string) => void process.stderr.write(text));
   let count = 0;
   return (signal, exitCode) => {
+    const code = exitCode ?? signalExitCode(signal === 'SIGINT' ? 'SIGINT' : 'SIGTERM');
     count += 1;
     if (count === 1) {
       options.info(options.stoppingMessage(signal));
-      void options.cleanup().then(() => exit(exitCode));
+      void options.cleanup().then(() => exit(code));
       return;
     }
     if (count === 2) {
@@ -50,8 +70,6 @@ export function createShutdownSignalHandler(options: ShutdownSignalOptions): Shu
     writeStderr(
       `Force-exit on repeated ${signal}; container cleanup skipped. ${options.forceExitHint}\n`
     );
-    // Always 130, whatever the signal: an aborted run, matching the pre-#882
-    // force-exit every caller had.
-    exit(130);
+    exit(code);
   };
 }
