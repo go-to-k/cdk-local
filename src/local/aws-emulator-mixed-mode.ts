@@ -278,6 +278,18 @@ export function realAwsServicesOf(exceptions: readonly RealAwsException[]): stri
 }
 
 /**
+ * Services whose real endpoint is not `<prefix>.<region>.amazonaws.com`: a
+ * per-resource host (API Gateway Management: the API id) or another domain
+ * (CloudFront KeyValueStore: `*.cloudfront-kvs.global.api.aws`).
+ */
+const NO_REGIONAL_ENDPOINT: ReadonlySet<string> = new Set([
+  'APIGATEWAYMANAGEMENTAPI',
+  'CLOUDFRONT_KEYVALUESTORE',
+]);
+
+const REGION_SHAPE = /^[a-z]{2}(-[a-z]+)+-\d+$/;
+
+/**
  * The real AWS endpoint an excepted service gets in its
  * `AWS_ENDPOINT_URL_<SERVICE>`, for a workload in `region`:
  * `https://<endpoint prefix>.<region>.<DNS suffix>` (`SECRETS_MANAGER` in
@@ -295,6 +307,19 @@ export function realAwsServicesOf(exceptions: readonly RealAwsException[]): stri
  * Host-side use case: a host CLI assembling a container env itself.
  */
 export function realAwsEndpointFor(service: string, region: string): string {
+  if (!REGION_SHAPE.test(region)) {
+    throw new Error(
+      `--env-vars marks AWS_ENDPOINT_URL_${service} "${REAL_AWS_SENTINEL}", but the workload's region ` +
+        `${displayUntrustedValue(region)} is not an AWS region name.`
+    );
+  }
+  if (NO_REGIONAL_ENDPOINT.has(service)) {
+    throw new Error(
+      `--env-vars marks AWS_ENDPOINT_URL_${service} "${REAL_AWS_SENTINEL}", but ${service} has no regional ` +
+        `endpoint to name. Set AWS_ENDPOINT_URL_${service} to the real endpoint URL instead (a literal URL is ` +
+        'passed through as-is).'
+    );
+  }
   const prefix = AWS_ENDPOINT_PREFIX_OVERRIDES[service] ?? service.toLowerCase().replace(/_/g, '');
   const isolated = /^(us|eu)-iso[a-z]*-/.test(region);
   const china = region.startsWith('cn-');
@@ -401,6 +426,9 @@ export function createMixedModeStateProvider(
 ): LocalStateProvider {
   const { real, emulator, realServices } = opts;
   const swaps = new Map<string, string>();
+  // Every resource's emulator physical ID -> its real one, for the lookups
+  // that must read real AWS (the deployed role to assume).
+  const toReal = new Map<string, string>();
   const warned = new Set<string>();
   const warnedEmulator = new Set<string>();
   const swap = (v: string): string => swaps.get(v) ?? v;
@@ -456,6 +484,8 @@ export function createMixedModeStateProvider(
       }
       const resources: Record<string, ResourceState> = { ...e.resources };
       for (const [id, res] of Object.entries(r.resources)) {
+        const emuId = e.resources[id]?.physicalId;
+        if (emuId && res.physicalId) toReal.set(emuId, res.physicalId);
         if (!excepted(res)) continue;
         const emuRes = e.resources[id];
         if (emuRes?.physicalId && res.physicalId && emuRes.physicalId !== res.physicalId) {
@@ -486,11 +516,15 @@ export function createMixedModeStateProvider(
       return out;
     };
   }
+  // The resolved state names the emulator's function / runtime: look its real
+  // counterpart (same logical ID) up in real AWS.
   if (real.resolveLambdaExecutionRoleArn) {
-    provider.resolveLambdaExecutionRoleArn = real.resolveLambdaExecutionRoleArn.bind(real);
+    const fn = real.resolveLambdaExecutionRoleArn.bind(real);
+    provider.resolveLambdaExecutionRoleArn = (id) => fn(toReal.get(id) ?? id);
   }
   if (real.resolveAgentCoreRuntimeRoleArn) {
-    provider.resolveAgentCoreRuntimeRoleArn = real.resolveAgentCoreRuntimeRoleArn.bind(real);
+    const fn = real.resolveAgentCoreRuntimeRoleArn.bind(real);
+    provider.resolveAgentCoreRuntimeRoleArn = (id) => fn(toReal.get(id) ?? id);
   }
   // The real side's SSM client routes per service (`service: 'SSM'`): the
   // emulator unless SSM is excepted for the workload.

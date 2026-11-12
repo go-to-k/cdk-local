@@ -455,6 +455,17 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
       },
     });
     setActiveWorkloadAwsWiring(wiringWith(['DYNAMODB']));
+    // A mixed wiring with no routing installed excepts nothing: emulator only (fails closed).
+    const unrouted = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
+    expect(unrouted).toBeInstanceOf(CfnLocalStateProvider);
+    expect(unrouted!.label).toBe('--from-cfn-stack (AWS Emulator)');
+    unrouted!.dispose();
+    const proxy = await import('../../../src/utils/aws-proxy.js');
+    proxy.setAwsEmulatorServiceRouting({
+      realServices: ['DYNAMODB'],
+      override: { endpoint: 'https://127.0.0.1:9297' },
+      envOverrides: { Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } },
+    });
     const mixed = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
     expect(mixed).toBeDefined();
     expect(mixed).not.toBeInstanceOf(CfnLocalStateProvider);
@@ -464,6 +475,8 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
     mixed!.dispose();
     // No excepted service at all: the emulator provider alone, no composite.
     setActiveWorkloadAwsWiring(wiringWith([]));
+    const routed = proxy.getAwsEmulatorServiceRouting();
+    proxy.setAwsEmulatorServiceRouting({ realServices: [], override: routed!.override, envOverrides: {} });
     const emulatorOnly = createLocalStateProvider(
       { fromCfnStack: true, stackRegion: 'us-east-1' },
       'S',
@@ -473,6 +486,7 @@ describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
     expect(emulatorOnly!.label).toBe('--from-cfn-stack (AWS Emulator)');
     emulatorOnly!.dispose();
     setActiveWorkloadAwsWiring(wiringWith(['DYNAMODB']));
+    proxy.setAwsEmulatorServiceRouting(routed);
 
     // The --from-cfn-stack path shares the merge: a stack only the emulator
     // has warns that the excepted (real-aws) resources keep their emulator names.

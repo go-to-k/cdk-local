@@ -1208,7 +1208,7 @@ async function resolveLambdaContainerEnvWith(
         `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to recover deployed values.`
     );
   }
-  if (envResult.unresolved.length > 0 && !stateAudit) {
+  if (envResult.unresolved.length > 0 && !stateProvider) {
     const hint = takeAwsEmulatorStateSourceHint();
     if (hint) logger.warn(hint);
   }

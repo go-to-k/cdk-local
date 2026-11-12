@@ -388,7 +388,9 @@ export function createLocalStateProvider(
       endpointOverride: mixed.emulatorClientOverride,
       label: '--from-cfn-stack (AWS Emulator)',
     });
-    const realServices = awsEmulatorRealServices(behavior.workload) ?? mixed.realServices;
+    // No routing installed (a host that skipped it): except nothing, so names
+    // fail closed to the emulator rather than to the run-wide union.
+    const realServices = awsEmulatorRealServices(behavior.workload) ?? [];
     // A workload with no exception of its own reads every name from the emulator.
     if (realServices.length === 0) {
       real.dispose();

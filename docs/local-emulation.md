@@ -292,7 +292,12 @@ the excepted resources resolve, and a warning names every other one.
 Every service goes to the emulator except Secrets Manager (for every
 workload) and Bedrock Runtime (for `MyStack/AgentHandler` only). A service you
 forget to list stays on the emulator, so a missing entry fails closed: the
-call reaches the emulator, never a shared real environment.
+call reaches the emulator, never a shared real environment. That holds for an
+SDK that reads `AWS_ENDPOINT_URL` (the AWS SDK for JavaScript v3, boto3, Go v2,
+Java 2.x); an older SDK that does not (JavaScript v2, Go v1, Java 1.x) would
+send its calls to real AWS with the real identity, so keep such a workload out
+of mixed mode. cdk-local removes `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS` from a
+mixed-mode container for the same reason.
 
 Two setups this is made for:
 
@@ -329,7 +334,7 @@ The values of an `AWS_ENDPOINT_URL*` variable in `--env-vars`:
 | --- | --- | --- |
 | `"real-aws"` on `AWS_ENDPOINT_URL_<SERVICE>` | Accepted and dropped: the service uses its normal real endpoint | That service goes to real AWS (an exception) |
 | `"real-aws"` on the bare `AWS_ENDPOINT_URL` | Accepted and dropped | Refused: that is running without `--aws-emulator`. Remove the flag, or mark only the services that must reach real AWS |
-| A literal URL (`"https://..."`) | Passed through as it is | Passed through as it is, never re-signed. It is signed with whatever identity the container holds: the emulator's keys with no `"real-aws"` entry, your REAL identity once there is one, so a real-key signature then reaches that URL |
+| A literal URL (`"https://..."`) | Passed through as it is | Passed through as it is, never re-signed. It is signed with whatever identity the container holds: the emulator's keys with no `"real-aws"` entry, your REAL identity once the container keeps one, so a real-key signature then reaches that URL |
 | `"aws-emulator"` (the old form) | Refused, with the migration | Refused, with the migration |
 
 Variables that are not endpoints (`TABLE_NAME`, ...) are unchanged:
@@ -367,7 +372,10 @@ The rules:
   a container whose own env keeps an exception gets your real identity, as
   without `--aws-emulator` (the default chain, `--profile` or
   `--assume-role`), because its excepted services need it; a container whose
-  env keeps none still gets the emulator's keys only. Your shell's
+  env keeps none still gets the emulator's keys only, and no `--profile`
+  credentials file or ECS task-role endpoint either. An ECS task's metadata
+  endpoint serves one identity for the whole task: the real one when any
+  container the run serves keeps an exception, else the emulator's keys. Your shell's
   `AWS_ENDPOINT_URL*` values are not forwarded in mixed mode, so no host
   variable can take a service around the emulator.
 - **Every other request is signed again.** The container's global
@@ -453,7 +461,11 @@ The rules:
   `start-service`, `start-alb`'s ECS targets, and `studio`, which runs them)
   do the same per function or container; an `AWS::SSM::Parameter::Value<...>`
   template parameter follows the SSM route. The container image of an ECS
-  task follows `Parameters` alone.
+  task follows `Parameters` alone. A bare `--assume-role` looks the deployed
+  role up in real AWS, under the real counterpart of the emulator's function;
+  when that lookup fails, pass `--assume-role <arn>`. `start-cloudfront` finds a
+  KeyValueStore through CloudFront and reads its keys through CloudFront
+  KeyValueStore, so except both or neither.
 - **Host-prefixed operations.** Mixed mode sets
   `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, as `--aws-emulator` alone does,
   because the sidecar listens on an IP address that cannot take a host

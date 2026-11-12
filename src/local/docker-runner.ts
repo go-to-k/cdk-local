@@ -31,6 +31,7 @@ import {
   type LoopbackForwarderResult,
 } from './loopback-forwarder.js';
 import {
+  workloadGetsEmulatorKeysOnly,
   applyWorkloadAwsWiringToEnv,
   effectiveLoopbackPorts,
   loopbackForwarderPlan,
@@ -332,8 +333,11 @@ export async function withWorkloadAwsWiring(
   const env = applyWorkloadAwsWiringToEnv(opts.env, wiring, defaults);
   // The `--profile` credentials file's in-container path (local-profile-credentials-file.ts).
   const credsPath = `${getEmbedConfig().awsBindMountPath}/credentials`;
+  // Emulator keys only (`--aws-emulator` alone, or a mixed-mode container
+  // keeping no exception): no host credentials file either.
+  const emulatorOnly = workloadGetsEmulatorKeysOnly(opts.env, wiring);
   const extra = (opts.extraMounts ?? []).filter(
-    (m) => wiring.mode !== 'emulator' || m.containerPath !== credsPath
+    (m) => !emulatorOnly || m.containerPath !== credsPath
   );
   const taken = new Set([...opts.mounts, ...extra].map((m) => m.containerPath));
   for (const m of wiring.mounts) {

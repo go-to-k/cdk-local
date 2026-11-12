@@ -286,7 +286,13 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // for all N (sessions are valid 3600s, far longer than any practical
   // image-pull loop).
   let assumed: TempCredentials | undefined;
-  if (options.ecrRoleArn) {
+  // Under --aws-emulator the token comes from the emulator with its own keys:
+  // a real AssumeRole would only be discarded.
+  if (options.ecrRoleArn && deployArtifactsReadEmulator()) {
+    logger.debug(
+      '--ecr-role-arn is not assumed under --aws-emulator: the emulator issues the token.'
+    );
+  } else if (options.ecrRoleArn) {
     const cacheKey = `${options.profile ?? '_noprofile'}|${options.ecrRoleArn}|${callerRegion ?? '_unset'}`;
     const cached = ASSUMED_ROLE_CACHE.get(cacheKey);
     if (cached && isCredentialFresh(cached)) {

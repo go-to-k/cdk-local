@@ -23,6 +23,7 @@ import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
+  mixedModeSidecarEmulatorCredentials,
   activateWorkloadAwsWiring,
   getActiveWorkloadAwsWiring,
   resolveHostDefaultCredentials,
@@ -408,7 +409,11 @@ async function localRunTaskCommand(
     // sidecar's credentials route gets a credential-provider failure.
     // Same gap class as the equivalent forward for `cdkl start-api`'s
     // Lambda container path.
-    const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
+    const sidecarCredentials = await resolveSidecarCredentials(
+      options,
+      assumedCredentials,
+      task.containers.map((c) => c.name)
+    );
 
     // Without a task role, how containers reach these credentials: the
     // `--profile` file, or the default chain in their env (see
@@ -876,10 +881,15 @@ export async function resolveSidecarCredentials(
   options: { profile?: string },
   assumedCredentials:
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
-    | undefined
+    | undefined,
+  /** The task's container names: in mixed mode, see `mixedModeSidecarEmulatorCredentials`. */
+  containerNames?: readonly string[]
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
   const wiring = getActiveWorkloadAwsWiring();
   if (wiring?.mode === 'emulator') return wiring.emulatorCredentials;
+  // Mixed mode with no container keeping an exception: the emulator's keys.
+  const emulatorOnly = mixedModeSidecarEmulatorCredentials(containerNames ?? []);
+  if (wiring?.mixed && containerNames && emulatorOnly) return emulatorOnly;
   if (assumedCredentials) return assumedCredentials;
   if (options.profile) return resolveProfileCredentials(options.profile);
   return resolveHostDefaultCredentials();

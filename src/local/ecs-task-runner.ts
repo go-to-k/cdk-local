@@ -59,6 +59,7 @@ import {
 import { getEmbedConfig } from './embed-config.js';
 import type { LoopbackForwarderNamespace } from './loopback-forwarder.js';
 import {
+  workloadGetsEmulatorKeysOnly,
   applyWorkloadAwsWiringToEnv,
   effectiveLoopbackPorts,
   getActiveWorkloadAwsWiring,
@@ -652,7 +653,7 @@ export async function runEcsTask(
           label: `Container ${c.name}`,
           skipKeys: new Set(Object.keys(c.environment).filter((k) => !tokenKeys.has(k))),
           resolver: dynamicRefs,
-          // Mixed mode: this container's own sentinels route the fetches.
+          // Mixed mode: this container's own exceptions route the fetches.
           workload: { containerName: c.name },
         })
       );
@@ -1729,8 +1730,18 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // The process-wide AWS wiring (workload-aws-wiring.ts): under
   // `--aws-emulator` no host credential file reaches the container.
   const wiring = getActiveWorkloadAwsWiring();
-  const profileCredentialsFile =
-    wiring?.mode === 'emulator' ? undefined : opts.profileCredentialsFile;
+  // A mixed-mode container keeping no "real-aws" exception gets the emulator's
+  // keys only, so judge on the env it will end up with (template, then the
+  // `--env-vars` layers, as assembled below).
+  const previewEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(container.environment)) defineOwnKey(previewEnv, k, v);
+  if (opts.envOverrides) {
+    applyEnvOverrideMap(previewEnv, opts.envOverrides['Parameters']);
+    applyEnvOverrideMap(previewEnv, opts.envOverrides[container.name]);
+  }
+  const profileCredentialsFile = workloadGetsEmulatorKeysOnly(previewEnv, wiring)
+    ? undefined
+    : opts.profileCredentialsFile;
   if (profileCredentialsFile) {
     both('-v', `${profileCredentialsFile.hostPath}:${profileCredentialsFile.containerPath}:ro`);
   }

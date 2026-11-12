@@ -51,7 +51,12 @@ import { isLoopbackHostname } from '../utils/loopback-host.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { describeCredentialLoadFailure } from './credential-error.js';
-import { setAwsEmulatorServiceRouting, setAwsEndpointOverride } from '../utils/aws-proxy.js';
+import {
+  awsEmulatorRealServices,
+  getAwsEmulatorServiceRouting,
+  setAwsEmulatorServiceRouting,
+  setAwsEndpointOverride,
+} from '../utils/aws-proxy.js';
 import { assumedRoleRecorded } from '../utils/workload-identity.js';
 import type { CallerCredentials } from '../utils/workload-identity.js';
 import type { AwsCredentialIdentityProvider } from '@smithy/types';
@@ -1021,7 +1026,7 @@ export function isEmptyWorkloadAwsWiring(w: WorkloadAwsWiring): boolean {
  *   no exception wiring (a host that skipped the scan) it throws.
  * - A literal URL on any endpoint variable is passed through as-is and never
  *   re-signed: it is signed with whatever identity the container holds, the
- *   REAL one in mixed mode.
+ *   REAL one when the container keeps an exception.
  * - The pre-inversion `"aws-emulator"` sentinel throws, in every mode.
  *
  * Host-side use case: a host CLI's own container env assembly.
@@ -1090,13 +1095,18 @@ export function applyWorkloadAwsWiringToEnv(
     setCreds(wiring.emulatorCredentials);
   } else if (wiring.mixed && !keepsException) {
     // Mixed run, but this workload reaches nothing real: the emulator's keys
-    // only, never the real identity.
+    // only, never the real identity (nor an ECS task-role URI to it).
     for (const k of EMULATOR_SCRUBBED_ENV_KEYS) delete out[k];
+    delete out['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    delete out['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'];
     for (const [k, v] of Object.entries(wiring.env)) {
       if (out[k] === undefined) out[k] = v;
     }
     setCreds(wiring.mixed.emulatorCredentials);
   } else {
+    // A mixed-mode container holds the real identity: an SDK told to ignore
+    // the endpoint variables would send every service to real AWS with it.
+    if (wiring.mixed) delete out['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'];
     for (const [k, v] of Object.entries(wiring.env)) {
       if (out[k] === undefined) out[k] = v;
     }
@@ -1107,6 +1117,57 @@ export function applyWorkloadAwsWiringToEnv(
   if (out['AWS_REGION'] && !out['AWS_DEFAULT_REGION'])
     out['AWS_DEFAULT_REGION'] = out['AWS_REGION'];
   return out;
+}
+
+/**
+ * Whether a container env keeps a `"real-aws"` exception on an
+ * `AWS_ENDPOINT_URL_<SERVICE>` variable (before {@link applyWorkloadAwsWiringToEnv}).
+ */
+export function envKeepsRealAwsException(
+  env: Readonly<Record<string, string | undefined>>
+): boolean {
+  return Object.entries(env).some(([k, v]) => k !== 'AWS_ENDPOINT_URL' && isRealAwsSentinel(k, v));
+}
+
+/**
+ * Whether a container whose env (before {@link applyWorkloadAwsWiringToEnv})
+ * is `env` gets the emulator's keys only, so no host credential file or
+ * credential endpoint may reach it either: always under `--aws-emulator`
+ * alone, and in mixed mode when the env keeps no exception.
+ *
+ * Host-side use case: a host that mounts a credentials file into a container
+ * it starts itself.
+ */
+export function workloadGetsEmulatorKeysOnly(
+  env: Readonly<Record<string, string | undefined>>,
+  wiring: WorkloadAwsWiring | undefined
+): boolean {
+  if (!wiring) return false;
+  return (
+    wiring.mode === 'emulator' || (wiring.mixed !== undefined && !envKeepsRealAwsException(env))
+  );
+}
+
+/**
+ * The credentials an ECS metadata sidecar serves in AWS Emulator mixed mode
+ * when NO container among `containerNames` keeps a `"real-aws"` exception (by
+ * the `--env-vars` sections, `Parameters` included): the emulator's keys, so
+ * no container can read the real identity from the metadata endpoint.
+ * `undefined` outside mixed mode, or when some container needs the real one.
+ *
+ * Host-side use case: a host's own ECS metadata sidecar.
+ */
+export function mixedModeSidecarEmulatorCredentials(
+  containerNames: readonly string[]
+): CallerCredentials | undefined {
+  const mixed = active?.mixed;
+  if (!mixed) return undefined;
+  const real = getAwsEmulatorServiceRouting();
+  if (!real) return undefined;
+  const needsReal = containerNames.some(
+    (containerName) => (awsEmulatorRealServices({ containerName }) ?? []).length > 0
+  );
+  return needsReal ? undefined : mixed.emulatorCredentials;
 }
 
 /**

@@ -247,6 +247,15 @@ describe('realAwsEndpointFor', () => {
     expect(() => realAwsEndpointFor('IAM', 'cn-north-1')).toThrow(/has no known real IAM endpoint/);
     expect(() => realAwsEndpointFor('SQS', 'us-iso-east-1')).toThrow(/has no known real SQS endpoint/);
   });
+
+  it('refuses a region that is not an AWS region name, and services with no regional endpoint', () => {
+    expect(() => realAwsEndpointFor('SECRETS_MANAGER', 'us-east-1.evil.test/')).toThrow(
+      /is not an AWS region name/
+    );
+    for (const id of ['APIGATEWAYMANAGEMENTAPI', 'CLOUDFRONT_KEYVALUESTORE']) {
+      expect(() => realAwsEndpointFor(id, 'us-east-1')).toThrow(/has no regional endpoint/);
+    }
+  });
 });
 
 // go-to-k/cdk-local#894: the scan must not consume a pipe-backed --env-vars
@@ -406,6 +415,8 @@ describe('createMixedModeStateProvider', () => {
       SECRET_ARN: 'arn:aws:secretsmanager:us-east-1:000000000000:secret:emu-secret',
     });
     expect(await p.resolveLambdaExecutionRoleArn!('emu-fn')).toBe('arn:role');
+    // The emulator's physical ID is looked up under its real counterpart's.
+    expect(real.resolveLambdaExecutionRoleArn).toHaveBeenCalledWith('real-fn');
     expect(await p.resolveTemplateSsmParameters!({} as never)).toEqual({ P: 'v' });
     expect(p.getLastLoadError!()).toBe('emu-err');
     await p.buildCrossStackResolver('us-east-1');

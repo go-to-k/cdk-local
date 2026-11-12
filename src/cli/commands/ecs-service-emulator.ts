@@ -34,6 +34,7 @@ import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js
 import { createReloadQueue, stopWatchReloads, type ReloadQueue } from '../../local/reload-queue.js';
 import { resolveProfileCredentials, createWatchPredicates } from './local-start-api.js';
 import {
+  mixedModeSidecarEmulatorCredentials,
   activateWorkloadAwsWiring,
   getActiveWorkloadAwsWiring,
   resolveHostDefaultCredentials,
@@ -741,7 +742,7 @@ export async function runEcsServiceEmulator(
     const taskRoleMode = isTaskRoleInEffect(options);
     const sidecarCredentials = taskRoleMode
       ? undefined
-      : await resolveSharedSidecarCredentials(options);
+      : await resolveSharedSidecarCredentials(options, stacks.flatMap(ecsContainerNamesOf));
     try {
       sharedNetwork = await createSharedSvcNetwork({
         prefix: options.cluster,
@@ -3118,11 +3119,17 @@ export async function resolveServiceDefaultCredentials(
  * `--assume-task-role` overrides are intentionally NOT consulted here. Exported
  * for a unit test that exercises both branches.
  */
-export async function resolveSharedSidecarCredentials(options: {
-  profile?: string;
-}): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
+export async function resolveSharedSidecarCredentials(
+  options: {
+    profile?: string;
+  },
+  /** Every ECS container name the run may serve: in mixed mode, see `mixedModeSidecarEmulatorCredentials`. */
+  containerNames?: readonly string[]
+): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
   const wiring = getActiveWorkloadAwsWiring();
   if (wiring?.mode === 'emulator') return wiring.emulatorCredentials;
+  const emulatorOnly = mixedModeSidecarEmulatorCredentials(containerNames ?? []);
+  if (wiring?.mixed && containerNames && emulatorOnly) return emulatorOnly;
   if (options.profile) return resolveProfileCredentials(options.profile);
   // No flag: the host's default credential chain (go-to-k/cdkd#6129).
   return resolveHostDefaultCredentials();
