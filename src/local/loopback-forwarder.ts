@@ -281,11 +281,22 @@ export function describeForwarderFailure(
       `Check that the endpoint on port ${port} is the one whose CA cdk-local mounted (a restart issues a new certificate).`
     );
   }
+  // On Linux the forwarder dials the Docker bridge gateway; Docker Desktop's
+  // host.docker.internal sits in 192.168.65.0/24 and says nothing about Linux.
+  const gw =
+    result.upstream &&
+    /^\d+\.\d+\.\d+\.\d+$/.test(result.upstream) &&
+    !result.upstream.startsWith('192.168.65.')
+      ? result.upstream
+      : '<docker bridge gateway, e.g. 172.17.0.1>';
   return (
     `${endpointLabel}: containers cannot reach port ${port} on the host${via} (${reason}). ` +
     `cdk-local forwards 127.0.0.1:${port} inside each workload container to the host, so the endpoint ` +
-    `must accept connections from the Docker network: on Docker Desktop publish it on the host's ` +
-    `127.0.0.1 (\`-p 127.0.0.1:${port}:${port}\`); on Linux bind it to an address containers can reach ` +
-    `(\`aws-emulator -b 0.0.0.0\`, or publish its container port on the Docker bridge gateway as well).`
+    `must also accept connections from the Docker network. On Docker Desktop, publish it on the ` +
+    `host's 127.0.0.1 (\`-p 127.0.0.1:${port}:${port}\`). On Linux, publish it on 127.0.0.1 AND on the ` +
+    `Docker bridge gateway: run the emulator's Docker image with ` +
+    `\`-p 127.0.0.1:${port}:${port} -p ${gw}:${port}:${port}\` (a native install listens on one address ` +
+    `only, so it cannot serve this machine and containers at once). Do not bind 0.0.0.0 on a host: ` +
+    `that opens it to your network.`
   );
 }

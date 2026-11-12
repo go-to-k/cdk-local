@@ -74,9 +74,11 @@ Every command that starts a workload container (`invoke`, `start-api`,
   calls AWS in its very first instant relies on its SDK's connection retry.
   The forwarder stops with the workload (and is restarted after a `--watch`
   soft reload). When
-  containers cannot reach the port, cdk-local warns with the fix (on Linux
-  the endpoint must listen on an address the Docker bridge reaches, not only
-  on `127.0.0.1`).
+  containers cannot reach the port, cdk-local warns with the fix. On Linux
+  the endpoint must ALSO listen on the Docker bridge gateway: run AWS
+  Emulator's Docker image with `-p 127.0.0.1:9297:9297 -p 172.17.0.1:9297:9297`
+  (use your bridge's gateway). Do not bind `0.0.0.0` on a host; that opens
+  it to your network.
 - **A CA bundle is mounted.** `--ca-bundle <file>`, else the host's
   `AWS_CA_BUNDLE`, else the profile's `ca_bundle`, is bind-mounted read-only
   at `/cdk-local-aws/ca-bundle.pem` (with the public root CAs appended), and

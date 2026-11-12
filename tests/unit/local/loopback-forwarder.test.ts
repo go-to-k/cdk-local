@@ -78,7 +78,15 @@ describe('describeForwarderFailure', () => {
     );
     expect(msg).toContain('cannot reach port 9297 on the host via 172.17.0.1:9297 (ECONNREFUSED)');
     expect(msg).toContain('-p 127.0.0.1:9297:9297');
-    expect(msg).toContain('-b 0.0.0.0');
+    expect(msg).toContain('-p 127.0.0.1:9297:9297 -p 172.17.0.1:9297:9297');
+    expect(msg).toContain('Do not bind 0.0.0.0');
+    // Docker Desktop's host.docker.internal address is not offered as a Linux gateway.
+    expect(
+      describeForwarderFailure(
+        { name: 'n', ok: false, failedPort: 9297, reason: 'ECONNREFUSED', upstream: '192.168.65.254' },
+        'X'
+      )
+    ).toContain('-p <docker bridge gateway, e.g. 172.17.0.1>:9297:9297');
   });
 
   it('distinguishes a health / certificate failure and a port clash', () => {
