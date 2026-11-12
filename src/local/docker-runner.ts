@@ -32,6 +32,7 @@ import {
 import {
   applyWorkloadAwsWiringToEnv,
   effectiveLoopbackPorts,
+  loopbackForwarderPlan,
   getActiveWorkloadAwsWiring,
   resolveHostDefaultCredentials,
 } from './workload-aws-wiring.js';
@@ -289,6 +290,18 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   if (!wiring) return runDetachedContainer(opts);
   const wired = await withWorkloadAwsWiring(opts, wiring);
   // On the host network `127.0.0.1` already is the host: no forwarder.
+  if (
+    opts.network === 'host' &&
+    wiring.mixed &&
+    effectiveLoopbackPorts(wired.env, wiring).includes(wiring.mixed.resignPort)
+  ) {
+    // The sidecar listens on the workload's own loopback; on the host network
+    // that is the host's, shared by every workload of the run.
+    throw new DockerRunnerError(
+      'An aws-emulator sentinel (mixed mode) needs the AWS Emulator re-signing sidecar, which cannot run on the ' +
+        'host network. Drop the host network for this workload, or use --aws-emulator without a sentinel.'
+    );
+  }
   const ports = opts.network === 'host' ? [] : effectiveLoopbackPorts(wired.env, wiring);
   // Pull the forwarder image BEFORE the workload starts, so the forwarder is
   // up within moments of the workload's own start.
@@ -336,7 +349,7 @@ export async function prepareLoopbackForwarder(wiring: WorkloadAwsWiring): Promi
   try {
     await ensureForwarderImage(wiring.skipPull === true);
   } catch (err) {
-    if (wiring.mode === 'emulator') {
+    if (wiring.mode === 'emulator' || wiring.mixed) {
       throw new DockerRunnerError(
         `--aws-emulator: the loopback forwarder image could not be pulled: ${(err as Error).message}`
       );
@@ -451,6 +464,11 @@ export async function attachLoopbackForwarder(
   if (samePorts(ports, wiring.loopbackPorts)) forwardedPortsByContainer.delete(containerId);
   else forwardedPortsByContainer.set(containerId, ports);
   if (ports.length === 0) return;
+  // Mixed mode: the re-signing sidecar's port is served by the sidecar, not
+  // the TCP forwarder; a workload that uses it asked for the emulator, so a
+  // failure is fatal as under `--aws-emulator`.
+  const plan = loopbackForwarderPlan(wiring, ports);
+  const fatal = forwarderFailureIsFatal(wiring, plan);
   const label = forwarderEndpointLabel(wiring);
   const forwarderName = newLoopbackForwarderName();
   let result;
@@ -458,18 +476,19 @@ export async function attachLoopbackForwarder(
     result = await removeOnSignalWhile([containerId, forwarderName], () =>
       startLoopbackForwarder({
         workloadContainer: containerId,
-        ports,
+        ports: plan.ports,
         probe: wiring.probeHealth ? 'health' : 'tcp',
         name: forwarderName,
         ...(wiring.skipPull ? { skipPull: true } : {}),
         ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
+        ...(plan.resignConfigHostPath ? { resignConfigHostPath: plan.resignConfigHostPath } : {}),
       })
     );
   } catch (err) {
     // Joining a container that already exited fails; it needs no forwarder.
     if (!(await isContainerRunning(containerId))) return;
     const message = `${label}: ${(err as Error).message}`;
-    if (wiring.mode === 'emulator') {
+    if (fatal) {
       await removeContainer(containerId);
       throw new DockerRunnerError(message);
     }
@@ -478,7 +497,7 @@ export async function attachLoopbackForwarder(
   }
   if (result.ok) return;
   const message = describeForwarderFailure(result, label);
-  if (wiring.mode === 'emulator') {
+  if (fatal) {
     await removeContainer(containerId);
     throw new DockerRunnerError(message);
   }
@@ -510,21 +529,24 @@ export async function startNamespaceOwnerForwarder(opts: {
 }): Promise<string | undefined> {
   const { name, wiring } = opts;
   const label = forwarderEndpointLabel(wiring);
+  const plan = loopbackForwarderPlan(wiring, opts.ports);
+  const fatal = forwarderFailureIsFatal(wiring, plan);
   await prepareLoopbackForwarder(wiring);
   const args = buildNamespaceOwnerForwarderDockerArgs({
     name,
     namespace: opts.namespace,
-    ports: opts.ports,
+    ports: plan.ports,
     probe: wiring.probeHealth ? 'health' : 'tcp',
     ...(wiring.skipPull ? { skipPull: true } : {}),
     ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
+    ...(plan.resignConfigHostPath ? { resignConfigHostPath: plan.resignConfigHostPath } : {}),
   });
   getLogger()
     .child('docker')
     .debug(`Starting loopback forwarder ${name} for ports ${opts.ports.join(',')}`);
   const fail = async (key: string, message: string, remove = true): Promise<undefined> => {
     if (remove) await removeContainer(name);
-    if (wiring.mode === 'emulator') throw new DockerRunnerError(message);
+    if (fatal) throw new DockerRunnerError(message);
     warnForwarderOnce(key, message);
     return undefined;
   };
@@ -577,9 +599,21 @@ export function rememberForwardedPorts(
 }
 
 function forwarderEndpointLabel(wiring: WorkloadAwsWiring): string {
-  return wiring.mode === 'emulator'
-    ? `--aws-emulator ${wiring.emulatorEndpoint?.url ?? ''}`
-    : 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
+  if (wiring.mode === 'emulator') return `--aws-emulator ${wiring.emulatorEndpoint?.url ?? ''}`;
+  if (wiring.mixed) return `--aws-emulator ${wiring.mixed.emulatorEndpoint.url} (mixed mode)`;
+  return 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
+}
+
+/**
+ * A forwarder failure stops the command under `--aws-emulator`, and in mixed
+ * mode for a workload that uses the re-signing sidecar (it asked for the
+ * emulator); otherwise it is a warning.
+ */
+function forwarderFailureIsFatal(
+  wiring: WorkloadAwsWiring,
+  plan: { resignConfigHostPath?: string }
+): boolean {
+  return wiring.mode === 'emulator' || plan.resignConfigHostPath !== undefined;
 }
 
 function samePorts(a: readonly number[], b: readonly number[]): boolean {

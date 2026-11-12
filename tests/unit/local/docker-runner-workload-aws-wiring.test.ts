@@ -448,3 +448,114 @@ describe('startNamespaceOwnerForwarder (issue #878)', () => {
     expect(calls().some((a) => a[0] === 'rm')).toBe(false);
   });
 });
+
+describe('runDetached — mixed mode (aws-emulator sentinel)', () => {
+  const RESIGN = 47297;
+  function mixedWiring(): Wiring {
+    return emulatorWiring({
+      mode: 'forward',
+      scrubEnvKeys: [],
+      env: { AWS_CA_BUNDLE: '/cdk-local-aws/ca-bundle.pem' },
+      loopbackPorts: [9297, RESIGN],
+      emulatorCredentials: undefined,
+      mixed: {
+        services: ['DYNAMODB'],
+        emulatorEndpoint: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+        resignPort: RESIGN,
+        resignEndpoint: `https://127.0.0.1:${RESIGN}`,
+        resignConfigHostPath: '/tmp/resign-x/resign.json',
+        emulatorClientOverride: { endpoint: 'https://127.0.0.1:9297', credentials: EMU },
+      },
+    });
+  }
+  const realEnv = { AWS_ACCESS_KEY_ID: 'AKIAREAL', AWS_SECRET_ACCESS_KEY: 'REALSECRET' };
+
+  it('keeps the real identity, points the sentinel at the sidecar, and starts the forwarder with it', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: args.includes('--pid') ? 'fwd\n' : 'workload-id\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return { stdout: '' };
+    });
+    await runDetached({ ...baseRun, env: { ...realEnv, AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
+    const calls = execFileMock.mock.calls as [string, string[], { env?: NodeJS.ProcessEnv } | undefined][];
+    const run = calls.find((c) => c[1][0] === 'run' && !c[1].includes('--pid'))!;
+    expect(run[1]).toContain(`AWS_ENDPOINT_URL_DYNAMODB=https://127.0.0.1:${RESIGN}`);
+    expect(run[2]?.env?.['AWS_SECRET_ACCESS_KEY']).toBe('REALSECRET');
+    const fwd = calls.find((c) => c[1][0] === 'run' && c[1].includes('--pid'))!;
+    expect(fwd[1]).toContain('/tmp/resign-x/resign.json:/cdkl-forwarder/resign.json:ro');
+    const tail = fwd[1].slice(fwd[1].indexOf('-e') + 2);
+    expect(tail[0]).toBe('9297');
+    expect(tail.at(-1)).toBe('/cdkl-forwarder/resign.json');
+    expect(fwd[1].join(' ')).not.toContain('REALSECRET');
+    expect(fwd[1].join(' ')).not.toContain(EMU.secretAccessKey);
+  });
+
+  it('a sidecar failure is fatal: the workload is removed', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: args.includes('--pid') ? 'fwd\n' : 'workload-id\n' };
+      if (args[0] === 'logs') return { stdout: `CDKL-FWD FAIL ${RESIGN} RESIGN_EADDRINUSE 192.168.65.254\n` };
+      return { stdout: '' };
+    });
+    await expect(
+      runDetached({ ...baseRun, env: { ...realEnv, AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } })
+    ).rejects.toThrow(/re-signing sidecar could not start on 127\.0\.0\.1:47297.*already listens/);
+    expect(execFileMock.mock.calls.some((c) => c[1][0] === 'rm' && c[1].includes('workload-id'))).toBe(true);
+  });
+
+  it('a workload without a sentinel starts no forwarder', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    execFileMock.mockReturnValue({ stdout: 'workload-id\n' });
+    await runDetached({ ...baseRun, env: realEnv });
+    expect(execFileMock.mock.calls.filter((c) => c[1][0] === 'run')).toHaveLength(1);
+  });
+
+  it('ECS owner forwarder (startNamespaceOwnerForwarder): runs the sidecar too, and its failure is fatal', async () => {
+    const owner = (ports: number[]) =>
+      startNamespaceOwnerForwarder({
+        name: 'cdkl-fam-app-abc-awsfwd',
+        namespace: { network: 'cdkl-task-x' },
+        ports,
+        wiring: mixedWiring(),
+        workloadLabel: 'container app',
+      });
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return {};
+    });
+    await expect(owner([9297, RESIGN])).resolves.toBe('fid');
+    const run = execFileMock.mock.calls.map((c) => c[1] as string[]).find((a) => a[0] === 'run')!;
+    expect(run).toContain('/tmp/resign-x/resign.json:/cdkl-forwarder/resign.json:ro');
+    expect(run.slice(run.indexOf('-e') + 2)).toEqual([
+      '9297',
+      'health',
+      '/cdkl-forwarder/ca.pem',
+      '/cdkl-forwarder/resign.json',
+    ]);
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid\n' };
+      if (args[0] === 'logs') return { stdout: `CDKL-FWD FAIL ${RESIGN} RESIGN_CONFIG_EACCES none\n` };
+      return {};
+    });
+    await expect(owner([9297, RESIGN])).rejects.toThrow(/re-signing sidecar could not start/);
+    // A literal emulator URL only (no sidecar): a failure stays a warning, as in forward mode.
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD FAIL 9297 ECONNREFUSED 172.17.0.1\n' };
+      return {};
+    });
+    await expect(owner([9297])).resolves.toBeUndefined();
+    warn.mockRestore();
+  });
+
+  it('refuses a sentinel on the host network (the sidecar cannot share the host loopback)', async () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    await expect(
+      runDetached({ ...baseRun, network: 'host', env: { ...realEnv, AWS_ENDPOINT_URL_S3: 'aws-emulator' } })
+    ).rejects.toThrow(/cannot run on the host network/);
+  });
+});

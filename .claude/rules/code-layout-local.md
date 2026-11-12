@@ -86,6 +86,16 @@ a log line, and a served HTTP response body.
 - `cdkl studio` activates the wiring for its own AWS calls and forwards
   `--aws-emulator <url>` / `--ca-bundle <abs path>` through
   `buildSharedChildArgs`.
+- Mixed mode (`aws-emulator-mixed-mode.ts`, go-to-k/cdkd#6150): an
+  `"aws-emulator"` sentinel in `--env-vars` keeps `mode: 'forward'` (real
+  identity) and sets `wiring.mixed`. The sentinel is substituted ONLY in
+  `applyWorkloadAwsWiringToEnv`, and the re-signing sidecar
+  (`emulator-resign-sidecar.ts`) runs INSIDE the forwarder container, so
+  both layouts get it through `forwarderCommand`; `loopbackForwarderPlan`
+  splits a container's ports. Its secrets live in one 0600 config file, never
+  on argv; the per-run CA key (`mixed-mode-tls.ts`) is never written.
+  `createLocalStateProvider` wraps `--from-cfn-stack` in
+  `createMixedModeStateProvider` when the active wiring is mixed.
 
 ## AgentCore
 
