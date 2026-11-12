@@ -59,7 +59,7 @@ import {
   MIXED_MODE_RESIGN_PORT,
   emulatedServicesOf,
   isAwsEmulatorSentinel,
-  readAwsEmulatorSentinelsFromFile,
+  readAwsEmulatorEnvVarsFile,
   validateAwsEmulatorSentinels,
 } from './aws-emulator-mixed-mode.js';
 import type { AwsEmulatorSentinel } from './aws-emulator-mixed-mode.js';
@@ -1194,7 +1194,10 @@ export function resolveAwsEmulatorOption(
  * route per service like the workload's calls: a client of a sentinel-routed
  * service talks to the emulator directly from the host (its keys and CA), every
  * other client stays on real AWS with the real identity
- * (`awsClientConfigForService`).
+ * (`awsClientConfigForService`). A call made for one workload (`{{resolve}}`,
+ * ECS `Secrets`, `--from-cfn-stack` names of a single function) routes by that
+ * workload's own sentinels; a call with no workload context by every sentinel.
+ * A pipe-backed `--env-vars` is read once and kept for the command's own read.
  *
  * Host-side use case: a host CLI's container commands call this with their
  * own options; the env var follows the embed config's `envPrefix`.
@@ -1203,7 +1206,7 @@ export async function activateWorkloadAwsWiring(
   options: WorkloadAwsWiringCommandOptions
 ): Promise<WorkloadAwsWiring> {
   const awsEmulator = resolveAwsEmulatorOption(options.awsEmulator);
-  const sentinels = readAwsEmulatorSentinelsFromFile(options.envVars);
+  const { overrides, sentinels } = readAwsEmulatorEnvVarsFile(options.envVars);
   validateAwsEmulatorSentinels(sentinels, awsEmulator !== undefined, awsEmulatorEnvName());
   const wiring = await resolveWorkloadAwsWiring({
     awsEmulator,
@@ -1218,9 +1221,12 @@ export async function activateWorkloadAwsWiring(
     // workload's: a routed service reads the emulator directly (no sidecar on
     // the host), every other one stays on real AWS.
     setAwsEndpointOverride(undefined);
+    // Per workload: a call made for one workload follows that workload's own
+    // sentinels (`Parameters` plus its own sections), as its runtime calls do.
     setAwsEmulatorServiceRouting({
       services: wiring.mixed.services,
       override: wiring.mixed.emulatorClientOverride,
+      envOverrides: overrides,
     });
     getLogger().info(
       `Mixed mode: ${wiring.mixed.services.join(', ')} go to AWS Emulator at ${wiring.mixed.emulatorEndpoint.url} ` +

@@ -33,7 +33,42 @@
  * (matches SAM behavior).
  */
 
+import { readFileSync, statSync } from 'node:fs';
 import { defineOwnKey } from '../utils/own-keys.js';
+
+/** The text of each pipe-backed `--env-vars` path read so far, by path. */
+const pipeTexts = new Map<string, string>();
+
+/**
+ * Read the `--env-vars` file at `filePath` as UTF-8. A regular file is read
+ * afresh on every call, so a `--watch` re-read sees an edit. Any other path (a
+ * FIFO, `/dev/stdin`, a `<(jq ...)` process substitution) can be read only
+ * once, so its text is kept and every later call returns it: the AWS Emulator
+ * sentinel scan and the command's own reader then see the same content
+ * (go-to-k/cdk-local#894). Errors are `readFileSync`'s own.
+ *
+ * Host-side use case: a host CLI reading `--env-vars` for a command that
+ * cdk-local also scans reads it through this.
+ */
+export function readEnvVarsFileText(filePath: string): string {
+  let regular = true;
+  try {
+    regular = statSync(filePath).isFile();
+  } catch {
+    // `readFileSync` below reports the missing / unreadable path.
+  }
+  if (regular) return readFileSync(filePath, 'utf-8');
+  const kept = pipeTexts.get(filePath);
+  if (kept !== undefined) return kept;
+  const text = readFileSync(filePath, 'utf-8');
+  pipeTexts.set(filePath, text);
+  return text;
+}
+
+/** Test-isolation helper: forget every kept pipe-backed `--env-vars` text. */
+export function resetEnvVarsFileTextsForTest(): void {
+  pipeTexts.clear();
+}
 
 export interface EnvResolutionResult {
   /** Variables that should be set on the container. */

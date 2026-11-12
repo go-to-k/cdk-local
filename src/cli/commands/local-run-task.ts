@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readEnvVarsFileText } from '../../local/env-resolver.js';
 import path from 'node:path';
 import { addAwsEndpointOptions } from '../options.js';
 import { DynamicReferenceResolver } from '../../local/dynamic-reference-resolver.js';
@@ -340,9 +340,10 @@ async function localRunTaskCommand(
           crossStackResolver: resolver,
           // A cross-stack value carrying a `{{resolve:...}}` token resolves
           // against its producer's region at this boundary (issue #784).
-          resolveDynamicReferences: (value, producerRegion) =>
+          resolveDynamicReferences: (value, producerRegion, workload) =>
             dynamicRefs.resolveString(value, {
               region: producerRegion,
+              workload,
               consumer: `Task ${task.taskDefinitionLogicalId} cross-stack env value`,
               // Overrides apply later, at docker-run time, so none can skip this.
               overridable: false,
@@ -832,7 +833,7 @@ function readEnvOverridesFile(
   if (!filePath) return undefined;
   let raw: string;
   try {
-    raw = readFileSync(filePath, 'utf-8');
+    raw = readEnvVarsFileText(filePath);
   } catch (err) {
     throw new Error(
       `Failed to read --env-vars file '${filePath}': ${err instanceof Error ? err.message : String(err)}`

@@ -58,7 +58,12 @@ import {
   type ResolvedZipLambda,
 } from '../../local/lambda-resolver.js';
 import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
-import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
+import type { AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
+import {
+  readEnvVarsFileText,
+  resolveEnvVars,
+  type EnvOverrideFile,
+} from '../../local/env-resolver.js';
 import {
   applyDeployedEnvFallback,
   substituteEnvVarsFromStateAsync,
@@ -877,11 +882,16 @@ function getTemplateEnv(resource: {
   return vars as Record<string, unknown>;
 }
 
+/** The {@link AwsEmulatorWorkload} of a Lambda function: its logical ID and `aws:cdk:path`. */
+function lambdaWorkload(lambda: ResolvedLambda): AwsEmulatorWorkload {
+  return { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) };
+}
+
 function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
   if (!filePath) return undefined;
   let raw: string;
   try {
-    raw = readFileSync(filePath, 'utf-8');
+    raw = readEnvVarsFileText(filePath);
   } catch (err) {
     throw new Error(
       `Failed to read --env-vars file '${filePath}': ${
@@ -1048,8 +1058,11 @@ export async function resolveLambdaContainerEnv(
 ): Promise<LambdaContainerEnvResult> {
   // One resolver per container env, shared by the cross-stack boundary and
   // the final env pass so each (reference, region) is fetched once (#784).
+  // Mixed mode: this function's own sentinels route its `{{resolve:...}}`
+  // fetches, as they route its runtime calls.
   const dynamicRefs = new DynamicReferenceResolver({
     ...(options.profile !== undefined && { profile: options.profile }),
+    workload: lambdaWorkload(lambda),
   });
   try {
     return await resolveLambdaContainerEnvWith(
@@ -1093,7 +1106,8 @@ async function resolveLambdaContainerEnvWith(
     options,
     lambda.stack.stackName,
     await resolveCfnFallbackRegion(options, lambda.stack.region),
-    extraStateProviders
+    extraStateProviders,
+    { workload: lambdaWorkload(lambda) }
   );
   if (stateProvider) {
     try {

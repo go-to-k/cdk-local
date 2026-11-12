@@ -301,6 +301,8 @@ describe('activateWorkloadAwsWiring — sentinels in --env-vars', () => {
       expect(getAwsEmulatorServiceRouting()).toEqual({
         services: ['DYNAMODB'],
         override: w.mixed!.emulatorClientOverride,
+        // The parsed file, so a call made for one workload routes by its own sentinels (#902).
+        envOverrides: { Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } },
       });
       expect(isAwsServiceRoutedToEmulator('DYNAMODB')).toBe(true);
       expect(isAwsServiceRoutedToEmulator('SECRETS_MANAGER')).toBe(false);

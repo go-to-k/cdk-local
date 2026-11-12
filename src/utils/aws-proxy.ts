@@ -13,6 +13,8 @@ import { getProxyForUrl } from 'proxy-from-env';
 import { getLogger } from './logger.js';
 import { formatAuthority } from './url-authority.js';
 import { isLoopbackHost } from './loopback-host.js';
+// Function-only import: the matcher runs at call time, never at module load.
+import { emulatedServicesForWorkload } from '../local/aws-emulator-mixed-mode.js';
 
 // Re-exported for this module's existing importers; the implementation is
 // shared with `local/studio-proxy` in `utils/loopback-host` (issue #666).
@@ -428,11 +430,41 @@ export function getAwsEndpointOverride(): AwsEndpointOverride | undefined {
  * the real identity.
  */
 export interface AwsEmulatorServiceRouting {
+  /**
+   * Every service a sentinel routes, in any section: the set for a call made
+   * with no workload context.
+   */
   services: readonly string[];
   override: AwsEndpointOverride;
+  /**
+   * The parsed `--env-vars` file. With it, a call made FOR one workload
+   * ({@link AwsEmulatorWorkload}) routes by that workload's own sentinels
+   * (`emulatedServicesForWorkload`), as its runtime calls do; without it, by
+   * {@link services}.
+   */
+  envOverrides?: Readonly<Record<string, unknown>> | undefined;
 }
 
-let serviceRouting: { services: ReadonlySet<string>; override: AwsEndpointOverride } | undefined;
+/**
+ * The workload a call is made for, by the keys its `--env-vars` sections
+ * match: a Lambda function or an AgentCore runtime by `logicalId` and
+ * `cdkPath` (`aws:cdk:path`), an ECS container by `containerName`. In AWS
+ * Emulator mixed mode such a call routes by that workload's own sentinels
+ * (`Parameters` plus its own sections) instead of the run's.
+ */
+export interface AwsEmulatorWorkload {
+  logicalId?: string | undefined;
+  cdkPath?: string | undefined;
+  containerName?: string | undefined;
+}
+
+let serviceRouting:
+  | {
+      services: ReadonlySet<string>;
+      override: AwsEndpointOverride;
+      envOverrides: Readonly<Record<string, unknown>> | undefined;
+    }
+  | undefined;
 
 /**
  * The `AWS_ENDPOINT_URL_<ID>` form of an endpoint service id, as the AWS SDKs
@@ -450,25 +482,60 @@ export function normalizeAwsEndpointServiceId(serviceId: string): string {
  */
 export function setAwsEmulatorServiceRouting(r: AwsEmulatorServiceRouting | undefined): void {
   serviceRouting = r
-    ? { services: new Set(r.services.map(normalizeAwsEndpointServiceId)), override: r.override }
+    ? {
+        services: new Set(r.services.map(normalizeAwsEndpointServiceId)),
+        override: r.override,
+        envOverrides: r.envOverrides,
+      }
     : undefined;
 }
 
 /** The active {@link AwsEmulatorServiceRouting}, if any. */
 export function getAwsEmulatorServiceRouting(): AwsEmulatorServiceRouting | undefined {
   return serviceRouting
-    ? { services: [...serviceRouting.services].sort(), override: serviceRouting.override }
+    ? {
+        services: [...serviceRouting.services].sort(),
+        override: serviceRouting.override,
+        ...(serviceRouting.envOverrides && { envOverrides: serviceRouting.envOverrides }),
+      }
     : undefined;
+}
+
+/**
+ * The endpoint service ids mixed mode routes to AWS Emulator: for `workload`
+ * when given (its own sentinels, when the routing carries the `--env-vars`
+ * file), else the run's. `undefined` outside mixed mode.
+ *
+ * Host-side use case: a host's per-service name resolution for one workload
+ * (`createMixedModeStateProvider`'s `emulatedServices`).
+ */
+export function awsEmulatorRoutedServices(workload?: AwsEmulatorWorkload): string[] | undefined {
+  if (!serviceRouting) return undefined;
+  if (workload === undefined || serviceRouting.envOverrides === undefined) {
+    return [...serviceRouting.services].sort();
+  }
+  return emulatedServicesForWorkload(serviceRouting.envOverrides, workload);
+}
+
+/** Whether mixed mode routes `serviceId` to the emulator, for `workload` when given. */
+function mixedModeRoutes(serviceId: string, workload: AwsEmulatorWorkload | undefined): boolean {
+  return (
+    awsEmulatorRoutedServices(workload)?.includes(normalizeAwsEndpointServiceId(serviceId)) ?? false
+  );
 }
 
 /**
  * Whether a client for `serviceId` talks to AWS Emulator: always under a
  * process-wide {@link AwsEndpointOverride} (`--aws-emulator` alone), and in
- * mixed mode exactly when an `--env-vars` sentinel routed that service.
+ * mixed mode exactly when an `--env-vars` sentinel routed that service — for
+ * `workload` when given (its own sentinels), else in any section.
  */
-export function isAwsServiceRoutedToEmulator(serviceId: string): boolean {
+export function isAwsServiceRoutedToEmulator(
+  serviceId: string,
+  workload?: AwsEmulatorWorkload
+): boolean {
   if (endpointOverride) return true;
-  return serviceRouting?.services.has(normalizeAwsEndpointServiceId(serviceId)) ?? false;
+  return mixedModeRoutes(serviceId, workload);
 }
 
 /**
@@ -480,6 +547,12 @@ export function isAwsServiceRoutedToEmulator(serviceId: string): boolean {
  * {@link buildProxyClientConfig}: real AWS, the proxy environment and the
  * default credential chain. When the fragment carries `endpoint`, add no
  * credentials of your own: the emulator's keys are its only identity.
+ *
+ * `workload` names the workload the call is made for ({@link
+ * AwsEmulatorWorkload}): mixed mode then routes by that workload's own
+ * sentinels (`Parameters` plus its own sections), exactly as its runtime calls
+ * go. Without it, a sentinel in ANY section routes the service: that is the
+ * set for a call that serves no single workload.
  *
  * Keep STS (and anything that establishes the real identity) off this path,
  * or pass no service: routing STS would replace the real identity mixed mode
@@ -493,7 +566,7 @@ export function isAwsServiceRoutedToEmulator(serviceId: string): boolean {
  */
 export function awsClientConfigForService(
   serviceId: string,
-  opts: { profile?: string | undefined } = {}
+  opts: { profile?: string | undefined; workload?: AwsEmulatorWorkload | undefined } = {}
 ): AwsProxyClientConfig {
   return buildProxyClientConfig({ ...opts, service: serviceId });
 }
@@ -589,7 +662,7 @@ export function buildProxyRequestHandler(): NodeHttpHandler {
  *
  * `service` is the client's endpoint service id ({@link
  * awsClientConfigForService}): in AWS Emulator mixed mode a routed service
- * gets the emulator's fragment instead. Omit it only for a client that must
+ * gets the emulator's fragment instead, judged for `workload` when given. Omit it only for a client that must
  * stay on real AWS in mixed mode (identity: STS; deploy artifacts such as the
  * ECR image, a fromS3 bundle or a layer; `--from-cfn-stack`'s real side;
  * `start-cloudfront`, which reads its origins by their real names);
@@ -600,13 +673,17 @@ export function buildProxyRequestHandler(): NodeHttpHandler {
  * same proxy environment with the same `NO_PROXY` semantics.
  */
 export function buildProxyClientConfig(
-  opts: { profile?: string | undefined; service?: string | undefined } = {}
+  opts: {
+    profile?: string | undefined;
+    service?: string | undefined;
+    workload?: AwsEmulatorWorkload | undefined;
+  } = {}
 ): AwsProxyClientConfig {
   if (endpointOverride) return endpointOverrideClientConfig(endpointOverride);
   if (
     serviceRouting &&
     opts.service !== undefined &&
-    serviceRouting.services.has(normalizeAwsEndpointServiceId(opts.service))
+    mixedModeRoutes(opts.service, opts.workload)
   ) {
     return endpointOverrideClientConfig(serviceRouting.override);
   }

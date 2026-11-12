@@ -1,6 +1,7 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { workloadClientConfig } from '../utils/workload-identity.js';
+import { isAwsServiceRoutedToEmulator } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -82,26 +83,45 @@ export async function resolveEcsSecrets(
   if (entries.length === 0) return [];
   const logger = getLogger().child('ecs-secrets');
 
-  const secretsClient =
-    options.secretsManagerClient ??
-    new SecretsManagerClient({
-      ...workloadClientConfig({ profile: options.profile, service: 'SECRETS_MANAGER' }),
-      ...(options.region && { region: options.region }),
-      ...(options.profile && { profile: options.profile }),
-    });
-  const ssmClient =
-    options.ssmClient ??
-    new SSMClient({
-      ...workloadClientConfig({ profile: options.profile, service: 'SSM' }),
-      ...(options.region && { region: options.region }),
-      ...(options.profile && { profile: options.profile }),
-    });
-  const ownsSecretsClient = options.secretsManagerClient === undefined;
-  const ownsSsmClient = options.ssmClient === undefined;
+  // Mixed mode: each container's own sentinels decide where ITS secrets are
+  // read (AWS Emulator or real AWS), as they decide where its runtime calls go.
+  // One client per (service, route), built on first use.
+  const owned: Array<{ destroy(): void }> = [];
+  const smClients = new Map<boolean, SecretsManagerClient>();
+  const ssmClients = new Map<boolean, SSMClient>();
+  const clientsFor = (
+    containerName: string
+  ): { secretsClient: SecretsManagerClient; ssmClient: SSMClient } => {
+    const workload = { containerName };
+    const smRoute = isAwsServiceRoutedToEmulator('SECRETS_MANAGER', workload);
+    const ssmRoute = isAwsServiceRoutedToEmulator('SSM', workload);
+    let secretsClient = options.secretsManagerClient ?? smClients.get(smRoute);
+    if (!secretsClient) {
+      secretsClient = new SecretsManagerClient({
+        ...workloadClientConfig({ profile: options.profile, service: 'SECRETS_MANAGER', workload }),
+        ...(options.region && { region: options.region }),
+        ...(options.profile && { profile: options.profile }),
+      });
+      smClients.set(smRoute, secretsClient);
+      owned.push(secretsClient);
+    }
+    let ssmClient = options.ssmClient ?? ssmClients.get(ssmRoute);
+    if (!ssmClient) {
+      ssmClient = new SSMClient({
+        ...workloadClientConfig({ profile: options.profile, service: 'SSM', workload }),
+        ...(options.region && { region: options.region }),
+        ...(options.profile && { profile: options.profile }),
+      });
+      ssmClients.set(ssmRoute, ssmClient);
+      owned.push(ssmClient);
+    }
+    return { secretsClient, ssmClient };
+  };
 
   try {
     const results = await Promise.all(
       entries.map(async (entry) => {
+        const { secretsClient, ssmClient } = clientsFor(entry.containerName);
         const value = await resolveOne(entry, secretsClient, ssmClient);
         logger.debug(
           `Resolved secret ${displayIdent(entry.containerName)}.${displayIdent(entry.name)} (${displayUntrustedValue(entry.valueFrom)})`
@@ -111,8 +131,7 @@ export async function resolveEcsSecrets(
     );
     return results;
   } finally {
-    if (ownsSecretsClient) secretsClient.destroy();
-    if (ownsSsmClient) ssmClient.destroy();
+    for (const c of owned) c.destroy();
   }
 }
 

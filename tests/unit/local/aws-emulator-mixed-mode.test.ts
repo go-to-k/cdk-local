@@ -1,3 +1,4 @@
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -5,13 +6,19 @@ import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   AWS_EMULATOR_SENTINEL,
   createMixedModeStateProvider,
+  emulatedServicesForWorkload,
   emulatedServicesOf,
   findAwsEmulatorSentinels,
+  readAwsEmulatorEnvVarsFile,
   readAwsEmulatorSentinelsFromFile,
   resourceTypeMatchesEmulatedService,
   validateAwsEmulatorSentinels,
 } from '../../../src/local/aws-emulator-mixed-mode.js';
 import type { LocalStateProvider, LocalStateRecord } from '../../../src/local/local-state-provider.js';
+import {
+  readEnvVarsFileText,
+  resetEnvVarsFileTextsForTest,
+} from '../../../src/local/env-resolver.js';
 import { getLogger } from '../../../src/utils/logger.js';
 
 describe('findAwsEmulatorSentinels', () => {
@@ -78,6 +85,109 @@ describe('validateAwsEmulatorSentinels', () => {
   it('refuses the sentinel on the bare AWS_ENDPOINT_URL (that is plain --aws-emulator)', () => {
     const bare = findAwsEmulatorSentinels({ Fn: { AWS_ENDPOINT_URL: 'aws-emulator' } });
     expect(() => validateAwsEmulatorSentinels(bare, true)).toThrow(/routes ONE service/);
+  });
+
+  // go-to-k/cdk-local#902: the SDKs never read a misspelled variable, so the
+  // workload's calls would go to real AWS while names resolved from the emulator.
+  it('refuses a sentinel on a variable the AWS SDKs do not read, naming the SDK spelling', () => {
+    const typo = findAwsEmulatorSentinels({
+      Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' },
+      Fn: { AWS_ENDPOINT_URL_SECRETSMANAGER: 'aws-emulator' },
+    });
+    expect(() => validateAwsEmulatorSentinels(typo, true)).toThrow(
+      /AWS_ENDPOINT_URL_SECRETSMANAGER under "?Fn"?.*the AWS SDKs do not read AWS_ENDPOINT_URL_SECRETSMANAGER.*Use AWS_ENDPOINT_URL_SECRETS_MANAGER\./
+    );
+    // Refused before the missing-flag error, which would not name the real problem.
+    expect(() => validateAwsEmulatorSentinels(typo, false)).toThrow(/Use AWS_ENDPOINT_URL_SECRETS_MANAGER/);
+    for (const [bad, good] of [
+      ['STEPFUNCTIONS', undefined],
+      ['CLOUDWATCHLOGS', 'CLOUDWATCH_LOGS'],
+      ['EVENT_BRIDGE', 'EVENTBRIDGE'],
+      ['NOT_A_SERVICE', undefined],
+    ] as const) {
+      const one = findAwsEmulatorSentinels({ Parameters: { [`AWS_ENDPOINT_URL_${bad}`]: 'aws-emulator' } });
+      expect(() => validateAwsEmulatorSentinels(one, true)).toThrow(
+        good ? new RegExp(`Use AWS_ENDPOINT_URL_${good}\\.`) : /must be the service's SDK endpoint id/
+      );
+    }
+  });
+
+  it('accepts the SDK spellings of the services mixed mode is used with', () => {
+    for (const id of ['DYNAMODB', 'S3', 'SQS', 'SNS', 'SSM', 'SECRETS_MANAGER', 'SFN', 'EVENTBRIDGE', 'KINESIS', 'CLOUDWATCH_LOGS', 'BEDROCK_RUNTIME']) {
+      const one = findAwsEmulatorSentinels({ Parameters: { [`AWS_ENDPOINT_URL_${id}`]: 'aws-emulator' } });
+      expect(() => validateAwsEmulatorSentinels(one, true), id).not.toThrow();
+    }
+  });
+});
+
+describe('emulatedServicesForWorkload', () => {
+  const file = {
+    Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator', AWS_ENDPOINT_URL_S3: 'aws-emulator' },
+    'MyStack/FnA': { AWS_ENDPOINT_URL_SSM: 'aws-emulator' },
+    FnA1234: { AWS_ENDPOINT_URL_S3: null },
+    FnB5678: { AWS_ENDPOINT_URL_DYNAMODB: 'https://127.0.0.1:4566' },
+    web: { AWS_ENDPOINT_URL_SQS: ' aws-emulator ' },
+  };
+
+  it("is Parameters plus the workload's own sections, cleared by null or a literal, in file order", () => {
+    expect(
+      emulatedServicesForWorkload(file, { logicalId: 'FnA1234', cdkPath: 'MyStack/FnA/Resource' })
+    ).toEqual(['DYNAMODB', 'SSM']);
+    expect(emulatedServicesForWorkload(file, { logicalId: 'FnB5678' })).toEqual(['S3']);
+    expect(emulatedServicesForWorkload(file, { containerName: 'web' })).toEqual(['DYNAMODB', 'S3', 'SQS']);
+    expect(emulatedServicesForWorkload(file, { logicalId: 'Other' })).toEqual(['DYNAMODB', 'S3']);
+    // A path section matches only at a `/` boundary.
+    expect(emulatedServicesForWorkload(file, { cdkPath: 'MyStack/FnAx/Resource' })).toEqual(['DYNAMODB', 'S3']);
+    expect(emulatedServicesForWorkload(undefined, { logicalId: 'FnA1234' })).toEqual([]);
+  });
+
+  it('a later section re-adds what an earlier one cleared', () => {
+    expect(
+      emulatedServicesForWorkload(
+        {
+          FnA1234: { AWS_ENDPOINT_URL_SSM: null },
+          'MyStack/FnA': { AWS_ENDPOINT_URL_SSM: 'aws-emulator' },
+        },
+        { logicalId: 'FnA1234', cdkPath: 'MyStack/FnA/Resource' }
+      )
+    ).toEqual(['SSM']);
+  });
+});
+
+// go-to-k/cdk-local#894: the scan must not consume a pipe-backed --env-vars
+// before the command's own reader runs.
+describe('pipe-backed --env-vars (FIFO)', () => {
+  it('the sentinel scan and the command read see the same text, read once', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'fifo-'));
+    try {
+      const fifo = path.join(dir, 'env.fifo');
+      execFileSync('mkfifo', [fifo]);
+      const body = JSON.stringify({ Parameters: { AWS_ENDPOINT_URL_SQS: AWS_EMULATOR_SENTINEL } });
+      // One writer: a second read of the FIFO itself would block forever.
+      const writer = spawn('sh', ['-c', 'printf "%s" "$1" > "$2"', 'sh', body, fifo]);
+      const done = new Promise((r) => writer.on('exit', r));
+      expect(readAwsEmulatorSentinelsFromFile(fifo)).toHaveLength(1);
+      await done;
+      expect(readEnvVarsFileText(fifo)).toBe(body);
+      expect(readAwsEmulatorEnvVarsFile(fifo).overrides).toEqual(JSON.parse(body));
+    } finally {
+      resetEnvVarsFileTextsForTest();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a regular file is read afresh each time (a --watch re-read sees an edit)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'envfile-'));
+    try {
+      const f = path.join(dir, 'env.json');
+      writeFileSync(f, '{"a":{}}');
+      expect(readEnvVarsFileText(f)).toBe('{"a":{}}');
+      writeFileSync(f, '{"b":{}}');
+      expect(readEnvVarsFileText(f)).toBe('{"b":{}}');
+      expect(() => readEnvVarsFileText(path.join(dir, 'missing.json'))).toThrow(/ENOENT/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

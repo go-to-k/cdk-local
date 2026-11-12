@@ -54,6 +54,8 @@ describe('applyCrossStackResolverToTask — dynamic-reference hook (#784)', () =
     expect(container.environment['DB_PASSWORD']).toBe('pl41n');
     expect(container.sensitiveEnvKeys).toContain('DB_PASSWORD');
     expect(hook).toHaveBeenCalledTimes(1);
+    // The container is the workload (#902): mixed mode routes the fetch by its sentinels.
+    expect(hook).toHaveBeenCalledWith(TOKEN, expect.any(String), { containerName: 'app' });
     expect(container.secrets).toEqual([{ name: 'API_KEY', valueFrom: TOKEN }]);
   });
 });

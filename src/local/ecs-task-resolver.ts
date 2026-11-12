@@ -1626,6 +1626,16 @@ export async function applyCrossStackResolverToTask(
     if (!raw || typeof raw !== 'object') continue;
     const c = raw as Record<string, unknown>;
     const containerName = pickString(c['Name']) ?? container.name;
+    // Mixed mode: a `{{resolve:...}}` in this container's cross-stack value is
+    // fetched where THIS container's runtime calls go.
+    const resolveRefs = context.resolveDynamicReferences;
+    const containerContext: SubstitutionContext = resolveRefs
+      ? {
+          ...context,
+          resolveDynamicReferences: (v, region) =>
+            resolveRefs(v, region, { containerName: container.name }),
+        }
+      : context;
 
     // Track keys the post-pass resolved so we can filter the matching
     // entries out of `container.warnings` (which the sync pass populated
@@ -1655,7 +1665,7 @@ export async function applyCrossStackResolverToTask(
         }
         const { result: sub, consumedSensitive } = await resolveWithSensitivityAsync(
           value,
-          context
+          containerContext
         );
         if (sub.kind === 'literal') {
           defineOwnKey(container.environment, key, String(sub.value));

@@ -19,8 +19,9 @@
 // a CloudFormation resource type to an endpoint service, and the composite
 // state provider. The wiring lives in `workload-aws-wiring.ts`.
 
-import { readFileSync } from 'node:fs';
-import type { EnvOverrideFile } from './env-resolver.js';
+import { readEnvVarsFileText, type EnvOverrideFile } from './env-resolver.js';
+import { AWS_ENDPOINT_SERVICE_IDS } from './aws-endpoint-service-ids.js';
+import type { AwsEmulatorWorkload } from '../utils/aws-proxy.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
 import type { ResourceState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
@@ -76,28 +77,108 @@ export function findAwsEmulatorSentinels(
   return found;
 }
 
+/** A parsed `--env-vars` file and its sentinels ({@link readAwsEmulatorEnvVarsFile}). */
+export interface AwsEmulatorEnvVarsScan {
+  /** The parsed file, or `undefined` when there is none or it is not a JSON object. */
+  overrides: Readonly<Record<string, unknown>> | undefined;
+  sentinels: AwsEmulatorSentinel[];
+}
+
 /**
- * {@link findAwsEmulatorSentinels} over the `--env-vars` file at `filePath`.
+ * Read and parse the `--env-vars` file at `filePath` and find its sentinels.
  * A missing path, an unreadable file or invalid JSON yields none: the
- * command's own `--env-vars` reader reports those.
+ * command's own `--env-vars` reader reports those. The file is read through
+ * `readEnvVarsFileText`, so a pipe-backed path (`<(jq ...)`, `/dev/stdin`, a
+ * FIFO) is consumed once and the command's own read gets the same text.
+ */
+export function readAwsEmulatorEnvVarsFile(filePath: string | undefined): AwsEmulatorEnvVarsScan {
+  if (!filePath) return { overrides: undefined, sentinels: [] };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readEnvVarsFileText(filePath));
+  } catch {
+    return { overrides: undefined, sentinels: [] };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { overrides: undefined, sentinels: [] };
+  }
+  const overrides = parsed as Record<string, unknown>;
+  return { overrides, sentinels: findAwsEmulatorSentinels(overrides) };
+}
+
+/**
+ * {@link findAwsEmulatorSentinels} over the `--env-vars` file at `filePath`
+ * ({@link readAwsEmulatorEnvVarsFile}).
  */
 export function readAwsEmulatorSentinelsFromFile(
   filePath: string | undefined
 ): AwsEmulatorSentinel[] {
-  if (!filePath) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(filePath, 'utf8'));
-  } catch {
-    return [];
-  }
-  return findAwsEmulatorSentinels(parsed as Record<string, unknown>);
+  return readAwsEmulatorEnvVarsFile(filePath).sentinels;
 }
 
 /**
- * Refuse sentinels that cannot work: any sentinel without `--aws-emulator`
- * (the error names the flag and its env var), and one on the bare
- * `AWS_ENDPOINT_URL` (every service: that is plain `--aws-emulator`).
+ * Whether the `--env-vars` section `section` applies to `workload`, by the
+ * rules the env merge uses: a Lambda / AgentCore section is its logical ID or
+ * its `aws:cdk:path` (or a prefix of it ending at `/`), an ECS section is the
+ * container name.
+ */
+function sectionAppliesTo(section: string, workload: AwsEmulatorWorkload): boolean {
+  if (section === 'Parameters') return false;
+  if (workload.logicalId !== undefined && section === workload.logicalId) return true;
+  if (workload.containerName !== undefined && section === workload.containerName) return true;
+  const path = workload.cdkPath;
+  return path !== undefined && (path === section || path.startsWith(`${section}/`));
+}
+
+/**
+ * The endpoint service ids routed to AWS Emulator for ONE workload: the
+ * sentinels its final env carries. That is the `Parameters` sentinels, then
+ * each of its own sections in file order, where a sentinel adds a service and
+ * any other value of the same variable (`null`, a literal URL) removes it, as
+ * the env merge does. Sorted.
+ *
+ * Host-side use case: a host routes its own pre-start calls for a workload the
+ * way that workload's runtime calls go.
+ */
+export function emulatedServicesForWorkload(
+  overrides: Readonly<Record<string, unknown>> | undefined,
+  workload: AwsEmulatorWorkload
+): string[] {
+  const out = new Set<string>();
+  const apply = (map: unknown): void => {
+    if (!map || typeof map !== 'object' || Array.isArray(map)) return;
+    for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
+      const service = ENDPOINT_KEY.exec(key)?.[1];
+      if (service === undefined) continue;
+      if (isAwsEmulatorSentinel(key, value)) out.add(service);
+      else out.delete(service);
+    }
+  };
+  if (!overrides) return [];
+  apply(overrides['Parameters']);
+  for (const [section, map] of Object.entries(overrides)) {
+    if (sectionAppliesTo(section, workload)) apply(map);
+  }
+  return [...out].sort();
+}
+
+/**
+ * The AWS SDK spelling of a mistyped endpoint service id, when one matches it
+ * with underscores ignored (`SECRETSMANAGER` -> `SECRETS_MANAGER`).
+ */
+function correctServiceIdSpelling(service: string): string | undefined {
+  const bare = service.replace(/_/g, '');
+  for (const id of AWS_ENDPOINT_SERVICE_IDS) if (id.replace(/_/g, '') === bare) return id;
+  return undefined;
+}
+
+/**
+ * Refuse sentinels that cannot work: one on the bare `AWS_ENDPOINT_URL`
+ * (every service: that is plain `--aws-emulator`), one whose suffix is not an
+ * AWS SDK endpoint service id (the SDKs never read that variable, so the
+ * workload's calls would go to real AWS; the error names the SDK spelling when
+ * one matches), and any sentinel without `--aws-emulator` (the error names the
+ * flag and its env var).
  *
  * Host-side use case: a host CLI validates its own `--env-vars` the same way.
  */
@@ -115,6 +196,17 @@ export function validateAwsEmulatorSentinels(
     throw new Error(
       `--env-vars sets ${where(bare)} to "${AWS_EMULATOR_SENTINEL}", but the sentinel routes ONE service ` +
         `(AWS_ENDPOINT_URL_<SERVICE>). To send every service to AWS Emulator, use --aws-emulator without a sentinel.`
+    );
+  }
+  const unknown = sentinels.find((s) => !AWS_ENDPOINT_SERVICE_IDS.has(s.service));
+  if (unknown) {
+    const fix = correctServiceIdSpelling(unknown.service);
+    throw new Error(
+      `--env-vars sets ${where(unknown)} to "${AWS_EMULATOR_SENTINEL}", but the AWS SDKs do not read ` +
+        `${unknown.key}, so the workload's calls would still go to real AWS. ` +
+        (fix
+          ? `Use AWS_ENDPOINT_URL_${fix}.`
+          : "The suffix must be the service's SDK endpoint id (its serviceId, uppercased, spaces as underscores).")
     );
   }
   if (!awsEmulatorOn) {
@@ -192,8 +284,9 @@ export interface MixedModeStateProviderOptions {
  * - Cross-stack resolution (`Fn::ImportValue`) and every other lookup use the
  *   real provider.
  *
- * The emulated-service set is the run's: a service routed for any workload
- * resolves from the emulator for every workload.
+ * `emulatedServices` is the run's set ({@link emulatedServicesOf}) unless the
+ * caller resolves names for one workload, which passes that workload's own set
+ * ({@link emulatedServicesForWorkload}).
  *
  * Host-side use case: cdkd wraps its own `--from-state` provider pair.
  */
