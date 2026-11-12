@@ -419,6 +419,19 @@ export function getAwsEndpointOverride(): AwsEndpointOverride | undefined {
   return endpointOverride;
 }
 
+/**
+ * The client config for one {@link AwsEndpointOverride}, without installing
+ * it process-wide: the endpoint, an https agent trusting its CA, and its
+ * credentials.
+ *
+ * Host-side use case: mixed mode (`--aws-emulator` plus an `aws-emulator`
+ * sentinel) keeps the process on real AWS and builds only the clients that
+ * read the emulator (per-service name resolution) with this.
+ */
+export function awsEndpointOverrideClientConfig(o: AwsEndpointOverride): AwsProxyClientConfig {
+  return endpointOverrideClientConfig(o);
+}
+
 function endpointOverrideClientConfig(o: AwsEndpointOverride): AwsProxyClientConfig {
   // A fresh handler per client, for the same reason as the proxy handler: a
   // client's `destroy()` destroys its agents. No proxy: the override is a local

@@ -19,12 +19,25 @@
 //     variables. cdk-local's own AWS clients are pointed at the endpoint too.
 //     Java gets the run's `truststore.p12` through `JAVA_TOOL_OPTIONS`, since
 //     the JVM reads none of the PEM trust variables.
+//   - under `--aws-emulator` with an `aws-emulator` sentinel in `--env-vars`
+//     (mixed mode, `aws-emulator-mixed-mode.ts`): the developer's real
+//     identity as in forward mode, each sentinel replaced by the re-signing
+//     sidecar's endpoint, and a CA bundle that trusts the sidecar's per-run
+//     CA and the emulator's. cdk-local's own clients stay on real AWS.
 //
 // The docker-run layer applies it (`runDetached`, the ECS task runner), so
 // each command only activates it; a host CLI that embeds cdk-local calls the
 // same exported functions.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  lstatSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { rootCertificates } from 'node:tls';
@@ -40,6 +53,21 @@ import { assumedRoleRecorded } from '../utils/workload-identity.js';
 import type { CallerCredentials } from '../utils/workload-identity.js';
 import type { AwsCredentialIdentityProvider } from '@smithy/types';
 import { getEmbedConfig } from './embed-config.js';
+import type { AwsEndpointOverride } from '../utils/aws-proxy.js';
+import {
+  AWS_EMULATOR_SENTINEL,
+  MIXED_MODE_RESIGN_PORT,
+  emulatedServicesOf,
+  isAwsEmulatorSentinel,
+  readAwsEmulatorSentinelsFromFile,
+  validateAwsEmulatorSentinels,
+} from './aws-emulator-mixed-mode.js';
+import type { AwsEmulatorSentinel } from './aws-emulator-mixed-mode.js';
+import { createMixedModeTlsMaterials } from './mixed-mode-tls.js';
+import {
+  MIXED_MODE_RESIGN_BODY_CAP_BYTES,
+  type ResignSidecarConfig,
+} from './emulator-resign-sidecar.js';
 
 /** Variables a container's runtimes read for a custom CA bundle. */
 export const CA_TRUST_ENV_KEYS = [
@@ -323,10 +351,40 @@ export interface WorkloadMount {
   containerPath: string;
 }
 
+/**
+ * Mixed mode (`--aws-emulator` plus at least one `aws-emulator` sentinel in
+ * `--env-vars`). The wiring's `mode` stays `forward`: workloads keep the real
+ * identity, and only sentinel-routed services reach the emulator, through the
+ * re-signing sidecar.
+ */
+export interface MixedModeWiring {
+  /** The emulated endpoint service ids, sorted: `['DYNAMODB', 'S3']`. */
+  services: string[];
+  /** The AWS Emulator the sentinels name. */
+  emulatorEndpoint: ParsedAwsEndpoint;
+  /** The port the re-signing sidecar listens on inside each workload. */
+  resignPort: number;
+  /** What a sentinel becomes in a workload's env: `https://127.0.0.1:<resignPort>`. */
+  resignEndpoint: string;
+  /**
+   * Host path of the sidecar's config (JSON, mode 0600, in a 0700 temp dir):
+   * its TLS key, the emulator's keys. Mounted read-only into the forwarder
+   * container; removed by `dispose`.
+   */
+  resignConfigHostPath: string;
+  /**
+   * For host-side clients that must read the emulator (per-service name
+   * resolution): its endpoint, CA and keys. Never installed process-wide.
+   */
+  emulatorClientOverride: AwsEndpointOverride;
+}
+
 /** The resolved wiring. Treat as immutable. */
 export interface WorkloadAwsWiring {
-  /** `emulator` under `--aws-emulator`, else `forward`. */
+  /** `emulator` under `--aws-emulator` alone, else `forward` (mixed mode included). */
   mode: 'forward' | 'emulator';
+  /** Set in mixed mode ({@link MixedModeWiring}). */
+  mixed?: MixedModeWiring;
   /** The endpoint under `emulator` mode. */
   emulatorEndpoint?: ParsedAwsEndpoint;
   /**
@@ -377,6 +435,13 @@ export interface ResolveWorkloadAwsWiringOptions {
   probeHealth?: (url: string, caPath: string | undefined) => Promise<string | undefined>;
   /** `--no-pull`: never pull the loopback forwarder image. */
   skipPull?: boolean | undefined;
+  /**
+   * The `aws-emulator` sentinels of the run's `--env-vars` file
+   * ({@link readAwsEmulatorSentinelsFromFile}). With `awsEmulator` and at
+   * least one sentinel the wiring is mixed mode; validate them first with
+   * `validateAwsEmulatorSentinels`.
+   */
+  awsEmulatorSentinels?: readonly AwsEmulatorSentinel[] | undefined;
 }
 
 /**
@@ -445,28 +510,42 @@ function expandHome(p: string, homeDir: string): string {
  * may not be the host user). Appending the public roots keeps the variables
  * that REPLACE a runtime's trust store (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
  * `AWS_CA_BUNDLE`) from cutting the workload off from every other HTTPS host.
+ * `extraCertsPem` adds more certificates (mixed mode: the re-signing
+ * sidecar's per-run CA); with no `source` the bundle holds only those.
  */
-export function writeCaBundleFile(source: string): { hostPath: string; dispose: () => void } {
-  let pem: string;
-  try {
-    pem = readFileSync(source, 'utf8');
-  } catch (err) {
-    throw new Error(
-      `CA bundle ${displayUntrustedValue(source)} cannot be read (${(err as NodeJS.ErrnoException).code ?? 'error'}).`
-    );
+export function writeCaBundleFile(
+  source: string | undefined,
+  extraCertsPem: readonly string[] = []
+): { hostPath: string; dispose: () => void } {
+  const certs: string[] = [];
+  if (source !== undefined) {
+    let pem: string;
+    try {
+      pem = readFileSync(source, 'utf8');
+    } catch (err) {
+      throw new Error(
+        `CA bundle ${displayUntrustedValue(source)} cannot be read (${(err as NodeJS.ErrnoException).code ?? 'error'}).`
+      );
+    }
+    // Certificates only: a "fullchain + key" PEM must not put its PRIVATE KEY
+    // into a world-readable file mounted into every container.
+    const found = pemCertificates(pem);
+    if (found.length === 0) {
+      throw new Error(`CA bundle ${displayUntrustedValue(source)} contains no PEM certificate.`);
+    }
+    certs.push(...found);
   }
-  // Certificates only: a "fullchain + key" PEM must not put its PRIVATE KEY
-  // into a world-readable file mounted into every container.
-  const certs = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g);
-  if (!certs) {
-    throw new Error(`CA bundle ${displayUntrustedValue(source)} contains no PEM certificate.`);
-  }
+  for (const extra of extraCertsPem) certs.push(...pemCertificates(extra));
   const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().productName}-ca-`));
   const hostPath = path.join(dir, 'ca-bundle.pem');
   writeFileSync(hostPath, `${certs.join('\n')}\n${rootCertificates.join('\n')}\n`, {
     mode: 0o644,
   });
   return { hostPath, dispose: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+function pemCertificates(pem: string): string[] {
+  return pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
 }
 
 /** The URL `--aws-emulator` uses when given no value: AWS Emulator's default. */
@@ -514,6 +593,145 @@ function describeEmulatorUnreachable(ep: ParsedAwsEndpoint, reason: string): str
     `Docker image published with \`-p 127.0.0.1:${ep.port}:${ep.port}\`), that the URL's port matches, and ` +
     `that it listens on an address this machine reaches (\`-b\`).`
   );
+}
+
+/** How old an orphaned re-signing config dir must be before a later run removes it. */
+export const STALE_RESIGN_DIR_AGE_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Remove re-signing config dirs (emulator keys + the sidecar's TLS key) that a
+ * killed run left behind: `<tmpdir>/<product>-resign-*` owned by this user,
+ * older than {@link STALE_RESIGN_DIR_AGE_MS}, whose owning process (its
+ * `owner.pid`) is gone. A running sidecar already holds its config in memory,
+ * so removing the file cannot break one. Best effort: never throws, never
+ * touches another user's dir or one without a readable dead owner.
+ */
+export function sweepStaleResignDirs(now: number = Date.now(), dir: string = tmpdir()): string[] {
+  const removed: string[] = [];
+  const prefix = `${getEmbedConfig().productName}-resign-`;
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return removed;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const full = path.join(dir, name);
+    try {
+      // lstat: a symlink planted under the prefix is skipped, never followed.
+      const st = lstatSync(full);
+      if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) continue;
+      if (now - st.mtimeMs < STALE_RESIGN_DIR_AGE_MS) continue;
+      const pid = Number(readFileSync(path.join(full, 'owner.pid'), 'utf8').trim());
+      if (!Number.isInteger(pid) || pid <= 0 || processAlive(pid)) continue;
+      rmSync(full, { recursive: true, force: true });
+      removed.push(full);
+    } catch {
+      // Unreadable, no owner.pid, or gone meanwhile: leave it.
+    }
+  }
+  return removed;
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * The mixed-mode branch of {@link resolveWorkloadAwsWiring}: per-run TLS
+ * material for the re-signing sidecar, its 0600 config, and a CA bundle that
+ * trusts the sidecar's CA and the emulator's (plus the public roots, so real
+ * AWS stays reachable). Host endpoint overrides are NOT forwarded: a host
+ * `AWS_ENDPOINT_URL` aimed at the emulator would otherwise carry real-key
+ * signatures to it.
+ */
+function resolveMixedModeWiring(args: {
+  ep: ParsedAwsEndpoint;
+  services: string[];
+  credentials: CallerCredentials;
+  /** Every CA the emulator's certificate may chain to: the run's `ca.pem`, `--ca-bundle`, `AWS_CA_BUNDLE`. */
+  caSources: string[];
+  disposers: (() => void)[];
+  dispose: () => void;
+  skipPull: boolean | undefined;
+  /** The host's region, for a SigV4a request that names none (`*`). */
+  region: string | undefined;
+}): WorkloadAwsWiring {
+  const { ep, services, credentials, caSources, disposers } = args;
+  // Kept together, never one instead of another: a `--ca-bundle` for a
+  // corporate proxy must not drop the trust in the emulator's own CA.
+  const caPems: string[] = [];
+  for (const source of caSources) {
+    try {
+      caPems.push(...pemCertificates(readFileSync(source, 'utf8')));
+    } catch (err) {
+      throw new Error(
+        `--aws-emulator: the CA bundle ${displayUntrustedValue(source)} cannot be read ` +
+          `(${(err as NodeJS.ErrnoException).code ?? 'error'}).`
+      );
+    }
+  }
+  const upstreamCaPem = caPems.length > 0 ? caPems.join('\n') : undefined;
+  // The CA's private key never leaves createMixedModeTlsMaterials.
+  const tls = createMixedModeTlsMaterials();
+  const bundle = writeCaBundleFile(undefined, [...caPems, tls.caCertPem]);
+  disposers.push(bundle.dispose);
+  // Secrets (the sidecar's TLS key, the emulator's keys): a 0700 directory
+  // holding one 0600 file, mounted read-only, removed by `dispose`.
+  // A SIGKILLed run cannot dispose: clean up what such runs left behind.
+  sweepStaleResignDirs();
+  const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().productName}-resign-`));
+  disposers.push(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(path.join(dir, 'owner.pid'), String(process.pid), { mode: 0o600 });
+  const resignConfigHostPath = path.join(dir, 'resign.json');
+  const config: ResignSidecarConfig = {
+    port: MIXED_MODE_RESIGN_PORT,
+    upstream: ep.url,
+    ...(upstreamCaPem ? { upstreamCaPem } : {}),
+    certPem: tls.certPem,
+    keyPem: tls.keyPem,
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      ...(credentials.sessionToken ? { sessionToken: credentials.sessionToken } : {}),
+    },
+    capBytes: MIXED_MODE_RESIGN_BODY_CAP_BYTES,
+    ...(args.region ? { region: args.region } : {}),
+  };
+  writeFileSync(resignConfigHostPath, JSON.stringify(config), { mode: 0o600 });
+  const containerPath = getContainerCaBundlePath();
+  const trust: Record<string, string> = {};
+  for (const k of CA_TRUST_ENV_KEYS) trust[k] = containerPath;
+  return {
+    mode: 'forward',
+    mixed: {
+      services,
+      emulatorEndpoint: ep,
+      resignPort: MIXED_MODE_RESIGN_PORT,
+      resignEndpoint: `https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`,
+      resignConfigHostPath,
+      emulatorClientOverride: {
+        endpoint: ep.url,
+        ...(upstreamCaPem ? { caPem: upstreamCaPem } : {}),
+        credentials: config.credentials,
+      },
+    },
+    env: trust,
+    scrubEnvKeys: [],
+    mounts: [{ hostPath: bundle.hostPath, containerPath }],
+    loopbackPorts: ep.loopback ? [ep.port, MIXED_MODE_RESIGN_PORT] : [MIXED_MODE_RESIGN_PORT],
+    probeHealth: true,
+    caHostPath: bundle.hostPath,
+    ...(args.skipPull ? { skipPull: true } : {}),
+    dispose: args.dispose,
+  };
 }
 
 /**
@@ -569,9 +787,13 @@ export async function resolveWorkloadAwsWiring(
       }
       const run = readEmulatorRunFiles(ep.port, homeDir);
       const caSource = opts.caBundle || run.caPath || env['AWS_CA_BUNDLE'];
+      const mixedServices = emulatedServicesOf(opts.awsEmulatorSentinels ?? []);
+      // Mixed mode keeps every CA (a `--ca-bundle` may be a corporate proxy's),
+      // so the probe trusts the run's own CA first.
+      const probeCa = mixedServices.length > 0 ? run.caPath || caSource : caSource;
       const failure = await (opts.probeHealth ?? probeAwsEmulatorHealth)(
         ep.url,
-        caSource ? expandHome(caSource, homeDir) : undefined
+        probeCa ? expandHome(probeCa, homeDir) : undefined
       );
       if (failure) throw new Error(describeEmulatorUnreachable(ep, failure));
       let credentials: CallerCredentials;
@@ -582,8 +804,34 @@ export async function resolveWorkloadAwsWiring(
         credentials = AUTH_OFF_PLACEHOLDER_CREDENTIALS;
         getLogger().info(
           `--aws-emulator: ${path.join(run.dir, 'emulator_credentials')} not found but the emulator is healthy, ` +
-            'so it runs with --auth off; workload containers get placeholder credentials.'
+            (mixedServices.length > 0
+              ? 'so it runs with --auth off; the re-signing sidecar signs with placeholder credentials.'
+              : 'so it runs with --auth off; workload containers get placeholder credentials.')
         );
+      }
+      if (mixedServices.length > 0) {
+        return resolveMixedModeWiring({
+          ep,
+          services: mixedServices,
+          credentials,
+          // The run's CA only matters for an https emulator; the host's CAs
+          // also serve real AWS (a TLS-inspecting proxy), so they stay either way.
+          caSources: [
+            ...new Set(
+              [
+                ep.url.startsWith('https:') ? run.caPath : undefined,
+                opts.caBundle,
+                env['AWS_CA_BUNDLE'],
+              ]
+                .filter((c): c is string => typeof c === 'string' && c !== '')
+                .map((c) => expandHome(c, homeDir))
+            ),
+          ],
+          disposers,
+          dispose,
+          skipPull: opts.skipPull,
+          region: env['AWS_REGION'] || env['AWS_DEFAULT_REGION'] || undefined,
+        });
       }
       const ca = caSource && ep.url.startsWith('https:') ? caMount(caSource) : undefined;
       // Java reads none of the PEM variables: mount the run's PKCS12 copy of
@@ -674,7 +922,9 @@ export async function resolveWorkloadAwsWiring(
 /**
  * The wiring's loopback ports that a container's FINAL env still points at
  * (`AWS_ENDPOINT_URL*`): when the template or `--env-vars` replaced the
- * forwarded endpoint, its port needs no forwarder.
+ * forwarded endpoint, its port needs no forwarder. In mixed mode the
+ * re-signing sidecar's port is among them when the env uses it, together with
+ * the emulator's loopback port (the sidecar's upstream).
  */
 export function effectiveLoopbackPorts(
   env: Readonly<Record<string, string>>,
@@ -690,7 +940,33 @@ export function effectiveLoopbackPorts(
       /* not a URL: nothing to forward */
     }
   }
+  const mixed = wiring.mixed;
+  if (mixed && used.has(mixed.resignPort) && mixed.emulatorEndpoint.loopback) {
+    used.add(mixed.emulatorEndpoint.port);
+  }
   return wiring.loopbackPorts.filter((p) => used.has(p));
+}
+
+/**
+ * Split a container's forwarder ports ({@link effectiveLoopbackPorts}) into
+ * the TCP ports the forwarder serves and, in mixed mode, the re-signing
+ * sidecar's config when the container uses it. Pass the result to
+ * `startLoopbackForwarder` / `buildNamespaceOwnerForwarderDockerArgs`
+ * (`ports`, `resignConfigHostPath`).
+ *
+ * Host-side use case: a host CLI that starts its own forwarder for a mixed
+ * mode workload.
+ */
+export function loopbackForwarderPlan(
+  wiring: WorkloadAwsWiring,
+  ports: readonly number[]
+): { ports: number[]; resignConfigHostPath?: string } {
+  const mixed = wiring.mixed;
+  if (!mixed || !ports.includes(mixed.resignPort)) return { ports: [...ports] };
+  return {
+    ports: ports.filter((p) => p !== mixed.resignPort),
+    resignConfigHostPath: mixed.resignConfigHostPath,
+  };
 }
 
 /** True when the wiring adds nothing to a container. */
@@ -708,6 +984,10 @@ export function isEmptyWorkloadAwsWiring(w: WorkloadAwsWiring): boolean {
  * - `emulator`: scrubbed keys are removed, wiring entries are forced, and the
  *   credential triple is REPLACED by the emulator's (removed when it has none),
  *   so no real credential reaches the container.
+ * - mixed mode (`forward` with `mixed`): as `forward`, and every
+ *   `AWS_ENDPOINT_URL_<SERVICE>` set to the `aws-emulator` sentinel becomes the
+ *   re-signing sidecar's endpoint. A sentinel outside mixed mode throws: it
+ *   would otherwise reach the SDK as an invalid URL.
  *
  * Host-side use case: a host CLI's own container env assembly.
  */
@@ -724,6 +1004,16 @@ export function applyWorkloadAwsWiringToEnv(
       configurable: true,
       writable: true,
     });
+  }
+  for (const [k, v] of Object.entries(out)) {
+    if (!isAwsEmulatorSentinel(k, v)) continue;
+    if (!wiring.mixed || k === 'AWS_ENDPOINT_URL') {
+      throw new Error(
+        `${k}="${AWS_EMULATOR_SENTINEL}" reached a workload container outside mixed mode. The sentinel is read ` +
+          'from the --env-vars file, on an AWS_ENDPOINT_URL_<SERVICE> variable, and needs --aws-emulator [url].'
+      );
+    }
+    out[k] = wiring.mixed.resignEndpoint;
   }
   const setCreds = (c: CallerCredentials | undefined): void => {
     for (const k of CREDENTIAL_KEYS) delete out[k];
@@ -860,6 +1150,11 @@ export interface WorkloadAwsWiringCommandOptions {
   profile?: string | undefined;
   /** Commander's `--no-pull` (`false` when given): the forwarder image is not pulled either. */
   pull?: boolean | undefined;
+  /**
+   * `--env-vars <file>`: scanned for `aws-emulator` sentinels, which select
+   * mixed mode (and need `--aws-emulator`).
+   */
+  envVars?: string | undefined;
 }
 
 /**
@@ -890,7 +1185,10 @@ export function resolveAwsEmulatorOption(
  * layer, and — under `--aws-emulator` — point cdk-local's own AWS clients
  * (including the CloudFormation client behind `--from-cfn-stack`) at the
  * emulator with its credentials and CA. Call once at the start of a command,
- * before any AWS client is built.
+ * before any AWS client is built. `envVars` (the command's `--env-vars` file)
+ * is scanned for `aws-emulator` sentinels: one without `--aws-emulator` is an
+ * error, and with it they select mixed mode, where cdk-local's own clients
+ * stay on real AWS.
  *
  * Host-side use case: a host CLI's container commands call this with their
  * own options; the env var follows the embed config's `envPrefix`.
@@ -898,14 +1196,26 @@ export function resolveAwsEmulatorOption(
 export async function activateWorkloadAwsWiring(
   options: WorkloadAwsWiringCommandOptions
 ): Promise<WorkloadAwsWiring> {
+  const awsEmulator = resolveAwsEmulatorOption(options.awsEmulator);
+  const sentinels = readAwsEmulatorSentinelsFromFile(options.envVars);
+  validateAwsEmulatorSentinels(sentinels, awsEmulator !== undefined, awsEmulatorEnvName());
   const wiring = await resolveWorkloadAwsWiring({
-    awsEmulator: resolveAwsEmulatorOption(options.awsEmulator),
+    awsEmulator,
     caBundle: options.caBundle,
     profile: options.profile,
     skipPull: options.pull === false,
+    awsEmulatorSentinels: sentinels,
   });
   setActiveWorkloadAwsWiring(wiring);
-  if (wiring.mode === 'emulator' && wiring.emulatorEndpoint) {
+  if (wiring.mixed) {
+    // Mixed mode: cdk-local's own clients stay on real AWS; only the
+    // per-service name resolution reads the emulator, with its own clients.
+    setAwsEndpointOverride(undefined);
+    getLogger().info(
+      `Mixed mode: ${wiring.mixed.services.join(', ')} go to AWS Emulator at ${wiring.mixed.emulatorEndpoint.url} ` +
+        `(re-signed with its keys); every other AWS call uses your real credentials.`
+    );
+  } else if (wiring.mode === 'emulator' && wiring.emulatorEndpoint) {
     setAwsEndpointOverride({
       endpoint: wiring.emulatorEndpoint.url,
       ...(wiring.caHostPath ? { caPem: readFileSync(wiring.caHostPath, 'utf8') } : {}),

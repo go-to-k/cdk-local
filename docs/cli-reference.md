@@ -146,6 +146,25 @@ runs a command against a local AWS Emulator. The URL defaults to
 Deploy and destroy are not part of cdk-local; deploy into the emulator with
 your usual tool.
 
+### Mixed mode (`"aws-emulator"` in `--env-vars`)
+
+To send only some services to AWS Emulator and the rest to real AWS, set
+`AWS_ENDPOINT_URL_<SERVICE>` to `"aws-emulator"` in the `--env-vars` file
+(under `Parameters` for every workload, or under one resource's section)
+and pass `--aws-emulator`:
+
+```json
+{ "Parameters": { "AWS_ENDPOINT_URL_DYNAMODB": "aws-emulator" } }
+```
+
+Containers then keep your real credentials, and a re-signing sidecar signs
+each emulator-bound request again with the emulator's keys, so the emulator
+keeps its signature checking. S3 streaming uploads are re-signed up to
+100 MiB per request. `--from-cfn-stack` resolves the routed services' names
+from the emulator. The sentinel without `--aws-emulator` is an error. Full
+rules, the credential model and the two setups it is made for:
+[local-emulation.md#mixed-mode-chosen-services-in-aws-emulator-the-rest-in-real-aws](./local-emulation.md#mixed-mode-chosen-services-in-aws-emulator-the-rest-in-real-aws).
+
 ## Extra arguments are rejected, not discarded
 
 A command that takes ONE target — `invoke`, `invoke-agentcore`,

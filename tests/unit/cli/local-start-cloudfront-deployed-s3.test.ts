@@ -114,7 +114,8 @@ describe('resolveDeployedS3Origins', () => {
       expect.objectContaining({ fromState: true, stateBucket: 'b' }),
       'Stack',
       'us-west-2',
-      providers
+      providers,
+      { realAwsOnly: true }
     );
     expect(dist.origins.get('o1')?.kind).toBe('s3-deployed');
     expect(readers.has('o1')).toBe(true);
@@ -296,7 +297,9 @@ describe('resolveDeployedS3Origins', () => {
       expect.anything(),
       'Stack',
       'us-west-2',
-      extraStateProviders
+      extraStateProviders,
+      // S3 origins are read with real-AWS clients: never the mixed-mode provider.
+      { realAwsOnly: true }
     );
   });
 

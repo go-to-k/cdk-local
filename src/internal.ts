@@ -1333,6 +1333,8 @@ export {
   resolveWorkloadAwsWiring,
   setActiveWorkloadAwsWiring,
   writeCaBundleFile,
+  loopbackForwarderPlan,
+  type MixedModeWiring,
   type EmulatorRunFiles,
   type ParsedAwsEndpoint,
   type ResolveWorkloadAwsWiringOptions,
@@ -1356,7 +1358,42 @@ export {
 export {
   getAwsEndpointOverride,
   setAwsEndpointOverride,
+  awsEndpointOverrideClientConfig,
   type AwsEndpointOverride,
 } from './utils/aws-proxy.js';
+/**
+ * AWS Emulator mixed mode (go-to-k/cdkd#6150): an `aws-emulator` sentinel on
+ * `AWS_ENDPOINT_URL_<SERVICE>` in `--env-vars` routes that service to the
+ * emulator through a re-signing sidecar, while the workload keeps the real
+ * identity. `activateWorkloadAwsWiring({ envVars })` does it all for a host
+ * that uses cdk-local's docker-run layer. A host that reads `--env-vars`
+ * itself scans with `findAwsEmulatorSentinels`, refuses bad ones with
+ * `validateAwsEmulatorSentinels`, and passes them to `resolveWorkloadAwsWiring`
+ * (`awsEmulatorSentinels`); the wiring's `mixed` then carries the sidecar
+ * endpoint and config, and `loopbackForwarderPlan` splits a container's ports.
+ * Per-service name resolution: `createMixedModeStateProvider` over a real and
+ * an emulator provider (`CfnLocalStateProviderOptions.endpointOverride`, or a
+ * host's own provider built with `awsEndpointOverrideClientConfig(
+ * wiring.mixed.emulatorClientOverride)`), with
+ * `resourceTypeMatchesEmulatedService` for the type-to-service test.
+ */
+export {
+  AWS_EMULATOR_SENTINEL,
+  MIXED_MODE_RESIGN_PORT,
+  createMixedModeStateProvider,
+  emulatedServicesOf,
+  findAwsEmulatorSentinels,
+  isAwsEmulatorSentinel,
+  readAwsEmulatorSentinelsFromFile,
+  resourceTypeMatchesEmulatedService,
+  validateAwsEmulatorSentinels,
+  type AwsEmulatorSentinel,
+  type MixedModeStateProviderOptions,
+} from './local/aws-emulator-mixed-mode.js';
+export { createMixedModeTlsMaterials, type MixedModeTlsMaterials } from './local/mixed-mode-tls.js';
+export {
+  MIXED_MODE_RESIGN_BODY_CAP_BYTES,
+  type ResignSidecarConfig,
+} from './local/emulator-resign-sidecar.js';
 export { awsEndpointOptions, addAwsEndpointOptions } from './cli/options.js';
 export { attachLoopbackForwarder, withWorkloadAwsWiring } from './local/docker-runner.js';

@@ -232,6 +232,129 @@ runs a command against a local AWS Emulator. The URL defaults to
 Deploy and destroy are not part of cdk-local; deploy into the emulator with
 your usual tool.
 
+### Mixed mode: chosen services in AWS Emulator, the rest in real AWS
+
+Set a standard `AWS_ENDPOINT_URL_<SERVICE>` variable to the value
+`"aws-emulator"` in the `--env-vars` file, and run with `--aws-emulator`.
+Under `Parameters` it applies to every workload; under a resource's
+section (logical ID, CDK path, or an ECS container name) to that workload
+only:
+
+```json
+{
+  "Parameters": {
+    "AWS_ENDPOINT_URL_DYNAMODB": "aws-emulator",
+    "AWS_ENDPOINT_URL_SQS": "aws-emulator"
+  },
+  "MyStack/AgentHandler": {
+    "AWS_ENDPOINT_URL_S3": "aws-emulator"
+  }
+}
+```
+
+```bash
+cdkl invoke MyStack/AgentHandler --aws-emulator --env-vars env.json --from-cfn-stack
+```
+
+Every workload sends DynamoDB and SQS to the emulator, and
+`MyStack/AgentHandler` sends S3 there too. Every other service (Bedrock,
+STS, Secrets Manager, ...) goes to real AWS with your real credentials.
+
+Two setups this is made for:
+
+- **AI agents.** Sessions and state live in an emulated DynamoDB while
+  Bedrock stays real, because the emulator cannot run real models. Route
+  `AWS_ENDPOINT_URL_DYNAMODB` and run the agent with `cdkl invoke-agentcore`
+  or `cdkl start-agentcore`.
+- **Read real, write safe.** The handler reads real S3 objects or Secrets
+  Manager values, while its DynamoDB and SQS writes land in the emulator,
+  so a test run never touches production data.
+
+**Why a local runner.** AWS Emulator runs a deployed function inside its own
+runtime, where every SDK call goes to the emulator. Only the process that
+owns the workload's container environment can choose an endpoint per
+service and per workload, and cdk-local is that process.
+
+The rules:
+
+- **The sentinel needs `--aws-emulator [url]`** (or `CDK_LOCAL_AWS_EMULATOR`),
+  which names the emulator: its endpoint, keys and CA in
+  `~/.aws/emulator/<port>/`. Without it, the command stops and names the
+  flag. A sentinel on the bare `AWS_ENDPOINT_URL` is refused: for every
+  service, use `--aws-emulator` with no sentinel. A literal URL (for example
+  `"https://127.0.0.1:9297"`) is passed through as it is and is never
+  re-signed.
+- **Containers keep your real identity.** With at least one sentinel, a
+  container gets credentials exactly as without `--aws-emulator`: the
+  default chain, `--profile` or `--assume-role`. Mixed mode runs with real
+  credentials on purpose, since the other services need them. With no
+  sentinel, `--aws-emulator` is unchanged: emulator keys only. Your
+  shell's `AWS_ENDPOINT_URL*` values are not forwarded in mixed mode, so a
+  real-key request cannot reach the emulator by that route.
+- **Emulator-bound requests are signed again.** The container's SDK signs
+  every request with your real keys, and the emulator rejects keys it never
+  issued. So a sentinel becomes `https://127.0.0.1:47297`, served by a
+  re-signing sidecar inside the workload's network namespace. The sidecar
+  drops the incoming signature and session token, signs the request again
+  with the emulator's keys (from `emulator_credentials`, or the
+  placeholder keys under `--auth off`), keeps the service and region of the
+  original credential scope, and forwards it to the emulator over TLS
+  verified against the emulator's CA. The emulator keeps its signature
+  checking (no `-a off`), and no signature made with real keys reaches it.
+  Real-AWS traffic never passes through the sidecar. It logs no header,
+  body or key.
+- **TLS stays verified on both legs** (with an `https` emulator URL; an
+  `http` one is forwarded as plain HTTP). The sidecar's certificate for
+  `127.0.0.1` comes from a CA made for each run. The containers' CA bundle
+  (`AWS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`,
+  `SSL_CERT_FILE`) trusts that CA, the emulator's `ca.pem` and any
+  `--ca-bundle` / `AWS_CA_BUNDLE`, plus the public roots, so real AWS still
+  verifies. The run's CA is name-constrained to `127.0.0.1`, `::1` and
+  `localhost`, and its private key is discarded once it has signed the
+  sidecar's certificate. A template or `--env-vars` value for one of those variables
+  wins, as everywhere, and then has to trust the run's CA itself. The sidecar's key and the emulator's
+  keys sit in a `0600` file in a private temp directory, mounted read-only
+  into the sidecar and removed when the command ends (a later run removes
+  one that a killed run left behind, after three hours). The sidecar listens
+  on the workload's loopback only. A JVM reads none of
+  these variables, and the emulator's `truststore.p12` does not hold the
+  run's CA, so a Java handler needs its own trust store for a
+  sentinel-routed service. Mixed mode sets no `JAVA_TOOL_OPTIONS`, because
+  that trust store would replace the JVM's default one and cut the handler
+  off from real AWS.
+- **S3 streaming uploads are supported, up to 100 MiB per request.** SDK
+  streaming uploads (`aws-chunked`: `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`,
+  `STREAMING-UNSIGNED-PAYLOAD-TRAILER` and their variants, which boto3 and
+  the AWS SDK for JavaScript use for `PutObject`) are decoded and re-signed
+  as an ordinary request, with the trailing checksum moved into a header. A
+  signature covers the body's hash, so the sidecar holds each body in
+  memory, and caps it at 100 MiB (about 200 MiB across concurrent requests;
+  past that a request gets 503 `SlowDown` and the SDK retries it). That is where AWS recommends multipart
+  upload, and every SDK's managed uploader (boto3 `upload_file`,
+  `@aws-sdk/lib-storage`, the Java transfer manager) switches to multipart
+  parts far smaller than that. Past the cap, the request fails with HTTP
+  413 (`EntityTooLarge`) and a message that names the cap. A presigned URL
+  that the handler fetches itself is re-signed too.
+- **Names resolve per service.** With `--from-cfn-stack`, a resource of a
+  routed service (for `DYNAMODB`, every `AWS::DynamoDB::*`) resolves from
+  the stack deployed into the emulator, and everything else from real AWS.
+  `--env-vars` values still win. An output or deployed-function value that
+  equals a real resource's physical ID takes the emulator's ID; an ARN or
+  URL that merely contains it is left as it is, so name those in
+  `--env-vars`. The routed set is the whole run's: a
+  service that any workload routes resolves from the emulator for every
+  workload. When the emulator has no such stack, those resources keep their
+  real names, with a warning. cdk-local's other AWS calls stay on real AWS,
+  and so do the names it reads itself: `cdkl start-cloudfront` serves S3
+  origins from real S3, under their real names. Mixed mode does not set
+  `AWS_DISABLE_HOST_PREFIX_INJECTION` (it would apply to real AWS calls too),
+  so an operation with a host prefix, such as Step Functions'
+  `StartSyncExecution`, cannot be routed to the emulator.
+- Port `47297` is reserved for the sidecar inside a workload that uses a
+  sentinel, and a host-network workload cannot use one. `cdkl studio`
+  passes `--env-vars` and `--aws-emulator` to the commands it starts, but
+  studio's own `--from-cfn-stack` reads still follow plain `--aws-emulator`.
+
 ## `invoke` (run Lambda functions locally)
 
 `cdkl invoke <target>` runs a Lambda function from a CDK app on the

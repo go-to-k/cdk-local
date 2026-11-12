@@ -124,6 +124,11 @@ const NON_AUTHORITY: readonly Allowed[] = [
     why: 'docker `-v` bind mount: two filesystem paths, no host',
   },
   {
+    file: 'local/loopback-forwarder.ts',
+    contains: '${opts.resignConfigHostPath}:${FORWARDER_RESIGN_CONFIG_PATH}',
+    why: 'docker `-v` bind mount: two filesystem paths, no host',
+  },
+  {
     file: 'local/ecs-task-runner.ts',
     contains: '${v.hostPath}:${mp.containerPath}',
     why: 'docker `-v` bind mount: two filesystem paths, no host',

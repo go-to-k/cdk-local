@@ -77,6 +77,8 @@ import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { workloadClientConfig } from '../utils/workload-identity.js';
+import { awsEndpointOverrideClientConfig } from '../utils/aws-proxy.js';
+import type { AwsEndpointOverride, AwsProxyClientConfig } from '../utils/aws-proxy.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { describeRejectedRoleArn, isIamRoleArn } from '../utils/role-arn.js';
@@ -117,12 +119,25 @@ export interface CfnLocalStateProviderOptions {
    * already passes `profile` straight to the SDK client.
    */
   profile?: string;
+  /**
+   * Read a copy of the stack deployed somewhere else: every client this
+   * provider builds goes to this endpoint with its credentials and CA instead
+   * of the process's own AWS configuration (`profile` is then ignored). Mixed
+   * mode uses it for the AWS Emulator side of per-service name resolution
+   * (`createMixedModeStateProvider`).
+   */
+  endpointOverride?: AwsEndpointOverride;
+  /**
+   * The label its warnings start with (default `--from-cfn-stack`). Mixed
+   * mode names the emulator side, so its misses do not read as real-AWS ones.
+   */
+  label?: string;
 }
 
 export class CfnLocalStateProvider implements LocalStateProvider {
   // erasableSyntaxOnly forbids parameter-property shorthand; declare
   // fields explicitly + assign in the body.
-  public readonly label = '--from-cfn-stack';
+  public readonly label: string;
   private readonly cfnStackName: string;
   private readonly region: string;
   // The CFn client is constructed lazily on the first `load` /
@@ -146,6 +161,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   // don't open a needless client.
   private agentCoreControlClient: BedrockAgentCoreControlClient | undefined;
   private readonly clientOptions: { region: string; profile?: string };
+  private readonly endpointOverride: AwsEndpointOverride | undefined;
   // Issue #611 NIT 2: `dispose()` is terminal. The lazy `getClient()`
   // path would otherwise resurrect the client on a post-dispose
   // `load()` / `buildCrossStackResolver()` call, which violates the
@@ -168,7 +184,19 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     this.cfnStackName = opts.cfnStackName;
     this.region = opts.region;
     this.clientOptions = { region: opts.region };
-    if (opts.profile !== undefined) this.clientOptions.profile = opts.profile;
+    this.endpointOverride = opts.endpointOverride;
+    this.label = opts.label ?? '--from-cfn-stack';
+    if (opts.profile !== undefined && !opts.endpointOverride) {
+      this.clientOptions.profile = opts.profile;
+    }
+  }
+
+  /**
+   * Spread right after `workloadClientConfig(...)`: under an endpoint override
+   * its endpoint, handler and credentials replace the process's own.
+   */
+  private overrideClientConfig(): AwsProxyClientConfig {
+    return this.endpointOverride ? awsEndpointOverrideClientConfig(this.endpointOverride) : {};
   }
 
   private getClient(): CloudFormationClient {
@@ -184,6 +212,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       // `~/.aws/credentials` / `~/.aws/config`. Issue #628.
       this.client = new CloudFormationClient({
         ...workloadClientConfig({ profile: this.clientOptions.profile }),
+        ...this.overrideClientConfig(),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
       });
@@ -198,6 +227,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     if (!this.lambdaClient) {
       this.lambdaClient = new LambdaClient({
         ...workloadClientConfig({ profile: this.clientOptions.profile }),
+        ...this.overrideClientConfig(),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
       });
@@ -212,6 +242,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     if (!this.agentCoreControlClient) {
       this.agentCoreControlClient = new BedrockAgentCoreControlClient({
         ...workloadClientConfig({ profile: this.clientOptions.profile }),
+        ...this.overrideClientConfig(),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
       });
@@ -231,6 +262,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       // default account while CFn read from the named profile's account.
       this.ssmClient = new SSMClient({
         ...workloadClientConfig({ profile: this.clientOptions.profile }),
+        ...this.overrideClientConfig(),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
       });

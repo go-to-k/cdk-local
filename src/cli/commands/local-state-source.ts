@@ -32,6 +32,8 @@
  */
 
 import { CfnLocalStateProvider } from '../../local/cfn-local-state-provider.js';
+import { createMixedModeStateProvider } from '../../local/aws-emulator-mixed-mode.js';
+import { getActiveWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import { getEmbedConfig } from '../../local/embed-config.js';
 import { resolveProfileRegion } from '../../utils/profile-region.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
@@ -300,7 +302,13 @@ export function createLocalStateProvider(
   options: LocalStateSourceOptions,
   stackName: string,
   synthRegion: string | undefined,
-  extraStateProviders?: ExtraStateProviders
+  extraStateProviders?: ExtraStateProviders,
+  /**
+   * `realAwsOnly`: the caller reads the resolved resources itself with
+   * cdk-local's own (real-AWS) clients, e.g. `start-cloudfront`'s S3 origins,
+   * so AWS Emulator mixed mode must not hand it the emulator's names.
+   */
+  behavior: { realAwsOnly?: boolean } = {}
 ): LocalStateProvider | undefined {
   const cfnStackOpt = options.fromCfnStack;
   const cfnFlagPresent = isCfnFlagPresent(options);
@@ -344,10 +352,25 @@ export function createLocalStateProvider(
   if (cfnFlagPresent) {
     const cfnStackName = resolveCfnStackName(cfnStackOpt as string | boolean, stackName);
     const region = resolveCfnRegion(options, synthRegion);
-    return new CfnLocalStateProvider({
+    const real = new CfnLocalStateProvider({
       cfnStackName,
       region,
       ...(options.profile !== undefined && { profile: options.profile }),
+    });
+    // Mixed mode (an `aws-emulator` sentinel in --env-vars): resources of the
+    // emulated services resolve from the stack deployed into AWS Emulator,
+    // the rest from real AWS.
+    const mixed = behavior.realAwsOnly ? undefined : getActiveWorkloadAwsWiring()?.mixed;
+    if (!mixed) return real;
+    return createMixedModeStateProvider({
+      real,
+      emulator: new CfnLocalStateProvider({
+        cfnStackName,
+        region,
+        endpointOverride: mixed.emulatorClientOverride,
+        label: '--from-cfn-stack (AWS Emulator)',
+      }),
+      emulatedServices: mixed.services,
     });
   }
 

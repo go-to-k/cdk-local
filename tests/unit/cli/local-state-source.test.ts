@@ -411,3 +411,50 @@ describe('state-source activity helpers (go-to-k/cdk-local#699)', () => {
     expect(hostStateSourceFields(bag, {})).toEqual({});
   });
 });
+
+describe('createLocalStateProvider — AWS Emulator mixed mode', () => {
+  afterEach(async () => {
+    const { setActiveWorkloadAwsWiring } = await import('../../../src/local/workload-aws-wiring.js');
+    setActiveWorkloadAwsWiring(undefined);
+  });
+
+  it('wraps --from-cfn-stack in a per-service provider when the active wiring is mixed', async () => {
+    const { setActiveWorkloadAwsWiring } = await import('../../../src/local/workload-aws-wiring.js');
+    const plain = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
+    expect(plain).toBeInstanceOf(CfnLocalStateProvider);
+    plain?.dispose();
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      dispose: () => undefined,
+      mixed: {
+        services: ['DYNAMODB'],
+        emulatorEndpoint: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+        resignPort: 47297,
+        resignEndpoint: 'https://127.0.0.1:47297',
+        resignConfigHostPath: '/tmp/x',
+        emulatorClientOverride: { endpoint: 'https://127.0.0.1:9297' },
+      },
+    });
+    const mixed = createLocalStateProvider({ fromCfnStack: true, stackRegion: 'us-east-1' }, 'S', undefined);
+    expect(mixed).toBeDefined();
+    expect(mixed).not.toBeInstanceOf(CfnLocalStateProvider);
+    expect(mixed!.label).toBe('--from-cfn-stack');
+    expect(typeof mixed!.resolveDeployedFunctionEnv).toBe('function');
+    mixed!.dispose();
+    // A caller that reads the resources itself with real-AWS clients opts out.
+    const real = createLocalStateProvider(
+      { fromCfnStack: true, stackRegion: 'us-east-1' },
+      'S',
+      undefined,
+      undefined,
+      { realAwsOnly: true }
+    );
+    expect(real).toBeInstanceOf(CfnLocalStateProvider);
+    real!.dispose();
+  });
+});
