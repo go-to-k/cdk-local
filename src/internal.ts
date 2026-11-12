@@ -1430,6 +1430,19 @@ export {
   type AwsEmulatorSentinel,
   type MixedModeStateProviderOptions,
 } from './local/aws-emulator-mixed-mode.js';
+/**
+ * Per-workload names in a command serving several workloads
+ * (go-to-k/cdk-local#905): resolve the shared names for `UNNAMED_WORKLOAD`
+ * (`Parameters` sentinels only), and each group `groupWorkloadsRoutedApart`
+ * returns with its own provider (`behavior.workload` = the group's workload).
+ * Host-side use case: a host's own multi-workload commands (cdkd's
+ * `start-api` / `run-task`).
+ */
+export {
+  UNNAMED_WORKLOAD,
+  groupWorkloadsRoutedApart,
+  type WorkloadRouteGroup,
+} from './cli/commands/local-state-source.js';
 export { AWS_ENDPOINT_SERVICE_IDS } from './local/aws-endpoint-service-ids.js';
 export { createMixedModeTlsMaterials, type MixedModeTlsMaterials } from './local/mixed-mode-tls.js';
 export {

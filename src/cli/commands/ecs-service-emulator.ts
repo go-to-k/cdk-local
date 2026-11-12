@@ -82,12 +82,16 @@ import {
 import { candidateTargetStack } from '../stack-matcher.js';
 import {
   createLocalStateProvider,
+  groupWorkloadsRoutedApart,
   hostStateSourceFields,
   rejectExplicitCfnStackWithMultipleStacks,
   resolveCfnFallbackRegion,
+  UNNAMED_WORKLOAD,
   type ExtraStateProviders,
   isCfnFlagPresent,
 } from './local-state-source.js';
+import type { AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
+import type { ContainerStateContext } from '../../local/intrinsic-image.js';
 import { getEmbedConfig } from '../../local/embed-config.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import { CloudMapRegistry } from '../../local/cloud-map-registry.js';
@@ -1609,11 +1613,10 @@ async function rollOneTarget(args: {
     logger,
   } = args;
 
-  const candidate = pickCandidateStack(newBoot.target, stacks);
-  const stateProvider = createLocalStateProvider(
+  const { stateProvider, stateProviderFor } = await createTargetStateProviders(
+    newBoot.target,
+    stacks,
     options,
-    candidate?.stackName ?? '',
-    await resolveCfnFallbackRegion(options, candidate?.region),
     extraStateProviders
   );
 
@@ -1630,7 +1633,11 @@ async function rollOneTarget(args: {
         profileCredsFile,
         frontDoorPools,
         suppressLoadBalancerWarning,
-        { quiet: true, ...(imageOverrideTag !== undefined && { imageOverrideTag }) }
+        {
+          quiet: true,
+          stateProviderFor,
+          ...(imageOverrideTag !== undefined && { imageOverrideTag }),
+        }
       );
     } catch (err) {
       // Resolution failure is recoverable on the next save (e.g. the
@@ -1759,11 +1766,10 @@ async function bootOneTarget(
   suppressLoadBalancerWarning: boolean,
   imageOverrideTag: string | undefined
 ): Promise<ServiceController> {
-  const candidate = pickCandidateStack(boot.target, stacks);
-  const stateProvider = createLocalStateProvider(
+  const { stateProvider, stateProviderFor } = await createTargetStateProviders(
+    boot.target,
+    stacks,
     options,
-    candidate?.stackName ?? '',
-    await resolveCfnFallbackRegion(options, candidate?.region),
     extraStateProviders
   );
 
@@ -1776,6 +1782,7 @@ async function bootOneTarget(
       discovery,
       skipPull,
       stateProvider,
+      stateProviderFor,
       profileCredsFile,
       frontDoorPools,
       suppressLoadBalancerWarning,
@@ -1794,6 +1801,7 @@ async function runOneTarget(
   discovery: ServiceDiscoveryContext,
   skipPull: boolean,
   stateProvider: LocalStateProvider | undefined,
+  stateProviderFor: StateProviderForWorkload,
   profileCredsFile: ProfileCredentialsFile | undefined,
   frontDoorPools: FrontDoorServicePools | undefined,
   suppressLoadBalancerWarning: boolean,
@@ -1809,7 +1817,7 @@ async function runOneTarget(
     profileCredsFile,
     frontDoorPools,
     suppressLoadBalancerWarning,
-    imageOverrideTag !== undefined ? { imageOverrideTag } : {}
+    { stateProviderFor, ...(imageOverrideTag !== undefined && { imageOverrideTag }) }
   );
   return startEcsService(service, runnerOpts, runState);
 }
@@ -1847,7 +1855,11 @@ async function resolveServiceAndRunnerOpts(
   profileCredsFile: ProfileCredentialsFile | undefined,
   frontDoorPools: FrontDoorServicePools | undefined,
   suppressLoadBalancerWarning: boolean,
-  opts: { quiet?: boolean; imageOverrideTag?: string } = {}
+  opts: {
+    quiet?: boolean;
+    imageOverrideTag?: string;
+    stateProviderFor?: StateProviderForWorkload;
+  } = {}
 ): Promise<{ service: ResolvedEcsService; runnerOpts: ServiceRunnerOptions }> {
   const logger = getLogger();
   const target = boot.target;
@@ -1861,7 +1873,10 @@ async function resolveServiceAndRunnerOpts(
     stacks,
     options,
     stateProvider,
-    opts.imageOverrideTag !== undefined ? { imageOverridden: true } : {}
+    {
+      ...(opts.imageOverrideTag !== undefined && { imageOverridden: true }),
+      ...(opts.stateProviderFor && { stateProviderFor: opts.stateProviderFor }),
+    }
   );
   const service = resolveEcsServiceTarget(target, stacks, imageContext, {
     suppressLoadBalancerWarning,
@@ -2633,6 +2648,105 @@ async function assumeTaskRole(
 }
 
 /**
+ * The state provider of one service target, for the names a container no
+ * `--env-vars` section names reads (`UNNAMED_WORKLOAD`), and the factory of
+ * one for a single workload (AWS Emulator mixed mode, #905). Exported for
+ * unit testing.
+ */
+export async function createTargetStateProviders(
+  target: string,
+  stacks: StackInfo[],
+  options: EcsServiceEmulatorOptions,
+  extraStateProviders: ExtraStateProviders | undefined
+): Promise<{
+  stateProvider: LocalStateProvider | undefined;
+  stateProviderFor: StateProviderForWorkload;
+}> {
+  const candidate = pickCandidateStack(target, stacks);
+  const region = await resolveCfnFallbackRegion(options, candidate?.region);
+  const stateProviderFor: StateProviderForWorkload = (workload) =>
+    createLocalStateProvider(options, candidate?.stackName ?? '', region, extraStateProviders, {
+      workload,
+    });
+  return { stateProvider: stateProviderFor(UNNAMED_WORKLOAD), stateProviderFor };
+}
+
+/** A state provider for one workload: `createLocalStateProvider(..., { workload })`. */
+export type StateProviderForWorkload = (
+  workload: AwsEmulatorWorkload
+) => LocalStateProvider | undefined;
+
+/** Every ECS container name a task definition of `stack` declares, in template order. */
+function ecsContainerNamesOf(stack: StackInfo): string[] {
+  const names = new Set<string>();
+  for (const resource of Object.values(stack.template.Resources ?? {})) {
+    if (resource?.Type !== 'AWS::ECS::TaskDefinition') continue;
+    const defs = resource.Properties?.['ContainerDefinitions'];
+    if (!Array.isArray(defs)) continue;
+    for (const def of defs as unknown[]) {
+      const name = (def as Record<string, unknown> | null)?.['Name'];
+      if (typeof name === 'string' && name !== '') names.add(name);
+    }
+  }
+  return [...names];
+}
+
+/**
+ * AWS Emulator mixed mode (go-to-k/cdk-local#905): fill `ctx.containerStates`
+ * for every container of `stack` whose own `--env-vars` section routes a
+ * different set of services than `Parameters` alone, from one provider per
+ * distinct set. `ctx`'s own state is the `Parameters`-only one
+ * (`UNNAMED_WORKLOAD`), so a container no section names keeps it. A no-op
+ * outside mixed mode.
+ *
+ * Exported for `run-task`, which shares it.
+ */
+export async function loadMixedModeContainerStates(
+  ctx: EcsImageResolutionContext,
+  stack: StackInfo,
+  stateProviderFor: StateProviderForWorkload
+): Promise<void> {
+  const groups = groupWorkloadsRoutedApart(ecsContainerNamesOf(stack), (containerName) => ({
+    containerName,
+  }));
+  if (groups.length === 0) return;
+  const containerStates: Record<string, ContainerStateContext> = {};
+  for (const group of groups) {
+    const provider = stateProviderFor(group.workload);
+    if (!provider) continue;
+    try {
+      const state: ContainerStateContext = {};
+      const loaded = await provider.load(stack.stackName, stack.region);
+      if (loaded) state.stateResources = loaded.resources;
+      else {
+        const loadError = provider.getLastLoadError?.();
+        if (loadError) state.stateLoadFailureMessage = loadError;
+      }
+      if (provider.resolveTemplateSsmParameters) {
+        const ssm = await provider.resolveTemplateSsmParameters(stack.template);
+        if (Object.keys(ssm.values).length > 0) state.stateParameters = ssm.values;
+        if (ssm.secureStringLogicalIds.length > 0) {
+          state.stateSensitiveParameters = ssm.secureStringLogicalIds;
+        }
+      }
+      for (const name of group.items) defineOwnState(containerStates, name, state);
+    } finally {
+      provider.dispose();
+    }
+  }
+  ctx.containerStates = containerStates;
+}
+
+/** Set `map[key]` as an own data property, even for `__proto__` (#769). */
+function defineOwnState(
+  map: Record<string, ContainerStateContext>,
+  key: string,
+  value: ContainerStateContext
+): void {
+  Object.defineProperty(map, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
  * Build the substitution context the ECS resolver consumes. Exported for the
  * site-level binding test that locks the `--from-cfn-stack` SSM-parameter
  * resolution call (issue #94).
@@ -2650,6 +2764,13 @@ export async function buildEcsImageResolutionContext(
      * dropped (the env / secret intrinsics WARN still fires).
      */
     imageOverridden?: boolean;
+    /**
+     * AWS Emulator mixed mode: the state provider for one workload
+     * (`createLocalStateProvider(..., { workload })`), so a container whose
+     * own `--env-vars` section routes other services reads its own names
+     * (#905). Omitted, every container reads `stateProvider`'s.
+     */
+    stateProviderFor?: StateProviderForWorkload;
   } = {}
 ): Promise<EcsImageResolutionContext | undefined> {
   const logger = getLogger();
@@ -2723,6 +2844,9 @@ export async function buildEcsImageResolutionContext(
       if (ssmParameters.secureStringLogicalIds.length > 0) {
         ctx.stateSensitiveParameters = ssmParameters.secureStringLogicalIds;
       }
+    }
+    if (needs.needsEnvOrSecretSubstitution && opts.stateProviderFor) {
+      await loadMixedModeContainerStates(ctx, candidate, opts.stateProviderFor);
     }
   } else if (!stateProvider && needs.needsStateResources) {
     // `suppressStateWarning` is set by the pre-boot pin-classification peek
@@ -3049,7 +3173,8 @@ async function resolveAndBuildImageOverrides(args: {
       options,
       candidate?.stackName ?? '',
       await resolveCfnFallbackRegion(options, candidate?.region),
-      extraStateProviders
+      extraStateProviders,
+      { workload: UNNAMED_WORKLOAD }
     );
     let imageContext: EcsImageResolutionContext | undefined;
     let service: ResolvedEcsService | undefined;

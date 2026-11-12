@@ -50,7 +50,9 @@ otherwise resolve the routed services' resources from the emulator, using
 `awsEmulatorRoutedServices(behavior.workload)` from `cdk-local/internal` for
 the routed set (the named workload's own sentinels, or the run's when
 `workload` is absent) and `createMixedModeStateProvider` to combine the two
-sides.
+sides. A command serving several workloads asks for `UNNAMED_WORKLOAD`
+(`Parameters` sentinels only) and then once more for each group
+`groupWorkloadsRoutedApart` returns.
 
 A registered flag reaches every state-backed path of the command it is
 passed to, exactly where `--from-cfn-stack` would: on `start-cloudfront` that

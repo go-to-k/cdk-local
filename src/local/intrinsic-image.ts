@@ -87,6 +87,39 @@ export interface ImageResolutionContext {
    * load was attempted, or when the load succeeded.
    */
   stateLoadFailureMessage?: string;
+  /**
+   * AWS Emulator mixed mode (go-to-k/cdk-local#905): the state an ECS
+   * container's `Environment` / `Secrets` resolve against when its own
+   * `--env-vars` section routes a different set of services than
+   * `Parameters` alone, keyed by container name. Each entry REPLACES the
+   * four state fields above for that container (never its `Image`, which
+   * the host pulls from real AWS); a container with no entry uses them.
+   */
+  containerStates?: Readonly<Record<string, ContainerStateContext>>;
+}
+
+/** One {@link ImageResolutionContext.containerStates} entry. */
+export type ContainerStateContext = Pick<
+  ImageResolutionContext,
+  'stateResources' | 'stateParameters' | 'stateSensitiveParameters' | 'stateLoadFailureMessage'
+>;
+
+/**
+ * The context a container's `Environment` / `Secrets` resolve against:
+ * `context` with that container's {@link ImageResolutionContext.containerStates}
+ * entry, when it has one, in place of the state fields.
+ */
+export function contextForContainer(
+  context: ImageResolutionContext | undefined,
+  containerName: string
+): ImageResolutionContext | undefined {
+  if (!context?.containerStates || !Object.hasOwn(context.containerStates, containerName)) {
+    return context;
+  }
+  return {
+    ...(context.pseudoParameters && { pseudoParameters: context.pseudoParameters }),
+    ...context.containerStates[containerName],
+  };
 }
 
 /**

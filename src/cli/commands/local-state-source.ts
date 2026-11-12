@@ -411,6 +411,53 @@ export function createLocalStateProvider(
   return undefined;
 }
 
+/**
+ * The {@link AwsEmulatorWorkload} no `--env-vars` section names: in AWS
+ * Emulator mixed mode its routed services are the `Parameters` sentinels
+ * alone. A multi-workload command resolves its shared names (and every
+ * workload {@link groupWorkloadsRoutedApart} does not return) for it.
+ */
+export const UNNAMED_WORKLOAD: AwsEmulatorWorkload = Object.freeze({});
+
+/** One group of {@link groupWorkloadsRoutedApart}. */
+export interface WorkloadRouteGroup<T> {
+  /** The services the group routes to AWS Emulator, sorted. */
+  services: string[];
+  /** A workload of the group: pass it as `behavior.workload`. */
+  workload: AwsEmulatorWorkload;
+  items: T[];
+}
+
+/**
+ * AWS Emulator mixed mode in a command serving several workloads
+ * (go-to-k/cdk-local#905): the `items` whose workload routes a different set
+ * of services (`Parameters` plus its own `--env-vars` sections) than
+ * {@link UNNAMED_WORKLOAD}, grouped by that set. Each group resolves its names
+ * with its own provider (`createLocalStateProvider(..., { workload })`), so a
+ * workload never reads an emulator name for a service its runtime sends to
+ * real AWS, or the reverse. Empty outside mixed mode, and when no section
+ * changes the set.
+ */
+export function groupWorkloadsRoutedApart<T>(
+  items: readonly T[],
+  workloadOf: (item: T) => AwsEmulatorWorkload
+): WorkloadRouteGroup<T>[] {
+  const base = awsEmulatorRoutedServices(UNNAMED_WORKLOAD);
+  if (base === undefined) return [];
+  const baseKey = base.join(',');
+  const groups = new Map<string, WorkloadRouteGroup<T>>();
+  for (const item of items) {
+    const workload = workloadOf(item);
+    const services = awsEmulatorRoutedServices(workload) ?? base;
+    const key = services.join(',');
+    if (key === baseKey) continue;
+    const group = groups.get(key);
+    if (group) group.items.push(item);
+    else groups.set(key, { services, workload, items: [item] });
+  }
+  return [...groups.values()];
+}
+
 /** Convert a camel-case option field name to its `--kebab-case` flag form. */
 function toFlagName(field: string): string {
   return '--' + field.replace(/([A-Z])/g, '-$1').toLowerCase();
