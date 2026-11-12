@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { addAwsEndpointOptions } from '../options.js';
 import { DynamicReferenceResolver } from '../../local/dynamic-reference-resolver.js';
 import { Command, Option } from 'commander';
@@ -526,6 +527,12 @@ async function localRunTaskCommand(
           `Under the loopback AWS endpoint, task containers share the network of a forwarder ` +
             `container, so that filter does not list them. Task container ids: ${containers}. ` +
             `Remove them before the forwarders (${joinedForwarders.map((f) => f.name).join(', ')}).`
+        );
+      }
+      if (profileCredsFile) {
+        logger.info(
+          `The task containers read the --profile credentials from ${path.dirname(profileCredsFile.hostPath)}; ` +
+            `remove that directory after removing them.`
         );
       }
       // Detach mode skips cleanup — the caller manages container lifecycle
