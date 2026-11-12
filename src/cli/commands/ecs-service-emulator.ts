@@ -1,6 +1,5 @@
 import { readEnvVarsFileText } from '../../local/env-resolver.js';
 import { addAwsEndpointOptions } from '../options.js';
-import { DynamicReferenceResolver } from '../../local/dynamic-reference-resolver.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   appOptions,
@@ -45,7 +44,7 @@ import {
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
 import {
-  applyCrossStackResolverToTask,
+  applyCrossStackValuesToTask,
   assertEcsTaskImagesResolvable,
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
@@ -91,7 +90,6 @@ import {
 } from './local-state-source.js';
 import { getEmbedConfig } from '../../local/embed-config.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
-import type { SubstitutionContext } from '../../local/state-resolver.js';
 import { CloudMapRegistry } from '../../local/cloud-map-registry.js';
 import { buildCloudMapIndex, type CloudMapIndex } from '../../local/cloud-map-resolver.js';
 import {
@@ -1907,38 +1905,11 @@ async function resolveServiceAndRunnerOpts(
       'us-east-1';
     const resolver = await stateProvider.buildCrossStackResolver(consumerRegion);
     if (resolver) {
-      const dynamicRefs = new DynamicReferenceResolver({
-        ...(options.profile !== undefined && { profile: options.profile }),
-      });
-      const subContext: SubstitutionContext = {
-        resources: imageContext?.stateResources ?? {},
-        ...(imageContext?.pseudoParameters && {
-          pseudoParameters: imageContext.pseudoParameters,
-        }),
-        ...(imageContext?.stateParameters && {
-          parameters: imageContext.stateParameters,
-        }),
-        ...(imageContext?.stateSensitiveParameters?.length && {
-          sensitiveParameters: new Set(imageContext.stateSensitiveParameters),
-        }),
+      await applyCrossStackValuesToTask(service.task, resolver, {
+        imageContext,
         consumerRegion,
-        crossStackResolver: resolver,
-        // A cross-stack value carrying a `{{resolve:...}}` token resolves
-        // against its producer's region at this boundary (issue #784).
-        resolveDynamicReferences: (value, producerRegion, workload) =>
-          dynamicRefs.resolveString(value, {
-            region: producerRegion,
-            workload,
-            consumer: `Task ${service.task.taskDefinitionLogicalId} cross-stack env value`,
-            // Overrides apply later, at docker-run time, so none can skip this.
-            overridable: false,
-          }),
-      };
-      try {
-        await applyCrossStackResolverToTask(service.task, subContext);
-      } finally {
-        dynamicRefs.dispose();
-      }
+        profile: options.profile,
+      });
     }
   } else if (!stateProvider && taskNeeds.needsCrossStackResolver) {
     logger.warn(

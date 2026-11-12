@@ -710,6 +710,27 @@ export interface ResolveEnvDynamicReferencesOptions extends DynamicReferenceReso
 }
 
 /**
+ * The `SubstitutionContext.resolveDynamicReferences` hook an ECS command
+ * (`run-task`, `start-service` / `start-alb`) hands the cross-stack post-pass:
+ * a `{{resolve:...}}` in a producer's value resolves in the PRODUCER's region,
+ * for the container `applyCrossStackResolverToTask` names (`workload`), so in
+ * AWS Emulator mixed mode it is read where that container's runtime calls go.
+ * Not overridable: `--env-vars` applies later, at docker-run time.
+ */
+export function crossStackDynamicReferenceHook(
+  resolver: Pick<DynamicReferenceResolver, 'resolveString'>,
+  consumer: string
+): (value: string, producerRegion: string, workload?: AwsEmulatorWorkload) => Promise<string> {
+  return (value, producerRegion, workload) =>
+    resolver.resolveString(value, {
+      region: producerRegion,
+      workload,
+      consumer,
+      overridable: false,
+    });
+}
+
+/**
  * Keys of `finalEnv` whose value did NOT come from `templateEnv` unchanged —
  * a `--env-vars` override replaced it, or the template never declared it.
  * Those are the developer's local literals, which CloudFormation never sees,

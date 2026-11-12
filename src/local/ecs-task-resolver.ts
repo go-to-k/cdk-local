@@ -15,8 +15,13 @@ import {
   substituteAgainstStateAsync,
   resolveWithSensitivity,
   resolveWithSensitivityAsync,
+  type CrossStackResolver,
   type SubstitutionContext,
 } from './state-resolver.js';
+import {
+  DynamicReferenceResolver,
+  crossStackDynamicReferenceHook,
+} from './dynamic-reference-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { parseEcrRegistryHost } from './ecr-uri.js';
 import { defineOwnKey } from '../utils/own-keys.js';
@@ -1585,6 +1590,50 @@ export function checkVolumeHostPath(hostPath: string): boolean {
     return existsSync(hostPath) && statSync(hostPath).isDirectory();
   } catch {
     return false;
+  }
+}
+
+/**
+ * The cross-stack post-pass of `run-task` and `start-service` / `start-alb`:
+ * build the substitution context from the image-resolution context, resolve a
+ * cross-stack value's `{{resolve:...}}` in its producer's region for the
+ * container that consumes it (in AWS Emulator mixed mode, where THAT
+ * container's runtime calls go: go-to-k/cdk-local#902), and apply it with
+ * {@link applyCrossStackResolverToTask}.
+ */
+export async function applyCrossStackValuesToTask(
+  task: ResolvedEcsTask,
+  crossStackResolver: CrossStackResolver,
+  opts: {
+    imageContext: EcsImageResolutionContext | undefined;
+    consumerRegion: string;
+    profile?: string | undefined;
+  }
+): Promise<void> {
+  const { imageContext } = opts;
+  const dynamicRefs = new DynamicReferenceResolver({
+    ...(opts.profile !== undefined && { profile: opts.profile }),
+  });
+  const subContext: SubstitutionContext = {
+    resources: imageContext?.stateResources ?? {},
+    ...(imageContext?.pseudoParameters && { pseudoParameters: imageContext.pseudoParameters }),
+    ...(imageContext?.stateParameters && { parameters: imageContext.stateParameters }),
+    ...(imageContext?.stateSensitiveParameters?.length && {
+      sensitiveParameters: new Set(imageContext.stateSensitiveParameters),
+    }),
+    consumerRegion: opts.consumerRegion,
+    crossStackResolver,
+    // A cross-stack value carrying a `{{resolve:...}}` token resolves against
+    // its producer's region at this boundary (issue #784).
+    resolveDynamicReferences: crossStackDynamicReferenceHook(
+      dynamicRefs,
+      `Task ${task.taskDefinitionLogicalId} cross-stack env value`
+    ),
+  };
+  try {
+    await applyCrossStackResolverToTask(task, subContext);
+  } finally {
+    dynamicRefs.dispose();
   }
 }
 
