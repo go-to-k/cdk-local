@@ -122,12 +122,13 @@ describe('ecs-service-emulator image-override engine binding (issue #238)', () =
 
   it('watcher onChange forwards `imageOverrideTags` to reloadAllServices', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
-    // The watcher block lives downstream of the boot WARN loop; it
-    // composes the `reloadAllServices` arg object. `imageOverrideTags`
+    // The watcher block lives downstream of the boot WARN loop; its
+    // reload queue's `run` (#882 — the watcher's onChange schedules onto
+    // it) composes the `reloadAllServices` arg object. `imageOverrideTags`
     // must be in that arg list verbatim, otherwise the reload-side
     // wouldn't have an override map to consult.
     const watcherCall = source.match(
-      /onChange:\s*\(changedPaths\)\s*=>\s*\{[\s\S]*?reloadAllServices\(\{[\s\S]*?imageOverrideTags[\s\S]*?\}\)/
+      /run:\s*\(changedPaths,\s*signal\)\s*=>\s*reloadAllServices\(\{[^}]*?imageOverrideTags[^}]*?\}\)/
     );
     expect(watcherCall, 'watcher onChange missing the imageOverrideTags thread').toBeTruthy();
   });
@@ -184,7 +185,7 @@ describe('reload-time --image-override rebuild (issue #262)', () => {
     // function — without it, the reload pathway has no input to
     // re-feed `runImageOverrideBuilds`.
     const watcherCall = source.match(
-      /onChange:\s*\(changedPaths\)\s*=>\s*\{[\s\S]*?reloadAllServices\(\{[\s\S]*?imageOverrideMap[\s\S]*?\}\)/
+      /run:\s*\(changedPaths,\s*signal\)\s*=>\s*reloadAllServices\(\{[^}]*?imageOverrideMap[^}]*?\}\)/
     );
     expect(
       watcherCall,

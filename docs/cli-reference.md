@@ -1485,8 +1485,9 @@ dependsOn relation start in template order.
    removed.
 4. cdk-local exits with the essential container's exit code.
 
-`^C` triggers the same teardown. Double-`^C` exits 130 immediately
-(skipping container cleanup — same pattern as `cdkl start-api`).
+`^C` triggers the same teardown. A second `^C` lets it finish; a third
+exits 130 immediately, skipping container cleanup (same pattern as
+`cdkl start-api`).
 
 `--detach` skips steps 1, 2, and 4. The sidecar and user containers
 stay running for the caller to manage. cdk-local prints the network
@@ -1612,8 +1613,9 @@ Plus the [common flags](#common-flags): `-a/--app`, `--output`,
 `^C` (SIGINT) and SIGTERM trigger a graceful shutdown across every
 replica in parallel — each replica's docker containers + per-replica
 network + metadata sidecar are torn down via the same cleanup path
-`cdkl run-task` uses. Double-`^C` bypasses cleanup and exits 130
-immediately so users have an escape hatch when docker hangs.
+`cdkl run-task` uses. A second `^C` lets that teardown finish; a third
+bypasses it and exits 130 immediately so users have an escape hatch when
+docker hangs.
 
 ### `awsvpc` network mode
 

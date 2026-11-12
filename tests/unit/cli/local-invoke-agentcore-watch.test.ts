@@ -215,6 +215,79 @@ describe('runAgentCoreWatchLoop — classifier dispatch (soft-reload vs rebuild)
     expect(watcher.close).toHaveBeenCalled();
   });
 
+  it('registerStop: a shutdown mid-reload closes the watcher, skips the rebuild, and resolves after the in-flight reload (#882)', async () => {
+    let stop: (() => Promise<void>) | undefined;
+    let releaseClassifier!: () => void;
+    const classifierGate = new Promise<void>((r) => {
+      releaseClassifier = r;
+    });
+    let classifierEntered!: () => void;
+    const entered = new Promise<void>((r) => {
+      classifierEntered = r;
+    });
+    let releaseWs!: () => void;
+    wsInvoker = vi.fn().mockImplementation(async () => {
+      process.nextTick(() => {
+        onChangeRef?.(['/abs/handler.py']);
+        onChangeRef?.(['/abs/other.py']); // coalesced; must never run
+      });
+      await new Promise<void>((r) => {
+        releaseWs = r;
+      });
+      return { frames: 0 };
+    });
+    rebuild.mockResolvedValue({ containerId: 'newId', hostPort: 9002, stacks: [] });
+    const classifier = vi.fn(async () => {
+      classifierEntered();
+      await classifierGate;
+      return undefined;
+    });
+
+    const loop = runAgentCoreWatchLoop({
+      containerHost: '127.0.0.1',
+      hostPort: 9001,
+      event: {},
+      sessionId: 'sid',
+      timeoutMs: 1000,
+      interactive: false,
+      options: { output: 'cdk.out' } as never,
+      resolvedTarget: 'ChatAgent',
+      resolved: baseRuntime(),
+      synthesizer,
+      synthOpts: {} as never,
+      stacks: [],
+      rebuild,
+      softReload,
+      registerStop: (s) => {
+        stop = s;
+      },
+      __wsInvoker: wsInvoker,
+      __waitForPing: waitForPing,
+      __watcherFactory: (onChange) => {
+        onChangeRef = onChange;
+        return watcher;
+      },
+      __classifierContext: classifier,
+    });
+
+    await entered;
+    expect(stop).toBeDefined();
+    let stopped = false;
+    const stopping = stop!().then(() => {
+      stopped = true;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(watcher.close).toHaveBeenCalled();
+    expect(stopped).toBe(false);
+    releaseClassifier();
+    await stopping;
+    expect(rebuild).not.toHaveBeenCalled();
+    expect(softReload).not.toHaveBeenCalled();
+    expect(classifier).toHaveBeenCalledTimes(1);
+    releaseWs();
+    await loop;
+  });
+
   it('routes a rebuild verdict through the rebuild callback', async () => {
     // Same scaffolding, but the asset context returns `undefined` so the
     // classifier defaults to rebuild ("target image is not a CDK

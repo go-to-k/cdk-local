@@ -52,6 +52,15 @@ Invariants:
   docker-image asset, rolling re-pulls byte-identical content and reports
   `Reload complete.` as a silent no-op — so the roll is SKIPPED with a no-op log,
   and the configuration WARNs per target on ANY cold start, not only `--watch`.
+- **Reloads go through `createReloadQueue`** (`src/local/reload-queue.ts`, every
+  `--watch` runner): one in flight plus ONE pending batch that coalesces every
+  firing landing meanwhile, never an unbounded `chain.then(...)` (#882: a busy
+  watched tree queued one reload per firing and the shutdown awaited them all).
+  Shutdown runs `stopWatchReloads` FIRST — watcher closed, pending batch
+  dropped, the in-flight reload's signal aborted and awaited — then tears down
+  containers → forwarders → networks. A reload checks its signal between steps.
+  A second stop signal never skips the teardown (`createShutdownSignalHandler`);
+  only a third force-exits.
 - **The host front-door is built ONCE at boot and never recreated on reload**
   (TLS materials, JWKS cache, Lambda-target RIE containers, listener sockets);
   only replica pool entries rotate. Lambda target groups are a no-op on reload.

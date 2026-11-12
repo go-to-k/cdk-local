@@ -81,6 +81,11 @@ embed-config (host-CLI branding), ssm-parameter-resolver.
   directories, copying files one at a time, recreating symlinks with their own
   target strings, last layer winning. Its doc comment records why
   `verbatimSymlinks: true` and a recursive `readdirSync` were wrong.
+- **reload-queue** — `createReloadQueue` / `stopWatchReloads`, the ONE reload
+  serializer every `--watch` runner uses (ECS emulator, `start-api`,
+  `start-agentcore`, `invoke-agentcore`, `start-cloudfront`); never chain
+  reloads by hand. `utils/shutdown-signal.ts` is the matching signal policy
+  (first signal cleans up, second waits, third force-exits).
 - **`resolveLambdaContainerEnv`** (from `local-invoke.ts`) is the one
   container-env resolver `cdkl invoke` and every front-door Lambda path share.
 

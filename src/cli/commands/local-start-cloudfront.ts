@@ -45,6 +45,7 @@ import { resolveDeployedKvsArnByName } from '../../local/cloudfront-kvs-client.j
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import { createReloadQueue, stopWatchReloads, type ReloadQueue } from '../../local/reload-queue.js';
 import {
   resolveFrontDoorTlsMaterials,
   type FrontDoorTlsMaterials,
@@ -1166,7 +1167,8 @@ async function localStartCloudFrontCommand(
   // `server.update()` — the listening socket and the RIE containers are never
   // recreated.
   let watcher: FileWatcher | undefined;
-  let reloadChain: Promise<unknown> = Promise.resolve();
+  // Serializes + coalesces reloads; shutdown cancels the pending one (#882).
+  let reloadQueue: ReloadQueue | undefined;
   if (options.watch) {
     const watchRoot = process.cwd();
     const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
@@ -1174,39 +1176,43 @@ async function localStartCloudFrontCommand(
       output: options.output,
       watchConfig: resolveWatchConfig(),
     });
+    const queue = createReloadQueue({
+      run: async (_changedPaths, signal) => {
+        try {
+          const reloaded = await synthAndResolve();
+          if (signal.aborted) return;
+          // Re-apply the boot-time deployed-S3 promotion (the pure resolver
+          // re-emits the origin as s3-unresolved). Before warnUnsupported so a
+          // promoted origin does not re-emit the unresolved-source WARN.
+          annotateDeployedS3Origins(reloaded.distribution, deployedS3.buckets);
+          // Drop any read-through cache so the reload reflects fresh S3 content.
+          for (const reader of deployedS3.readers.values()) reader.clearCache();
+          warnUnsupported(reloaded.distribution, extraStateProviders);
+          await attachKvsModules(
+            reloaded.distribution,
+            reloaded.stacks,
+            options,
+            profileCredentials,
+            logger,
+            extraStateProviders
+          );
+          server.update(reloaded.distribution);
+          logger.info('Reload complete.');
+        } catch (err) {
+          logger.warn(
+            `Reload failed; keeping the previous version serving: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      },
+    });
+    reloadQueue = queue;
     watcher = createFileWatcher({
       paths: [watchRoot],
       ignored,
       shouldTrigger,
-      onChange: () => {
+      onChange: (changedPaths) => {
         logger.info('Detected source change; reloading...');
-        const next = reloadChain.then(async () => {
-          try {
-            const reloaded = await synthAndResolve();
-            // Re-apply the boot-time deployed-S3 promotion (the pure resolver
-            // re-emits the origin as s3-unresolved). Before warnUnsupported so a
-            // promoted origin does not re-emit the unresolved-source WARN.
-            annotateDeployedS3Origins(reloaded.distribution, deployedS3.buckets);
-            // Drop any read-through cache so the reload reflects fresh S3 content.
-            for (const reader of deployedS3.readers.values()) reader.clearCache();
-            warnUnsupported(reloaded.distribution, extraStateProviders);
-            await attachKvsModules(
-              reloaded.distribution,
-              reloaded.stacks,
-              options,
-              profileCredentials,
-              logger,
-              extraStateProviders
-            );
-            server.update(reloaded.distribution);
-            logger.info('Reload complete.');
-          } catch (err) {
-            logger.warn(
-              `Reload failed; keeping the previous version serving: ${err instanceof Error ? err.message : String(err)}`
-            );
-          }
-        });
-        reloadChain = next.catch(() => undefined);
+        queue.schedule(changedPaths);
       },
     });
     logger.info(
@@ -1220,13 +1226,9 @@ async function localStartCloudFrontCommand(
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info(`Received ${signal}, shutting down...`);
-    if (watcher) {
-      try {
-        await watcher.close();
-      } catch {
-        /* best-effort */
-      }
-    }
+    // #882: close the watcher, cancel the pending reload, and wait for the
+    // in-flight one before closing the server and stopping the containers.
+    await stopWatchReloads({ watcher, queue: reloadQueue });
     try {
       await server.close();
     } catch {
