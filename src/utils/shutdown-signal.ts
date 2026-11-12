@@ -50,6 +50,8 @@ export function createShutdownSignalHandler(options: ShutdownSignalOptions): Shu
     writeStderr(
       `Force-exit on repeated ${signal}; container cleanup skipped. ${options.forceExitHint}\n`
     );
+    // Always 130, whatever the signal: an aborted run, matching the pre-#882
+    // force-exit every caller had.
     exit(130);
   };
 }

@@ -35,7 +35,11 @@ export interface ReloadQueue {
    * Idempotent; never rejects.
    */
   stop(): Promise<void>;
-  /** Resolve when nothing is running and nothing is pending. Never rejects. */
+  /**
+   * Resolve once the reload in flight and the batch pending at call time have
+   * settled (later firings are not waited for, so a tree that keeps changing
+   * cannot hold it open). Never rejects.
+   */
   idle(): Promise<void>;
   /** True once {@link ReloadQueue.stop} has been called. */
   readonly stopped: boolean;
@@ -77,39 +81,53 @@ export async function stopWatchReloads(args: {
 export function createReloadQueue(options: ReloadQueueOptions): ReloadQueue {
   const abort = new AbortController();
   let stopped = false;
-  let running: Promise<void> | undefined;
+  // The batch now running (settles, never rejects), or undefined when idle.
+  let current: Promise<void> | undefined;
   let pending: Set<string> | undefined;
+  // Batches started / settled so far: `idle()` waits for a target count, so a
+  // firing that keeps re-filling `pending` cannot keep it waiting forever.
+  let started = 0;
+  let finished = 0;
+
+  const runBatch = async (batch: readonly string[]): Promise<void> => {
+    try {
+      // The inner async call turns a synchronous throw from `run` into a
+      // rejection, so this always yields before settling.
+      await (async () => options.run(batch, abort.signal))();
+    } catch (err) {
+      try {
+        options.onError?.(err);
+      } catch {
+        /* a throwing onError must not wedge the queue */
+      }
+    }
+  };
 
   const start = (paths: readonly string[]): void => {
-    // The body always yields at its first `await` (a synchronous throw from
-    // `run` becomes a rejection of the inner async call), so `running` is
-    // assigned before the body's final `running = undefined`.
-    running = (async () => {
+    void (async () => {
       let next: readonly string[] | undefined = paths;
       while (next) {
-        const batch: readonly string[] = next;
-        try {
-          await (async () => options.run(batch, abort.signal))();
-        } catch (err) {
-          options.onError?.(err);
-        }
+        started += 1;
+        current = runBatch(next);
+        await current;
+        finished += 1;
         next = !stopped && pending ? [...pending] : undefined;
         pending = undefined;
       }
-      running = undefined;
+      current = undefined;
     })();
   };
 
   const idle = async (): Promise<void> => {
-    // `running` is reassigned when the pending batch starts, so re-check after
-    // each settle until the queue is drained.
-    while (running) await running;
+    // Wait for what is in flight or pending NOW, not for later firings.
+    const target = started + (pending ? 1 : 0);
+    while (current && finished < target) await current;
   };
 
   return {
     schedule(changedPaths) {
       if (stopped) return;
-      if (!running) {
+      if (!current) {
         start(changedPaths);
         return;
       }

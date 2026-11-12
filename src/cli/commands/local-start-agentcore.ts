@@ -50,6 +50,7 @@ import {
 import { selectServeInboundAuth } from '../../local/agentcore-serve-auth.js';
 import { signAgentCoreInvocation } from '../../local/agentcore-sigv4-sign.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
 import { createReloadQueue, stopWatchReloads, type ReloadQueue } from '../../local/reload-queue.js';
 import { classifySourceChange, type ReloadVerdict } from '../../local/source-change-classifier.js';
 import { AssetManifestLoader } from '../../assets/asset-manifest-loader.js';
@@ -412,15 +413,20 @@ async function localStartAgentCoreCommand(
   // orphaning it. `teardown` is null-safe (the server may not exist yet) and
   // idempotent, so the boot-error catch below and a racing signal cannot
   // double-tear-down.
-  const shutdown = async (signal: string, exitCode: number): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    logger.info(`Received ${signal}, shutting down...`);
-    await teardown();
-    process.exit(exitCode);
-  };
-  process.on('SIGINT', () => void shutdown('SIGINT', 130));
-  process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
+  // #882: a second signal waits for the teardown; a third force-exits (the
+  // teardown now waits for an in-flight reload, which can be a slow build).
+  const shutdown = createShutdownSignalHandler({
+    cleanup: async () => {
+      shuttingDown = true;
+      await teardown().catch(() => undefined);
+    },
+    stoppingMessage: (signal) => `Received ${signal}, shutting down...`,
+    forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+    info: (m) => logger.info(m),
+    warn: (m) => logger.warn(m),
+  });
+  process.on('SIGINT', () => shutdown('SIGINT', 130));
+  process.on('SIGTERM', () => shutdown('SIGTERM', 0));
 
   // A failure in the post-boot setup (readiness wait or server bind) must stop
   // the booted container before rethrowing.
@@ -663,6 +669,9 @@ async function localStartAgentCoreCommand(
               freshLoaded,
               freshImageContext
             );
+            // #882: shutdown raced the image build above — start no container
+            // after it (teardown removes the one it knows about).
+            if (tornDown || shuttingDown) return;
             const newPort = await pickFreePort();
             const newName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
             logger.info(

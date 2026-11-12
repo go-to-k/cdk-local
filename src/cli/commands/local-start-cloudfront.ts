@@ -45,6 +45,7 @@ import { resolveDeployedKvsArnByName } from '../../local/cloudfront-kvs-client.j
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
 import { createReloadQueue, stopWatchReloads, type ReloadQueue } from '../../local/reload-queue.js';
 import {
   resolveFrontDoorTlsMaterials,
@@ -1221,11 +1222,8 @@ async function localStartCloudFrontCommand(
   }
 
   // Graceful shutdown.
-  let shuttingDown = false;
-  const shutdown = async (signal: string, exitCode: number): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    logger.info(`Received ${signal}, shutting down...`);
+  // #882: a second signal waits for the teardown; a third force-exits.
+  const teardown = async (): Promise<void> => {
     // #882: close the watcher, cancel the pending reload, and wait for the
     // in-flight one before closing the server and stopping the containers.
     await stopWatchReloads({ watcher, queue: reloadQueue });
@@ -1254,10 +1252,16 @@ async function localStartCloudFrontCommand(
     ]);
     // Release any deployed-S3 origin reader's S3 client socket pool.
     await Promise.all([...deployedS3.readers.values()].map((reader) => reader.close()));
-    process.exit(exitCode);
   };
-  process.on('SIGINT', () => void shutdown('SIGINT', 130));
-  process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
+  const shutdown = createShutdownSignalHandler({
+    cleanup: () => teardown().catch(() => undefined),
+    stoppingMessage: (signal) => `Received ${signal}, shutting down...`,
+    forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+    info: (m) => logger.info(m),
+    warn: (m) => logger.warn(m),
+  });
+  process.on('SIGINT', () => shutdown('SIGINT', 130));
+  process.on('SIGTERM', () => shutdown('SIGTERM', 0));
 
   // Block forever — signal handlers exit the process.
   await new Promise<never>(() => undefined);

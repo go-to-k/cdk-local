@@ -64,5 +64,6 @@ describe('createShutdownSignalHandler', () => {
     expect(s.writeStderr).toHaveBeenCalledTimes(1);
     expect(s.writeStderr.mock.calls[0]![0]).toMatch(/Force-exit on repeated SIGTERM.*HINT/);
     expect(s.exit).toHaveBeenCalledWith(130);
+    expect(s.cleanup).toHaveBeenCalledTimes(1);
   });
 });

@@ -128,6 +128,7 @@ import {
 } from '../../assets/asset-manifest-loader.js';
 import type { FileAsset } from '../../types/assets.js';
 import { singleFlight } from '../../utils/single-flight.js';
+import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
   workloadStsClientConfig,
@@ -535,14 +536,18 @@ async function localInvokeAgentCoreCommand(
 
     stopLogs = streamLogs(containerId);
 
-    sigintHandler = (): void => {
-      void cleanup().then(() => process.exit(130));
-    };
     // #882: SIGTERM ran no cleanup at all, so a terminated `--watch` session
-    // left its container behind.
-    sigtermHandler = (): void => {
-      void cleanup().then(() => process.exit(143));
-    };
+    // left its container behind. A second signal waits for the cleanup (it
+    // now waits for an in-flight reload); a third force-exits.
+    const onSignal = createShutdownSignalHandler({
+      cleanup,
+      stoppingMessage: (signal) => `Received ${signal}, removing the agent container...`,
+      forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+      info: (m) => logger.info(m),
+      warn: (m) => logger.warn(m),
+    });
+    sigintHandler = (): void => onSignal('SIGINT', 130);
+    sigtermHandler = (): void => onSignal('SIGTERM', 143);
     process.on('SIGINT', sigintHandler);
     process.on('SIGTERM', sigtermHandler);
 
@@ -602,7 +607,7 @@ async function localInvokeAgentCoreCommand(
           registerStop: (stop) => {
             stopWatch = stop;
           },
-          rebuild: async () => {
+          rebuild: async (signal) => {
             // Tear down the OLD container, then re-run the full image build
             // + container run pipeline against the new synth. Returns the
             // new (containerId, stopLogs, hostPort). Reuses the same
@@ -650,6 +655,14 @@ async function localInvokeAgentCoreCommand(
               newLoaded,
               newImageContext
             );
+            // #882: shutdown raced the synth / image build above — start no
+            // container after it (the cleanup removes the one it knows about).
+            if (signal?.aborted) {
+              throw new CdkLocalError(
+                'Reload cancelled: shutting down.',
+                'LOCAL_INVOKE_AGENTCORE_WATCH_CANCELLED'
+              );
+            }
             const newHostPort = await pickFreePort();
             const newName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
             logger.info(
@@ -2096,7 +2109,9 @@ export async function runAgentCoreWatchLoop(args: {
    * `docker run` a fresh container. Returns the new (containerId,
    * hostPort, stacks) so the loop can update its local state.
    */
-  rebuild: () => Promise<{ containerId: string; hostPort: number; stacks: StackInfo[] }>;
+  rebuild: (
+    signal?: AbortSignal
+  ) => Promise<{ containerId: string; hostPort: number; stacks: StackInfo[] }>;
   /**
    * Soft-reload the agent container in place. `docker cp` the
    * freshly-synthed asset directory contents into the existing
@@ -2161,8 +2176,6 @@ export async function runAgentCoreWatchLoop(args: {
   // main loop checks this BEFORE the next waitForPing so we bail out
   // instead of blocking for the ~30s ping timeout.
   let reloadFailed = false;
-  // Tracks "the watcher fired during a reload"; the watch loop's
-  // serialized reloadChain handles re-firing without re-entry races.
 
   const watcherFactory =
     args.__watcherFactory ??
@@ -2254,7 +2267,7 @@ export async function runAgentCoreWatchLoop(args: {
             containerId: _newId,
             hostPort: newHostPort,
             stacks: newStacks,
-          } = await args.rebuild();
+          } = await args.rebuild(signal);
           currentHostPort = newHostPort;
           currentStacks = newStacks;
           logger.info(`Reload: rebuilt the agent container.`);
@@ -2266,6 +2279,13 @@ export async function runAgentCoreWatchLoop(args: {
         // iteration's `waitForPing` would block until its ~30s timeout.
         // Signal the main loop to bail out cleanly instead — SIGINT
         // stays the user-initiated termination path.
+        if (signal.aborted) {
+          // #882: cancelled by the shutdown, not a failure.
+          logger.info('Reload cancelled: shutting down.');
+          reloadFailed = true;
+          currentAbort?.abort();
+          return;
+        }
         logger.error(
           `Reload failed: ${err instanceof Error ? err.message : String(err)}. ` +
             'The previous container may already be torn down; exiting --watch loop. ' +

@@ -95,6 +95,47 @@ describe('createReloadQueue', () => {
     expect(onError).toHaveBeenCalledTimes(2);
   });
 
+  it('idle() waits for the in-flight + pending batches at call time, not for firings that keep arriving', async () => {
+    const g = gatedRun();
+    const q = createReloadQueue({ run: g.run });
+    q.schedule(['a']);
+    q.schedule(['b']);
+    let idled = false;
+    const waiting = q.idle().then(() => {
+      idled = true;
+    });
+    g.calls[0]!.release();
+    await flush();
+    // The b batch runs; a new firing lands while it does (a tree that keeps changing).
+    expect(g.calls).toHaveLength(2);
+    q.schedule(['c']);
+    g.calls[1]!.release();
+    await waiting;
+    expect(idled).toBe(true);
+    // The c batch started after idle()'s horizon and is still running.
+    expect(g.calls).toHaveLength(3);
+    g.calls[2]!.release();
+    await q.idle();
+  });
+
+  it('a throwing onError does not wedge the queue', async () => {
+    let n = 0;
+    const q = createReloadQueue({
+      run: async () => {
+        n += 1;
+        throw new Error('run');
+      },
+      onError: () => {
+        throw new Error('onError');
+      },
+    });
+    q.schedule(['a']);
+    await q.idle();
+    q.schedule(['b']);
+    await q.idle();
+    expect(n).toBe(2);
+  });
+
   it('stop() drops the pending batch, aborts the in-flight signal, and resolves only once the in-flight run settles', async () => {
     const g = gatedRun();
     const q = createReloadQueue({ run: g.run });

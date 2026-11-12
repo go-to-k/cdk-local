@@ -1016,6 +1016,9 @@ and non-integer values pre-container.
   `error` (MCP), OR a cdk-local-side error: Docker not installed, image
   build / pull failed, target not found, the agent never became ready within
   the readiness window, or the container exited before responding.
+- `130` / `143` — stopped by `^C` (SIGINT) / SIGTERM. Both remove the agent
+  container first (under `--watch`, after the running reload stops). A second
+  signal waits for that; a third exits 130 at once and skips it.
 
 ## `cdkl start-agentcore` (serve an AgentCore Runtime's HTTP contract + `/ws` locally)
 
