@@ -111,6 +111,8 @@ describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
     expect(flags).toEqual([
       '--assume-role',
       '--assume-task-role',
+      '--aws-emulator',
+      '--ca-bundle',
       '--cluster',
       '--container-host',
       '--detach',
@@ -176,6 +178,8 @@ describe('invoke option surface contract (addInvokeSpecificOptions)', () => {
     const flags = longFlagsOf(addInvokeSpecificOptions(new Command()));
     expect(flags).toEqual([
       '--assume-role',
+      '--aws-emulator',
+      '--ca-bundle',
       '--container-host',
       '--debug-port',
       '--ecr-role-arn',
@@ -208,7 +212,9 @@ describe('invoke-agentcore option surface contract (addInvokeAgentCoreSpecificOp
     const flags = longFlagsOf(addInvokeAgentCoreSpecificOptions(new Command()));
     expect(flags).toEqual([
       '--assume-role',
+      '--aws-emulator',
       '--bearer-token',
+      '--ca-bundle',
       '--container-host',
       '--ecr-role-arn',
       '--env-vars',
@@ -256,6 +262,8 @@ describe('start-api option surface contract (addStartApiSpecificOptions)', () =>
       '--api',
       '--assume-role',
       '--assume-role-auto',
+      '--aws-emulator',
+      '--ca-bundle',
       '--container-host',
       '--debug-port',
       '--debug-port-base',
@@ -298,6 +306,8 @@ describe('start-cloudfront option surface contract (addStartCloudFrontSpecificOp
     expect(flags).toEqual([
       // Issue #380 — full env/state/role parity for a Function URL origin Lambda.
       '--assume-role',
+      '--aws-emulator',
+      '--ca-bundle',
       // Issue #405 follow-up — in-memory read-through cache for a deployed-S3 origin.
       '--cache-origin',
       // go-to-k/cdk-local#863 — env overrides for Function URL / Web Function origins.

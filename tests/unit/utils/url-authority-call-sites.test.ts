@@ -110,7 +110,17 @@ const NON_AUTHORITY: readonly Allowed[] = [
   },
   {
     file: 'local/ecs-task-runner.ts',
-    contains: '${opts.profileCredentialsFile.hostPath}:${opts.profileCredentialsFile.containerPath}',
+    contains: '${profileCredentialsFile.hostPath}:${profileCredentialsFile.containerPath}',
+    why: 'docker `-v` bind mount: two filesystem paths, no host',
+  },
+  {
+    file: 'local/ecs-task-runner.ts',
+    contains: '${m.hostPath}:${m.containerPath}',
+    why: 'docker `-v` bind mount: two filesystem paths, no host',
+  },
+  {
+    file: 'local/loopback-forwarder.ts',
+    contains: '${opts.caHostPath}:${FORWARDER_CA_PATH}',
     why: 'docker `-v` bind mount: two filesystem paths, no host',
   },
   {

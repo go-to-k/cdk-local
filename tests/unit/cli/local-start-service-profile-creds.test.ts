@@ -1,4 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
+import {
+  resetWorkloadAwsWiringForTest,
+  setActiveWorkloadAwsWiring,
+} from '../../../src/local/workload-aws-wiring.js';
 import { resolveSharedSidecarCredentials } from '../../../src/cli/commands/local-start-service.js';
 
 // cdkd#658: `cdkl start-service --profile <p>` used to resolve the
@@ -27,11 +31,19 @@ vi.mock('@aws-sdk/client-sts', () => ({
   }),
 }));
 
+const defaultChainMock = vi.fn();
+vi.mock('@aws-sdk/credential-provider-node', () => ({
+  defaultProvider: vi.fn(() => defaultChainMock),
+}));
+
+
 describe('resolveSharedSidecarCredentials (cdkd#658)', () => {
   beforeEach(() => {
     credsProviderMock.mockReset();
     stsDestroyMock.mockReset();
     stsCtorMock.mockReset();
+    defaultChainMock.mockReset();
+    resetWorkloadAwsWiringForTest();
   });
 
   it('resolves --profile via the SDK default chain when set', async () => {
@@ -64,13 +76,36 @@ describe('resolveSharedSidecarCredentials (cdkd#658)', () => {
     expect(result).not.toHaveProperty('sessionToken');
   });
 
-  it('returns undefined when --profile is NOT set (sidecar falls back to its own default chain)', async () => {
+  it('falls back to the host default credential chain when no credential flag is set (cdkd#6129)', async () => {
+    defaultChainMock.mockResolvedValue({ accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' });
+    const result = await resolveSharedSidecarCredentials({});
+    expect(result).toEqual({ accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' });
+    expect(stsCtorMock).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined when the host default chain finds nothing', async () => {
+    defaultChainMock.mockRejectedValue(new Error('Could not load credentials from any providers'));
     const result = await resolveSharedSidecarCredentials({});
     expect(result).toBeUndefined();
-    // No AWS calls at all — pre-existing behavior preserved.
-    expect(stsCtorMock).not.toHaveBeenCalled();
-    expect(credsProviderMock).not.toHaveBeenCalled();
   });
+
+  it('returns only the emulator credentials under --aws-emulator', async () => {
+    const emulatorCredentials = { accessKeyId: 'EMULATOR0000', secretAccessKey: 'EMU-SECRET' };
+    setActiveWorkloadAwsWiring({
+      mode: 'emulator',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      emulatorCredentials,
+      dispose: () => undefined,
+    });
+    const result = await resolveSharedSidecarCredentials({});
+    expect(result).toBe(emulatorCredentials);
+    expect(defaultChainMock).not.toHaveBeenCalled();
+  });
+
 
   it('propagates resolveProfileCredentials errors (expired SSO etc.) — no silent fallback', async () => {
     credsProviderMock.mockRejectedValue(

@@ -48,9 +48,83 @@ Shared across every `cdkl` subcommand (declared in
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c, --context <key=value...>` | — | Set CDK context values (repeatable). |
 | `--region <region>` | — | AWS region for the host-side SDK calls (STS `GetCallerIdentity` for `${AWS::AccountId}` resolution, `AssumeRole` for `--assume-role`, the `--from-cfn-stack` CFn client) and the container's `AWS_REGION` env var. Defaults to `AWS_REGION` / `AWS_DEFAULT_REGION` env, then the synthesized stack region, then the `--profile`'s configured region. |
+| `--aws-emulator [url]` | off | Run against a local AWS Emulator (default `https://127.0.0.1:9297`) for the command's own AWS calls and every workload container; also reads `CDK_LOCAL_AWS_EMULATOR`. Registered by every command that starts containers. See [AWS endpoints, CA bundles and credentials inside containers](#aws-endpoints-ca-bundles-and-credentials-inside-containers). |
+| `--ca-bundle <file>` | host `AWS_CA_BUNDLE` | PEM CA bundle mounted read-only into every workload container. Registered by every command that starts containers. |
 
 The `--from-cfn-stack` / `--stack-region` family is described in the
 per-command sections below.
+
+## AWS endpoints, CA bundles and credentials inside containers
+
+Every command that starts a workload container (`invoke`, `start-api`,
+`run-task`, `start-service`, `start-alb`, `start-web-function`,
+`start-microvm`, `start-cloudfront`, `invoke-agentcore`,
+`start-agentcore`) applies the same rules to it:
+
+- **Endpoint overrides are forwarded.** `AWS_ENDPOINT_URL`, every
+  `AWS_ENDPOINT_URL_<SERVICE>`, and the active profile's `endpoint_url`
+  reach the container unchanged (`AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true`
+  turns this off). A value the template or `--env-vars` sets for the same
+  key wins. A loopback endpoint (`127.0.0.1`, `localhost`, `::1`) keeps its
+  URL: cdk-local starts a small forwarder container in the workload's
+  network namespace that listens on `127.0.0.1:<port>` there and forwards to
+  the host, so a certificate issued for `127.0.0.1` still verifies and S3
+  keeps path-style addressing. The forwarder image is pulled before the
+  workload starts and the forwarder joins within moments of it; an app that
+  calls AWS in its very first instant relies on its SDK's connection retry.
+  The forwarder stops with the workload (and is restarted after a `--watch`
+  soft reload). When
+  containers cannot reach the port, cdk-local warns with the fix. On Linux
+  the endpoint must ALSO listen on the Docker bridge gateway: run AWS
+  Emulator's Docker image with `-p 127.0.0.1:9297:9297 -p 172.17.0.1:9297:9297`
+  (use your bridge's gateway). Do not bind `0.0.0.0` on a host; that opens
+  it to your network.
+- **A CA bundle is mounted.** `--ca-bundle <file>`, else the host's
+  `AWS_CA_BUNDLE`, else the profile's `ca_bundle`, is bind-mounted read-only
+  at `/cdk-local-aws/ca-bundle.pem` (with the public root CAs appended), and
+  `AWS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and
+  `SSL_CERT_FILE` point at it.
+- **Credentials default to your credential chain.** With no credential
+  flag, a container gets what the host's default chain resolves
+  (`AWS_PROFILE`, the shared credentials / config files, SSO). The
+  precedence is `--assume-role` > `--profile` > the default chain; for ECS
+  tasks the metadata sidecar serves them.
+- **`AWS_DEFAULT_REGION` follows `AWS_REGION`**, as on Lambda and ECS, so
+  boto3 finds the region.
+
+### `--aws-emulator [url]`
+
+`--aws-emulator` (or `CDK_LOCAL_AWS_EMULATOR=1`, or `CDK_LOCAL_AWS_EMULATOR=<url>`)
+runs a command against a local AWS Emulator. The URL defaults to
+`https://127.0.0.1:9297`; its port selects the emulator run's files in
+`~/.aws/emulator/<port>/`. For any other local endpoint, use the default
+`AWS_ENDPOINT_URL` forwarding and `--ca-bundle` described above.
+
+- Before anything else, cdk-local checks `GET <url>/__admin/health` with
+  the run's `ca.pem`; when the emulator does not answer, the command stops
+  and says what to check (is it running, on that port, on an address this
+  machine reaches).
+- cdk-local's own AWS calls — `--from-cfn-stack` reads, `{{resolve:...}}`,
+  STS — go to the emulator, so a stack deployed there with `cdk deploy`
+  binds with `--from-cfn-stack`.
+- Containers get `AWS_ENDPOINT_URL=<url>`, `AWS_EC2_METADATA_DISABLED=true`
+  and `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, and only the emulator's
+  credentials: the keys in `~/.aws/emulator/<port>/emulator_credentials`,
+  or fixed placeholder keys when that file is missing but the emulator is
+  healthy (it runs with `--auth off`; cdk-local says so in one line). Host
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` /
+  `AWS_PROFILE` / `AWS_SHARED_CREDENTIALS_FILE` / `AWS_CONFIG_FILE` never
+  reach a container, and the `--profile` credentials file is not mounted,
+  so a handler that misses the endpoint fails instead of reaching real AWS.
+- The run's `ca.pem` (or `--ca-bundle` / `AWS_CA_BUNDLE`) is mounted as
+  above; certificate verification stays on.
+- For a loopback URL, the forwarder repeats the health check through
+  `127.0.0.1:<port>` inside the container network with that CA as each
+  container starts; a failure stops the command with the fix instead of a
+  handler timeout.
+
+Deploy and destroy are not part of cdk-local; deploy into the emulator with
+your usual tool.
 
 ## Extra arguments are rejected, not discarded
 
@@ -271,7 +345,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the CLI's resolved credentials (honoring `--profile`) and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. No-op when `--no-pull` is set. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
-| `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from the active state source (requires `--from-cfn-stack` or a host-provided extension); (3) `--no-assume-role` explicitly opts out. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback. |
+| `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from the active state source (requires `--from-cfn-stack` or a host-provided extension); (3) `--no-assume-role` explicitly opts out. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default), and with none in the environment the host's default credential chain fills them. STS failures degrade to a warn + dev-creds fallback. |
 | `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Use only when the dev credentials cannot read the layer — typically cross-account layers. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in the Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. See [CloudFormation-driven env recovery](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region when `--from-cfn-stack` is set. |

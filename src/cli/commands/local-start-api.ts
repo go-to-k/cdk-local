@@ -4,6 +4,8 @@ import {
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
 } from '../../local/dynamic-reference-resolver.js';
+import { addAwsEndpointOptions } from '../options.js';
+import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -447,6 +449,7 @@ async function localStartApiCommand(
     options.assumeRole = normalizedAssumeRole;
   }
 
+  await activateWorkloadAwsWiring(options);
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -4095,6 +4098,7 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
  * `--help` clusters. Chainable: returns `cmd`.
  */
 export function addStartApiSpecificOptions(cmd: Command): Command {
+  addAwsEndpointOptions(cmd);
   return (
     cmd
       .addOption(

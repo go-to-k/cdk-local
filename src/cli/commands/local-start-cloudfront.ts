@@ -1,4 +1,6 @@
 import { Command, Option } from 'commander';
+import { addAwsEndpointOptions } from '../options.js';
+import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import {
   getEmbedConfig,
   setEmbedConfig,
@@ -959,6 +961,7 @@ async function localStartCloudFrontCommand(
   const tlsRequested =
     options.tls === true || options.tlsCert !== undefined || options.tlsKey !== undefined;
 
+  await activateWorkloadAwsWiring(options);
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -1308,6 +1311,7 @@ export function createLocalStartCloudFrontCommand(
  * `cmd`.
  */
 export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
+  addAwsEndpointOptions(cmd);
   return cmd
     .addOption(
       new Option('--port <port>', 'HTTP server port (default: auto-allocate)').default('0')

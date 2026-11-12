@@ -19,6 +19,18 @@ import { getLogger } from '../utils/logger.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { getEmbedConfig } from './embed-config.js';
+import {
+  describeForwarderFailure,
+  ensureForwarderImage,
+  startLoopbackForwarder,
+} from './loopback-forwarder.js';
+import {
+  applyWorkloadAwsWiringToEnv,
+  effectiveLoopbackPorts,
+  getActiveWorkloadAwsWiring,
+  resolveHostDefaultCredentials,
+} from './workload-aws-wiring.js';
+import type { WorkloadAwsWiring } from './workload-aws-wiring.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -265,6 +277,145 @@ export async function pullImage(
  *     is cleaned up on any error path including SIGINT.
  */
 export async function runDetached(opts: DockerRunOptions): Promise<string> {
+  // The process-wide AWS wiring (endpoint forwarding, CA bundle, default-chain
+  // credentials, `--aws-emulator`) applies to every workload container
+  // started here; see `workload-aws-wiring.ts`.
+  const wiring = getActiveWorkloadAwsWiring();
+  if (!wiring) return runDetachedContainer(opts);
+  const wired = await withWorkloadAwsWiring(opts, wiring);
+  // On the host network `127.0.0.1` already is the host: no forwarder.
+  const ports = opts.network === 'host' ? [] : effectiveLoopbackPorts(wired.env, wiring);
+  // Pull the forwarder image BEFORE the workload starts, so the forwarder is
+  // up within moments of the workload's own start.
+  if (ports.length > 0) await prepareLoopbackForwarder(wiring);
+  const id = await runDetachedContainer(wired);
+  await attachLoopbackForwarder(id, wiring, ports);
+  return id;
+}
+
+/**
+ * {@link DockerRunOptions} with the wiring applied: env entries, the CA
+ * mount, default-chain credentials when the env has none, and — under
+ * `--aws-emulator` — no host profile-credentials mount.
+ *
+ * Host-side use case: a host CLI's own `docker run` assembly for a workload
+ * container (pair it with {@link attachLoopbackForwarder}).
+ */
+export async function withWorkloadAwsWiring(
+  opts: DockerRunOptions,
+  wiring: WorkloadAwsWiring
+): Promise<DockerRunOptions> {
+  const defaults =
+    wiring.mode === 'forward' && !opts.env['AWS_ACCESS_KEY_ID']
+      ? await resolveHostDefaultCredentials()
+      : undefined;
+  const env = applyWorkloadAwsWiringToEnv(opts.env, wiring, defaults);
+  // The `--profile` credentials file's in-container path (local-profile-credentials-file.ts).
+  const credsPath = `${getEmbedConfig().awsBindMountPath}/credentials`;
+  const extra = (opts.extraMounts ?? []).filter(
+    (m) => wiring.mode !== 'emulator' || m.containerPath !== credsPath
+  );
+  const taken = new Set([...opts.mounts, ...extra].map((m) => m.containerPath));
+  for (const m of wiring.mounts) {
+    if (!taken.has(m.containerPath)) extra.push({ ...m, readOnly: true });
+  }
+  return { ...opts, env, extraMounts: extra };
+}
+
+/**
+ * Pull the forwarder image ahead of a workload start. A pull failure is fatal
+ * under `--aws-emulator`; otherwise it is left for {@link attachLoopbackForwarder}
+ * to report as a warning.
+ */
+export async function prepareLoopbackForwarder(wiring: WorkloadAwsWiring): Promise<void> {
+  try {
+    await ensureForwarderImage();
+  } catch (err) {
+    if (wiring.mode === 'emulator') {
+      throw new DockerRunnerError(
+        `--aws-emulator: the loopback forwarder image could not be pulled: ${(err as Error).message}`
+      );
+    }
+  }
+}
+
+const warnedForwarderPorts = new Set<string>();
+
+function warnForwarderOnce(key: string, message: string): void {
+  if (warnedForwarderPorts.has(key)) return;
+  warnedForwarderPorts.add(key);
+  getLogger().warn(message);
+}
+
+async function isContainerRunning(containerId: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(getDockerCmd(), [
+      'inspect',
+      '-f',
+      '{{.State.Running}}',
+      containerId,
+    ]);
+    return stdout.trim() === 'true';
+  } catch (err) {
+    // Only a container that no longer exists counts as not running; any other
+    // inspect failure keeps the caller on its error path.
+    return !/no such (object|container)/i.test((err as { stderr?: string }).stderr ?? '');
+  }
+}
+
+/** Ports each workload's forwarder serves, so a restart re-attaches the same set. */
+const forwardedPortsByContainer = new Map<string, readonly number[]>();
+
+/**
+ * Start the loopback forwarder for `containerId` on `ports` (default: the
+ * ports this container's forwarder served before — a restart — else the
+ * wiring's). A failure is fatal under `--aws-emulator` (the container is
+ * removed and the error names the fix) and a once-per-port warning otherwise.
+ * A workload that already exited (a short task) is left alone.
+ *
+ * Host-side use case: call right after a host's own `docker run` of a
+ * workload container.
+ */
+export async function attachLoopbackForwarder(
+  containerId: string,
+  wiring: WorkloadAwsWiring,
+  ports: readonly number[] = forwardedPortsByContainer.get(containerId) ?? wiring.loopbackPorts
+): Promise<void> {
+  forwardedPortsByContainer.set(containerId, ports);
+  if (ports.length === 0) return;
+  const label =
+    wiring.mode === 'emulator'
+      ? `--aws-emulator ${wiring.emulatorEndpoint?.url ?? ''}`
+      : 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
+  let result;
+  try {
+    result = await startLoopbackForwarder({
+      workloadContainer: containerId,
+      ports,
+      probe: wiring.probeHealth ? 'health' : 'tcp',
+      ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
+    });
+  } catch (err) {
+    // Joining a container that already exited fails; it needs no forwarder.
+    if (!(await isContainerRunning(containerId))) return;
+    const message = `${label}: ${(err as Error).message}`;
+    if (wiring.mode === 'emulator') {
+      await removeContainer(containerId);
+      throw new DockerRunnerError(message);
+    }
+    warnForwarderOnce('start', message);
+    return;
+  }
+  if (result.ok) return;
+  const message = describeForwarderFailure(result, label);
+  if (wiring.mode === 'emulator') {
+    await removeContainer(containerId);
+    throw new DockerRunnerError(message);
+  }
+  warnForwarderOnce(String(result.failedPort ?? 0), message);
+}
+
+async function runDetachedContainer(opts: DockerRunOptions): Promise<string> {
   const args: string[] = opts.autoRemove === false ? ['run', '-d'] : ['run', '-d', '--rm'];
 
   if (opts.name) {

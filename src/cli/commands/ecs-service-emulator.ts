@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { addAwsEndpointOptions } from '../options.js';
 import { DynamicReferenceResolver } from '../../local/dynamic-reference-resolver.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
@@ -31,6 +32,11 @@ import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
 import { resolveProfileCredentials, createWatchPredicates } from './local-start-api.js';
+import {
+  activateWorkloadAwsWiring,
+  getActiveWorkloadAwsWiring,
+  resolveHostDefaultCredentials,
+} from '../../local/workload-aws-wiring.js';
 import { accountLookupStsClientConfig } from '../../utils/workload-identity.js';
 import {
   writeProfileCredentialsFile,
@@ -659,6 +665,7 @@ export async function runEcsServiceEmulator(
   );
 
   try {
+    await activateWorkloadAwsWiring(options);
     await applyRoleArnIfSet({
       roleArn: options.roleArn,
       region: options.region,
@@ -2936,15 +2943,20 @@ export function resolveShadowReadyTimeoutMs(
 /**
  * Resolve the credentials forwarded to the AWS-published metadata-endpoints
  * sidecar (shared across every replica boot in one CLI invocation). `--profile`
- * resolves via the SDK default chain; unset yields `undefined`. Per-service
+ * resolves via the SDK default chain; unset resolves the host's default credential chain
+ * (`undefined` when it finds nothing); under `--aws-emulator` the endpoint's
+ * credentials only. Per-service
  * `--assume-task-role` overrides are intentionally NOT consulted here. Exported
  * for a unit test that exercises both branches.
  */
 export async function resolveSharedSidecarCredentials(options: {
   profile?: string;
 }): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
+  const wiring = getActiveWorkloadAwsWiring();
+  if (wiring?.mode === 'emulator') return wiring.emulatorCredentials;
   if (options.profile) return resolveProfileCredentials(options.profile);
-  return undefined;
+  // No flag: the host's default credential chain (go-to-k/cdkd#6129).
+  return resolveHostDefaultCredentials();
 }
 
 /**
@@ -3254,6 +3266,7 @@ export function resolveEcsAssumeRoleOption(options: {
  * factory.
  */
 export function addCommonEcsServiceOptions(cmd: Command): Command {
+  addAwsEndpointOptions(cmd);
   cmd
     .addOption(ecsClusterOption())
     .addOption(

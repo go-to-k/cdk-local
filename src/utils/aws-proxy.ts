@@ -1,6 +1,7 @@
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { Agent as HttpAgent, request as httpRequest } from 'node:http';
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
+import { rootCertificates } from 'node:tls';
 import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 import type { AwsCredentialIdentityProvider } from '@smithy/types';
@@ -389,6 +390,57 @@ export class EnvRoutingProxyAgent extends Agent {
 export interface AwsProxyClientConfig {
   requestHandler?: NodeHttpHandler;
   credentials?: AwsCredentialIdentityProvider;
+  /** Set only while an endpoint override is active ({@link setAwsEndpointOverride}). */
+  endpoint?: string;
+}
+
+/**
+ * A process-wide AWS endpoint for cdk-local's OWN clients
+ * (`--aws-emulator`): every client built through
+ * {@link buildProxyClientConfig} then talks to `endpoint` (one endpoint serves
+ * every service), trusts `caPem` on top of the public roots, and signs with
+ * `credentials` when given.
+ */
+export interface AwsEndpointOverride {
+  endpoint: string;
+  caPem?: string;
+  credentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+}
+
+let endpointOverride: AwsEndpointOverride | undefined;
+
+/** Install (or clear, with `undefined`) the {@link AwsEndpointOverride}. */
+export function setAwsEndpointOverride(o: AwsEndpointOverride | undefined): void {
+  endpointOverride = o;
+}
+
+/** The active {@link AwsEndpointOverride}, if any. */
+export function getAwsEndpointOverride(): AwsEndpointOverride | undefined {
+  return endpointOverride;
+}
+
+function endpointOverrideClientConfig(o: AwsEndpointOverride): AwsProxyClientConfig {
+  // A fresh handler per client, for the same reason as the proxy handler: a
+  // client's `destroy()` destroys its agents. No proxy: the override is a local
+  // endpoint by design.
+  const httpsAgent = new HttpsAgent({
+    keepAlive: true,
+    ...(o.caPem ? { ca: [...rootCertificates, o.caPem] } : {}),
+  });
+  const creds = o.credentials;
+  return {
+    endpoint: o.endpoint,
+    requestHandler: new NodeHttpHandler({ httpsAgent }),
+    ...(creds
+      ? {
+          credentials: async () => ({
+            accessKeyId: creds.accessKeyId,
+            secretAccessKey: creds.secretAccessKey,
+            ...(creds.sessionToken ? { sessionToken: creds.sessionToken } : {}),
+          }),
+        }
+      : {}),
+  };
 }
 
 /**
@@ -450,6 +502,7 @@ export function buildProxyRequestHandler(): NodeHttpHandler {
 export function buildProxyClientConfig(
   opts: { profile?: string | undefined } = {}
 ): AwsProxyClientConfig {
+  if (endpointOverride) return endpointOverrideClientConfig(endpointOverride);
   if (!isProxyEnvConfigured()) return {};
   if (everySetProxyEnvValueIsUnspeakable()) {
     // Warn only for what a request would actually SELECT, by asking the ONE
