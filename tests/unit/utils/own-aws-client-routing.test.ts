@@ -105,7 +105,11 @@ function sites(): Site[] {
       const blanked = argumentText(code, c.argOpen);
       expect(blanked, `${rel}: unbalanced construction of ${c.name}`).not.toBeNull();
       // Same span on the raw source: the literal (the service id) is readable there.
-      const args = raw.slice(c.argOpen + 1, c.argOpen + 1 + blanked!.length);
+      // Comments stripped, so a commented-out `service: '...'` routes nothing.
+      const args = raw
+        .slice(c.argOpen + 1, c.argOpen + 1 + blanked!.length)
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/[^\n]*/g, '');
       out.push({
         key: `${rel}#${c.name}`,
         file: rel,

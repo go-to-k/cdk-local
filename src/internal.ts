@@ -1369,7 +1369,10 @@ export {
  * the SDK's `serviceId`) and the client reads AWS Emulator exactly when a
  * sentinel routed that service — under `--aws-emulator` alone always, without
  * it never. When the fragment carries `endpoint`, add no credentials of your
- * own. A host that resolves the wiring itself
+ * own. For a read made FOR the workload (a secret or parameter it receives),
+ * use `workloadClientConfig({ profile, service })`, which also honors
+ * `workloadIdentity: 'caller'`. Keep STS off both: it carries the real
+ * identity. A host that resolves the wiring itself
  * installs it with `setAwsEmulatorServiceRouting({ services:
  * wiring.mixed.services, override: wiring.mixed.emulatorClientOverride })`.
  */

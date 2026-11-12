@@ -351,7 +351,9 @@ The rules:
   (SQS, SNS, EventBridge, Kinesis, Step Functions, SSM). With
   `AWS_ENDPOINT_URL_SECRETS_MANAGER` routed, the secret comes from the
   emulator (called from the host with the emulator's keys and CA, no
-  sidecar); otherwise from real AWS with your real credentials. These stay
+  sidecar); otherwise from real AWS with your real credentials. As for names,
+  the routed set is the whole run's: a service any workload routes is read
+  from the emulator for every workload. These stay
   on real AWS whatever you route: STS (your identity, `--assume-role` and the
   account lookup), the deployed artifacts (the ECR image, a `fromS3` code
   bundle, a layer ARN) and the stack read behind `--from-cfn-stack`.

@@ -481,9 +481,15 @@ export function isAwsServiceRoutedToEmulator(serviceId: string): boolean {
  * default credential chain. When the fragment carries `endpoint`, add no
  * credentials of your own: the emulator's keys are its only identity.
  *
+ * Keep STS (and anything that establishes the real identity) off this path,
+ * or pass no service: routing STS would replace the real identity mixed mode
+ * promises with the emulator's. A read made FOR the workload (a secret or a
+ * parameter it receives) goes through `workloadClientConfig({ service })`
+ * instead, which also honors `workloadIdentity: 'caller'`.
+ *
  * Host-side use case: a host CLI (cdkd) building its own clients next to
- * cdk-local's — `--from-state` reads, secret and parameter lookups — makes the
- * same per-service decision the workload's runtime calls get.
+ * cdk-local's — `--from-state` reads, for example — makes the same
+ * per-service decision the workload's runtime calls get.
  */
 export function awsClientConfigForService(
   serviceId: string,

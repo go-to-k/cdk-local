@@ -74,6 +74,10 @@ const { CfnLocalStateProvider } = await import('../../../src/local/cfn-local-sta
 const { createDeployedKvsDataSource } = await import('../../../src/local/cloudfront-kvs-client.js');
 const { setAwsEmulatorServiceRouting, setAwsEndpointOverride, awsClientConfigForService } =
   await import('../../../src/utils/aws-proxy.js');
+const { recordAssumedRole, resetWorkloadIdentity } = await import(
+  '../../../src/utils/workload-identity.js'
+);
+const { resetEmbedConfig, setEmbedConfig } = await import('../../../src/local/embed-config.js');
 
 const EMU_URL = 'https://127.0.0.1:9391';
 const EMU_KEY = { accessKeyId: 'EMULATORKEY000000000', secretAccessKey: 'e'.repeat(40) };
@@ -206,6 +210,8 @@ beforeEach(() => {
 afterEach(() => {
   setAwsEndpointOverride(undefined);
   setAwsEmulatorServiceRouting(undefined);
+  resetWorkloadIdentity();
+  resetEmbedConfig();
 });
 
 describe('mixed mode: own pre-start calls route per service (#898)', () => {
@@ -240,6 +246,34 @@ describe('mixed mode: own pre-start calls route per service (#898)', () => {
     const cfn = ctorArgs.filter((c) => c.cls === 'CloudFormationClient' || c.cls === 'LambdaClient');
     expect(cfn.map((c) => c.cls).sort()).toEqual(['CloudFormationClient', 'LambdaClient']);
     for (const c of cfn) expect(await sideOf(c.cfg)).toBe('real');
+  });
+
+  it("caller mode with a recorded role, and --profile: a routed service still signs only with the emulator's keys", async () => {
+    setEmbedConfig({ workloadIdentity: 'caller' });
+    recordAssumedRole(REAL_KEY, { accessKeyId: 'assumed-role-key-id', secretAccessKey: 'x'.repeat(40) });
+    setAwsEmulatorServiceRouting({ services: ['SECRETS_MANAGER'], override: OVERRIDE });
+    ctorArgs.length = 0;
+    const r = new DynamicReferenceResolver({ profile: 'dev' });
+    await r.resolveString('{{resolve:secretsmanager:probe}}', { region: REGION, consumer: 'test' });
+    await r.resolveString('{{resolve:ssm:/probe}}', { region: REGION, consumer: 'test' });
+    r.dispose();
+    const sm = ctorArgs.find((c) => c.cls === 'SecretsManagerClient')!.cfg;
+    expect(await sideOf(sm)).toBe('emulator');
+    // Not routed: real AWS, the profile's chain (no injected caller triple under a profile).
+    const ssm = ctorArgs.find((c) => c.cls === 'SSMClient')!.cfg;
+    expect(ssm['endpoint']).toBeUndefined();
+    expect(ssm['profile']).toBe('dev');
+    // Without a profile, the unrouted client gets the caller's pre-assume triple.
+    ctorArgs.length = 0;
+    const r2 = new DynamicReferenceResolver();
+    await r2.resolveString('{{resolve:ssm:/probe}}', { region: REGION, consumer: 'test' });
+    await r2.resolveString('{{resolve:secretsmanager:probe}}', { region: REGION, consumer: 'test' });
+    r2.dispose();
+    const ssm2 = ctorArgs.find((c) => c.cls === 'SSMClient')!.cfg;
+    expect(ssm2['endpoint']).toBeUndefined();
+    const callerCreds = await (ssm2['credentials'] as () => Promise<{ accessKeyId: string }>)();
+    expect(callerCreds.accessKeyId).toBe(REAL_KEY.accessKeyId);
+    expect(await sideOf(ctorArgs.find((c) => c.cls === 'SecretsManagerClient')!.cfg)).toBe('emulator');
   });
 
   it('start-cloudfront keeps its KeyValueStore read on real AWS (real names, realAwsOnly state)', async () => {
