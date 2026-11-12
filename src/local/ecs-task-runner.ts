@@ -1532,11 +1532,6 @@ export async function resolvePrivilegedHostPortRemaps(opts: {
 }
 
 /**
- * Build the full `docker run -d` argument list for one container.
- * Exported (no-leading-underscore) so the unit tests can assert against
- * the shape directly without spawning a process.
- */
-/**
  * Env keys that name a container's own credential source. When any is set,
  * `defaultCredentials` is not filled in (issue #883).
  */
@@ -1551,6 +1546,11 @@ const OWN_CREDENTIAL_SOURCE_KEYS = [
   'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
 ] as const;
 
+/**
+ * Build the full `docker run -d` argument list for one container.
+ * Exported (no-leading-underscore) so the unit tests can assert against
+ * the shape directly without spawning a process.
+ */
 export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   args: string[];
   sensitiveEnv: Record<string, string>;
