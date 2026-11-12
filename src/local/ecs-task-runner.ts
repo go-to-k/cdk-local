@@ -321,6 +321,15 @@ export interface RunEcsTaskOptions {
    * and env-vars through `buildDockerRunArgs`.
    */
   profileCredentialsFile?: { hostPath: string; containerPath: string; profileName: string };
+  /**
+   * Credentials set as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+   * `AWS_SESSION_TOKEN` in every container whose env has no
+   * `AWS_ACCESS_KEY_ID` after the template and `--env-vars` (issue #883:
+   * `run-task` with no credential flag passes the host's default chain).
+   * The values ride docker's value-from-process-env form, never argv, and
+   * are replaced under `--aws-emulator`.
+   */
+  defaultCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
 }
 
 /**
@@ -772,6 +781,7 @@ export async function runEcsTask(
       ...(options.profileCredentialsFile && {
         profileCredentialsFile: options.profileCredentialsFile,
       }),
+      ...(options.defaultCredentials && { defaultCredentials: options.defaultCredentials }),
     });
     dockerCmds.set(container.name, {
       args: built.args,
@@ -1411,6 +1421,15 @@ interface BuildDockerRunArgs {
    * sidecar only.
    */
   profileCredentialsFile?: { hostPath: string; containerPath: string; profileName: string };
+  /**
+   * Credentials set as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+   * `AWS_SESSION_TOKEN` in every container whose env has no
+   * `AWS_ACCESS_KEY_ID` after the template and `--env-vars` (issue #883:
+   * `run-task` with no credential flag passes the host's default chain).
+   * The values ride docker's value-from-process-env form, never argv, and
+   * are replaced under `--aws-emulator`.
+   */
+  defaultCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
 }
 
 /**
@@ -1732,7 +1751,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   //   5. forwarded AWS endpoint / CA entries (workload-aws-wiring, `forward` mode)
   //   6. profile credentials file env (AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE)
   //   7. metadata sidecar env (sidecar URL / role URL)
-  // `--aws-emulator` is applied after all of them and wins over every layer.
+  // Default-chain credentials (`defaultCredentials`) then fill an env that
+  // names none of its own. `--aws-emulator` is applied after all of them and wins over every layer.
   let finalEnv: Record<string, string> = {};
   const metaEnv = buildMetadataEnv({
     containerName: container.name,
@@ -1767,6 +1787,24 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   if (overrides) {
     applyEnvOverrideMap(finalEnv, overrides['Parameters']);
     applyEnvOverrideMap(finalEnv, overrides[container.name]);
+  }
+  // Default-chain credentials fill an env that names no credentials of its
+  // own: a template / `--env-vars` key pair or `AWS_PROFILE` wins as a whole
+  // (issue #883).
+  const defaultCredentials = opts.defaultCredentials;
+  if (
+    defaultCredentials &&
+    wiring?.mode !== 'emulator' &&
+    !finalEnv['AWS_ACCESS_KEY_ID'] &&
+    !finalEnv['AWS_PROFILE']
+  ) {
+    finalEnv['AWS_ACCESS_KEY_ID'] = defaultCredentials.accessKeyId;
+    finalEnv['AWS_SECRET_ACCESS_KEY'] = defaultCredentials.secretAccessKey;
+    if (defaultCredentials.sessionToken) {
+      finalEnv['AWS_SESSION_TOKEN'] = defaultCredentials.sessionToken;
+    } else {
+      delete finalEnv['AWS_SESSION_TOKEN'];
+    }
   }
   // `--aws-emulator` is forced last: the endpoint, its credentials only,
   // and the scrub of every variable that could reach real credentials.

@@ -185,10 +185,10 @@ same two flags and forwards them to every command it starts:
   flag, a container gets what the host's default chain resolves
   (`AWS_PROFILE`, the shared credentials / config files, SSO). The
   precedence is `--assume-role` > `--profile` > the default chain. A
-  `run-task` container reads `--profile` or default-chain credentials from
-  a mounted shared credentials file (`[<profile>]` or `[default]`, named by
-  `AWS_PROFILE`); only an assumed task role is served by the metadata
-  sidecar. When the chain finds nothing, it
+  `run-task` container gets default-chain credentials as `AWS_*` env
+  (unless its own env sets `AWS_ACCESS_KEY_ID` or `AWS_PROFILE`), and
+  `--profile` credentials from a mounted shared credentials file; only an
+  assumed task role is served by the metadata sidecar. When the chain finds nothing, it
   is asked again after a minute, so an SSO login during a long `--watch`
   session reaches containers started after it.
 - **`AWS_DEFAULT_REGION` follows `AWS_REGION`**, as on Lambda and ECS, so
@@ -1717,9 +1717,10 @@ For every task invocation cdk-local:
    and (when `--assume-role` / `--assume-task-role` is set) `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`.
    The sidecar holds the assumed role's credentials and serves them at `/creds`,
    so an AWS SDK in the container runs as the task role. Without a task role,
-   the `--profile` or default-chain credentials are mounted read-only as a
-   shared credentials file, with `AWS_SHARED_CREDENTIALS_FILE` and
-   `AWS_PROFILE` pointing at it (not under `--aws-emulator`).
+   `--profile` credentials are mounted read-only as a shared credentials
+   file (`AWS_SHARED_CREDENTIALS_FILE` + `AWS_PROFILE`), and with no
+   credential flag the default chain is set as `AWS_*` env. Neither happens
+   under `--aws-emulator`.
 
 **Concurrent runs.** AWS SDKs read `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`
 only from the fixed address `169.254.170.2`, so a run with a task role always

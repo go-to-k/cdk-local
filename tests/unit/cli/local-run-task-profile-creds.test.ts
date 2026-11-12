@@ -1,10 +1,10 @@
-import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vite-plus/test';
 import {
   resetWorkloadAwsWiringForTest,
   setActiveWorkloadAwsWiring,
 } from '../../../src/local/workload-aws-wiring.js';
 import {
-  containerCredentialsFileProfile,
+  containerCredentialDelivery,
   resolveSidecarCredentials,
 } from '../../../src/cli/commands/local-run-task.js';
 
@@ -127,36 +127,39 @@ describe('resolveSidecarCredentials (cdkd#658)', () => {
 // Issue #883: without a task role, nothing advertises the sidecar's `/creds`
 // route to the containers (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` is set only
 // for a role, and a no-role run is not on 169.254.170.0/24), so the
-// credentials reach them through the mounted credentials file. This pins which
-// section that file carries, or that there is none.
-describe('containerCredentialsFileProfile (#883)', () => {
+// credentials reach them through the `--profile` file or, with no flag, their
+// env. This pins which, or that they get none.
+describe('containerCredentialDelivery (#883)', () => {
   const chain = { accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' };
   const assumed = { accessKeyId: 'AKIA-ASSUMED', secretAccessKey: 'SECRET-ASSUMED' };
 
   beforeEach(() => {
     resetWorkloadAwsWiringForTest();
   });
+  afterEach(() => {
+    resetWorkloadAwsWiringForTest();
+  });
 
-  it('mounts the host default chain under [default] when no credential flag is set', () => {
-    expect(containerCredentialsFileProfile({}, chain, undefined)).toBe('default');
+  it('passes the host default chain as env when no credential flag is set', () => {
+    expect(containerCredentialDelivery({}, chain, undefined)).toBe('env');
   });
 
   it('mounts --profile credentials under the profile name', () => {
-    expect(containerCredentialsFileProfile({ profile: 'my-sso' }, chain, undefined)).toBe(
-      'my-sso'
+    expect(containerCredentialDelivery({ profile: 'my-sso' }, chain, undefined)).toBe(
+      'profile-file'
     );
   });
 
-  it('mounts no file when a task role was assumed (the sidecar serves it; a file would win)', () => {
-    expect(containerCredentialsFileProfile({}, assumed, assumed)).toBeUndefined();
-    expect(containerCredentialsFileProfile({ profile: 'my-sso' }, assumed, assumed)).toBeUndefined();
+  it('delivers nothing extra when a task role was assumed (the sidecar serves it)', () => {
+    expect(containerCredentialDelivery({}, assumed, assumed)).toBeUndefined();
+    expect(containerCredentialDelivery({ profile: 'my-sso' }, assumed, assumed)).toBeUndefined();
   });
 
-  it('mounts no file when no credentials were resolved', () => {
-    expect(containerCredentialsFileProfile({}, undefined, undefined)).toBeUndefined();
+  it('delivers nothing when no credentials were resolved', () => {
+    expect(containerCredentialDelivery({}, undefined, undefined)).toBeUndefined();
   });
 
-  it('mounts no file under --aws-emulator full mode, with or without --profile', () => {
+  it('delivers no real credentials under --aws-emulator full mode, with or without --profile', () => {
     const emulatorCredentials = { accessKeyId: 'EMULATOR0000', secretAccessKey: 'EMU-SECRET' };
     setActiveWorkloadAwsWiring({
       mode: 'emulator',
@@ -168,9 +171,9 @@ describe('containerCredentialsFileProfile (#883)', () => {
       emulatorCredentials,
       dispose: () => undefined,
     });
-    expect(containerCredentialsFileProfile({}, emulatorCredentials, undefined)).toBeUndefined();
+    expect(containerCredentialDelivery({}, emulatorCredentials, undefined)).toBeUndefined();
     expect(
-      containerCredentialsFileProfile({ profile: 'my-sso' }, emulatorCredentials, undefined)
+      containerCredentialDelivery({ profile: 'my-sso' }, emulatorCredentials, undefined)
     ).toBeUndefined();
   });
 
@@ -184,6 +187,6 @@ describe('containerCredentialsFileProfile (#883)', () => {
       probeHealth: false,
       dispose: () => undefined,
     });
-    expect(containerCredentialsFileProfile({}, chain, undefined)).toBe('default');
+    expect(containerCredentialDelivery({}, chain, undefined)).toBe('env');
   });
 });

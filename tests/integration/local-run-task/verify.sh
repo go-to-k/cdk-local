@@ -186,14 +186,14 @@ CREDS_OUT=$(env -u AWS_PROFILE -u AWS_SESSION_TOKEN \
 CREDS_RC=$?
 set -e
 if [[ "${CREDS_RC}" -ne 0 ]] \
-  || ! grep -qE 'access_key +\*+0883 +shared-credentials-file' <<<"${CREDS_OUT}"; then
+  || ! grep -qE 'access_key +\*+0883 +env' <<<"${CREDS_OUT}"; then
   echo "FAIL: the container did not resolve the host default chain (rc=${CREDS_RC})"
   echo "${CREDS_OUT}"; exit 1
 fi
 if grep -qF 'integ-fake-secret-883' <<<"${CREDS_OUT}"; then
   echo "FAIL: the secret key reached the run output"; exit 1
 fi
-echo "    OK: the container resolved the default-chain key from the mounted credentials file"
+echo "    OK: the container resolved the default-chain key from its env"
 teardown_runs
 
 echo ""
