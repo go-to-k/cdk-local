@@ -433,4 +433,18 @@ describe('startNamespaceOwnerForwarder (issue #878)', () => {
     await expect(start(emulatorWiring())).rejects.toThrow(/already in use/);
     expect(calls().some((a) => a[0] === 'rm')).toBe(false);
   });
+
+  it('recognizes the finch (nerdctl) name-conflict wording too', async () => {
+    execFileMock.mockImplementation((_c: string, args: string[]) =>
+      args[0] === 'run'
+        ? {
+            error: Object.assign(new Error('Command failed'), {
+              stderr: 'name "cdkl-fam-app-abc-awsfwd" is already used by ID "0123abcd"',
+            }),
+          }
+        : {}
+    );
+    await expect(start(emulatorWiring())).rejects.toThrow(/already used by/);
+    expect(calls().some((a) => a[0] === 'rm')).toBe(false);
+  });
 });

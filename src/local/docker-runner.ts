@@ -539,7 +539,7 @@ export async function startNamespaceOwnerForwarder(opts: {
       const err = error as { stderr?: string };
       // A name conflict means a container this run did NOT create holds the
       // name (a `--detach` leftover, a peer run): never remove it.
-      const conflict = /is already in use by container|Conflict\. The container name/.test(
+      const conflict = /is already (?:in use|used) by|Conflict\. The container name/.test(
         err.stderr ?? ''
       );
       return fail(
