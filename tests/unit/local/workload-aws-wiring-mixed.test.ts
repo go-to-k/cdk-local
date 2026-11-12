@@ -131,14 +131,17 @@ describe('resolveWorkloadAwsWiring — mixed mode', () => {
     const extra = createMixedModeTlsMaterials().caCertPem;
     const extraPath = path.join(home, 'corp.pem');
     writeFileSync(extraPath, extra);
+    const probe = vi.fn(async () => undefined);
     const w = await resolveWorkloadAwsWiring({
       awsEmulator: 'https://127.0.0.1:9364',
       awsEmulatorSentinels: SENTINELS,
       caBundle: extraPath,
       homeDir: home,
       env: {},
-      probeHealth: healthy,
+      probeHealth: probe,
     });
+    // The host-side probe trusts the run's own CA, not the --ca-bundle.
+    expect(probe).toHaveBeenCalledWith('https://127.0.0.1:9364', path.join(home, '.aws', 'emulator', '9364', 'ca.pem'));
     try {
       const cfg = JSON.parse(readFileSync(w.mixed!.resignConfigHostPath, 'utf8'));
       expect(cfg.upstreamCaPem).toContain(EMU_CA.trim());

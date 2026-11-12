@@ -246,14 +246,16 @@ function startResigner(cfgPath){return new Promise(function(done){
   // Bodies held at once, across concurrent requests: twice the per-request cap.
   var inflight=0,inflightCap=2*rawCap(cfg.capBytes);
   function handle(req,resp){
-    var chunks=[],size=0,over=false,busy=false,limit=rawCap(cfg.capBytes);
-    var release=function(){inflight-=size;size=0;release=function(){};};
-    req.on('data',function(c){if(over||busy)return;if(inflight+c.length>inflightCap){busy=true;inflight-=size;size=0;chunks=[];return;}size+=c.length;inflight+=c.length;if(size>limit){over=true;inflight-=size;chunks=[];return;}chunks.push(c);});
-    req.on('error',function(){release();resp.destroy();});
-    req.on('close',function(){release();});
+    // held counts toward inflight until the response is over; seen is the
+    // body size for the 413 message.
+    var chunks=[],held=0,seen=0,over=false,busy=false,limit=rawCap(cfg.capBytes);
+    var drop=function(){inflight-=held;held=0;chunks=[];};
+    req.on('data',function(c){seen+=c.length;if(over||busy)return;if(inflight+c.length>inflightCap){busy=true;drop();return;}held+=c.length;inflight+=c.length;if(seen>limit){over=true;drop();return;}chunks.push(c);});
+    req.on('error',function(){drop();resp.destroy();});
+    resp.on('close',drop);
     req.on('end',function(){
       if(busy){send(resp,503,{code:'SlowDown',message:'cdk-local mixed mode: the AWS Emulator re-signing sidecar is holding too many request bodies at once; retry.'},serviceOf(req));return;}
-      if(over){process.stdout.write('CDKL-RESIGN rejected a streamed request body over the cap without holding it\n');send(resp,413,tooLargeError(size,cfg.capBytes,serviceOf(req)),serviceOf(req));return;}
+      if(over){process.stdout.write('CDKL-RESIGN rejected a streamed request body over the cap without holding it\n');send(resp,413,tooLargeError(seen,cfg.capBytes,serviceOf(req)),serviceOf(req));return;}
       var p;
       try{p=prepareResign(req,Buffer.concat(chunks),cfg,new Date());}catch(e){p={error:{status:400,code:'InvalidRequest',message:'cdk-local mixed mode: the request could not be re-signed.'}};}
       if(p.error){if(p.error.status===413)process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,p.error.status,p.error,serviceOf(req));return;}
@@ -264,8 +266,7 @@ function startResigner(cfgPath){return new Promise(function(done){
         resp.writeHead(ur.statusCode||502,h);
         ur.pipe(resp);
         ur.on('error',function(){resp.destroy();});
-      });}catch(e){release();send(resp,400,{code:'InvalidRequest',message:'cdk-local mixed mode: the request has a header the AWS Emulator re-signing sidecar cannot forward.'},p.service);return;}
-      release();
+      });}catch(e){send(resp,400,{code:'InvalidRequest',message:'cdk-local mixed mode: the request has a header the AWS Emulator re-signing sidecar cannot forward.'},p.service);return;}
       // A client that hangs up (an aborted GetObject) frees the upstream socket too.
       resp.on('close',function(){if(!resp.writableFinished)r.destroy();});
       r.setTimeout(300000,function(){r.destroy(Object.assign(new Error('upstream timeout'),{code:'ETIMEDOUT'}));});

@@ -727,12 +727,15 @@ export async function resolveWorkloadAwsWiring(
       }
       const run = readEmulatorRunFiles(ep.port, homeDir);
       const caSource = opts.caBundle || run.caPath || env['AWS_CA_BUNDLE'];
+      const mixedServices = emulatedServicesOf(opts.awsEmulatorSentinels ?? []);
+      // Mixed mode keeps every CA (a `--ca-bundle` may be a corporate proxy's),
+      // so the probe trusts the run's own CA first.
+      const probeCa = mixedServices.length > 0 ? run.caPath || caSource : caSource;
       const failure = await (opts.probeHealth ?? probeAwsEmulatorHealth)(
         ep.url,
-        caSource ? expandHome(caSource, homeDir) : undefined
+        probeCa ? expandHome(probeCa, homeDir) : undefined
       );
       if (failure) throw new Error(describeEmulatorUnreachable(ep, failure));
-      const mixedServices = emulatedServicesOf(opts.awsEmulatorSentinels ?? []);
       let credentials: CallerCredentials;
       if (run.credentials) credentials = run.credentials;
       else {
@@ -751,15 +754,19 @@ export async function resolveWorkloadAwsWiring(
           ep,
           services: mixedServices,
           credentials,
-          caSources: ep.url.startsWith('https:')
-            ? [
-                ...new Set(
-                  [run.caPath, opts.caBundle, env['AWS_CA_BUNDLE']]
-                    .filter((c): c is string => typeof c === 'string' && c !== '')
-                    .map((c) => expandHome(c, homeDir))
-                ),
+          // The run's CA only matters for an https emulator; the host's CAs
+          // also serve real AWS (a TLS-inspecting proxy), so they stay either way.
+          caSources: [
+            ...new Set(
+              [
+                ep.url.startsWith('https:') ? run.caPath : undefined,
+                opts.caBundle,
+                env['AWS_CA_BUNDLE'],
               ]
-            : [],
+                .filter((c): c is string => typeof c === 'string' && c !== '')
+                .map((c) => expandHome(c, homeDir))
+            ),
+          ],
           disposers,
           dispose,
           skipPull: opts.skipPull,
