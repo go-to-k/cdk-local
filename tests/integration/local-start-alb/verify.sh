@@ -104,12 +104,27 @@ echo "    OK: privileged 80 auto-remapped to ${NOLB_PORT} + serving (no --lb-por
 kill -INT "${NOLB_PID}" 2>/dev/null; wait "${NOLB_PID}" 2>/dev/null || true
 cleanup
 
+# Issue #889 — count running containers whose env carries the fake default-chain
+# key this run booted with (no credential flag). Other lanes' containers never
+# carry it, so the count is this run's.
+count_default_chain_containers() {
+  local n=0 id
+  for id in $(docker ps --filter "name=cdkl-" --format '{{.ID}}'); do
+    if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${id}" 2>/dev/null \
+      | grep -qx 'AWS_ACCESS_KEY_ID=FAKEINTEGKEY0889'; then
+      n=$((n + 1))
+    fi
+  done
+  echo "${n}"
+}
+
 echo "==> start-alb: naming the ALB (DesiredCount=2 backing service); HTTP:80 -> :${LB_HOST_PORT}, HTTPS:443 -> :${LB_HOST_PORT_HTTPS}"
 # Remap both privileged listener ports (80 / 443) to non-privileged host ports
 # so the front-door binds without root (the macOS Docker Desktop privileged-port
 # path). No --tls flag: the HTTPS:443 listener exercises the #198 default —
 # served over plain HTTP locally, with X-Forwarded-Proto: https preserved.
-${CDKL} start-alb CdkLocalStartAlbFixture:WebLB \
+env -u AWS_PROFILE -u AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID=FAKEINTEGKEY0889 AWS_SECRET_ACCESS_KEY=integ-fake-secret-889 \
+  ${CDKL} start-alb CdkLocalStartAlbFixture:WebLB \
   --container-host 127.0.0.1 \
   --lb-port "80=${LB_HOST_PORT}" \
   --lb-port "443=${LB_HOST_PORT_HTTPS}" \
@@ -198,6 +213,17 @@ if [[ "${DISTINCT}" -lt 2 ]]; then
   exit 1
 fi
 echo "    OK: front-door load-balances across ${DISTINCT} replicas"
+
+echo "==> Asserting both backing replicas got the host default chain as env (issue #889)"
+CHAIN_COUNT=$(count_default_chain_containers)
+if [[ "${CHAIN_COUNT}" -lt 2 ]]; then
+  echo "FAIL: expected 2 replica containers with the default-chain key, found ${CHAIN_COUNT}"
+  exit 1
+fi
+if grep -qF 'integ-fake-secret-889' "${OUT_FILE}"; then
+  echo "FAIL: the secret key reached the run output"; exit 1
+fi
+echo "    OK: ${CHAIN_COUNT} replica containers carry the default-chain key"
 
 echo "==> curl-ing the cloud-HTTPS listener's host port over plain HTTP (no -k); asserting X-Forwarded-Proto: https reaches the upstream"
 # #198 default: cloud-HTTPS listener served over HTTP locally. The replica

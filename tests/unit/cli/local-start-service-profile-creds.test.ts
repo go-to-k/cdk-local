@@ -1,9 +1,10 @@
-import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vite-plus/test';
 import {
   resetWorkloadAwsWiringForTest,
   setActiveWorkloadAwsWiring,
 } from '../../../src/local/workload-aws-wiring.js';
 import { resolveSharedSidecarCredentials } from '../../../src/cli/commands/local-start-service.js';
+import { resolveServiceDefaultCredentials } from '../../../src/cli/commands/ecs-service-emulator.js';
 
 // cdkd#658: `cdkl start-service --profile <p>` used to resolve the
 // profile for cdk-local's OWN AWS calls but the AWS-published shared
@@ -114,5 +115,72 @@ describe('resolveSharedSidecarCredentials (cdkd#658)', () => {
     await expect(
       resolveSharedSidecarCredentials({ profile: 'expired-sso' })
     ).rejects.toThrow(/SSO session.*expired/);
+  });
+});
+
+// Issue #889: with no credential flag, each service's task containers get the
+// host default chain as env (the shared sidecar holds it, but nothing points a
+// container at it without a task role).
+describe('resolveServiceDefaultCredentials (#889)', () => {
+  const assumed = { accessKeyId: 'AKIA-ASSUMED' };
+
+  beforeEach(() => {
+    defaultChainMock.mockReset();
+    resetWorkloadAwsWiringForTest();
+  });
+  afterEach(() => {
+    resetWorkloadAwsWiringForTest();
+  });
+
+  it('returns the host default chain when no credential flag is set', async () => {
+    defaultChainMock.mockResolvedValue({ accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' });
+    await expect(resolveServiceDefaultCredentials({}, undefined)).resolves.toEqual({
+      accessKeyId: 'AKIA-CHAIN',
+      secretAccessKey: 'SECRET-CHAIN',
+    });
+  });
+
+  it('returns nothing with --assume-role (the sidecar serves the role) or --profile (its file)', async () => {
+    defaultChainMock.mockResolvedValue({ accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' });
+    await expect(resolveServiceDefaultCredentials({}, assumed)).resolves.toBeUndefined();
+    await expect(resolveServiceDefaultCredentials({ profile: 'my-sso' }, undefined)).resolves.toBeUndefined();
+    expect(defaultChainMock).not.toHaveBeenCalled();
+  });
+
+  it('returns nothing under --aws-emulator full mode', async () => {
+    defaultChainMock.mockResolvedValue({ accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' });
+    setActiveWorkloadAwsWiring({
+      mode: 'emulator',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      emulatorCredentials: { accessKeyId: 'EMULATOR0000', secretAccessKey: 'EMU-SECRET' },
+      dispose: () => undefined,
+    });
+    await expect(resolveServiceDefaultCredentials({}, undefined)).resolves.toBeUndefined();
+    expect(defaultChainMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the real chain in forward (mixed-mode) wiring', async () => {
+    defaultChainMock.mockResolvedValue({ accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' });
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      dispose: () => undefined,
+    });
+    await expect(resolveServiceDefaultCredentials({}, undefined)).resolves.toMatchObject({
+      accessKeyId: 'AKIA-CHAIN',
+    });
+  });
+
+  it('returns undefined when the chain finds nothing', async () => {
+    defaultChainMock.mockRejectedValue(new Error('Could not load credentials from any providers'));
+    await expect(resolveServiceDefaultCredentials({}, undefined)).resolves.toBeUndefined();
   });
 });

@@ -2008,6 +2008,10 @@ async function resolveServiceAndRunnerOpts(
       profileName: profileCredsFile.profileName,
     };
   }
+  // No credential flag: the host default chain rides each container's env
+  // (issue #889, as `run-task` does since #883).
+  const defaultCredentials = await resolveServiceDefaultCredentials(options, assumedCredentials);
+  if (defaultCredentials) taskOpts.defaultCredentials = defaultCredentials;
   // Let each replica's containers reach a server on the host (an
   // `AWS_ENDPOINT_URL_*` local endpoint / tunneled VPC resource) via
   // `host.docker.internal`. Memoized — one `docker version` probe per
@@ -2984,6 +2988,28 @@ export function resolveShadowReadyTimeoutMs(
     );
   }
   return DEFAULT_SHADOW_READY_TIMEOUT_MS;
+}
+
+/**
+ * The host default chain a service's task containers get as `AWS_*` env when
+ * no credential flag gave them any (issue #889). The shared sidecar holds the
+ * same chain, but nothing points a container at it: only a task role is
+ * advertised (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, read only at
+ * 169.254.170.2), and the shared network stays off 169.254.170.0/24 without
+ * one (#849). `undefined` with `--assume-role` (the sidecar serves the role),
+ * with `--profile` (its mounted credentials file), under `--aws-emulator` full
+ * mode (emulator keys only), or when the chain finds nothing. Resolved per
+ * boot, so a `--watch` restart after an SSO login picks up the new keys. The
+ * runner fills them only into a container env that names no credential
+ * source of its own.
+ */
+export async function resolveServiceDefaultCredentials(
+  options: { profile?: string },
+  assumedCredentials: { accessKeyId: string } | undefined
+): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
+  if (assumedCredentials || options.profile) return undefined;
+  if (getActiveWorkloadAwsWiring()?.mode === 'emulator') return undefined;
+  return resolveHostDefaultCredentials();
 }
 
 /**

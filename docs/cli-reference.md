@@ -101,7 +101,8 @@ same two flags and forwards them to every command it starts:
   flag, a container gets what the host's default chain resolves
   (`AWS_PROFILE`, the shared credentials / config files, SSO). The
   precedence is `--assume-role` > `--profile` > the default chain. A
-  `run-task` container gets default-chain credentials as `AWS_*` env
+  `run-task` / `start-service` / `start-alb` container gets default-chain
+  credentials as `AWS_*` env
   (unless its own env names a credential source: an `AWS_*` key,
   `AWS_PROFILE`, `AWS_SHARED_CREDENTIALS_FILE`,
   `AWS_WEB_IDENTITY_TOKEN_FILE` or an `AWS_CONTAINER_CREDENTIALS_*` URI; an
@@ -1563,7 +1564,10 @@ With `--assume-role` / `--assume-task-role`, the shared network uses
 `169.254.170.0/24` instead, with the sidecar at `169.254.170.2`, the only
 address AWS SDKs read task-role credentials from. The sidecar serves the
 assumed role's credentials at `/creds` (every container gets
-`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`). One sidecar holds one set of
+`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`). Without a task role,
+`--profile` credentials are mounted as a shared credentials file, and with no
+credential flag every container gets the host default chain as `AWS_*` env,
+resolved again at each replica start (not under `--aws-emulator`). One sidecar holds one set of
 credentials, so every service in the run must resolve to the SAME task role —
 when the bare flag resolves different roles for different services, the run
 fails and names both; pass one with `--assume-role <arn>`. Only one run with a
