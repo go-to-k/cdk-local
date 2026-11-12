@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import { AWS_ENDPOINT_SERVICE_IDS } from '../../../src/local/aws-endpoint-service-ids.js';
@@ -13,7 +14,7 @@ const require = createRequire(import.meta.url);
 
 function installedClientServiceIds(): Array<{ pkg: string; id: string }> {
   // The project's own `node_modules/@aws-sdk` (pnpm links each direct dependency there).
-  const scopeDir = path.join(process.cwd(), 'node_modules', '@aws-sdk');
+  const scopeDir = fileURLToPath(new URL('../../../node_modules/@aws-sdk/', import.meta.url));
   const out: Array<{ pkg: string; id: string }> = [];
   for (const name of readdirSync(scopeDir).filter((n) => n.startsWith('client-'))) {
     const pkg = `@aws-sdk/${name}`;

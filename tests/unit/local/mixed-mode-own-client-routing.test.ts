@@ -403,6 +403,59 @@ describe('mixed mode: own pre-start calls route per workload (#902)', () => {
     expect((await Promise.all(built.map((b) => sideOf(b.cfg)))).sort()).toEqual(['emulator', 'real']);
   });
 
+  it('--from-cfn-stack SSM-backed template parameter follows the provider workload', async () => {
+    install(ENV_OVERRIDES);
+    const sideFor = async (workload?: Record<string, string>): Promise<Side> => {
+      ctorArgs.length = 0;
+      const p = new CfnLocalStateProvider({ cfnStackName: 'S', region: REGION, workload });
+      await p.resolveTemplateSsmParameters({
+        Parameters: { P: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/probe' } },
+        Resources: {},
+      } as never);
+      p.dispose();
+      return sideOf(ctorArgs.find((c) => c.cls === 'SSMClient')!.cfg);
+    };
+    expect(await sideFor(FN_A)).toBe('emulator');
+    expect(await sideFor(FN_B)).toBe('real');
+    expect(await sideFor()).toBe('emulator');
+  });
+
+  it('resolveDynamicReferencesInEnv passes the env\'s workload to a SHARED resolver', async () => {
+    install(ENV_OVERRIDES);
+    const { resolveDynamicReferencesInEnv } = await import(
+      '../../../src/local/dynamic-reference-resolver.js'
+    );
+    ctorArgs.length = 0;
+    const shared = new DynamicReferenceResolver();
+    for (const workload of [FN_A, FN_B]) {
+      await resolveDynamicReferencesInEnv(
+        { P: '{{resolve:ssm:/p}}' },
+        { region: REGION, label: 'x', resolver: shared, workload }
+      );
+    }
+    shared.dispose();
+    const built = ctorArgs.filter((c) => c.cls === 'SSMClient');
+    expect((await Promise.all(built.map((b) => sideOf(b.cfg)))).sort()).toEqual(['emulator', 'real']);
+  });
+
+  it('a client factory receives the route its client must take', async () => {
+    install(ENV_OVERRIDES);
+    const routes: unknown[] = [];
+    const r = new DynamicReferenceResolver({
+      ssmClientFactory: (_region, route) => {
+        routes.push(route);
+        return { send: async () => ({ Parameter: { Value: 'v' } }), destroy: () => undefined } as never;
+      },
+    });
+    await r.resolveString('{{resolve:ssm:/p}}', { region: REGION, consumer: 'a', workload: FN_A });
+    await r.resolveString('{{resolve:ssm:/p}}', { region: REGION, consumer: 'b', workload: FN_B });
+    r.dispose();
+    expect(routes).toEqual([
+      { workload: FN_A, emulator: true },
+      { workload: FN_B, emulator: false },
+    ]);
+  });
+
   it('awsEmulatorRoutedServices: per workload with the --env-vars file, run-wide without it', async () => {
     const { awsEmulatorRoutedServices } = await import('../../../src/utils/aws-proxy.js');
     expect(awsEmulatorRoutedServices(FN_A)).toBeUndefined();

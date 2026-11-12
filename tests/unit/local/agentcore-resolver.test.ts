@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   AgentCoreResolutionError,
+  agentCoreTargetWorkload,
   pickAgentCoreCandidateStack,
   resolveAgentCoreTarget,
 } from '../../../src/local/agentcore-resolver.js';
@@ -875,5 +876,19 @@ describe('resolveAgentCoreTarget — assembly-chosen identifiers render through 
     expect(() => resolveAgentCoreTarget('App:x\u001b[2Kforged', [stack])).toThrow(
       'AgentCore Runtime "x [2Kforged" in App uses the BOGUS protocol.'
     );
+  });
+});
+
+// go-to-k/cdk-local#902: the runtime's mixed-mode workload, found before the
+// `--from-cfn-stack` provider is built.
+describe('agentCoreTargetWorkload', () => {
+  it('names the runtime by logical ID and aws:cdk:path, by either target form', () => {
+    const stacks = [
+      buildStack('S', { Agent1234: withPath(containerRuntime(), 'S/Agent/Runtime') }),
+    ];
+    const want = { logicalId: 'Agent1234', cdkPath: 'S/Agent/Runtime' };
+    expect(agentCoreTargetWorkload('S/Agent', stacks)).toEqual(want);
+    expect(agentCoreTargetWorkload('Agent1234', stacks)).toEqual(want);
+    expect(agentCoreTargetWorkload('S/Missing', stacks)).toBeUndefined();
   });
 });

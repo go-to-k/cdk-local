@@ -83,7 +83,7 @@ export interface LocalStateProviderBehavior {
    * services are then that workload's own (`Parameters` plus its own
    * `--env-vars` sections), as its runtime calls go; without it, the run's.
    */
-  workload?: AwsEmulatorWorkload;
+  workload?: AwsEmulatorWorkload | undefined;
 }
 
 /**
@@ -379,6 +379,8 @@ export function createLocalStateProvider(
       cfnStackName,
       region,
       ...(options.profile !== undefined && { profile: options.profile }),
+      // An SSM-backed template parameter follows this workload's SSM route.
+      ...(behavior.workload !== undefined && { workload: behavior.workload }),
     });
     // Mixed mode (an `aws-emulator` sentinel in --env-vars): resources of the
     // emulated services resolve from the stack deployed into AWS Emulator,

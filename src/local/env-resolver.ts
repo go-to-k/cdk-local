@@ -34,6 +34,7 @@
  */
 
 import { readFileSync, statSync } from 'node:fs';
+import * as path from 'node:path';
 import { defineOwnKey } from '../utils/own-keys.js';
 
 /** The text of each pipe-backed `--env-vars` path read so far, by path. */
@@ -51,9 +52,12 @@ const pipeTexts = new Map<string, string>();
  * cdk-local also scans reads it through this.
  */
 export function readEnvVarsFileText(filePath: string): string {
-  let regular = true;
+  // A descriptor path (`/dev/stdin`, `/dev/fd/N`, `/proc/self/fd/N`) is read
+  // once even when it names a regular file (`--env-vars /dev/stdin < env.json`):
+  // reopening it shares the descriptor's offset, so a second read is empty.
+  let regular = !/^\/(?:dev|proc)\//.test(path.resolve(filePath));
   try {
-    regular = statSync(filePath).isFile();
+    regular &&= statSync(filePath).isFile();
   } catch {
     // `readFileSync` below reports the missing / unreadable path.
   }

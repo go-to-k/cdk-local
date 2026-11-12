@@ -151,7 +151,11 @@ export function emulatedServicesForWorkload(
       const service = ENDPOINT_KEY.exec(key)?.[1];
       if (service === undefined) continue;
       if (isAwsEmulatorSentinel(key, value)) out.add(service);
-      else out.delete(service);
+      // Only what the env merge applies replaces it: `null` clears, a
+      // primitive overwrites; any other shape is skipped there, so here too.
+      else if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
+        out.delete(service);
+      }
     }
   };
   if (!overrides) return [];

@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vite-plus/test';
@@ -141,6 +141,18 @@ describe('emulatedServicesForWorkload', () => {
     expect(emulatedServicesForWorkload(undefined, { logicalId: 'FnA1234' })).toEqual([]);
   });
 
+  it('a value the env merge skips (object, array) leaves a Parameters sentinel in place', () => {
+    expect(
+      emulatedServicesForWorkload(
+        {
+          Parameters: { AWS_ENDPOINT_URL_SSM: 'aws-emulator', AWS_ENDPOINT_URL_S3: 'aws-emulator' },
+          FnA1234: { AWS_ENDPOINT_URL_SSM: { x: 1 }, AWS_ENDPOINT_URL_S3: 42 },
+        },
+        { logicalId: 'FnA1234' }
+      )
+    ).toEqual(['SSM']);
+  });
+
   it('a later section re-adds what an earlier one cleared', () => {
     expect(
       emulatedServicesForWorkload(
@@ -159,6 +171,7 @@ describe('emulatedServicesForWorkload', () => {
 describe('pipe-backed --env-vars (FIFO)', () => {
   it('the sentinel scan and the command read see the same text, read once', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'fifo-'));
+    let empty: ReturnType<typeof spawn> | undefined;
     try {
       const fifo = path.join(dir, 'env.fifo');
       execFileSync('mkfifo', [fifo]);
@@ -168,10 +181,36 @@ describe('pipe-backed --env-vars (FIFO)', () => {
       const done = new Promise((r) => writer.on('exit', r));
       expect(readAwsEmulatorSentinelsFromFile(fifo)).toHaveLength(1);
       await done;
+      // An empty second writer: a regression's second open reads "" and fails
+      // instead of blocking the worker forever. Killed unused when kept.
+      empty = spawn('sh', ['-c', ': > "$1"', 'sh', fifo]);
       expect(readEnvVarsFileText(fifo)).toBe(body);
       expect(readAwsEmulatorEnvVarsFile(fifo).overrides).toEqual(JSON.parse(body));
     } finally {
+      empty?.kill();
       resetEnvVarsFileTextsForTest();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a descriptor path naming a regular file (/dev/stdin < env.json) is read once and kept (#894)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'stdin-'));
+    try {
+      const f = path.join(dir, 'env.json');
+      const body = JSON.stringify({ Parameters: { AWS_ENDPOINT_URL_SQS: AWS_EMULATOR_SENTINEL } });
+      writeFileSync(f, body);
+      // `/dev/stdin < env.json` is a descriptor path naming a regular file;
+      // `/dev/fd/<fd>` of an open file is the same case in-process. On macOS a
+      // reopen shares the offset, so an unkept second read would be empty.
+      const fd = openSync(f, 'r');
+      try {
+        const p = `/dev/fd/${fd}`;
+        expect([readEnvVarsFileText(p), readEnvVarsFileText(p)]).toEqual([body, body]);
+      } finally {
+        closeSync(fd);
+        resetEnvVarsFileTextsForTest();
+      }
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

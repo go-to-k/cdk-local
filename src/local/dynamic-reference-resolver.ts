@@ -390,9 +390,13 @@ export interface DynamicReferenceResolverOptions {
    * region chain). Production leaves both unset.
    */
   secretsManagerClientFactory?: (
-    region: string | undefined
+    region: string | undefined,
+    route: DynamicReferenceRoute
   ) => Pick<SecretsManagerClient, 'send' | 'destroy'>;
-  ssmClientFactory?: (region: string | undefined) => Pick<SSMClient, 'send' | 'destroy'>;
+  ssmClientFactory?: (
+    region: string | undefined,
+    route: DynamicReferenceRoute
+  ) => Pick<SSMClient, 'send' | 'destroy'>;
   /**
    * The workload the values are resolved for. In AWS Emulator mixed mode a
    * fetch then goes where that workload's own runtime calls go (its
@@ -403,12 +407,21 @@ export interface DynamicReferenceResolverOptions {
   workload?: AwsEmulatorWorkload | undefined;
 }
 
-/** Where one fetch goes: the region, and in mixed mode the workload and its route. */
-interface FetchTarget {
-  region: string | undefined;
+/**
+ * Where a client factory's client must send its fetches. The resolver keys
+ * clients and cached values by it, so a host factory that builds its own
+ * clients routes by it too: `awsClientConfigForService(id, { workload })`.
+ */
+export interface DynamicReferenceRoute {
+  /** The workload the fetch is for, when known. */
   workload: AwsEmulatorWorkload | undefined;
   /** Whether mixed mode (or `--aws-emulator`) sends this fetch to AWS Emulator. */
   emulator: boolean;
+}
+
+/** Where one fetch goes: the region, and in mixed mode the workload and its route. */
+interface FetchTarget extends DynamicReferenceRoute {
+  region: string | undefined;
 }
 
 export interface ResolveStringOptions {
@@ -522,7 +535,10 @@ export class DynamicReferenceResolver {
     let c = this.smClients.get(key);
     if (!c) {
       c =
-        this.options.secretsManagerClientFactory?.(region) ??
+        this.options.secretsManagerClientFactory?.(region, {
+          workload,
+          emulator: target.emulator,
+        }) ??
         new SecretsManagerClient({
           ...workloadClientConfig({
             profile: this.options.profile,
@@ -543,7 +559,7 @@ export class DynamicReferenceResolver {
     let c = this.ssmClients.get(key);
     if (!c) {
       c =
-        this.options.ssmClientFactory?.(region) ??
+        this.options.ssmClientFactory?.(region, { workload, emulator: target.emulator }) ??
         new SSMClient({
           ...workloadClientConfig({ profile: this.options.profile, service: 'SSM', workload }),
           ...(region && { region }),

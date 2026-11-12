@@ -362,7 +362,9 @@ The rules:
   from real AWS with your real credentials. A call that serves no single
   workload follows every sentinel in the file (a service any section routes):
   an `AWS::SSM::Parameter::Value<...>` template parameter under
-  `--from-cfn-stack` (one value for the whole stack), and an HTTP API's
+  `--from-cfn-stack` in a command that reads one stack for several workloads
+  (listed under the next rule; for one function or runtime it follows that
+  workload's route), and an HTTP API's
   direct service integration (SQS, SNS, EventBridge, Kinesis, Step
   Functions, SSM), which API Gateway makes, not a function. These stay
   on real AWS whatever you route: STS (your identity, `--assume-role` and the
@@ -375,10 +377,10 @@ The rules:
   equals a real resource's physical ID takes the emulator's ID; an ARN or
   URL that merely contains it is left as it is, so name those in
   `--env-vars`. `cdkl invoke` (and a Lambda behind `start-cloudfront` or
-  `start-alb`) resolves names for its one function, by that function's own
-  sentinels. Commands that read a stack once for several workloads
-  (`start-api`, `run-task`, `start-service`, `start-alb`'s ECS targets,
-  `invoke-agentcore`, `start-agentcore`, `studio`) use the whole run's set:
+  `start-alb`), `invoke-agentcore` and `start-agentcore` resolve names for
+  their one function or runtime, by its own sentinels. Commands that read a
+  stack once for several workloads (`start-api`, `run-task`, `start-service`,
+  `start-alb`'s ECS targets, `studio`) use the whole run's set:
   a service any section routes resolves from the emulator for every
   workload there. When the emulator has no such stack, those resources keep their
   real names, with a warning. `cdkl start-cloudfront` serves S3 origins and

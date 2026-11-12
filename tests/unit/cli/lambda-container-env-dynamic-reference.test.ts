@@ -10,15 +10,17 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
-const { smSend, smRegions } = vi.hoisted(() => ({
+const { smSend, smRegions, smEndpoints } = vi.hoisted(() => ({
   smSend: vi.fn(),
   smRegions: [] as Array<string | undefined>,
+  smEndpoints: [] as Array<string | undefined>,
 }));
 
 vi.mock('@aws-sdk/client-secrets-manager', () => ({
   SecretsManagerClient: class {
-    constructor(config: { region?: string }) {
+    constructor(config: { region?: string; endpoint?: string }) {
       smRegions.push(config.region);
+      smEndpoints.push(config.endpoint);
     }
     send = smSend;
     destroy(): void {}
@@ -78,6 +80,7 @@ function zipLambda(envVars: Record<string, unknown>, region = 'us-west-2'): Reso
 beforeEach(() => {
   smSend.mockReset();
   smRegions.length = 0;
+  smEndpoints.length = 0;
   smSend.mockResolvedValue({ SecretString: JSON.stringify({ password: PLAINTEXT }) });
 });
 
@@ -293,5 +296,70 @@ describe('resolveLambdaContainerEnv — cross-stack dynamic reference (host --fr
     expect(result.env['DB_PASSWORD']).toBe(PLAINTEXT);
     expect(result.sensitiveEnvKeys).toEqual(['DB_PASSWORD']);
     expect(smRegions).toEqual(['eu-central-1']);
+  });
+});
+
+// go-to-k/cdk-local#902: the function is the workload. Its `{{resolve}}`
+// fetches and its `--from-cfn-stack` names follow ITS sentinels.
+const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');
+
+describe('resolveLambdaContainerEnv — AWS Emulator mixed mode, per workload', () => {
+  const EMU = 'https://127.0.0.1:9395';
+  const route = (section: string): void =>
+    setAwsEmulatorServiceRouting({
+      services: ['SECRETS_MANAGER'],
+      override: { endpoint: EMU, credentials: { accessKeyId: 'EMU', secretAccessKey: 'e' } },
+      envOverrides: { [section]: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator' } },
+    });
+
+  it("reads the secret from the emulator only when the function's own section routes it", async () => {
+    try {
+      route('Consumer/Handler');
+      await resolveLambdaContainerEnv(zipLambda({ DB_PASSWORD: TOKEN }), {}, undefined);
+      route('OtherFn');
+      await resolveLambdaContainerEnv(zipLambda({ DB_PASSWORD: TOKEN }), {}, undefined);
+      expect(smEndpoints).toEqual([EMU, undefined]);
+    } finally {
+      setAwsEmulatorServiceRouting(undefined);
+    }
+  });
+
+  it('hands a host state provider the function as the workload', async () => {
+    const factory = vi.fn(() => undefined as unknown as LocalStateProvider);
+    await resolveLambdaContainerEnv(zipLambda({ PLAIN: 'x' }), { fromHost: true }, undefined, {
+      fromHost: factory,
+    }).catch(() => undefined);
+    expect(factory).toHaveBeenCalledWith(expect.anything(), {
+      workload: { logicalId: 'Handler', cdkPath: 'Consumer/Handler/Resource' },
+    });
+  });
+
+  it('reads a pipe-backed --env-vars the sentinel scan already consumed (#894)', async () => {
+    const { execFileSync, spawn } = await import('node:child_process');
+    const { readAwsEmulatorSentinelsFromFile } = await import(
+      '../../../src/local/aws-emulator-mixed-mode.js'
+    );
+    const { resetEnvVarsFileTextsForTest } = await import('../../../src/local/env-resolver.js');
+    const dir = mkdtempSync(path.join(tmpdir(), 'fifo-invoke-'));
+    const fifo = path.join(dir, 'env.fifo');
+    execFileSync('mkfifo', [fifo]);
+    const body = JSON.stringify({ Handler: { FROM_PIPE: 'yes' } });
+    const writer = spawn('sh', ['-c', 'printf "%s" "$1" > "$2"', 'sh', body, fifo]);
+    const written = new Promise((r) => writer.on('exit', r));
+    // An empty second writer: a regression's second open of the FIFO reads ""
+    // and fails, instead of blocking the worker forever. Unused (killed) when
+    // the text is kept.
+    let empty: ReturnType<typeof spawn> | undefined;
+    try {
+      readAwsEmulatorSentinelsFromFile(fifo);
+      await written;
+      empty = spawn('sh', ['-c', ': > "$1"', 'sh', fifo]);
+      const result = await resolveLambdaContainerEnv(zipLambda({}), { envVars: fifo }, undefined);
+      expect(result.env['FROM_PIPE']).toBe('yes');
+    } finally {
+      writer.kill();
+      empty?.kill();
+      resetEnvVarsFileTextsForTest();
+    }
   });
 });

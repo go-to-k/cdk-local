@@ -77,7 +77,7 @@ import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { workloadClientConfig } from '../utils/workload-identity.js';
-import { awsEndpointOverrideClientConfig } from '../utils/aws-proxy.js';
+import { awsEndpointOverrideClientConfig, type AwsEmulatorWorkload } from '../utils/aws-proxy.js';
 import type { AwsEndpointOverride, AwsProxyClientConfig } from '../utils/aws-proxy.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
@@ -132,6 +132,12 @@ export interface CfnLocalStateProviderOptions {
    * mode names the emulator side, so its misses do not read as real-AWS ones.
    */
   label?: string;
+  /**
+   * The one workload this provider resolves for. In AWS Emulator mixed mode
+   * an SSM-backed template parameter is then read where THAT workload's SSM
+   * calls go (its own sentinels); without it, by every sentinel in the file.
+   */
+  workload?: AwsEmulatorWorkload | undefined;
 }
 
 export class CfnLocalStateProvider implements LocalStateProvider {
@@ -162,6 +168,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   private agentCoreControlClient: BedrockAgentCoreControlClient | undefined;
   private readonly clientOptions: { region: string; profile?: string };
   private readonly endpointOverride: AwsEndpointOverride | undefined;
+  private readonly workload: AwsEmulatorWorkload | undefined;
   // Issue #611 NIT 2: `dispose()` is terminal. The lazy `getClient()`
   // path would otherwise resurrect the client on a post-dispose
   // `load()` / `buildCrossStackResolver()` call, which violates the
@@ -185,6 +192,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     this.region = opts.region;
     this.clientOptions = { region: opts.region };
     this.endpointOverride = opts.endpointOverride;
+    this.workload = opts.workload;
     this.label = opts.label ?? '--from-cfn-stack';
     if (opts.profile !== undefined && !opts.endpointOverride) {
       this.clientOptions.profile = opts.profile;
@@ -267,7 +275,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       this.ssmClient = new SSMClient({
         ...workloadClientConfig({
           profile: this.clientOptions.profile,
-          ...(this.endpointOverride ? {} : { service: 'SSM' }),
+          ...(this.endpointOverride ? {} : { service: 'SSM', workload: this.workload }),
         }),
         ...this.overrideClientConfig(),
         region: this.region,

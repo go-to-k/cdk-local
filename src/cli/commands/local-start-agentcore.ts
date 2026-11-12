@@ -35,6 +35,7 @@ import {
 import {
   AGENTCORE_A2A_PROTOCOL,
   AGENTCORE_MCP_PROTOCOL,
+  agentCoreTargetWorkload,
   pickAgentCoreCandidateStack,
   resolveAgentCoreTarget,
 } from '../../local/agentcore-resolver.js';
@@ -321,7 +322,9 @@ async function localStartAgentCoreCommand(
     options,
     candidate?.stackName ?? '',
     await resolveCfnFallbackRegion(options, candidate?.region),
-    extraStateProviders
+    extraStateProviders,
+    // Mixed mode: names resolve by this runtime's own sentinels.
+    { workload: agentCoreTargetWorkload(resolvedTarget, stacks) }
   );
   const { context: imageContext, loaded: loadedState } =
     stateProvider && candidate
