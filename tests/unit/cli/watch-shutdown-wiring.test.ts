@@ -79,6 +79,23 @@ describe('--watch shutdown wiring (#882)', () => {
     expect(src).toContain('createShutdownSignalHandler(');
   });
 
+  it('a non-signal exit keeps the signal handlers until its cleanup has finished', () => {
+    // Removing them first let a ^C during that cleanup hit Node's default
+    // SIGINT handler, which kills the process mid-teardown.
+    for (const f of ['ecs-service-emulator.ts', 'local-invoke-agentcore.ts', 'local-run-task.ts']) {
+      const src = read(f);
+      // The command's own `finally`: the one that removes the signal handlers.
+      const fin = src.lastIndexOf('} finally {', src.indexOf("process.off('SIGINT', sigintHandler)"));
+      const tail = src.slice(fin);
+      const cleanupAt = tail.search(/await cleanup\(\);/);
+      const offAt = tail.indexOf("process.off('SIGINT'");
+      expect(cleanupAt, `${f}: finally awaits cleanup`).toBeGreaterThanOrEqual(0);
+      expect(offAt, `${f}: finally removes the SIGINT handler`).toBeGreaterThanOrEqual(0);
+      expect(cleanupAt, `${f}: handlers removed before the cleanup finished`).toBeLessThan(offAt);
+      expect(tail.indexOf("process.off('SIGTERM'"), f).toBeGreaterThan(cleanupAt);
+    }
+  });
+
   it('run-task (no --watch, same second-signal policy)', () => {
     const src = read('local-run-task.ts');
     expect(src).toContain('createShutdownSignalHandler(');

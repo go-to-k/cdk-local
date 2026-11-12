@@ -546,10 +546,13 @@ async function localRunTaskCommand(
       process.exitCode = result.exitCode;
     }
   } finally {
+    if (stateProvider) stateProvider.dispose();
+    // #882: keep the signal handlers installed until the cleanup has finished,
+    // so a ^C during a non-signal exit's cleanup joins it (single-flight)
+    // instead of killing the process with the default handler mid-teardown.
+    if (!options.detach) await cleanup();
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
-    if (stateProvider) stateProvider.dispose();
-    if (!options.detach) await cleanup();
   }
 }
 

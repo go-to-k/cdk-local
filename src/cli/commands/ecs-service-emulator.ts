@@ -1007,9 +1007,12 @@ export async function runEcsServiceEmulator(
       /* resolved only by the SIGINT/SIGTERM handler's process.exit */
     });
   } finally {
+    // #882: keep the signal handlers installed until the cleanup has finished,
+    // so a ^C during a non-signal exit's cleanup joins it (single-flight)
+    // instead of killing the process with the default handler mid-teardown.
+    await cleanup();
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
-    await cleanup();
   }
 }
 
