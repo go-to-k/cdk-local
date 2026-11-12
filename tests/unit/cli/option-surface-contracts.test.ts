@@ -152,6 +152,8 @@ describe('studio option surface contract (addStudioSpecificOptions)', () => {
     const flags = longFlagsOf(addStudioSpecificOptions(new Command()));
     expect(flags).toEqual([
       '--assume-role',
+      '--aws-emulator',
+      '--ca-bundle',
       '--from-cfn-stack',
       '--include-custom-resources',
       '--no-open',

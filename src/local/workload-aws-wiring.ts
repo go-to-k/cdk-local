@@ -17,6 +17,8 @@
 //   - under `--aws-emulator`: the endpoint, ITS credentials only (the
 //     host's real ones are scrubbed), its CA, and the emulator hygiene
 //     variables. cdk-local's own AWS clients are pointed at the endpoint too.
+//     Java gets the run's `truststore.p12` through `JAVA_TOOL_OPTIONS`, since
+//     the JVM reads none of the PEM trust variables.
 //
 // The docker-run layer applies it (`runDetached`, the ECS task runner), so
 // each command only activates it; a host CLI that embeds cdk-local calls the
@@ -154,10 +156,12 @@ export interface EmulatorRunFiles {
   credentials?: CallerCredentials;
   /** Host path of the run's `ca.pem`, when present. */
   caPath?: string;
+  /** Host path of the run's `truststore.p12` (the same CA, for Java), when present. */
+  truststorePath?: string;
 }
 
 /**
- * Read `~/.aws/emulator/<port>/{emulator_credentials, ca.pem}` — the files an
+ * Read `~/.aws/emulator/<port>/{emulator_credentials, ca.pem, truststore.p12}` — the files an
  * AWS Emulator run writes for its port. Never throws: missing or unreadable
  * files leave the field undefined.
  *
@@ -184,6 +188,8 @@ export function readEmulatorRunFiles(port: number, homeDir: string = homedir()):
   }
   const ca = path.join(dir, 'ca.pem');
   if (existsSync(ca)) result.caPath = ca;
+  const truststore = path.join(dir, 'truststore.p12');
+  if (existsSync(truststore)) result.truststorePath = truststore;
   return result;
 }
 
@@ -315,6 +321,44 @@ export interface ResolveWorkloadAwsWiringOptions {
    * Resolves `undefined` when healthy, else a short reason.
    */
   probeHealth?: (url: string, caPath: string | undefined) => Promise<string | undefined>;
+}
+
+/** Path of the AWS Emulator's Java trust store inside workload containers. */
+export function getContainerJavaTruststorePath(): string {
+  return `${getEmbedConfig().awsBindMountPath}/truststore.p12`;
+}
+
+/**
+ * The `JAVA_TOOL_OPTIONS` that point a JVM at a password-less PKCS12 trust
+ * store. The JVM reads none of the PEM variables in {@link CA_TRUST_ENV_KEYS},
+ * so the AWS SDK for Java needs this to trust AWS Emulator's certificate.
+ */
+export function javaTruststoreToolOptions(containerPath: string): string {
+  return `-Djavax.net.ssl.trustStore=${containerPath} -Djavax.net.ssl.trustStoreType=PKCS12`;
+}
+
+/**
+ * Combine a container's own `JAVA_TOOL_OPTIONS` with the wiring's. A value
+ * that already names a trust store wins as-is (the user chose one); any other
+ * value keeps its options and gets the wiring's appended.
+ */
+export function mergeJavaToolOptions(existing: string | undefined, wiring: string): string {
+  const own = (existing ?? '').trim();
+  if (own === '') return wiring;
+  if (/-Djavax\.net\.ssl\.trustStore=/.test(own)) return own;
+  return `${own} ${wiring}`;
+}
+
+/**
+ * Copy the emulator's `truststore.p12` into a fresh temp file, mode 0644: the
+ * run directory is private to the host user, and the container user may be
+ * another one. A trust store holds certificates only.
+ */
+function copyTruststoreFile(source: string): { hostPath: string; dispose: () => void } {
+  const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().productName}-truststore-`));
+  const hostPath = path.join(dir, 'truststore.p12');
+  writeFileSync(hostPath, readFileSync(source), { mode: 0o644 });
+  return { hostPath, dispose: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 /** Path of the CA bundle inside workload containers. */
@@ -472,6 +516,18 @@ export async function resolveWorkloadAwsWiring(
         );
       }
       const ca = caSource && ep.url.startsWith('https:') ? caMount(caSource) : undefined;
+      // Java reads none of the PEM variables: mount the run's PKCS12 copy of
+      // the same CA and point the JVM at it.
+      let java: { mount: WorkloadMount; env: Record<string, string> } | undefined;
+      if (run.truststorePath && ep.url.startsWith('https:')) {
+        const file = copyTruststoreFile(run.truststorePath);
+        disposers.push(file.dispose);
+        const containerPath = getContainerJavaTruststorePath();
+        java = {
+          mount: { hostPath: file.hostPath, containerPath },
+          env: { JAVA_TOOL_OPTIONS: javaTruststoreToolOptions(containerPath) },
+        };
+      }
       return {
         mode: 'emulator',
         emulatorEndpoint: ep,
@@ -480,9 +536,10 @@ export async function resolveWorkloadAwsWiring(
           AWS_EC2_METADATA_DISABLED: 'true',
           AWS_DISABLE_HOST_PREFIX_INJECTION: 'true',
           ...(ca?.env ?? {}),
+          ...(java?.env ?? {}),
         },
         scrubEnvKeys: EMULATOR_SCRUBBED_ENV_KEYS,
-        mounts: ca?.mounts ?? [],
+        mounts: [...(ca?.mounts ?? []), ...(java ? [java.mount] : [])],
         loopbackPorts: ep.loopback ? [ep.port] : [],
         probeHealth: ca !== undefined,
         ...(ca ? { caHostPath: ca.hostPath } : {}),
@@ -590,8 +647,15 @@ export function applyWorkloadAwsWiringToEnv(
     if (c.sessionToken) out['AWS_SESSION_TOKEN'] = c.sessionToken;
   };
   if (wiring.mode === 'emulator') {
+    const ownJavaToolOptions = out['JAVA_TOOL_OPTIONS'];
     for (const k of wiring.scrubEnvKeys) delete out[k];
     Object.assign(out, wiring.env);
+    // Forced like the rest, except that a container's own JVM options are
+    // kept: the trust store options are appended to them.
+    const javaToolOptions = wiring.env['JAVA_TOOL_OPTIONS'];
+    if (javaToolOptions !== undefined) {
+      out['JAVA_TOOL_OPTIONS'] = mergeJavaToolOptions(ownJavaToolOptions, javaToolOptions);
+    }
     setCreds(wiring.emulatorCredentials);
   } else {
     for (const [k, v] of Object.entries(wiring.env)) {

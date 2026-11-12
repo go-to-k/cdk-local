@@ -48,8 +48,8 @@ Shared across every `cdkl` subcommand (declared in
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c, --context <key=value...>` | — | Set CDK context values (repeatable). |
 | `--region <region>` | — | AWS region for the host-side SDK calls (STS `GetCallerIdentity` for `${AWS::AccountId}` resolution, `AssumeRole` for `--assume-role`, the `--from-cfn-stack` CFn client) and the container's `AWS_REGION` env var. Defaults to `AWS_REGION` / `AWS_DEFAULT_REGION` env, then the synthesized stack region, then the `--profile`'s configured region. |
-| `--aws-emulator [url]` | off | Run against a local AWS Emulator (default `https://127.0.0.1:9297`) for the command's own AWS calls and every workload container; also reads `CDK_LOCAL_AWS_EMULATOR`. Registered by every command that starts containers. See [AWS endpoints, CA bundles and credentials inside containers](#aws-endpoints-ca-bundles-and-credentials-inside-containers). |
-| `--ca-bundle <file>` | host `AWS_CA_BUNDLE` | PEM CA bundle mounted read-only into every workload container. Registered by every command that starts containers. |
+| `--aws-emulator [url]` | off | Run against a local AWS Emulator (default `https://127.0.0.1:9297`) for the command's own AWS calls and every workload container; also reads `CDK_LOCAL_AWS_EMULATOR`. Registered by every command that starts containers, and by `studio`, which forwards it. See [AWS endpoints, CA bundles and credentials inside containers](#aws-endpoints-ca-bundles-and-credentials-inside-containers). |
+| `--ca-bundle <file>` | host `AWS_CA_BUNDLE` | PEM CA bundle mounted read-only into every workload container. Registered by every command that starts containers, and by `studio`, which forwards it. |
 
 The `--from-cfn-stack` / `--stack-region` family is described in the
 per-command sections below.
@@ -59,7 +59,8 @@ per-command sections below.
 Every command that starts a workload container (`invoke`, `start-api`,
 `run-task`, `start-service`, `start-alb`, `start-web-function`,
 `start-microvm`, `start-cloudfront`, `invoke-agentcore`,
-`start-agentcore`) applies the same rules to it:
+`start-agentcore`) applies the same rules to it. `cdkl studio` takes the
+same two flags and forwards them to every command it starts:
 
 - **Endpoint overrides are forwarded.** `AWS_ENDPOINT_URL`, every
   `AWS_ENDPOINT_URL_<SERVICE>`, and the active profile's `endpoint_url`
@@ -73,7 +74,7 @@ Every command that starts a workload container (`invoke`, `start-api`,
   workload starts and the forwarder joins within moments of it; an app that
   calls AWS in its very first instant relies on its SDK's connection retry.
   The forwarder stops with the workload (and is restarted after a `--watch`
-  soft reload). When
+  soft reload); Ctrl-C while it is still starting removes both. When
   containers cannot reach the port, cdk-local warns with the fix. On Linux
   the endpoint must ALSO listen on the Docker bridge gateway: run AWS
   Emulator's Docker image with `-p 127.0.0.1:9297:9297 -p 172.17.0.1:9297:9297`
@@ -83,7 +84,11 @@ Every command that starts a workload container (`invoke`, `start-api`,
   `AWS_CA_BUNDLE`, else the profile's `ca_bundle`, is bind-mounted read-only
   at `/cdk-local-aws/ca-bundle.pem` (with the public root CAs appended), and
   `AWS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and
-  `SSL_CERT_FILE` point at it.
+  `SSL_CERT_FILE` point at it. The JVM reads none of these, so a Java
+  handler gets nothing from a PEM bundle: under `--aws-emulator` it gets
+  the emulator's trust store (below); for any other endpoint, put a trust
+  store in the function and set `JAVA_TOOL_OPTIONS` yourself (template
+  environment or `--env-vars`).
 - **Credentials default to your credential chain.** With no credential
   flag, a container gets what the host's default chain resolves
   (`AWS_PROFILE`, the shared credentials / config files, SSO). The
@@ -118,6 +123,13 @@ runs a command against a local AWS Emulator. The URL defaults to
   so a handler that misses the endpoint fails instead of reaching real AWS.
 - The run's `ca.pem` (or `--ca-bundle` / `AWS_CA_BUNDLE`) is mounted as
   above; certificate verification stays on.
+- For Java, a copy of the run's `truststore.p12` is mounted read-only at
+  `/cdk-local-aws/truststore.p12` and `JAVA_TOOL_OPTIONS` gets
+  `-Djavax.net.ssl.trustStore=/cdk-local-aws/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12`,
+  appended to the container's own `JAVA_TOOL_OPTIONS` (left alone when that
+  already names a trust store). As in AWS Emulator's own guidance, this
+  trust store replaces the JVM's default one, so the handler then reaches
+  the emulator but no other HTTPS host.
 - For a loopback URL, the forwarder repeats the health check through
   `127.0.0.1:<port>` inside the container network with that CA as each
   container starts; a failure stops the command with the fix instead of a
@@ -2422,10 +2434,12 @@ The console is a three-pane layout:
 | `--no-open` | (auto-opens) | Do not auto-open the browser when studio starts (TTY only). |
 | `--from-cfn-stack [name]` | (off) | Bind the whole studio session to a deployed CloudFormation stack — every invoke / serve started from the UI runs against the stack's real ARNs / Secret values. Bare flag auto-resolves a single-stack app; pass a name to pick the stack. Forwarded to each child command. |
 | `--assume-role <arn>` | (off) | IAM role ARN to assume for every invoke / serve started from the UI; the temporary credentials are forwarded into the containers. Forwarded to each child command. |
+| `--aws-emulator [url]` | (off; reads `CDK_LOCAL_AWS_EMULATOR`) | Run studio's own AWS calls (the `--from-cfn-stack` binding) and every invoke / serve started from the UI against a local AWS Emulator. studio checks the emulator's health at boot and forwards the URL to each child command. See [`--aws-emulator [url]`](#--aws-emulator-url). |
+| `--ca-bundle <file>` | host `AWS_CA_BUNDLE` | PEM CA bundle mounted into every workload container. Forwarded to each child command as an absolute path. |
 | `--stack <glob...>` | (all) | Filter the DISPLAYED targets by stack glob (a target id is `Stack/Construct`, so `dev/*` keeps stack `dev`'s targets, `dev*` any stack starting `dev`). Space-separate multiple globs (a target matching ANY is shown). **Display-only — does NOT scope synth**: the whole app is still synthesized, so gate synth itself with the app's own `-c` context / a committed `cdk.context.json`. |
 | `--watch` | (off) | Spawn serves started from the UI (`start-api` / `start-alb` / `start-service`) with `--watch`, so they re-synth + rolling-reload on CDK source changes. Toggleable live from the Session bar (`PATCH /api/config`), applying to the next serve. No effect on single-shot invokes (each re-synths anyway); the target list is not re-synthed (restart studio to pick up newly-added resources). |
 
-`--from-cfn-stack` and `--assume-role` are **session-global**: they apply
+`--from-cfn-stack`, `--assume-role`, `--aws-emulator` and `--ca-bundle` are **session-global**: they apply
 to every target you run from the UI, so they sit on `cdkl studio` itself
 rather than being set per-target. `cdkl studio` also accepts the shared app
 / context / region / profile flags (`--app`, `-c key=value`, `--region`,

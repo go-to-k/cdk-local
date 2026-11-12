@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Command, Option } from 'commander';
+import { addAwsEndpointOptions } from '../options.js';
+import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import {
   appOptions,
   commonOptions,
@@ -1043,6 +1045,10 @@ interface LocalStudioOptions {
   fromCfnStack?: string | boolean;
   /** `--assume-role <arn>`: explicit role ARN forwarded to every child command. */
   assumeRole?: string;
+  /** `--aws-emulator [url]`: forwarded to every child command (resolved to a URL). */
+  awsEmulator?: string | boolean;
+  /** `--ca-bundle <file>`: forwarded to every child command (as an absolute path). */
+  caBundle?: string;
   /**
    * `--stack <glob...>`: DISPLAY-only filter — show only targets whose id
    * matches one of the globs (e.g. `dev/*`). Does NOT scope synth.
@@ -1080,6 +1086,12 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   if (options.verbose) logger.setLevel('debug');
 
   const port = parseStudioPort(options.studioPort);
+
+  // studio's own AWS calls (the `--from-cfn-stack` classification) follow
+  // `--aws-emulator` like every other command's, and an unreachable emulator
+  // fails here rather than in each child.
+  const wiring = await activateWorkloadAwsWiring(options);
+  const awsEmulatorUrl = wiring.mode === 'emulator' ? wiring.emulatorEndpoint?.url : undefined;
 
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
@@ -1227,6 +1239,8 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     context?: Record<string, string>;
     fromCfnStack?: string | boolean;
     assumeRole?: string;
+    awsEmulator?: string;
+    caBundle?: string;
     watch?: boolean;
   } = {
     cliEntry,
@@ -1239,6 +1253,8 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     ...(Object.keys(context).length > 0 ? { context } : {}),
     ...(options.fromCfnStack !== undefined ? { fromCfnStack: options.fromCfnStack } : {}),
     ...(options.assumeRole ? { assumeRole: options.assumeRole } : {}),
+    ...(awsEmulatorUrl ? { awsEmulator: awsEmulatorUrl } : {}),
+    ...(options.caBundle ? { caBundle: resolve(options.caBundle) } : {}),
     ...(options.watch ? { watch: true } : {}),
   };
   const dispatcher = createStudioDispatcher(childConfig);
@@ -1521,6 +1537,8 @@ export function addStudioSpecificOptions(cmd: Command): Command {
         'forwarded into the containers). Forwarded to each child command.'
     )
   );
+  // `--aws-emulator` / `--ca-bundle`: forwarded to each child command.
+  addAwsEndpointOptions(cmd);
   cmd.addOption(
     new Option(
       '--stack <glob...>',

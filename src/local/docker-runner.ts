@@ -1,6 +1,6 @@
 import { flattenToOneLine } from './credential-error.js';
 import { redactDockerArgvValues, describeExitWithoutArgv } from '../utils/docker-argv-redaction.js';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
@@ -22,6 +22,7 @@ import { getEmbedConfig } from './embed-config.js';
 import {
   describeForwarderFailure,
   ensureForwarderImage,
+  newLoopbackForwarderName,
   startLoopbackForwarder,
 } from './loopback-forwarder.js';
 import {
@@ -363,6 +364,41 @@ async function isContainerRunning(containerId: string): Promise<boolean> {
   }
 }
 
+/**
+ * Run `fn` with SIGINT / SIGTERM listeners that remove `containers`
+ * synchronously. The forwarder's readiness wait can take seconds, and
+ * {@link runDetached} has not handed the workload's id to its caller yet, so
+ * the caller's own signal cleanup cannot know it; without this, Ctrl-C there
+ * leaves the workload running. A synchronous `docker rm -f` finishes before
+ * any other listener's async shutdown can exit the process. When no other
+ * listener exists, Node's default (exit on the signal) is kept: exit 130 / 143.
+ */
+async function removeOnSignalWhile<T>(
+  containers: readonly string[],
+  fn: () => Promise<T>
+): Promise<T> {
+  const listeners = (['SIGINT', 'SIGTERM'] as const).map((signal) => {
+    const listener = (): void => {
+      try {
+        execFileSync(getDockerCmd(), ['rm', '-f', ...containers], {
+          stdio: 'ignore',
+          timeout: 15_000,
+        });
+      } catch {
+        // Best effort: a container already gone makes `rm -f` exit non-zero.
+      }
+      if (process.listenerCount(signal) === 1) process.exit(signal === 'SIGINT' ? 130 : 143);
+    };
+    process.on(signal, listener);
+    return { signal, listener };
+  });
+  try {
+    return await fn();
+  } finally {
+    for (const { signal, listener } of listeners) process.off(signal, listener);
+  }
+}
+
 /** Ports each workload's forwarder serves, so a restart re-attaches the same set. */
 const forwardedPortsByContainer = new Map<string, readonly number[]>();
 
@@ -387,14 +423,18 @@ export async function attachLoopbackForwarder(
     wiring.mode === 'emulator'
       ? `--aws-emulator ${wiring.emulatorEndpoint?.url ?? ''}`
       : 'The AWS endpoint override (AWS_ENDPOINT_URL*)';
+  const forwarderName = newLoopbackForwarderName();
   let result;
   try {
-    result = await startLoopbackForwarder({
-      workloadContainer: containerId,
-      ports,
-      probe: wiring.probeHealth ? 'health' : 'tcp',
-      ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
-    });
+    result = await removeOnSignalWhile([containerId, forwarderName], () =>
+      startLoopbackForwarder({
+        workloadContainer: containerId,
+        ports,
+        probe: wiring.probeHealth ? 'health' : 'tcp',
+        name: forwarderName,
+        ...(wiring.caHostPath ? { caHostPath: wiring.caHostPath } : {}),
+      })
+    );
   } catch (err) {
     // Joining a container that already exited fails; it needs no forwarder.
     if (!(await isContainerRunning(containerId))) return;

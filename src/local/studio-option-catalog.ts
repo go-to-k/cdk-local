@@ -82,6 +82,8 @@ export const CATALOG_EXCLUDED_FLAGS: ReadonlySet<string> = new Set([
   '--context',
   '--from-cfn-stack',
   '--assume-role',
+  '--aws-emulator',
+  '--ca-bundle',
   '--help',
   '--version',
 ]);

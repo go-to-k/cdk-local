@@ -26,6 +26,7 @@ const {
   getActiveWorkloadAwsWiring,
   parseAwsEndpoint,
   readEmulatorRunFiles,
+  mergeJavaToolOptions,
   resetWorkloadAwsWiringForTest,
   resolveHostDefaultCredentials,
   resolveWorkloadAwsWiring,
@@ -45,10 +46,16 @@ const EMU_KEY = { accessKeyId: 'EMULATOR0123456789AB', secretAccessKey: 'A'.repe
 
 let home: string;
 
-function writeEmulatorRun(port: number, opts: { credentials?: boolean } = {}): string {
+const TRUSTSTORE = Buffer.from([0x30, 0x82, 0x01, 0x00, 0xde, 0xad, 0xbe, 0xef]);
+
+function writeEmulatorRun(
+  port: number,
+  opts: { credentials?: boolean; truststore?: boolean } = {}
+): string {
   const dir = path.join(home, '.aws', 'emulator', String(port));
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, 'ca.pem'), PEM, { mode: 0o600 });
+  if (opts.truststore) writeFileSync(path.join(dir, 'truststore.p12'), TRUSTSTORE, { mode: 0o600 });
   writeFileSync(path.join(dir, 'config'), '[default]\nregion = us-east-1\n');
   if (opts.credentials !== false) {
     writeFileSync(
@@ -147,6 +154,11 @@ describe('readEmulatorRunFiles', () => {
       credentials: EMU_KEY,
       caPath: path.join(dir, 'ca.pem'),
     });
+  });
+
+  it('reports the Java trust store when the run wrote one', () => {
+    const dir = writeEmulatorRun(9297, { truststore: true });
+    expect(readEmulatorRunFiles(9297, home).truststorePath).toBe(path.join(dir, 'truststore.p12'));
   });
 
   it('reports a run without keys (--auth off) and a port with no run', () => {
@@ -314,6 +326,77 @@ describe('resolveWorkloadAwsWiring — --aws-emulator', () => {
         probeHealth: async () => 'ECONNREFUSED',
       })
     ).rejects.toThrow(/no AWS Emulator answers its health check .*ECONNREFUSED.*running on port 9399/);
+  });
+});
+
+describe('--aws-emulator: Java trust store', () => {
+  const healthy = vi.fn(async () => undefined);
+  const JAVA_OPTS =
+    '-Djavax.net.ssl.trustStore=/cdk-local-aws/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12';
+
+  it("mounts a world-readable copy of the run's truststore.p12 and points JAVA_TOOL_OPTIONS at it", async () => {
+    writeEmulatorRun(9297, { truststore: true });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    try {
+      expect(w.env['JAVA_TOOL_OPTIONS']).toBe(JAVA_OPTS);
+      const mount = w.mounts.find((m) => m.containerPath === '/cdk-local-aws/truststore.p12');
+      expect(mount).toBeDefined();
+      // A copy, not the private run file: the container user may not be the host user.
+      expect(mount!.hostPath).not.toContain(path.join('.aws', 'emulator'));
+      expect(readFileSync(mount!.hostPath)).toEqual(TRUSTSTORE);
+      expect(statSync(mount!.hostPath).mode & 0o777).toBe(0o644);
+      // The PEM bundle mount is still there for the other runtimes.
+      expect(w.mounts.map((m) => m.containerPath)).toContain('/cdk-local-aws/ca-bundle.pem');
+      w.dispose();
+      expect(() => statSync(mount!.hostPath)).toThrow();
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it('sets no JAVA_TOOL_OPTIONS when the run has no truststore.p12, or the endpoint is plain http', async () => {
+    writeEmulatorRun(9297);
+    const noStore = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    expect(noStore.env['JAVA_TOOL_OPTIONS']).toBeUndefined();
+    noStore.dispose();
+    writeEmulatorRun(9302, { truststore: true });
+    const http = await resolveWorkloadAwsWiring({
+      awsEmulator: 'http://127.0.0.1:9302',
+      env: {},
+      homeDir: home,
+      probeHealth: healthy,
+    });
+    expect(http.env['JAVA_TOOL_OPTIONS']).toBeUndefined();
+    expect(http.mounts).toEqual([]);
+    http.dispose();
+  });
+
+  it('forward mode (a plain --ca-bundle PEM) sets no JAVA_TOOL_OPTIONS', async () => {
+    const pem = path.join(home, 'ca.pem');
+    writeFileSync(pem, PEM);
+    const w = await resolveWorkloadAwsWiring({ caBundle: pem, env: {}, homeDir: home });
+    expect(w.env['JAVA_TOOL_OPTIONS']).toBeUndefined();
+    w.dispose();
+  });
+
+  it("appends to a container's own JAVA_TOOL_OPTIONS instead of replacing it", async () => {
+    writeEmulatorRun(9297, { truststore: true });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    try {
+      expect(applyWorkloadAwsWiringToEnv({ JAVA_TOOL_OPTIONS: '-Xmx256m' }, w)['JAVA_TOOL_OPTIONS']).toBe(
+        `-Xmx256m ${JAVA_OPTS}`
+      );
+      expect(applyWorkloadAwsWiringToEnv({}, w)['JAVA_TOOL_OPTIONS']).toBe(JAVA_OPTS);
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it('mergeJavaToolOptions keeps a value that already names a trust store', () => {
+    const own = '-Djavax.net.ssl.trustStore=/opt/my.jks -Xss1m';
+    expect(mergeJavaToolOptions(own, JAVA_OPTS)).toBe(own);
+    expect(mergeJavaToolOptions('  ', JAVA_OPTS)).toBe(JAVA_OPTS);
+    expect(mergeJavaToolOptions(undefined, JAVA_OPTS)).toBe(JAVA_OPTS);
   });
 });
 
