@@ -101,3 +101,101 @@ describe('buildDockerRunArgs with the AWS wiring', () => {
     expect(args.some((a) => a.includes('ca-bundle'))).toBe(false);
   });
 });
+
+// Issue #883: with no credential flag, run-task passes the host default chain
+// as container env. It fills only an env that names no credentials of its own,
+// stays off argv, and never survives --aws-emulator full mode.
+describe('buildDockerRunArgs with default-chain credentials (#883)', () => {
+  const chain = {
+    accessKeyId: 'AKIDCHAIN0000000883',
+    secretAccessKey: 'CHAINSECRET883',
+    sessionToken: 'CHAINTOKEN883',
+  };
+  function buildDefault(environment: Record<string, string>, envOverrides?: object) {
+    return buildDockerRunArgs({
+      task: { family: 'fam' } as unknown as ResolvedEcsTask,
+      container: container(environment),
+      image: 'busybox',
+      network: 'net',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: envOverrides as never,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: 'us-east-1',
+      defaultCredentials: chain,
+    });
+  }
+
+  it('sets the chain as AWS_* env, values off argv, no credentials file', () => {
+    const { args, sensitiveEnv } = buildDefault({});
+    expect(sensitiveEnv).toEqual({
+      AWS_ACCESS_KEY_ID: chain.accessKeyId,
+      AWS_SECRET_ACCESS_KEY: chain.secretAccessKey,
+      AWS_SESSION_TOKEN: chain.sessionToken,
+    });
+    const argv = args.join(' ');
+    for (const v of Object.values(chain)) expect(argv).not.toContain(v);
+    expect(args).toContain('AWS_ACCESS_KEY_ID');
+    expect(args.some((a) => a.startsWith('AWS_SHARED_CREDENTIALS_FILE'))).toBe(false);
+    expect(args.some((a) => a.startsWith('AWS_CONTAINER_CREDENTIALS'))).toBe(false);
+  });
+
+  it('a task-declared key pair or AWS_PROFILE wins as a whole', () => {
+    const declared = buildDefault({ AWS_ACCESS_KEY_ID: 'TASKKEY', AWS_SECRET_ACCESS_KEY: 'TASKSECRET' });
+    expect(declared.sensitiveEnv['AWS_ACCESS_KEY_ID']).toBe('TASKKEY');
+    expect(declared.sensitiveEnv['AWS_SECRET_ACCESS_KEY']).toBe('TASKSECRET');
+    expect(declared.sensitiveEnv['AWS_SESSION_TOKEN']).toBeUndefined();
+    const profile = buildDefault({ AWS_PROFILE: 'baked' });
+    expect(profile.sensitiveEnv['AWS_ACCESS_KEY_ID']).toBeUndefined();
+    expect(profile.args).toContain('AWS_PROFILE=baked');
+  });
+
+  it('an --env-vars key wins over the chain', () => {
+    const { sensitiveEnv } = buildDefault({}, { app: { AWS_ACCESS_KEY_ID: 'OVERRIDEKEY' } });
+    expect(sensitiveEnv['AWS_ACCESS_KEY_ID']).toBe('OVERRIDEKEY');
+    expect(sensitiveEnv['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
+  });
+
+  it.each([
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+    'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+    'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  ])('a task-declared %s keeps the chain out', (key) => {
+    const { args, sensitiveEnv } = buildDefault({ [key]: 'task-value' });
+    expect(sensitiveEnv['AWS_ACCESS_KEY_ID']).toBeUndefined();
+    expect(JSON.stringify({ args, sensitiveEnv })).not.toContain('CHAIN');
+  });
+
+  it('an --env-vars "AWS_ACCESS_KEY_ID": null opts the container out', () => {
+    for (const scope of ['app', 'Parameters']) {
+      const { args, sensitiveEnv } = buildDefault({}, { [scope]: { AWS_ACCESS_KEY_ID: null } });
+      expect(sensitiveEnv['AWS_ACCESS_KEY_ID']).toBeUndefined();
+      expect(JSON.stringify({ args, sensitiveEnv })).not.toContain('CHAIN');
+    }
+  });
+
+  it('emulator full mode: only the emulator keys reach the container', () => {
+    setActiveWorkloadAwsWiring({
+      ...base,
+      mode: 'emulator',
+      scrubEnvKeys: ['AWS_PROFILE', 'AWS_SHARED_CREDENTIALS_FILE'],
+      emulatorCredentials: { accessKeyId: 'EMULATOR0123456789AB', secretAccessKey: 'EMUSECRET' },
+    });
+    const { args, sensitiveEnv } = buildDefault({});
+    expect(sensitiveEnv['AWS_ACCESS_KEY_ID']).toBe('EMULATOR0123456789AB');
+    expect(sensitiveEnv['AWS_SECRET_ACCESS_KEY']).toBe('EMUSECRET');
+    expect(sensitiveEnv['AWS_SESSION_TOKEN']).toBeUndefined();
+    expect(JSON.stringify({ args, sensitiveEnv })).not.toContain('CHAIN');
+  });
+
+  it('forward (mixed) mode keeps the real chain', () => {
+    setActiveWorkloadAwsWiring(base);
+    const { sensitiveEnv } = buildDefault({});
+    expect(sensitiveEnv['AWS_ACCESS_KEY_ID']).toBe(chain.accessKeyId);
+  });
+});

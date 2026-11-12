@@ -184,8 +184,14 @@ same two flags and forwards them to every command it starts:
 - **Credentials default to your credential chain.** With no credential
   flag, a container gets what the host's default chain resolves
   (`AWS_PROFILE`, the shared credentials / config files, SSO). The
-  precedence is `--assume-role` > `--profile` > the default chain; for ECS
-  tasks the metadata sidecar serves them. When the chain finds nothing, it
+  precedence is `--assume-role` > `--profile` > the default chain. A
+  `run-task` container gets default-chain credentials as `AWS_*` env
+  (unless its own env names a credential source: an `AWS_*` key,
+  `AWS_PROFILE`, `AWS_SHARED_CREDENTIALS_FILE`,
+  `AWS_WEB_IDENTITY_TOKEN_FILE` or an `AWS_CONTAINER_CREDENTIALS_*` URI; an
+  `--env-vars` `"AWS_ACCESS_KEY_ID": null` opts out), and
+  `--profile` credentials from a mounted shared credentials file; only an
+  assumed task role is served by the metadata sidecar. When the chain finds nothing, it
   is asked again after a minute, so an SSO login during a long `--watch`
   session reaches containers started after it.
 - **`AWS_DEFAULT_REGION` follows `AWS_REGION`**, as on Lambda and ECS, so
@@ -1713,7 +1719,11 @@ For every task invocation cdk-local:
 4. Injects per-container env vars: `ECS_CONTAINER_METADATA_URI_V4=http://<sidecar-ip>/v4/<container-name>`
    and (when `--assume-role` / `--assume-task-role` is set) `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`.
    The sidecar holds the assumed role's credentials and serves them at `/creds`,
-   so an AWS SDK in the container runs as the task role.
+   so an AWS SDK in the container runs as the task role. Without a task role,
+   `--profile` credentials are mounted read-only as a shared credentials
+   file (`AWS_SHARED_CREDENTIALS_FILE` + `AWS_PROFILE`), and with no
+   credential flag the default chain is set as `AWS_*` env. Neither happens
+   under `--aws-emulator`.
 
 **Concurrent runs.** AWS SDKs read `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`
 only from the fixed address `169.254.170.2`, so a run with a task role always

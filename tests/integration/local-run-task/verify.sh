@@ -19,6 +19,7 @@ cd "$(dirname "$0")"
 CDKL="node ../../../dist/cli.js"
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 NGINX_IMAGE="public.ecr.aws/nginx/nginx:alpine"
+AWSCLI_IMAGE="public.ecr.aws/aws-cli/aws-cli:2.31.0"
 
 # --- built-image cleanup (issue #587) --------------------------------------
 # This used to force-remove EVERY `cdkl-override-*` tag. Parallel integ lanes
@@ -68,6 +69,7 @@ docker version --format '{{.Server.Version}}' >/dev/null
 echo "==> Pulling fixture images"
 docker pull "${SIDECAR_IMAGE}"
 docker pull "${NGINX_IMAGE}"
+docker pull "${AWSCLI_IMAGE}"
 
 echo "==> Installing fixture deps"
 if [[ ! -d node_modules ]]; then
@@ -75,7 +77,7 @@ if [[ ! -d node_modules ]]; then
 fi
 
 
-echo "==> [1/5] Starting task via --detach"
+echo "==> [1/6] Starting task via --detach"
 # Capture the run output: the fixture's image is a public-registry pin, so a
 # run WITHOUT --image-override must WARN that local source edits will not take
 # effect (issue #388 — this locks the command-level pinned-uncovered WARN
@@ -89,7 +91,7 @@ fi
 rm -f "${PINNED_RUN_LOG}"
 echo "    OK: pinned-image WARN surfaced (suggests --image-override)"
 
-echo "==> [2/5] Curling http://127.0.0.1:18080/"
+echo "==> [2/6] Curling http://127.0.0.1:18080/"
 # Give nginx ~5s to listen.
 sleep 5
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/ || true)
@@ -114,7 +116,7 @@ fi
 echo "==> Tearing down the pinned run to free host port 18080"
 teardown_runs
 
-echo "==> [3/5] run-task --image-override rebuilds the pinned task-def image from a local Dockerfile"
+echo "==> [3/6] run-task --image-override rebuilds the pinned task-def image from a local Dockerfile"
 ${CDKL} run-task CdkLocalRunTaskFixture/NginxTask \
   --image-override 'CdkLocalRunTaskFixture/NginxTask=Dockerfile.override' \
   --no-interactive-overrides --detach --no-pull --container-host 127.0.0.1
@@ -134,7 +136,7 @@ echo "    OK: the pinned task-def image was rebuilt from the local Dockerfile (s
 echo "==> Tearing down the override run"
 teardown_runs
 
-echo "==> [4/5] run-task --image-override + --image-context on a same-stack ECR repository image"
+echo "==> [4/6] run-task --image-override + --image-context on a same-stack ECR repository image"
 SAME_STACK_LOG=$(mktemp)
 ${CDKL} run-task CdkLocalRunTaskFixture/SameStackTask \
   --image-override 'CdkLocalRunTaskFixture/SameStackTask=context-app/docker/Dockerfile' \
@@ -155,7 +157,7 @@ fi
 echo "    OK: same-stack ECR image rebuilt from a Dockerfile below its --image-context"
 teardown_runs
 
-echo "==> [5/5] run-task on the same-stack ECR image WITHOUT an override is refused"
+echo "==> [5/6] run-task on the same-stack ECR image WITHOUT an override is refused"
 set +e
 NOOV_OUT=$(${CDKL} run-task CdkLocalRunTaskFixture/SameStackTask \
   --no-interactive-overrides --detach --no-pull --container-host 127.0.0.1 2>&1)
@@ -171,5 +173,28 @@ if ! grep -qF 'references same-stack ECR repository' <<<"${NOOV_OUT}" \
 fi
 echo "    OK: refused, remedy names --image-override"
 
+# Issue #883 — with no credential flag, the task gets the host's default
+# chain. A fake env key pair stands in for it (env is the chain's first link),
+# so nothing reaches AWS: `aws configure list` resolves the container's chain
+# locally and prints the key masked to its last 4 characters.
+echo "==> [6/6] run-task with no credential flag hands the container the host default chain"
+set +e
+CREDS_OUT=$(env -u AWS_PROFILE -u AWS_SESSION_TOKEN \
+  AWS_ACCESS_KEY_ID=FAKEINTEGKEY0883 AWS_SECRET_ACCESS_KEY=integ-fake-secret-883 \
+  AWS_REGION=us-east-1 \
+  ${CDKL} run-task CdkLocalRunTaskFixture/CredsTask --no-pull 2>&1)
+CREDS_RC=$?
+set -e
+if [[ "${CREDS_RC}" -ne 0 ]] \
+  || ! grep -qE 'access_key +\*+0883 +env' <<<"${CREDS_OUT}"; then
+  echo "FAIL: the container did not resolve the host default chain (rc=${CREDS_RC})"
+  echo "${CREDS_OUT}"; exit 1
+fi
+if grep -qF 'integ-fake-secret-883' <<<"${CREDS_OUT}"; then
+  echo "FAIL: the secret key reached the run output"; exit 1
+fi
+echo "    OK: the container resolved the default-chain key from its env"
+teardown_runs
+
 echo ""
-echo "==> All local-run-task tests passed (run + image-override rebuild + same-stack ECR)"
+echo "==> All local-run-task tests passed (run + image-override rebuild + same-stack ECR + default-chain credentials)"

@@ -1,9 +1,12 @@
-import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vite-plus/test';
 import {
   resetWorkloadAwsWiringForTest,
   setActiveWorkloadAwsWiring,
 } from '../../../src/local/workload-aws-wiring.js';
-import { resolveSidecarCredentials } from '../../../src/cli/commands/local-run-task.js';
+import {
+  containerCredentialDelivery,
+  resolveSidecarCredentials,
+} from '../../../src/cli/commands/local-run-task.js';
 
 // cdkd#658: `cdkl run-task --profile <p>` (without
 // `--assume-task-role`) used to resolve the profile for cdk-local's OWN
@@ -118,5 +121,72 @@ describe('resolveSidecarCredentials (cdkd#658)', () => {
     await expect(
       resolveSidecarCredentials({ profile: 'expired-sso' }, undefined)
     ).rejects.toThrow(/SSO session.*expired/);
+  });
+});
+
+// Issue #883: without a task role, nothing advertises the sidecar's `/creds`
+// route to the containers (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` is set only
+// for a role, and a no-role run is not on 169.254.170.0/24), so the
+// credentials reach them through the `--profile` file or, with no flag, their
+// env. This pins which, or that they get none.
+describe('containerCredentialDelivery (#883)', () => {
+  const chain = { accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'SECRET-CHAIN' };
+  const assumed = { accessKeyId: 'AKIA-ASSUMED', secretAccessKey: 'SECRET-ASSUMED' };
+
+  beforeEach(() => {
+    resetWorkloadAwsWiringForTest();
+  });
+  afterEach(() => {
+    resetWorkloadAwsWiringForTest();
+  });
+
+  it('passes the host default chain as env when no credential flag is set', () => {
+    expect(containerCredentialDelivery({}, chain, undefined)).toBe('env');
+  });
+
+  it('mounts --profile credentials under the profile name', () => {
+    expect(containerCredentialDelivery({ profile: 'my-sso' }, chain, undefined)).toBe(
+      'profile-file'
+    );
+  });
+
+  it('delivers nothing extra when a task role was assumed (the sidecar serves it)', () => {
+    expect(containerCredentialDelivery({}, assumed, assumed)).toBeUndefined();
+    expect(containerCredentialDelivery({ profile: 'my-sso' }, assumed, assumed)).toBeUndefined();
+  });
+
+  it('delivers nothing when no credentials were resolved', () => {
+    expect(containerCredentialDelivery({}, undefined, undefined)).toBeUndefined();
+  });
+
+  it('delivers no real credentials under --aws-emulator full mode, with or without --profile', () => {
+    const emulatorCredentials = { accessKeyId: 'EMULATOR0000', secretAccessKey: 'EMU-SECRET' };
+    setActiveWorkloadAwsWiring({
+      mode: 'emulator',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      emulatorCredentials,
+      dispose: () => undefined,
+    });
+    expect(containerCredentialDelivery({}, emulatorCredentials, undefined)).toBeUndefined();
+    expect(
+      containerCredentialDelivery({ profile: 'my-sso' }, emulatorCredentials, undefined)
+    ).toBeUndefined();
+  });
+
+  it('keeps the real default chain in forward (mixed-mode) wiring', () => {
+    setActiveWorkloadAwsWiring({
+      mode: 'forward',
+      env: {},
+      scrubEnvKeys: [],
+      mounts: [],
+      loopbackPorts: [],
+      probeHealth: false,
+      dispose: () => undefined,
+    });
+    expect(containerCredentialDelivery({}, chain, undefined)).toBe('env');
   });
 });
