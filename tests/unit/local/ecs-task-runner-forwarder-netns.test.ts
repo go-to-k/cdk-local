@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { ResolvedEcsContainer, ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
 import {
+  awsEmulatorSqsHostBlocks,
   resetWorkloadAwsWiringForTest,
   setActiveWorkloadAwsWiring,
   type WorkloadAwsWiring,
@@ -145,9 +146,18 @@ describe('buildDockerRunArgs: the namespace-owning forwarder (issue #878)', () =
       network: 'net',
       networkAliases: ['app', 'api.local'],
       publish: ['127.0.0.1:8080:8080/tcp', '127.0.0.1::9000/tcp'],
-      addHosts: ['peer.ns:10.0.0.9', 'host.docker.internal:host-gateway'],
+      // The SQS host blocks of an emulator-side container follow the task's own (#947).
+      addHosts: [
+        'peer.ns:10.0.0.9',
+        'host.docker.internal:host-gateway',
+        ...awsEmulatorSqsHostBlocks({ AWS_ENDPOINT_URL: 'https://127.0.0.1:4566' }, wiring).map(
+          (h) => `${h.host}:${h.ip}`
+        ),
+      ],
       links: ['db:db'],
     });
+    // On its own network endpoint the container carries the SQS host blocks itself (#947).
+    expect(built.args[built.args.indexOf('sqs.us-east-1.amazonaws.com:127.0.0.1') - 1]).toBe('--add-host');
     // The joiner: same name, the forwarder's network, none of the refused flags.
     expect(flagValues(fwd.args, '--name')).toEqual([name]);
     expect(flagValues(fwd.args, '--network')).toEqual([`container:${fwd.name}`]);

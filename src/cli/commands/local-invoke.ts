@@ -6,6 +6,7 @@ import {
 } from '../options.js';
 import {
   activateWorkloadAwsWiring,
+  logMixedModeForWorkload,
   takeAwsEmulatorStateSourceHint,
 } from '../../local/workload-aws-wiring.js';
 import { tmpdir } from 'node:os';
@@ -323,7 +324,7 @@ async function localInvokeCommand(
   );
 
   try {
-    await activateWorkloadAwsWiring(options);
+    await activateWorkloadAwsWiring({ ...options, singleWorkload: true });
     warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
       roleFlag: '--assume-role',
       roleRequested: options.assumeRole !== undefined && options.assumeRole !== false,
@@ -391,6 +392,10 @@ async function localInvokeCommand(
     const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
     logger.info(
       `Target: ${displayStackName(`${lambda.stack.stackName}/${lambda.logicalId}`)} (${targetLabel})`
+    );
+    logMixedModeForWorkload(
+      lambdaWorkload(lambda),
+      `Lambda ${displayStackName(`${lambda.stack.stackName}/${lambda.logicalId}`)}`
     );
 
     imagePlan = await resolveImagePlan(lambda, options);

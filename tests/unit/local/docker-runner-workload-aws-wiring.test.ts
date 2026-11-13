@@ -657,3 +657,62 @@ describe('runDetached — mixed mode (--aws-emulator + a real-aws exception)', (
     ).rejects.toThrow(/cannot run on the host network/);
   });
 });
+
+describe('SQS queue URLs and hosts under --aws-emulator (#947)', () => {
+  const Q = 'https://sqs.us-east-1.amazonaws.com/000000000000/Stack-Queue';
+  const sidecar = {
+    port: 47297,
+    endpoint: 'https://127.0.0.1:47297',
+    upstream: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+    configHostPath: '/tmp/resign-full/resign.json',
+    passthrough: true,
+  };
+
+  it('blocks the real SQS hosts and rewrites the env queue URL to the sidecar', async () => {
+    const w = emulatorWiring({
+      sidecar,
+      env: { ...emulatorWiring().env, AWS_ENDPOINT_URL_SQS: sidecar.endpoint },
+      loopbackPorts: [9297, 47297],
+    });
+    const wired = await withWorkloadAwsWiring(
+      { ...baseRun, env: { QUEUE_URL: Q }, extraHosts: [{ host: 'host.docker.internal', ip: 'host-gateway' }] },
+      w
+    );
+    expect(wired.env['QUEUE_URL']).toBe('https://127.0.0.1:47297/000000000000/Stack-Queue');
+    expect(wired.extraHosts?.[0]).toEqual({ host: 'host.docker.internal', ip: 'host-gateway' });
+    expect(wired.extraHosts).toContainEqual({ host: 'sqs.us-east-1.amazonaws.com', ip: '127.0.0.1' });
+  });
+
+  it('host network: the queue URL falls back to the emulator with the SQS endpoint', async () => {
+    const w = emulatorWiring({
+      sidecar,
+      env: { ...emulatorWiring().env, AWS_ENDPOINT_URL_SQS: sidecar.endpoint },
+      loopbackPorts: [9297, 47297],
+    });
+    const wired = await withWorkloadAwsWiring({ ...baseRun, network: 'host', env: { QUEUE_URL: Q } }, w);
+    expect(wired.env['AWS_ENDPOINT_URL_SQS']).toBeUndefined();
+    expect(wired.env['QUEUE_URL']).toBe('https://127.0.0.1:9297/000000000000/Stack-Queue');
+  });
+
+  it('forward mode (no --aws-emulator): no host entries, the env untouched', async () => {
+    const w: Wiring = { ...emulatorWiring(), mode: 'forward', env: {}, emulatorCredentials: undefined };
+    defaultChainMock.mockResolvedValue(undefined);
+    const wired = await withWorkloadAwsWiring({ ...baseRun, env: { QUEUE_URL: Q } }, w);
+    expect(wired.env['QUEUE_URL']).toBe(Q);
+    expect(wired.extraHosts).toBeUndefined();
+  });
+
+  it('runDetached passes the blocks as --add-host flags', async () => {
+    setActiveWorkloadAwsWiring(emulatorWiring());
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: args.includes('--pid') ? 'fwd\n' : 'id\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return { stdout: '' };
+    });
+    await runDetached({ ...baseRun, env: { QUEUE_URL: Q } });
+    const run = execFileMock.mock.calls.find((c) => c[1][0] === 'run' && !c[1].includes('--pid'))!;
+    const args = run[1] as string[];
+    expect(args[args.indexOf('sqs.us-east-1.amazonaws.com:127.0.0.1') - 1]).toBe('--add-host');
+    expect(args).toContain('QUEUE_URL=https://127.0.0.1:9297/000000000000/Stack-Queue');
+  });
+});

@@ -1332,6 +1332,8 @@ export {
   activateWorkloadAwsWiring,
   displayEndpointValue,
   applyWorkloadAwsWiringToEnv,
+  awsEmulatorSqsHostBlocks,
+  logMixedModeForWorkload,
   collectHostEndpointOverrides,
   effectiveLoopbackPorts,
   DEFAULT_AWS_EMULATOR_URL,
@@ -1449,6 +1451,7 @@ export {
   MIXED_MODE_RESIGN_PORT,
   REAL_AWS_SENTINEL,
   createMixedModeStateProvider,
+  describeRealAwsExceptions,
   findLegacyAwsEmulatorSentinels,
   findRealAwsExceptions,
   isLegacyAwsEmulatorSentinel,
@@ -1464,6 +1467,18 @@ export {
   type MixedModeStateProviderOptions,
   type RealAwsException,
 } from './local/aws-emulator-mixed-mode.js';
+/**
+ * SQS queue URLs under `--aws-emulator` (go-to-k/cdk-local#947): the env
+ * rewrite `applyWorkloadAwsWiringToEnv` applies, and the host names
+ * `awsEmulatorSqsHostBlocks` blocks, for a host's own container assembly.
+ */
+export {
+  REAL_SQS_QUEUE_URL,
+  isRealAwsHost,
+  realSqsHostnames,
+  rewriteSqsQueueUrlsInEnv,
+  sqsEmulatorOriginOf,
+} from './local/aws-emulator-sqs-routing.js';
 /**
  * Per-workload names in a command serving several workloads
  * (go-to-k/cdk-local#905): resolve the shared names for `UNNAMED_WORKLOAD`

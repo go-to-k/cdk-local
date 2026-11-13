@@ -108,7 +108,15 @@ a log line, and a served HTTP response body.
   (`AwsEmulatorWorkload`) and routes by its own exceptions
   (`realAwsServicesForWorkload`); one without routes by `Parameters`
   (go-to-k/cdk-local#902). Keep the route in any cache key. `validateAwsEmulatorEnvVars` refuses the old
-  `"aws-emulator"` value and a suffix outside `aws-endpoint-service-ids.ts`.
+  `"aws-emulator"` value, a suffix outside `aws-endpoint-service-ids.ts`, a
+  case variant of a sentinel, and (under `--aws-emulator`) a non-http(s)
+  endpoint value (#949). SQS queue URLs (`aws-emulator-sqs-routing.ts`,
+  #947): when a container's SQS goes to the emulator,
+  `applyWorkloadAwsWiringToEnv` rewrites an env value that IS a real queue
+  URL to its SQS endpoint, and `awsEmulatorSqsHostBlocks` maps the real SQS
+  hosts to `127.0.0.1` (`runDetached` via `withWorkloadAwsWiring`, ECS on the
+  owner) so any other queue URL fails closed; the sidecar's response rewrite
+  shares `REAL_SQS_QUEUE_URL`.
   `--env-vars` is read through `readEnvVarsFileText`, which keeps a
   pipe-backed path's text for the scan and the command's reader
   (go-to-k/cdk-local#894).

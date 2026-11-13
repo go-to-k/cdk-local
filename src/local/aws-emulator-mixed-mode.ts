@@ -229,10 +229,59 @@ export function legacyAwsEmulatorSentinelMessage(s: RealAwsException): string {
 }
 
 /**
+ * Refuse values on the `AWS_ENDPOINT_URL[_<SERVICE>]` variables of a parsed
+ * `--env-vars` file that the SDKs would read as a broken endpoint
+ * (go-to-k/cdk-local#949):
+ *
+ * - in either mode, a sentinel in another case or spelling (`"REAL-AWS"`,
+ *   `"Aws-Emulator"`): the sentinels match exactly, so it would otherwise reach
+ *   the container as a literal endpoint;
+ * - under `--aws-emulator`, any other value that is not an http(s) URL. An
+ *   empty string is left alone. The value itself is never quoted.
+ */
+function validateEndpointValues(overrides: unknown, awsEmulatorOn: boolean): void {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return;
+  for (const [section, map] of Object.entries(overrides as Record<string, unknown>)) {
+    if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
+    for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
+      if (typeof value !== 'string' || !ENDPOINT_KEY.test(key)) continue;
+      const v = value.trim();
+      if (v === '' || v === REAL_AWS_SENTINEL || v === LEGACY_AWS_EMULATOR_SENTINEL) continue;
+      const where = `--env-vars sets ${key} under ${displayUntrustedValue(section)}`;
+      if (v.toLowerCase() === LEGACY_AWS_EMULATOR_SENTINEL) {
+        throw new Error(
+          legacyAwsEmulatorSentinelMessage({
+            section,
+            key,
+            service: ENDPOINT_KEY.exec(key)![1] ?? '',
+          })
+        );
+      }
+      if (v.toLowerCase() === REAL_AWS_SENTINEL) {
+        throw new Error(
+          `${where} to "${v}", which is not the exception value "${REAL_AWS_SENTINEL}": it is matched exactly, ` +
+            `in lowercase, so the SDKs would read "${v}" as the endpoint URL. Write "${REAL_AWS_SENTINEL}".`
+        );
+      }
+      if (awsEmulatorOn && !/^https?:\/\/[^/\s]/i.test(v)) {
+        throw new Error(
+          `${where} to a value that is neither "${REAL_AWS_SENTINEL}" nor an http(s) URL, so the SDKs would fail ` +
+            `on every call it routes. Under --aws-emulator, write "${REAL_AWS_SENTINEL}" to keep the service on ` +
+            'real AWS, a full endpoint URL (https://...), or remove the entry to keep it on AWS Emulator.'
+        );
+      }
+    }
+  }
+}
+
+/**
  * Refuse sentinels that cannot work, from a {@link readAwsEmulatorEnvVarsFile}
  * scan:
  *
  * - a pre-inversion `"aws-emulator"` sentinel, in either mode (migration message);
+ * - a sentinel in another case (`"REAL-AWS"`), in either mode, and under
+ *   `--aws-emulator` any other endpoint value that is not an http(s) URL, when
+ *   the scan carries the parsed file (`overrides`);
  * - under `--aws-emulator`: `"real-aws"` on the bare `AWS_ENDPOINT_URL` (every
  *   service to real AWS is running without the flag), and an exception whose
  *   suffix is not an AWS SDK endpoint service id (the SDKs never read that
@@ -245,11 +294,13 @@ export function legacyAwsEmulatorSentinelMessage(s: RealAwsException): string {
  * Host-side use case: a host CLI validates its own `--env-vars` the same way.
  */
 export function validateAwsEmulatorEnvVars(
-  scan: Pick<AwsEmulatorEnvVarsScan, 'exceptions' | 'legacySentinels'>,
+  scan: Pick<AwsEmulatorEnvVarsScan, 'exceptions' | 'legacySentinels'> &
+    Partial<Pick<AwsEmulatorEnvVarsScan, 'overrides'>>,
   awsEmulatorOn: boolean
 ): void {
   const legacy = scan.legacySentinels[0];
   if (legacy) throw new Error(legacyAwsEmulatorSentinelMessage(legacy));
+  validateEndpointValues(scan.overrides, awsEmulatorOn);
   if (!awsEmulatorOn) return;
   if (scan.exceptions.some((s) => s.service === '')) {
     throw new Error(
@@ -270,6 +321,33 @@ export function validateAwsEmulatorEnvVars(
           : "The suffix must be the service's SDK endpoint id (its serviceId, uppercased, spaces as underscores).")
     );
   }
+}
+
+/**
+ * The exceptions of an `--env-vars` file for the mixed-mode startup line, by
+ * service and the sections that mark it (go-to-k/cdk-local#949):
+ * `DYNAMODB under Parameters (every workload); S3 under Stack/PyFn`. A
+ * per-resource exception applies to that workload only, so the line names
+ * where each one is marked rather than claiming it for the run.
+ */
+export function describeRealAwsExceptions(exceptions: readonly RealAwsException[]): string {
+  const sections = new Map<string, string[]>();
+  for (const e of exceptions) {
+    if (e.service === '') continue;
+    const list = sections.get(e.service) ?? [];
+    if (!list.includes(e.section)) list.push(e.section);
+    sections.set(e.service, list);
+  }
+  return [...sections.keys()]
+    .sort()
+    .map((service) => {
+      const where = sections
+        .get(service)!
+        .map((s) => (s === 'Parameters' ? 'Parameters (every workload)' : displayUntrustedValue(s)))
+        .join(', ');
+      return `${service} under ${where}`;
+    })
+    .join('; ');
 }
 
 /** The distinct endpoint service ids of `exceptions`, sorted: `['SECRETS_MANAGER', 'STS']`. */

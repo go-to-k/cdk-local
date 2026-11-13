@@ -79,6 +79,11 @@ const NON_AUTHORITY: readonly Allowed[] = [
     why: 'docker `--add-host name:ip` grammar',
   },
   {
+    file: 'local/ecs-task-runner.ts',
+    contains: 'const mapping = `${h.host}:${h.ip}`',
+    why: 'docker `--add-host name:ip` grammar (the SQS host blocks, #947)',
+  },
+  {
     file: 'local/docker-runner.ts',
     contains: "'-p', `${host}:${opts.hostPort}",
     why: 'docker `-p` publish grammar',

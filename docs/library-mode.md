@@ -273,6 +273,17 @@ and `resignConfigHostPath` from `loopbackForwarderPlan`, and you remove
 `AWS_ENDPOINT_URL_SQS` from a host-network container's env (no sidecar can
 run there), as `withWorkloadAwsWiring` does.
 
+Under `--aws-emulator`, `applyWorkloadAwsWiringToEnv` rewrites an env value
+that is exactly a real SQS queue URL to the container's SQS endpoint when its
+SQS goes to the emulator (go-to-k/cdk-local#947). A host that assembles its
+own `docker run` adds `awsEmulatorSqsHostBlocks(finalEnv, wiring)` as
+`--add-host <host>:<ip>` entries (on the namespace owner for a container that
+joins one), so a queue URL the workload reads at run time cannot reach real
+SQS; `withWorkloadAwsWiring` and the ECS task runner do. A single-workload
+command activates the wiring with `singleWorkload: true` and calls
+`logMixedModeForWorkload(workload, label)` once its target is resolved, so the
+mixed-mode line names that workload's exceptions only (go-to-k/cdk-local#949).
+
 `deployCommand` (default unset) is the host's own deploy command as a user
 types it (`'cdkd deploy'`). Under `--aws-emulator`, when an environment
 variable that references a resource is dropped for want of a state source,
