@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { buildDockerImage } from '../assets/docker-build.js';
 import type { DockerImageAssetSource } from '../types/assets.js';
+import type { AwsEmulatorWorkload } from '../utils/aws-proxy.js';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -46,6 +47,8 @@ export interface BuildContainerImageOptions {
    * `cdk.Stage` asset's `../asset.<hash>`; see `BuildDockerImageOptions`.
    */
   assetOutdir?: string;
+  /** The workload the image is built for (see `BuildDockerImageOptions.workload`). */
+  workload?: AwsEmulatorWorkload;
 }
 
 /**
@@ -94,6 +97,7 @@ export async function buildContainerImage(
       ),
     progressLabel: `Building container image (platform=${platform})`,
     ...(options.assetOutdir !== undefined && { assetOutdir: options.assetOutdir }),
+    ...(options.workload !== undefined && { workload: options.workload }),
   });
   if (actualTag !== tag) {
     logger.debug(

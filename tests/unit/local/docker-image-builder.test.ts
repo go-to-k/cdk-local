@@ -45,6 +45,8 @@ import {
 } from '../../../src/local/docker-image-builder.js';
 import type { Logger } from '../../../src/utils/logger.js';
 import { LocalInvokeBuildError } from '../../../src/utils/error-handler.js';
+import { setAwsEmulatorServiceRouting } from '../../../src/utils/aws-proxy.js';
+import { resetDockerRegistryConfigForTest } from '../../../src/utils/docker-registry-config.js';
 
 beforeEach(() => {
   mockRunDocker.mockReset();
@@ -167,6 +169,47 @@ describe('buildContainerImage', () => {
     );
     const buildOpts = mockRunDocker.mock.calls[0]![1] as { env?: Record<string, string> };
     expect(buildOpts.env?.['BUILDX_NO_DEFAULT_ATTESTATIONS']).toBe('1');
+  });
+
+  // go-to-k/cdk-local#917: the build's docker config follows the workload's
+  // ECR exception — the host's own when excepted, one with no ECR credential
+  // when not (so a FROM in real ECR is never answered by the host's helper).
+  it('routes the build docker config by the workload ECR exception under --aws-emulator', async () => {
+    setAwsEmulatorServiceRouting({
+      realServices: [],
+      override: { endpoint: 'https://127.0.0.1:9403' },
+      envOverrides: { Parameters: {}, Marked: { AWS_ENDPOINT_URL_ECR: 'real-aws' } },
+    });
+    try {
+      await buildContainerImage({ source: { directory: 'asset.m' } }, '/cdk.out', {
+        architecture: 'x86_64',
+        workload: { logicalId: 'Marked' },
+      });
+      await buildContainerImage({ source: { directory: 'asset.u' } }, '/cdk.out', {
+        architecture: 'x86_64',
+        workload: { logicalId: 'Unmarked' },
+      });
+      const envOf = (i: number) =>
+        (mockRunDocker.mock.calls[i]![1] as { env: Record<string, string | undefined> }).env;
+      expect(envOf(0)['DOCKER_CONFIG']).toBe(process.env['DOCKER_CONFIG']);
+      expect(envOf(1)['DOCKER_CONFIG']).toBeDefined();
+      expect(envOf(1)['DOCKER_CONFIG']).not.toBe(process.env['DOCKER_CONFIG']);
+      expect(envOf(1)['BUILDX_NO_DEFAULT_ATTESTATIONS']).toBe('1');
+      // The `executable` arm (a script that runs `docker build` itself) gets
+      // the same docker config.
+      await buildContainerImage(
+        { source: { executable: ['./build.sh'] } },
+        '/cdk.out',
+        { architecture: 'x86_64', workload: { logicalId: 'Unmarked' } }
+      );
+      const execOpts = mockSpawnStreaming.mock.calls[0]![2] as {
+        env: Record<string, string | undefined>;
+      };
+      expect(execOpts.env['DOCKER_CONFIG']).toBe(envOf(1)['DOCKER_CONFIG']);
+    } finally {
+      setAwsEmulatorServiceRouting(undefined);
+      resetDockerRegistryConfigForTest();
+    }
   });
 
   it('returns a stable tag for the same source (cache reproducibility)', async () => {

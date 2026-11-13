@@ -1,4 +1,5 @@
 import { describeExitWithoutArgv } from '../utils/docker-argv-redaction.js';
+import { noImplicitEcrPullArgs } from '../utils/docker-registry-config.js';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
@@ -1239,6 +1240,7 @@ async function prepareOneImage(
               `(${displayUntrustedValue(asset.source.directory ?? asset.source.executable?.[0] ?? '')}): ${stderr}`
           ),
         progressLabel: `Building container image for ${displayIdent(container.name)}`,
+        workload: { containerName: container.name },
       });
       if (actualTag !== tag) {
         // `executable` source mode returns the script's own tag — re-tag
@@ -1944,7 +1946,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     entryPointTail = container.entryPoint.slice(1);
   }
 
-  both(image, ...entryPointTail, ...(container.command ?? []));
+  both(...noImplicitEcrPullArgs(image), image, ...entryPointTail, ...(container.command ?? []));
   const loopbackPorts = wiring ? effectiveLoopbackPorts(finalEnv, wiring) : [];
   return {
     args,

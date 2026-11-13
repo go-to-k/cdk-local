@@ -1069,6 +1069,10 @@ export async function resolveAgentCoreImage(
           // The containment bound for `source.directory`: the app's outdir,
           // Stage-aware (go-to-k/cdk-local#745).
           assetOutdir: assetPathDirs(resolved.stack).assetOutdir,
+          workload: {
+            logicalId: resolved.logicalId,
+            cdkPath: readCdkPathOrUndefined(resolved.resource),
+          },
         });
       }
     }

@@ -1,4 +1,5 @@
 import { flattenToOneLine } from './credential-error.js';
+import { noImplicitEcrPullArgs } from '../utils/docker-registry-config.js';
 import { redactDockerArgvValues, describeExitWithoutArgv } from '../utils/docker-argv-redaction.js';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -719,7 +720,7 @@ async function runDetachedContainer(opts: DockerRunOptions): Promise<string> {
     entryPointTail = opts.entryPoint.slice(1);
   }
 
-  args.push(opts.image, ...entryPointTail, ...opts.cmd);
+  args.push(...noImplicitEcrPullArgs(opts.image), opts.image, ...entryPointTail, ...opts.cmd);
 
   const logger = getLogger().child('docker');
   // Every `-e` / `--env` / `--label` VALUE is masked, not only the AWS

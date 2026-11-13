@@ -93,7 +93,7 @@ describe('pullEcrImage — docker login targets the host the pull targets (issue
       '--password-stdin',
       `https://${host}`,
     ]);
-    expect(runFg).toHaveBeenCalledWith(['pull', uri]);
+    expect(runFg).toHaveBeenCalledWith(['pull', uri], expect.anything());
     expect(ref).toBe(uri);
   });
 
@@ -128,7 +128,7 @@ describe('pullEcrImage — docker login targets the host the pull targets (issue
 
       expect(loginCall().args.at(-1)).toBe(`https://${host}`);
     }
-    expect(runFg).toHaveBeenCalledWith(['pull', `${host}/r:t`]);
+    expect(runFg).toHaveBeenCalledWith(['pull', `${host}/r:t`], expect.anything());
   });
 
   it('logs in, pulls and returns the ASCII-lower-cased host for an upper-cased reference', async () => {
@@ -141,7 +141,7 @@ describe('pullEcrImage — docker login targets the host the pull targets (issue
 
     const canonical = `${ACCT}.dkr-ecr.us-east-1.on.aws/my-repo:V1`;
     expect(loginCall().args.at(-1)).toBe(`https://${ACCT}.dkr-ecr.us-east-1.on.aws`);
-    expect(runFg).toHaveBeenCalledWith(['pull', canonical]);
+    expect(runFg).toHaveBeenCalledWith(['pull', canonical], expect.anything());
     expect(ref).toBe(canonical);
   });
 

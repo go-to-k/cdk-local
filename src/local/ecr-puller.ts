@@ -16,6 +16,7 @@ import {
 } from '../utils/aws-proxy.js';
 import { workloadStsClientConfig } from '../utils/workload-identity.js';
 import { buildStsClientConfig } from '../utils/profile-resolver.js';
+import { dockerRegistryEnv } from '../utils/docker-registry-config.js';
 import { getEmbedConfig } from './embed-config.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
@@ -127,11 +128,11 @@ export interface EcrPullOptions {
    */
   profile?: string;
   /**
-   * The workload the image is pulled for. Under `--aws-emulator` the token
-   * comes from AWS Emulator unless a `"real-aws"` exception names ECR
-   * (`AWS_ENDPOINT_URL_ECR`) for this workload (`Parameters` plus its own
-   * section); then from real ECR with the real identity. Without it, the
-   * `Parameters` exceptions alone decide.
+   * The workload the image is pulled for. Under `--aws-emulator` the pull is
+   * refused unless a `"real-aws"` exception names ECR (`AWS_ENDPOINT_URL_ECR`)
+   * for this workload (`Parameters` plus its own section); then it comes from
+   * real ECR with the real identity and the host's docker config. Without it,
+   * the `Parameters` exceptions alone decide.
    */
   workload?: AwsEmulatorWorkload;
 }
@@ -242,6 +243,24 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     return canonicalUri;
   }
 
+  // Under --aws-emulator, unless a "real-aws" exception names ECR for this
+  // workload, refuse before any AWS call or docker spawn (go-to-k/cdk-local#917).
+  // An ECR URI always names the REAL registry host (AWS Emulator's ECR hands out
+  // repository URIs on `<account>.dkr.ecr.<region>.amazonaws.com` and serves no
+  // registry docker can reach), so `docker login` / `docker pull` could only
+  // reach real ECR: with the emulator's token it is refused there, and the
+  // host's docker credential helper would answer the pull with the real
+  // identity. A cached image still runs under --no-pull (above).
+  if (deployArtifactsReadEmulator(ECR_SERVICE_ID, options.workload)) {
+    throw new LocalInvokeBuildError(
+      `--aws-emulator: image ${displayUntrustedValue(canonicalUri)} is in a real ECR registry, and ECR is ` +
+        'not excepted to real AWS for this workload, so it is not pulled (AWS Emulator serves no registry ' +
+        'docker can pull from). To pull it from real ECR with your real identity, except ECR for the ' +
+        'workload in the --env-vars file ("AWS_ENDPOINT_URL_ECR": "real-aws", under "Parameters" or the ' +
+        "workload's own section); or pull the image yourself and pass --no-pull."
+    );
+  }
+
   // Look up the caller's identity (cached per region — invariant for the
   // process's default credentials). Used both to log cross-account info AND
   // as the STS-AssumeRole source region. Failures here are fatal — without
@@ -302,24 +321,13 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // for all N (sessions are valid 3600s, far longer than any practical
   // image-pull loop).
   let assumed: TempCredentials | undefined;
-  // Under --aws-emulator (ECR not excepted to real AWS) the token comes from
-  // the emulator with its own keys: a real AssumeRole would only be discarded.
-  const tokenFromEmulator = deployArtifactsReadEmulator(ECR_SERVICE_ID, options.workload);
-  if (tokenFromEmulator) {
-    logger.debug(
-      `ECR token for ${displayUntrustedValue(canonicalUri)} comes from AWS Emulator (--aws-emulator).`
-    );
-  } else if (awsEmulatorRealServices(options.workload) !== undefined) {
+  if (awsEmulatorRealServices(options.workload) !== undefined) {
     logger.info(
       `ECR is excepted to real AWS ("real-aws" on AWS_ENDPOINT_URL_ECR): pulling ${displayUntrustedValue(canonicalUri)} from real ECR ` +
         'with your real credentials.'
     );
   }
-  if (options.ecrRoleArn && tokenFromEmulator) {
-    logger.debug(
-      '--ecr-role-arn is not assumed under --aws-emulator: the emulator issues the token.'
-    );
-  } else if (options.ecrRoleArn) {
+  if (options.ecrRoleArn) {
     const cacheKey = `${options.profile ?? '_noprofile'}|${options.ecrRoleArn}|${callerRegion ?? '_unset'}`;
     const cached = ASSUMED_ROLE_CACHE.get(cacheKey);
     if (cached && isCredentialFresh(cached)) {
@@ -349,9 +357,8 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // Authenticate against the URI's region (NOT the caller region).
   // When `assumed` is set, the ECR client uses those temporary
   // credentials; otherwise the default credential chain.
-  // Under --aws-emulator the token comes from the emulator, where the stack
-  // was deployed, and its keys are then the only identity — unless a
-  // "real-aws" exception names ECR: then real ECR, as the real identity.
+  // Under --aws-emulator this is reached only when a "real-aws" exception
+  // names ECR (refused above otherwise): real ECR, as the real identity.
   const ecr = new ECRClient({
     ...deployArtifactClientConfig({
       service: 'ECR',
@@ -361,16 +368,14 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
     region: parsed.region,
     // Assumed-role creds (the `ecrRoleArn` path) take precedence; otherwise
     // authenticate as the supplied `--profile` rather than the default chain.
-    ...(tokenFromEmulator
-      ? {}
-      : assumed
-        ? { credentials: assumed }
-        : options.profile
-          ? { profile: options.profile }
-          : {}),
+    ...(assumed ? { credentials: assumed } : options.profile ? { profile: options.profile } : {}),
   });
+  // The host's own docker config for the login and the pull: this workload
+  // excepts ECR (or there is no --aws-emulator), so the default `Parameters`
+  // answer of `runDocker*` must not withhold its credentials (#917).
+  const dockerEnv = dockerRegistryEnv(options.workload);
   try {
-    await ecrLogin(ecr, {
+    await ecrLogin(ecr, dockerEnv, {
       accountId: parsed.accountId,
       region: parsed.region,
       // The host `docker pull` below targets, taken off the SAME parse
@@ -385,7 +390,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
 
   logger.info(`Pulling ${canonicalUri}...`);
   try {
-    await runDockerForeground(['pull', canonicalUri]);
+    await runDockerForeground(['pull', canonicalUri], { env: dockerEnv });
   } catch (err) {
     const e = err as Error;
     throw new LocalInvokeBuildError(`docker pull ${canonicalUri} failed: ${e.message}`);
@@ -505,6 +510,7 @@ async function assumeRoleForEcr(
  */
 async function ecrLogin(
   client: ECRClient,
+  dockerEnv: Record<string, string | undefined>,
   target: { accountId: string; region: string; registryHost: string }
 ): Promise<void> {
   const { accountId, region, registryHost } = target;
@@ -547,6 +553,7 @@ async function ecrLogin(
   try {
     await runDockerStreaming(['login', '--username', username, '--password-stdin', endpoint], {
       input: password,
+      env: dockerEnv,
     });
   } catch (err) {
     const e = err as { stderr?: string; message?: string };

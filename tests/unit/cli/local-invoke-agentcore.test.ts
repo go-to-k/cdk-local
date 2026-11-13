@@ -187,6 +187,8 @@ describe('resolveAgentCoreImage — acquisition fallback order', () => {
       architecture: 'arm64',
       noBuild: false,
       assetOutdir: '/cdk.out',
+      // The build routes the ECR credential decision by this runtime (#917).
+      workload: { logicalId: 'ChatAgent', cdkPath: undefined },
     });
     expect(pullEcrImageMock).not.toHaveBeenCalled();
     expect(pullImageMock).not.toHaveBeenCalled();

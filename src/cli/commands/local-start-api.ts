@@ -2784,6 +2784,7 @@ export async function resolveContainerImageForStartApi(
     const imageRef = await buildContainerImage(localBuild.asset, localBuild.cdkOutDir, {
       architecture: lambda.architecture,
       assetOutdir: localBuild.assetOutdir,
+      workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
       ...(options?.noBuild !== undefined && { noBuild: options.noBuild }),
     });
     return { imageRef };

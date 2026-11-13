@@ -4,6 +4,7 @@ import { spinner as createSpinner } from '@clack/prompts';
 import { displayUntrustedValue } from './assembly-path.js';
 import { getLogger } from './logger.js';
 import { getEmbedConfig } from '../local/embed-config.js';
+import { dockerRegistryEnv } from './docker-registry-config.js';
 
 /**
  * Shared helpers for invoking the docker-compatible CLI binary across cdk-local.
@@ -226,7 +227,29 @@ export async function runDockerStreaming(
   args: string[],
   options: RunDockerOptions = {}
 ): Promise<SpawnResult> {
-  return spawnStreaming(getDockerCmd(), args, options);
+  return spawnStreaming(getDockerCmd(), args, withRegistryEnv(options));
+}
+
+/**
+ * `options` with {@link dockerRegistryEnv}'s `Parameters` answer under the
+ * caller's own `env` (go-to-k/cdk-local#917): under `--aws-emulator` with ECR
+ * not excepted, every docker spawn that goes through `runDocker*` (each
+ * `pull` and `build` does) holds no credential for an ECR host. A caller that
+ * knows its workload passes `dockerRegistryEnv(workload)` as `env` to route by
+ * that workload's own exceptions instead.
+ */
+function withRegistryEnv<T extends { env?: Record<string, string | undefined> }>(options: T): T {
+  const registry = dockerRegistryEnv();
+  // Outside --aws-emulator (or with ECR excepted) the answer is the host's own
+  // DOCKER_CONFIG: leave the spawn exactly as it was.
+  if (
+    registry['DOCKER_CONFIG'] === process.env['DOCKER_CONFIG'] &&
+    registry['DOCKER_AUTH_CONFIG'] === process.env['DOCKER_AUTH_CONFIG'] &&
+    registry['REGISTRY_AUTH_FILE'] === process.env['REGISTRY_AUTH_FILE']
+  ) {
+    return options;
+  }
+  return { ...options, env: { ...registry, ...options.env } };
 }
 
 /**
@@ -418,7 +441,7 @@ export async function runDockerForeground(
   args: string[],
   options: ForegroundOptions = {}
 ): Promise<void> {
-  return spawnForeground(getDockerCmd(), args, options);
+  return spawnForeground(getDockerCmd(), args, withRegistryEnv(options));
 }
 
 export interface ForegroundOptions {
