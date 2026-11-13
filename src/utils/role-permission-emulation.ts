@@ -2,6 +2,7 @@ import { getLogger } from './logger.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../local/credential-error.js';
 import { workloadClientConfig, workloadStsClientConfig } from './workload-identity.js';
+import { getAwsEndpointOverride } from './aws-proxy.js';
 import { describeRejectedRoleArn, isIamRoleArn } from './role-arn.js';
 
 /**
@@ -231,6 +232,22 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
     );
     return undefined;
   };
+
+  // AWS Emulator (go-to-k/cdk-local#951): its own `emulator` user is allowed
+  // everything WITHOUT any IAM policy, so a GetFederationToken session (the
+  // user's policies intersected with the role's) is allowed nothing, and every
+  // call the workload makes would be denied. The endpoint override is what
+  // sends this module's STS client to the emulator (`workloadStsClientConfig`);
+  // in mixed mode it is unset and the hops stay on real AWS. Checked before
+  // any STS call.
+  if (args.emulateRoleVia === undefined && getAwsEndpointOverride() !== undefined) {
+    return cannot(
+      "in AWS Emulator a sts:GetFederationToken session is allowed nothing (the emulator's own user has no " +
+        "IAM policies). Let the role's trust policy allow the emulator's identity, for example the account " +
+        'root (arn:aws:iam::000000000000:root), and redeploy, or pass --emulate-role-via <arn> naming an ' +
+        'emulator role you can assume'
+    );
+  }
 
   const { STSClient, GetCallerIdentityCommand, GetFederationTokenCommand, AssumeRoleCommand } =
     await import('@aws-sdk/client-sts');

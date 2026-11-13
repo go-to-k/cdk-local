@@ -7,6 +7,8 @@ import {
 import {
   activateWorkloadAwsWiring,
   logMixedModeForWorkload,
+  roleHopsGoToAwsEmulator,
+  stateRoleRecordIsEmulatorSide,
   takeAwsEmulatorStateSourceHint,
 } from '../../local/workload-aws-wiring.js';
 import { tmpdir } from 'node:os';
@@ -411,7 +413,13 @@ async function localInvokeCommand(
       extraStateProviders
     );
     const dockerEnv = containerEnv.env;
-    if (options.assumeRole === undefined && containerEnv.stateForRoleHint) {
+    // Not in AWS Emulator mixed mode with the emulator's IAM record: the bare
+    // flag cannot use the role the hint would name (go-to-k/cdk-local#951).
+    if (
+      options.assumeRole === undefined &&
+      containerEnv.stateForRoleHint &&
+      !stateRoleRecordIsEmulatorSide()
+    ) {
       // Legacy hint path: surface the deployed role ARN so they can re-run
       // with `--assume-role`.
       suggestAssumeRoleFromState(containerEnv.stateForRoleHint, lambda.logicalId);
@@ -1279,7 +1287,10 @@ async function resolveLambdaContainerEnvWith(
     // function revision) resolves a bare --assume-role from its TEMPLATE role
     // reference against the loaded state instead.
     const fromTemplate =
-      options.assumeRole === true && options.deployedFunctionLookups === false && stateForRoleHint
+      options.assumeRole === true &&
+      options.deployedFunctionLookups === false &&
+      stateForRoleHint &&
+      !stateRoleRecordIsEmulatorSide()
         ? await resolveTemplateRoleArnFromState(
             lambda.resource.Properties?.['Role'],
             stateForRoleHint,
@@ -1363,7 +1374,9 @@ async function resolveLambdaContainerEnvWith(
       const reason = assumeRoleDetail(err, 'STS AssumeRole');
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(resolvedAssumeRoleArn)}) failed: ${reason}. ` +
-          "Falling back to the developer's shell credentials."
+          (roleHopsGoToAwsEmulator()
+            ? "The function runs with the emulator's own keys."
+            : "Falling back to the developer's shell credentials.")
       );
     }
   }
@@ -1426,6 +1439,22 @@ export function suggestAssumeRoleFromState(state: StackState, logicalId: string)
 }
 
 /**
+ * The warning a bare `--assume-role` prints instead of reading the execution
+ * role from the state record in AWS Emulator mixed mode when IAM is not a
+ * `"real-aws"` exception (go-to-k/cdk-local#951): the role is assumed in real
+ * AWS there, and the record's roles are the emulator's. `pin` is the flag form
+ * that names the ARN explicitly. Mirrors the ECS commands' warning.
+ */
+export function mixedModeEmulatorRoleWarning(pin: string): string {
+  return (
+    '--assume-role: in AWS Emulator mixed mode the execution role is assumed in real AWS, but the ' +
+    "state record's IAM roles are the emulator's, so the role is not read from it. Mark IAM " +
+    'as a "real-aws" exception under Parameters (AWS_ENDPOINT_URL_IAM), or pass the ARN explicitly: ' +
+    `${pin}. Falling back to the developer's shell credentials.`
+  );
+}
+
+/**
  * Resolve the role ARN to assume for a Lambda invoke, honoring the three
  * `--assume-role` forms:
  *
@@ -1466,7 +1495,13 @@ export async function resolveAssumeRoleArnForLambda(
     );
     return undefined;
   }
-  const fromState = resolveExecutionRoleArnFromState(stateForRoleHint, lambdaLogicalId);
+  // Mixed mode: the record's roles are the emulator's, and the role is
+  // assumed in real AWS (go-to-k/cdk-local#951), so the record is not read;
+  // the real-AWS lookup below still runs.
+  const recordIsEmulatorSide = stateRoleRecordIsEmulatorSide();
+  const fromState = recordIsEmulatorSide
+    ? undefined
+    : resolveExecutionRoleArnFromState(stateForRoleHint, lambdaLogicalId);
   if (fromState) {
     logger.info(
       `--assume-role: auto-resolved execution role from state: ${flattenToOneLine(fromState)}`
@@ -1512,6 +1547,10 @@ export async function resolveAssumeRoleArnForLambda(
       );
       return liveArn;
     }
+  }
+  if (recordIsEmulatorSide) {
+    logger.warn(mixedModeEmulatorRoleWarning('--assume-role <arn>'));
+    return undefined;
   }
   logger.warn(
     `--assume-role: could not resolve the execution role ARN for ${displayIdent(lambdaLogicalId)}. ` +

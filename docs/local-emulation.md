@@ -535,9 +535,14 @@ The rules:
   `start-service`, `start-alb`'s ECS targets, and `studio`, which runs them)
   do the same per function or container; an `AWS::SSM::Parameter::Value<...>`
   template parameter follows the SSM route. The container image of an ECS
-  task follows `Parameters` alone. A bare `--assume-role` looks the deployed
-  role up in real AWS, under the real counterpart of the emulator's function;
-  when that lookup fails, pass `--assume-role <arn>`. `start-cloudfront` finds a
+  task follows `Parameters` alone. A bare `--assume-role` does not read the
+  role from the state record unless `Parameters` excepts IAM
+  (`AWS_ENDPOINT_URL_IAM`): the role is assumed in real AWS, and the record's
+  roles are otherwise the emulator's. `invoke` and `invoke-agentcore` then
+  look the deployed role up in real AWS, under the real counterpart of the
+  emulator's function or runtime; when that lookup fails, and for
+  `start-api`, `run-task` and `start-service`, cdk-local warns: pass
+  `--assume-role <arn>`. `start-cloudfront` finds a
   KeyValueStore through CloudFront and reads its keys through CloudFront
   KeyValueStore, so except both or neither.
 - **Running an image that only exists in real ECR.**

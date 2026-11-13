@@ -12,6 +12,7 @@ import {
   recordAssumedRole,
 } from './workload-identity.js';
 import { emulateRoleAfterDeniedAssume } from './role-permission-emulation.js';
+import { keepEmulatorIssuedCredentials } from '../local/workload-aws-wiring.js';
 
 /**
  * Upper bound on a value this module is willing to treat as a role ARN.
@@ -347,7 +348,7 @@ export async function assumeRoleCredentials(opts: {
       flag: opts.roleFlag ?? '--assume-role',
       sessionNameSuffix: opts.sessionNameSuffix,
     });
-    if (emulated !== undefined) return emulated;
+    if (emulated !== undefined) return keepEmulatorIssuedCredentials(emulated);
     const detail = describeAwsFailureForWarn(refused.err, 'STS AssumeRole');
     const message = `AssumeRole(${shownArn}) failed: ${detail}`;
     throw opts.makeError ? opts.makeError(message) : new AssumeRoleFailure(message, detail);
@@ -366,11 +367,13 @@ export async function assumeRoleCredentials(opts: {
     const detail = 'the response carried no usable credentials';
     throw opts.makeError ? opts.makeError(message) : new AssumeRoleFailure(message, detail);
   }
-  return {
+  // `--aws-emulator`: the emulator issued these, so they replace its keys in
+  // the container instead of being discarded (go-to-k/cdk-local#951).
+  return keepEmulatorIssuedCredentials({
     accessKeyId: creds.AccessKeyId,
     secretAccessKey: creds.SecretAccessKey,
     sessionToken: creds.SessionToken,
-  };
+  });
 }
 
 /**

@@ -64,6 +64,7 @@ import {
   applyWorkloadAwsWiringToEnv,
   awsEmulatorSqsHostBlocks,
   effectiveLoopbackPorts,
+  emulatorIssuedCredentials,
   getActiveWorkloadAwsWiring,
 } from './workload-aws-wiring.js';
 import { applyEnvOverrideMap } from './env-resolver.js';
@@ -806,6 +807,7 @@ export async function runEcsTask(
       ...(options.mixedModeRoleCredentials && {
         mixedModeRoleCredentials: options.mixedModeRoleCredentials,
       }),
+      ...(options.taskCredentials && { taskCredentials: options.taskCredentials }),
       ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
       ...(effectiveHostPortOverrides ? { hostPortOverrides: effectiveHostPortOverrides } : {}),
       ...(autoRemappedContainerPorts ? { autoRemappedContainerPorts } : {}),
@@ -1402,6 +1404,16 @@ interface BuildDockerRunArgs {
    * point at their own sidecar instance.
    */
   sidecarIp?: string;
+  /**
+   * {@link RunEcsTaskOptions.taskCredentials}. Read only under `--aws-emulator`
+   * (not mixed mode): a task role the emulator's STS issued then replaces the
+   * emulator's keys in the container env (go-to-k/cdk-local#951).
+   */
+  taskCredentials?: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
   /** {@link RunEcsTaskOptions.mixedModeRoleCredentials}. */
   mixedModeRoleCredentials?: {
     accessKeyId: string;
@@ -1904,9 +1916,20 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // Under `forward` the entries were applied above; only the region mirror
   // (AWS_DEFAULT_REGION next to AWS_REGION) is left to do here.
   if (wiring) {
+    // `--assume-task-role` under `--aws-emulator` (go-to-k/cdk-local#951): the
+    // task role's credentials the EMULATOR's STS issued take the emulator
+    // keys' place, so the container runs as the role there (env credentials
+    // outrank the metadata endpoint, which serves the same role). Any other
+    // credential is replaced by the emulator's keys.
+    const emulatorRole =
+      wiring.mode === 'emulator' ? emulatorIssuedCredentials(opts.taskCredentials) : undefined;
     finalEnv = applyWorkloadAwsWiringToEnv(
       finalEnv,
-      wiring.mode === 'emulator' ? wiring : { ...wiring, env: {} }
+      wiring.mode === 'emulator'
+        ? emulatorRole
+          ? { ...wiring, emulatorCredentials: emulatorRole }
+          : wiring
+        : { ...wiring, env: {} }
     );
     // Under --aws-emulator, a real SQS host is unreachable from a container
     // whose SQS goes to the emulator (go-to-k/cdk-local#947). On a joiner the

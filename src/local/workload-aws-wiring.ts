@@ -53,6 +53,8 @@ import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { describeCredentialLoadFailure } from './credential-error.js';
 import {
   awsEmulatorRealServices,
+  getAwsEndpointOverride,
+  isAwsServiceRoutedToEmulator,
   setAwsEmulatorServiceRouting,
   setAwsEndpointOverride,
 } from '../utils/aws-proxy.js';
@@ -1237,7 +1239,11 @@ export function applyWorkloadAwsWiringToEnv(
     if (javaToolOptions !== undefined) {
       out['JAVA_TOOL_OPTIONS'] = mergeJavaToolOptions(ownJavaToolOptions, javaToolOptions);
     }
-    setCreds(wiring.emulatorCredentials);
+    // A role's credentials the EMULATOR's STS issued (`--assume-role`,
+    // go-to-k/cdk-local#951) take the emulator keys' place, so the workload
+    // runs as the role and the emulator enforces its policies. Only a triple
+    // cdk-local itself recorded qualifies; every other credential is replaced.
+    setCreds(emulatorIssuedCredentialsIn(env) ?? wiring.emulatorCredentials);
   } else if (wiring.mixed && !keepsException) {
     // Mixed run, but this workload reaches nothing real: the emulator's keys
     // only, never the real identity (nor an ECS task-role URI to it).
@@ -1437,8 +1443,90 @@ export function setActiveWorkloadAwsWiring(wiring: WorkloadAwsWiring | undefined
   }
 }
 
+/** A role session's credential triple. */
+interface RoleSessionCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+}
+
+/** Credentials AWS Emulator's STS issued for a role flag, by access key id. */
+const emulatorIssued = new Map<string, RoleSessionCredentials>();
+
+/**
+ * Whether cdk-local's role hops (`AssumeRole` for `--assume-role` /
+ * `--assume-task-role`, and the role-permission emulation) go to AWS Emulator:
+ * full emulator mode, where every one of cdk-local's own clients talks to the
+ * emulator. In mixed mode those hops stay on real AWS.
+ */
+export function roleHopsGoToAwsEmulator(): boolean {
+  return active?.mode === 'emulator' && getAwsEndpointOverride() !== undefined;
+}
+
+/**
+ * Record `creds` as issued by AWS Emulator's STS for a role flag
+ * (go-to-k/cdk-local#951), so {@link applyWorkloadAwsWiringToEnv} lets them
+ * replace the emulator's own keys in the container: the workload then runs as
+ * the role there, and the emulator enforces the role's policies. A no-op
+ * unless {@link roleHopsGoToAwsEmulator}: in mixed mode the role is assumed in
+ * real AWS, and without `--aws-emulator` nothing replaces the credentials.
+ * Returns `creds`.
+ */
+export function keepEmulatorIssuedCredentials<T extends RoleSessionCredentials>(creds: T): T {
+  if (roleHopsGoToAwsEmulator()) {
+    emulatorIssued.set(creds.accessKeyId, {
+      accessKeyId: creds.accessKeyId,
+      secretAccessKey: creds.secretAccessKey,
+      sessionToken: creds.sessionToken,
+    });
+  }
+  return creds;
+}
+
+/**
+ * The recorded emulator-issued triple ({@link keepEmulatorIssuedCredentials})
+ * that `creds` equals in full, if any. Only COMPARED: nothing else qualifies.
+ */
+export function emulatorIssuedCredentials(
+  creds: { accessKeyId?: string; secretAccessKey?: string; sessionToken?: string } | undefined
+): RoleSessionCredentials | undefined {
+  const id = creds?.accessKeyId;
+  const recorded = id === undefined ? undefined : emulatorIssued.get(id);
+  return recorded &&
+    recorded.secretAccessKey === creds?.secretAccessKey &&
+    recorded.sessionToken === creds.sessionToken
+    ? recorded
+    : undefined;
+}
+
+/** {@link emulatorIssuedCredentials} for the triple a container env carries. */
+function emulatorIssuedCredentialsIn(
+  env: Readonly<Record<string, string | undefined>>
+): RoleSessionCredentials | undefined {
+  const accessKeyId = env['AWS_ACCESS_KEY_ID'];
+  if (accessKeyId === undefined) return undefined;
+  return emulatorIssuedCredentials({
+    accessKeyId,
+    secretAccessKey: env['AWS_SECRET_ACCESS_KEY'] ?? '',
+    sessionToken: env['AWS_SESSION_TOKEN'] ?? '',
+  });
+}
+
+/**
+ * Whether the state record's IAM roles are the WRONG side for a role flag that
+ * reads its role from the record (go-to-k/cdkd#6223, go-to-k/cdk-local#951):
+ * in AWS Emulator mixed mode the role is assumed in real AWS, while the
+ * record's IAM resources are the emulator's unless `Parameters` marks IAM as a
+ * `"real-aws"` exception. The record would then name an emulator role
+ * (account 000000000000) to real STS.
+ */
+export function stateRoleRecordIsEmulatorSide(): boolean {
+  return active?.mixed !== undefined && isAwsServiceRoutedToEmulator('IAM');
+}
+
 /** Test hook. */
 export function resetWorkloadAwsWiringForTest(): void {
+  emulatorIssued.clear();
   active?.dispose();
   active = undefined;
   chainProviders.clear();

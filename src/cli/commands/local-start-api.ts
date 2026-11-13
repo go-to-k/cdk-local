@@ -11,6 +11,7 @@ import {
 } from '../options.js';
 import {
   activateWorkloadAwsWiring,
+  stateRoleRecordIsEmulatorSide,
   takeAwsEmulatorStateSourceHint,
 } from '../../local/workload-aws-wiring.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -51,7 +52,7 @@ import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.
 import { resolveApp, resolveWatchConfig, type CdkWatchConfig } from '../config-loader.js';
 import { createGlobMatcher } from '../../utils/glob-match.js';
 import { readCdkPathOrUndefined, stackForConstructPath } from '../cdk-path.js';
-import { resolveExecutionRoleArnFromState } from './local-invoke.js';
+import { mixedModeEmulatorRoleWarning, resolveExecutionRoleArnFromState } from './local-invoke.js';
 import type { AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import {
@@ -2248,6 +2249,12 @@ export function resolveStartApiAssumeRoleArn(args: {
     getLogger().warn(
       `--assume-role: the template Role for ${displayIdent(logicalId)} is not a well-formed IAM role ARN: ${describeRejectedRoleArn(roleProp)}. Ignoring it.`
     );
+  }
+  // Mixed mode: the record's roles are the emulator's, and the role is
+  // assumed in real AWS (go-to-k/cdk-local#951).
+  if (stateBundle && stateRoleRecordIsEmulatorSide()) {
+    getLogger().warn(mixedModeEmulatorRoleWarning(`--assume-role ${logicalId}=<arn>`));
+    return undefined;
   }
   if (stateBundle) {
     const fromState = resolveExecutionRoleArnFromState(stateBundle.state, logicalId);

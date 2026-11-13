@@ -28,6 +28,7 @@ import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
   activateWorkloadAwsWiring,
+  emulatorIssuedCredentials,
   getActiveWorkloadAwsWiring,
   resolveHostDefaultCredentials,
 } from '../../local/workload-aws-wiring.js';
@@ -932,7 +933,9 @@ function readEnvOverridesFile(
  * Without a task role the containers get 2 and 3 from a mounted file or
  * their env, not the sidecar ({@link containerCredentialDelivery}).
  *
- * Under `--aws-emulator` the endpoint's credentials replace all three.
+ * Under `--aws-emulator` the endpoint's credentials replace all three, except
+ * that a task role the emulator's STS issued is served as it is
+ * (go-to-k/cdk-local#951).
  *
  * Extracted as an exported helper so a unit test can exercise every
  * branch without having to mock the full Synth + Docker + AWS pipeline
@@ -945,7 +948,12 @@ export async function resolveSidecarCredentials(
     | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
   const wiring = getActiveWorkloadAwsWiring();
-  if (wiring?.mode === 'emulator') return wiring.emulatorCredentials;
+  // `--assume-task-role` under `--aws-emulator` (go-to-k/cdk-local#951): a
+  // task role the emulator's STS issued is served in place of its keys, so
+  // the containers run as the role there. Any other credential is not.
+  if (wiring?.mode === 'emulator') {
+    return emulatorIssuedCredentials(assumedCredentials) ?? wiring.emulatorCredentials;
+  }
   if (assumedCredentials) return assumedCredentials;
   if (options.profile) return resolveProfileCredentials(options.profile);
   return resolveHostDefaultCredentials();
