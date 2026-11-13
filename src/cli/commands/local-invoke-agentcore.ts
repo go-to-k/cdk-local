@@ -9,6 +9,8 @@ import {
   activateWorkloadAwsWiring,
   logMixedModeForWorkload,
   getActiveWorkloadAwsWiring,
+  keepEmulatorIssuedCredentials,
+  stateRoleRecordIsEmulatorSide,
 } from '../../local/workload-aws-wiring.js';
 import { attachLoopbackForwarder } from '../../local/docker-runner.js';
 import { randomUUID } from 'node:crypto';
@@ -151,6 +153,7 @@ import {
 import {
   applyProfileCredentialsOverlay,
   assumeRoleDetail,
+  mixedModeEmulatorRoleWarning,
   resolveExecutionRoleArnFromState,
 } from './local-invoke.js';
 import {
@@ -1765,7 +1768,13 @@ export async function resolveAssumeRoleArn(
     );
   }
   if (loaded) {
-    const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
+    // Mixed mode: the record's roles are the emulator's, and the role is
+    // assumed in real AWS (go-to-k/cdk-local#951), so the record is not read;
+    // the real-AWS lookup below still runs.
+    const recordIsEmulatorSide = stateRoleRecordIsEmulatorSide();
+    const fromState = recordIsEmulatorSide
+      ? undefined
+      : resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
     if (fromState) {
       getLogger().debug(
         `--assume-role: resolved RoleArn from state: ${flattenToOneLine(fromState)}`
@@ -1796,6 +1805,10 @@ export async function resolveAssumeRoleArn(
         );
         return liveArn;
       }
+    }
+    if (recordIsEmulatorSide) {
+      getLogger().warn(mixedModeEmulatorRoleWarning('--assume-role <arn>'));
+      return undefined;
     }
   }
   getLogger().warn(
@@ -2000,7 +2013,7 @@ async function assumeAgentCoreExecutionRole(
         flag: '--assume-role',
         sessionNameSuffix: 'invoke-agentcore',
       });
-      if (emulated !== undefined) return emulated;
+      if (emulated !== undefined) return keepEmulatorIssuedCredentials(emulated);
       throw err;
     }
     const creds = response.Credentials;
@@ -2017,11 +2030,13 @@ async function assumeAgentCoreExecutionRole(
         'the response carried no usable credentials'
       );
     }
-    return {
+    // `--aws-emulator`: the emulator issued these, so they replace its keys in
+    // the container instead of being discarded (go-to-k/cdk-local#951).
+    return keepEmulatorIssuedCredentials({
       accessKeyId: creds.AccessKeyId,
       secretAccessKey: creds.SecretAccessKey,
       sessionToken: creds.SessionToken,
-    };
+    });
   } finally {
     sts.destroy();
   }

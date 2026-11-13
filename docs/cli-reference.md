@@ -151,6 +151,15 @@ permission the role lacks fails locally the way it would in AWS.
   take the session's values.
 - The IAM and STS calls go where the refused `AssumeRole` went: to the
   endpoint under `--aws-emulator`, to real AWS in mixed mode.
+- Under `--aws-emulator` (not mixed mode) there is no `GetFederationToken`
+  fallback: AWS Emulator's own user is allowed everything without any IAM
+  policy, so a federation session, which intersects that user's policies
+  with the role's, would be allowed nothing. cdk-local warns once instead
+  (let the role's trust policy allow the emulator's identity, for example
+  the account root `arn:aws:iam::000000000000:root`, or pass
+  `--emulate-role-via`) and the command does what a refused assume did
+  before. `--emulate-role-via` still works there: that role has its own
+  policies in the emulator.
 
 `--emulate-role-via` is on every command that takes `--assume-role` (`invoke`,
 `invoke-agentcore`, `start-agentcore`, `start-api`, `run-task`,
@@ -187,7 +196,15 @@ runs a command against a local AWS Emulator. The URL defaults to
   `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=false`, and only the emulator's
   credentials: the keys in `~/.aws/emulator/<port>/emulator_credentials`,
   or fixed placeholder keys when that file is missing but the emulator is
-  healthy (it runs with `--auth off`; cdk-local says so in one line). Host
+  healthy (it runs with `--auth off`; cdk-local says so in one line). The
+  one exception is a role session the emulator's own STS issued for
+  `--assume-role` / `--assume-task-role`: it replaces the emulator's keys,
+  so the workload runs as the role and AWS Emulator enforces the role's
+  policies (a call the role does not allow is denied). The role's trust
+  policy must allow the emulator's identity (for example
+  `arn:aws:iam::000000000000:root`); a CDK-created role trusts only its
+  service principal, and its refused assume is handled as in
+  [role permission emulation](#a-refused---assume-role-role-permission-emulation). Host
   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` /
   `AWS_PROFILE` / `AWS_SHARED_CREDENTIALS_FILE` / `AWS_CONFIG_FILE` never
   reach a container, and the `--profile` credentials file is not mounted,
