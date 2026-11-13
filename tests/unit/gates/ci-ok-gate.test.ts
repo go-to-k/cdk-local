@@ -535,12 +535,10 @@ describe('release-pr-not-stale', () => {
       expect(stepSliceForJob('release-pr-not-stale')).toContain(
         "if: startsWith(github.head_ref, 'release-please--')"
       );
-      // RESIDUAL, stated rather than implied away: this repo has not yet had a
-      // release-please-created PR (batched releases landed recently and no
-      // release has been cut), so the prefix is release-please's documented
-      // default rather than an observed branch name here. The FIRST release PR
-      // must be checked — if its head does not start with `release-please--`,
-      // this job skips on every PR and `ci-ok` stays green over it.
+      // The prefix is OBSERVED, not just documented: release PRs here open from
+      // `release-please--branches--main--components--cdk-local`. If a head ever
+      // stops starting with `release-please--`, this job skips on every PR and
+      // `ci-ok` stays green over it.
       //
       // `branch-prefix` is NOT a release-please config key, so asserting its
       // absence would be a fence over something that can never appear. What can
@@ -556,7 +554,7 @@ describe('release-pr-not-stale', () => {
         'release-please was bumped to a new MAJOR. Its release branch prefix is a property ' +
           `of that major — re-verify that a release PR's head still starts with ` +
           "'release-please--' before updating this expectation."
-      ).toBe('4');
+      ).toBe('5');
     });
   });
 });
