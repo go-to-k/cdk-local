@@ -32,6 +32,7 @@ describe('embed-config', () => {
       sigV4StrictByDefault: false,
       sigV4OptFlag: '--strict-sigv4',
       workloadIdentity: 'role',
+      awsEmulatorSqsSidecar: true,
     });
   });
 
@@ -56,6 +57,7 @@ describe('embed-config', () => {
       sigV4StrictByDefault: true,
       sigV4OptFlag: '--allow-unverified-sigv4',
       workloadIdentity: 'role',
+      awsEmulatorSqsSidecar: false,
     });
   });
 
@@ -71,6 +73,7 @@ describe('embed-config', () => {
       sigV4StrictByDefault: false,
       sigV4OptFlag: '--strict-sigv4',
       workloadIdentity: 'role',
+      awsEmulatorSqsSidecar: false,
     });
   });
 
@@ -86,6 +89,16 @@ describe('embed-config', () => {
     const first = getEmbedConfig();
     setEmbedConfig(override);
     expect(getEmbedConfig()).toEqual(first);
+  });
+
+  it('awsEmulatorSqsSidecar: on standalone, off for a host config unless it opts in', () => {
+    expect(getEmbedConfig().awsEmulatorSqsSidecar).toBe(true);
+    setEmbedConfig({ cliName: 'host local' });
+    expect(getEmbedConfig().awsEmulatorSqsSidecar).toBe(false);
+    setEmbedConfig({ cliName: 'host local', awsEmulatorSqsSidecar: true });
+    expect(getEmbedConfig().awsEmulatorSqsSidecar).toBe(true);
+    setEmbedConfig(undefined);
+    expect(getEmbedConfig().awsEmulatorSqsSidecar).toBe(true);
   });
 
   it("workloadIdentity: 'caller' resolves to 'caller'; undefined and any other value to 'role'", () => {

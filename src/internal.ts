@@ -1336,6 +1336,7 @@ export {
   writeCaBundleFile,
   loopbackForwarderPlan,
   type MixedModeWiring,
+  type AwsEmulatorSidecarWiring,
   type EmulatorRunFiles,
   type ParsedAwsEndpoint,
   type ResolveWorkloadAwsWiringOptions,
@@ -1458,7 +1459,11 @@ export {
   type WorkloadRouteGroup,
 } from './cli/commands/local-state-source.js';
 export { AWS_ENDPOINT_SERVICE_IDS } from './local/aws-endpoint-service-ids.js';
-export { createMixedModeTlsMaterials, type MixedModeTlsMaterials } from './local/mixed-mode-tls.js';
+export {
+  buildJavaTrustStore,
+  createMixedModeTlsMaterials,
+  type MixedModeTlsMaterials,
+} from './local/mixed-mode-tls.js';
 export {
   MIXED_MODE_RESIGN_BODY_CAP_BYTES,
   type ResignSidecarConfig,

@@ -410,7 +410,7 @@ export function describeForwarderFailure(
   const reason = result.reason ?? 'unknown';
   if (reason.startsWith('RESIGN_UPSTREAM_')) {
     return (
-      `${endpointLabel}: the AWS Emulator re-signing sidecar started, but a health check through it did not ` +
+      `${endpointLabel}: the AWS Emulator sidecar started, but a health check through it did not ` +
       `reach the emulator (${reason.slice('RESIGN_UPSTREAM_'.length)}). Check that the emulator is still ` +
       'running, and that its certificate comes from the CA cdk-local trusts (a restart issues a new one).'
     );
@@ -419,10 +419,10 @@ export function describeForwarderFailure(
     const inUse = reason === 'RESIGN_EADDRINUSE';
     const where = port > 0 ? ` on 127.0.0.1:${port}` : '';
     return (
-      `${endpointLabel}: the AWS Emulator re-signing sidecar could not start${where} ` +
+      `${endpointLabel}: the AWS Emulator sidecar could not start${where} ` +
       `inside the workload container (${reason.slice('RESIGN_'.length)}). ` +
       (inUse
-        ? `The workload already listens on port ${port}; it is reserved for the re-signing sidecar in mixed mode.`
+        ? `The workload already listens on port ${port}; under --aws-emulator it is reserved for the AWS Emulator sidecar.`
         : reason.startsWith('RESIGN_CONFIG_')
           ? 'Its config file was not readable in the container; check that the temp directory is shared with Docker.'
           : 'It could not listen on that address inside the container.')
