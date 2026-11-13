@@ -1120,6 +1120,23 @@ export {
   type CallerCredentials,
 } from './utils/workload-identity.js';
 
+/**
+ * Docker registry credential isolation (go-to-k/cdk-local#917, #918). Under
+ * `--aws-emulator` the host's own ECR login must never reach a registry-touching
+ * docker spawn. A host (e.g. cdkd) running its own `docker pull` / `build` /
+ * `run` reuses these so it inherits the same behavior: `dockerRegistryEnv` is
+ * the spawn `env` (a per-run `DOCKER_CONFIG` stripped of ECR credentials via
+ * `stripEcrCredentials`), `noImplicitEcrPullArgs` adds `--pull never` for an
+ * ECR image to `docker run`, and `isEcrRegistryConfigKey` is the loose
+ * ECR-host test both build on.
+ */
+export {
+  dockerRegistryEnv,
+  noImplicitEcrPullArgs,
+  stripEcrCredentials,
+  isEcrRegistryConfigKey,
+} from './utils/docker-registry-config.js';
+
 export { addStudioSpecificOptions } from './cli/commands/local-studio.js';
 
 /**

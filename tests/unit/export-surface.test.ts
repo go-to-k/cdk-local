@@ -44,6 +44,13 @@ describe('package export surface', () => {
     expect(internal).toHaveProperty('keysOverriddenBy');
     expect(internal).toHaveProperty('withoutKeys');
     expect(internal).toHaveProperty('firstUsableRegion');
+    // Docker-registry helpers a host reuses (cdkd#6187); the test-only reset
+    // stays unexported.
+    expect(internal).toHaveProperty('dockerRegistryEnv');
+    expect(internal).toHaveProperty('noImplicitEcrPullArgs');
+    expect(internal).toHaveProperty('stripEcrCredentials');
+    expect(internal).toHaveProperty('isEcrRegistryConfigKey');
+    expect(internal).not.toHaveProperty('resetDockerRegistryConfigForTest');
   });
 
   it('does NOT leak internal building blocks into the main entry', () => {
