@@ -428,7 +428,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the CLI's resolved credentials (honoring `--profile`) and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. No-op when `--no-pull` is set. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
-| `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from the active state source (requires `--from-cfn-stack` or a host-provided extension); (3) `--no-assume-role` explicitly opts out. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default), and with none in the environment the host's default credential chain fills them. STS failures degrade to a warn + dev-creds fallback. |
+| `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from the active state source (requires `--from-cfn-stack` or a host-provided extension); (3) `--no-assume-role` explicitly opts out. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` are passed through unchanged (SAM-compatible default; the region follows the container `AWS_REGION` order below), and with none in the environment the host's default credential chain fills them. STS failures degrade to a warn + dev-creds fallback. |
 | `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Use only when the dev credentials cannot read the layer — typically cross-account layers. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in the Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. See [CloudFormation-driven env recovery](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region when `--from-cfn-stack` is set. |
@@ -1312,20 +1312,17 @@ produces an error — they're mutually exclusive.
 Plus the [common flags](#common-flags): `-a/--app`, `--output`,
 `-c/--context`, `--profile`, `--role-arn`, `--verbose`, `-y/--yes`.
 
-**Container `AWS_REGION` fallback**: when neither `--assume-role`'s STS
-region nor an `AWS_REGION` / `AWS_DEFAULT_REGION` env var already set a
-region for a Lambda container, cdk-local seeds `AWS_REGION` from the first
-available of `--stack-region` > the synth-derived stack region
-(`env.region` on the CDK stack, read from the cloud assembly manifest) >
-the `--profile`'s configured region (`~/.aws/config`'s `region =`).
-`--profile` injects the credential triple but the synthesized credentials
-file carries no `region =`, and the synth-derived stack region was
-previously used only host-side for the `--from-cfn-stack` CFn client — so
-without this a handler's ambient-region SDK call (`new XxxClient({})`)
-booted with credentials but failed locally with "Region is missing" while
-succeeding when deployed. A region-agnostic stack run with no profile
-region and no `AWS_REGION` env still surfaces that SDK error — set
-`AWS_REGION` or `--stack-region`.
+**Container `AWS_REGION`**: a Lambda container gets `AWS_REGION` and
+`AWS_DEFAULT_REGION` from the first of `--region`, the shell's `AWS_REGION`,
+`AWS_DEFAULT_REGION`, `--stack-region` or the stack's `env.region` (read from
+the cloud assembly manifest), the loaded state record's region, then the
+profile's `region` in `~/.aws/config` (`--profile`, else `AWS_PROFILE` /
+`default`). Both credential paths use it, and `--assume-role`'s STS call
+uses the same region. The same order applies to `invoke`, `invoke-agentcore`
+/ `start-agentcore`, and every server that boots a Lambda container
+(`start-cloudfront`, `start-alb`, `start-microvm`, `start-web-function`), as
+it does to ECS task containers. With no region anywhere, the container gets
+none, and the handler's SDK reports "Region is missing".
 
 ### `cdkl start-api` exit codes
 

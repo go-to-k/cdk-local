@@ -151,6 +151,7 @@ import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
+import { resolveContainerRegion, setContainerRegion } from '../../utils/profile-region.js';
 
 export interface LocalInvokeAgentCoreOptions {
   app?: string;
@@ -1424,9 +1425,12 @@ async function buildContainerEnvWith(
 
   const dockerEnv: Record<string, string> = { ...dynamic.env };
   const assumeRoleArn = await resolveAssumeRoleArn(options, resolved, loaded, stateProvider);
+  const stackRegion = options.stackRegion ?? resolved.stack.region;
   await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),
     ...(options.region !== undefined && { region: options.region }),
+    ...(stackRegion !== undefined && { stackRegion }),
+    ...(loaded?.region !== undefined && { stateRegion: loaded.region }),
     ...(options.profile !== undefined && { profile: options.profile }),
     ...(profileCredentials !== undefined && { profileCredentials }),
     ...(profileCredsFile !== undefined && {
@@ -1602,21 +1606,34 @@ export async function applyAgentCoreCredentialEnv(
   args: {
     assumeRoleArn?: string;
     region?: string;
+    /** `--stack-region`, else the runtime stack's own `env.region`. */
+    stackRegion?: string;
+    /** The loaded state record's region (a state-source flag). */
+    stateRegion?: string;
     profile?: string;
     profileCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
     profileCredsFile?: { containerPath: string; profileName: string };
   }
 ): Promise<void> {
   const logger = getLogger();
+  // The region the container runs in, which is also the `--assume-role` STS
+  // hop's region: `--region`, the host variables, `--stack-region` or the
+  // stack's own region, the loaded state record's, then the profile's (the
+  // default profile without `--profile`), as on ECS (go-to-k/cdk-local#926).
+  const containerRegion = await resolveContainerRegion({
+    region: args.region,
+    stackRegion: args.stackRegion,
+    stateRegion: args.stateRegion,
+    profile: args.profile,
+  });
   let assumeSucceeded = false;
   if (args.assumeRoleArn) {
-    const stsRegion = args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
+    const stsRegion = containerRegion;
     try {
       const creds = await assumeAgentCoreExecutionRole(args.assumeRoleArn, stsRegion, args.profile);
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-      if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
       assumeSucceeded = true;
     } catch (err) {
       // Issue #570: never interpolate the SDK error's `message` into this
@@ -1655,6 +1672,9 @@ export async function applyAgentCoreCredentialEnv(
       dockerEnv['AWS_PROFILE'] = args.profileCredsFile.profileName;
     }
   }
+  // On both credential arms, after the forwarded host variables: `--region`
+  // outranks a shell `AWS_REGION` (go-to-k/cdk-local#926).
+  setContainerRegion(dockerEnv, containerRegion);
 }
 
 /**

@@ -168,6 +168,7 @@ import {
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import { formatAuthority } from '../../utils/url-authority.js';
+import { resolveContainerRegion, setContainerRegion } from '../../utils/profile-region.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -2596,12 +2597,22 @@ export async function buildContainerSpec(args: {
     // The execution role is assumed through real STS: the stack's names.
     stateBundle: stackBundle?.withoutSharedState ? undefined : stackBundle,
   });
+  // The region the container runs in, which is also the `--assume-role` STS
+  // hop's region: `--region`, the host variables (both already in
+  // `stsRegion`), `--stack-region` or the stack's own region, the loaded state
+  // record's, then the profile's (the default profile without `--profile`),
+  // as on ECS (go-to-k/cdk-local#926).
+  const containerRegion = await resolveContainerRegion({
+    region: stsRegion,
+    stackRegion: stackRegionOverride ?? lambda.stack.region,
+    stateRegion: stateBundle?.region ?? stackBundle?.region,
+    profile,
+  });
   if (roleArn) {
-    const creds = await assumeLambdaExecutionRole(roleArn, stsRegion, profile);
+    const creds = await assumeLambdaExecutionRole(roleArn, containerRegion, profile);
     dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
     dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
     dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-    if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
   } else {
     const forwarded = forwardAwsEnv(dockerEnv);
     // Issue #654: when `--profile <p>` is set AND this Lambda has no
@@ -2655,23 +2666,9 @@ export async function buildContainerSpec(args: {
     }
   }
 
-  // Fallback AWS_REGION for the container's AWS SDK. The branches above
-  // only set AWS_REGION from the assume-role STS region or a forwarded
-  // AWS_REGION / AWS_DEFAULT_REGION env var. `--profile` injects the
-  // credential triple but NOT the profile's region (the synthesized
-  // credentials file carries no `region =`), and the synth-derived stack
-  // region was previously used only host-side for the --from-cfn-stack CFn
-  // client. Seed both here (precedence in resolveContainerFallbackRegion)
-  // so a handler's ambient-region SDK call resolves to the same region the
-  // deployed function runs in instead of failing with "Region is missing".
-  if (!dockerEnv['AWS_REGION']) {
-    const fallbackRegion = resolveContainerFallbackRegion({
-      stackRegionOverride,
-      synthRegion: lambda.stack.region,
-      profileRegion,
-    });
-    if (fallbackRegion) dockerEnv['AWS_REGION'] = fallbackRegion;
-  }
+  // On both credential arms, after the forwarded host variables: `--region`
+  // outranks a shell `AWS_REGION` (go-to-k/cdk-local#926).
+  setContainerRegion(dockerEnv, containerRegion);
 
   if (debugPort !== undefined) {
     dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
@@ -3446,38 +3443,6 @@ function forwardAwsEnv(
  * command import (issue #245).
  */
 export { resolveProfileCredentials };
-
-/**
- * Resolve the fallback `AWS_REGION` for a Lambda container when neither
- * the assume-role STS region nor a forwarded `AWS_REGION` /
- * `AWS_DEFAULT_REGION` env var already set one.
- *
- * Precedence mirrors where the deployed function would actually run, so a
- * handler's ambient-region SDK call (`new XxxClient({})`) reaches the same
- * region locally as the resources it is bound to:
- *
- *   1. `--stack-region` — explicit; also drives the `--from-cfn-stack` CFn
- *      client, so the container matches the region the bound stack was read
- *      from.
- *   2. the synth-derived stack region — `env.region` on the CDK stack, read
- *      from the cloud assembly manifest (`StackInfo.region`). Previously
- *      used only host-side for the `--from-cfn-stack` CFn client; never
- *      injected into the container.
- *   3. the `--profile`'s configured region — `~/.aws/config`'s `region =`
- *      for the profile. `--profile` injected credentials but not this.
- *
- * Returns `undefined` when none is known; the caller leaves `AWS_REGION`
- * unset so the SDK's own "Region is missing" surfaces (the correct signal
- * for a region-agnostic stack with no profile region and no `AWS_REGION`
- * env).
- */
-export function resolveContainerFallbackRegion(args: {
-  stackRegionOverride?: string | undefined;
-  synthRegion?: string | undefined;
-  profileRegion?: string | undefined;
-}): string | undefined {
-  return args.stackRegionOverride ?? args.synthRegion ?? args.profileRegion;
-}
 
 /**
  * Issue an STS AssumeRole and return temporary credentials, via the
