@@ -17,6 +17,9 @@ const { exec, stubs, manifestRef } = vi.hoisted(() => ({
   manifestRef: { value: undefined as unknown },
 }));
 
+// Captured before any test fakes timers: the health-loop case yields through it.
+const realSetImmediate = globalThis.setImmediate;
+
 vi.mock('node:child_process', () => ({
   execFile: (...rest: unknown[]) => {
     const cb = rest[rest.length - 1] as (
@@ -192,8 +195,22 @@ describe('ecs-task-runner dependency messages (#761)', () => {
       ["a' b", 'Container "a\' b" did not become healthy within 5 minutes.'],
     ] as const) {
       const task = makeTask(DEPS(dep, 'web', 'HEALTHY'));
-      const p = messageOf(runEcsTask(task, runnableOptions(task), createEcsRunState()));
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 5000);
+      let settled = false;
+      const p = messageOf(runEcsTask(task, runnableOptions(task), createEcsRunState())).finally(
+        () => {
+          settled = true;
+        }
+      );
+      // runEcsTask reaches the health loop only after lazy `import()`s, which
+      // the test runner resolves with REAL I/O. One big advance can finish
+      // before the loop's first fake `setTimeout` exists (vitest 5 on Linux
+      // under load), and the loop then hangs to the test timeout. So yield to
+      // the REAL event loop and advance in steps until the run settles.
+      while (!settled) {
+        await vi.dynamicImportSettled();
+        await new Promise((resolve) => realSetImmediate(resolve));
+        await vi.advanceTimersByTimeAsync(10_000);
+      }
       expect(await p).toBe(expected);
     }
   });
