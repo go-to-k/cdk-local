@@ -90,14 +90,16 @@ describe('applyWorkloadAwsWiringToEnv: SQS queue URLs in the env (#947)', () => 
 
   it('mixed mode with SQS not excepted: the queue URL goes through the re-signing sidecar, any account', () => {
     const real = 'https://sqs.eu-west-1.amazonaws.com/123456789012/orders.fifo';
+    const legacy = 'https://queue.amazonaws.com/123456789012/old';
     const out = applyWorkloadAwsWiringToEnv(
-      { QUEUE_URL: Q, REAL_QUEUE: real, AWS_ENDPOINT_URL_DYNAMODB: 'real-aws', ...REAL_KEYS },
+      { QUEUE_URL: Q, REAL_QUEUE: real, LEGACY: legacy, AWS_ENDPOINT_URL_DYNAMODB: 'real-aws', ...REAL_KEYS },
       mixed(['DYNAMODB'])
     );
     expect(out['AWS_ENDPOINT_URL_DYNAMODB']).toBe('https://dynamodb.us-east-1.amazonaws.com');
     expect(out['AWS_ACCESS_KEY_ID']).toBe('AKIAREAL');
     expect(out['QUEUE_URL']).toBe(`${RESIGN}/000000000000/Stack-Queue4A7E3555-abc`);
     expect(out['REAL_QUEUE']).toBe(`${RESIGN}/123456789012/orders.fifo`);
+    expect(out['LEGACY']).toBe(`${RESIGN}/123456789012/old`);
   });
 
   it('mixed mode with SQS excepted: the queue URL stays on real SQS', () => {

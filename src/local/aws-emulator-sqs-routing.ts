@@ -22,13 +22,14 @@
 // A workload whose SQS is excepted to real AWS (`"real-aws"`) gets neither.
 
 /**
- * A real SQS queue URL: an AWS SQS host (either form, any partition suffix),
+ * A real SQS queue URL: an AWS SQS host (`sqs.<region>`, `<region>.queue`, the
+ * legacy global `queue`; any partition suffix),
  * no port, user info, query or fragment, and a path of a 12-digit account and
  * a queue name. Group 1 is `<account>/<queue>`. The re-signing sidecar's
  * response rewrite uses this same pattern (`emulator-resign-sidecar.ts`).
  */
 export const REAL_SQS_QUEUE_URL =
-  /^https?:\/\/(?:sqs\.[a-z0-9-]+|[a-z0-9-]+\.queue)\.amazonaws\.com(?:\.cn)?\/([0-9]{12}\/[A-Za-z0-9_-]{1,80}(?:\.fifo)?)$/;
+  /^https?:\/\/(?:sqs\.[a-z0-9-]+|[a-z0-9-]+\.queue|queue)\.amazonaws\.com(?:\.cn)?\/([0-9]{12}\/[A-Za-z0-9_-]{1,80}(?:\.fifo)?)$/;
 
 /**
  * The AWS Regions whose SQS hosts are blocked, pinned (botocore

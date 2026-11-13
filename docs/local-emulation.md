@@ -265,7 +265,10 @@ runs a command against a local AWS Emulator. The URL defaults to
   request is sent. Not covered: the FIPS and dual-stack hosts
   (`sqs-fips.<region>.amazonaws.com`, `sqs.<region>.api.aws`), which AWS
   does not return as queue URLs, the AWS European Sovereign Cloud
-  (`amazonaws.eu`), and a client given an explicit real `endpoint` in code. A container whose SQS is excepted to real AWS (mixed
+  (`amazonaws.eu`), a client given an explicit real `endpoint` in code, and
+  a literal real `AWS_ENDPOINT_URL_SQS` in the container's env (a literal
+  endpoint is passed through as-is, so SQS then goes to real AWS by your own
+  choice). A container whose SQS is excepted to real AWS (mixed
   mode, `"real-aws"`) gets neither: its queue URLs reach real SQS.
 - For Java, when the URL is https and the run wrote a `truststore.p12`, a
   trust store holding the run's CA (and the SQS sidecar's CA) is mounted
