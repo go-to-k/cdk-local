@@ -44,6 +44,8 @@ describe('isEcrRegistryConfigKey', () => {
     '123456789012.dkr-ecr.us-east-1.on.aws',
     '123456789012.dkr-ecr-fips.us-east-1.on.aws',
     '123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn',
+    'public.ecr.aws',
+    'https://public.ecr.aws/v2/',
     // A look-alike loses its credential too: withholding is the safe side.
     '123456789012.dkr.ecr.us-east-1.example.com',
   ])('matches %s', (key) => {
@@ -52,7 +54,6 @@ describe('isEcrRegistryConfigKey', () => {
 
   it.each([
     'https://index.docker.io/v1/',
-    'public.ecr.aws',
     'ghcr.io',
     'registry.example.com',
     'mydkr.ecr.example.com',
@@ -102,6 +103,7 @@ describe('stripEcrCredentials', () => {
 describe('hostDockerConfigDir', () => {
   it('honors DOCKER_CONFIG and falls back to ~/.docker', () => {
     expect(hostDockerConfigDir({ DOCKER_CONFIG: '/x/cfg' })).toBe('/x/cfg');
+    expect(hostDockerConfigDir({ DOCKER_CONFIG: 'rel/cfg' })).toBe(join(process.cwd(), 'rel/cfg'));
     expect(hostDockerConfigDir({ DOCKER_CONFIG: '' })).toMatch(/[/\\]\.docker$/);
     expect(hostDockerConfigDir({})).toMatch(/[/\\]\.docker$/);
   });
@@ -147,7 +149,7 @@ describe('dockerRegistryEnv / runDocker* under --aws-emulator', () => {
   });
 
   it('keeps the host config outside --aws-emulator', async () => {
-    expect(dockerRegistryEnv()).toEqual({ DOCKER_CONFIG: hostDir });
+    expect(dockerRegistryEnv()).toEqual({ DOCKER_CONFIG: hostDir, DOCKER_AUTH_CONFIG: undefined, REGISTRY_AUTH_FILE: undefined });
     const { stdout } = await runDockerStreaming(['pull', `${ECR}/r:t`]);
     expect(stdout.trim()).toBe(hostDir);
   });
@@ -169,6 +171,8 @@ describe('dockerRegistryEnv / runDocker* under --aws-emulator', () => {
     expect(readlinkSync(join(dir, 'cli-plugins'))).toBe(join(hostDir, 'cli-plugins'));
     // `buildx` is absent on this host, so it is not linked.
     expect(existsSync(join(dir, 'buildx'))).toBe(false);
+    // podman reads the same stripped file.
+    expect(dockerRegistryEnv()['REGISTRY_AUTH_FILE']).toBe(join(dir, 'config.json'));
     // One directory per process.
     expect(dockerRegistryEnv()['DOCKER_CONFIG']).toBe(dir);
 
@@ -183,7 +187,7 @@ describe('dockerRegistryEnv / runDocker* under --aws-emulator', () => {
       override: EMU,
       envOverrides: { Parameters: {}, web: { AWS_ENDPOINT_URL_ECR: 'real-aws' } },
     });
-    expect(dockerRegistryEnv({ containerName: 'web' })).toEqual({ DOCKER_CONFIG: hostDir });
+    expect(dockerRegistryEnv({ containerName: 'web' })).toEqual({ DOCKER_CONFIG: hostDir, DOCKER_AUTH_CONFIG: undefined, REGISTRY_AUTH_FILE: undefined });
     const stripped = dockerRegistryEnv({ containerName: 'worker' })['DOCKER_CONFIG']!;
     expect(stripped).not.toBe(hostDir);
     // Without a workload, `Parameters` decides: not excepted, so stripped.
@@ -201,7 +205,7 @@ describe('dockerRegistryEnv / runDocker* under --aws-emulator', () => {
       override: EMU,
       envOverrides: { Parameters: { AWS_ENDPOINT_URL_ECR: 'real-aws' } },
     });
-    expect(dockerRegistryEnv()).toEqual({ DOCKER_CONFIG: hostDir });
+    expect(dockerRegistryEnv()).toEqual({ DOCKER_CONFIG: hostDir, DOCKER_AUTH_CONFIG: undefined, REGISTRY_AUTH_FILE: undefined });
     await expect(runDockerForeground(['pull', `${ECR}/r:t`])).resolves.toBeUndefined();
   });
 
@@ -220,10 +224,19 @@ describe('dockerRegistryEnv / runDocker* under --aws-emulator', () => {
       expect('DOCKER_AUTH_CONFIG' in env && env['DOCKER_AUTH_CONFIG'] === undefined).toBe(true);
       delete process.env['DOCKER_AUTH_CONFIG'];
       expect('DOCKER_AUTH_CONFIG' in dockerRegistryEnv()).toBe(false);
-      // Outside the flag it is left alone.
+      // Outside the flag, and for an ECR-excepted workload, the host value
+      // passes unchanged, replacing the stripped default underneath.
+      const hostAuth = JSON.stringify({ auths: { [ECR]: { auth: 'ZWNyOnRvaw==' } } });
+      process.env['DOCKER_AUTH_CONFIG'] = hostAuth;
       setAwsEndpointOverride(undefined);
-      process.env['DOCKER_AUTH_CONFIG'] = '{"auths":{}}';
-      expect('DOCKER_AUTH_CONFIG' in dockerRegistryEnv()).toBe(false);
+      expect(dockerRegistryEnv()['DOCKER_AUTH_CONFIG']).toBe(hostAuth);
+      setAwsEmulatorServiceRouting({
+        realServices: [],
+        override: EMU,
+        envOverrides: { Parameters: {}, web: { AWS_ENDPOINT_URL_ECR: 'real-aws' } },
+      });
+      expect(dockerRegistryEnv({ containerName: 'web' })['DOCKER_AUTH_CONFIG']).toBe(hostAuth);
+      expect(dockerRegistryEnv()['DOCKER_AUTH_CONFIG']).not.toBe(hostAuth);
     } finally {
       if (saved === undefined) delete process.env['DOCKER_AUTH_CONFIG'];
       else process.env['DOCKER_AUTH_CONFIG'] = saved;

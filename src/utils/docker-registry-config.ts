@@ -52,7 +52,13 @@ export function isEcrRegistryConfigKey(key: string): boolean {
     .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
     .split('/')[0]!
     .toLowerCase();
-  return /(^|\.)dkr[.-]ecr(-fips)?\./.test(host);
+  // `public.ecr.aws` too: its pulls work anonymously, and a helper there
+  // (`ecr-login`) would fetch an ECR Public token with the host's identity.
+  return (
+    /(^|\.)dkr[.-]ecr(-fips)?\./.test(host) ||
+    host === 'public.ecr.aws' ||
+    host.startsWith('public.ecr.aws:')
+  );
 }
 
 /**
@@ -107,7 +113,9 @@ function asRecord(v: unknown): Record<string, unknown> {
 /** The host docker client's config directory: `DOCKER_CONFIG`, else `~/.docker`. */
 export function hostDockerConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   const own = env['DOCKER_CONFIG'];
-  return own !== undefined && own !== '' ? own : path.join(homedir(), '.docker');
+  // Absolute: a relative value would make the links below dangle (a link's
+  // relative target resolves against the link's own directory).
+  return own !== undefined && own !== '' ? path.resolve(own) : path.join(homedir(), '.docker');
 }
 
 let strippedDir: string | undefined;
@@ -176,10 +184,21 @@ export function dockerRegistryEnv(
   workload?: AwsEmulatorWorkload
 ): Record<string, string | undefined> {
   if (!isAwsServiceRoutedToEmulator(ECR_SERVICE_ID, workload)) {
-    return { DOCKER_CONFIG: process.env['DOCKER_CONFIG'] };
+    // Both host values, so the stripped `Parameters` default `runDocker*` puts
+    // underneath is fully replaced (unset stays unset).
+    return {
+      DOCKER_CONFIG: process.env['DOCKER_CONFIG'],
+      DOCKER_AUTH_CONFIG: process.env['DOCKER_AUTH_CONFIG'],
+      REGISTRY_AUTH_FILE: process.env['REGISTRY_AUTH_FILE'],
+    };
   }
+  const dir = ensureStrippedConfigDir();
   return {
-    DOCKER_CONFIG: ensureStrippedConfigDir(),
+    DOCKER_CONFIG: dir,
+    // podman (CDK_DOCKER) reads its own auth file, not DOCKER_CONFIG; pointed
+    // here it reads only the stripped one. A `credential-helpers` entry in
+    // podman's registries.conf is system configuration and out of reach.
+    REGISTRY_AUTH_FILE: path.join(dir, 'config.json'),
     ...strippedAuthConfigEnv(process.env['DOCKER_AUTH_CONFIG']),
   };
 }

@@ -242,7 +242,13 @@ function withRegistryEnv<T extends { env?: Record<string, string | undefined> }>
   const registry = dockerRegistryEnv();
   // Outside --aws-emulator (or with ECR excepted) the answer is the host's own
   // DOCKER_CONFIG: leave the spawn exactly as it was.
-  if (registry['DOCKER_CONFIG'] === process.env['DOCKER_CONFIG']) return options;
+  if (
+    registry['DOCKER_CONFIG'] === process.env['DOCKER_CONFIG'] &&
+    registry['DOCKER_AUTH_CONFIG'] === process.env['DOCKER_AUTH_CONFIG'] &&
+    registry['REGISTRY_AUTH_FILE'] === process.env['REGISTRY_AUTH_FILE']
+  ) {
+    return options;
+  }
   return { ...options, env: { ...registry, ...options.env } };
 }
 

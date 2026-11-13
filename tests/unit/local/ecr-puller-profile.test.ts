@@ -119,7 +119,7 @@ describe('pullEcrImage — --profile threading', () => {
     // No assumed-role credentials on the same-account, no-ecrRoleArn path.
     expect(ecrCtorArgs[0]!['credentials']).toBeUndefined();
     expect(runFg).toHaveBeenCalledWith(['pull', IMAGE], {
-      env: { DOCKER_CONFIG: process.env['DOCKER_CONFIG'] },
+      env: { DOCKER_CONFIG: process.env['DOCKER_CONFIG'], DOCKER_AUTH_CONFIG: process.env['DOCKER_AUTH_CONFIG'], REGISTRY_AUTH_FILE: process.env['REGISTRY_AUTH_FILE'] },
     });
   });
 
@@ -310,7 +310,7 @@ describe('pullEcrImage — AWS Emulator mixed mode follows "real-aws" on ECR', (
     // --ecr-role-arn is honored on the real side.
     expect(ecrCtorArgs[0]!['credentials']).toMatchObject({ accessKeyId: 'AKIA' });
     // The login and the pull use the host's own docker config (#917).
-    const hostEnv = { env: { DOCKER_CONFIG: process.env['DOCKER_CONFIG'] } };
+    const hostEnv = { env: { DOCKER_CONFIG: process.env['DOCKER_CONFIG'], DOCKER_AUTH_CONFIG: process.env['DOCKER_AUTH_CONFIG'], REGISTRY_AUTH_FILE: process.env['REGISTRY_AUTH_FILE'] } };
     expect(runFg).toHaveBeenCalledWith(['pull', IMAGE], hostEnv);
     expect(runStream).toHaveBeenCalledWith(
       expect.arrayContaining(['login']),

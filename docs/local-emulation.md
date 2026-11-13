@@ -534,7 +534,8 @@ The rules:
   `docker build` cdk-local runs under `--aws-emulator` also uses a per-run
   Docker client config with no credential for any ECR host (the host's
   `auths`, `credHelpers` and `credsStore` entries for ECR hosts, and those in
-  `DOCKER_AUTH_CONFIG`, are left out;
+  `DOCKER_AUTH_CONFIG`, are left out, and so are those for `public.ecr.aws`,
+  which pulls anonymously;
   every other registry keeps its login (except one held only in the
   credential store with no `auths` entry, such as a Docker Desktop sign-in,
   which then pulls anonymously), and the context, CLI plugins and
@@ -545,8 +546,9 @@ The rules:
   own workload's exceptions; an `--image-override`, AgentCore code-asset or
   MicroVM build follows `Parameters`. The
   config is written under the OS temp directory and removed on exit. A
-  client that keeps its own credential store (podman's `auth.json`,
-  finch's `creds_helpers`) is not covered.
+  podman is pointed at the same file (`REGISTRY_AUTH_FILE`); a credential
+  helper in podman's `registries.conf` or finch's `creds_helpers` is not
+  covered.
 - **Host-prefixed operations.** Mixed mode sets
   `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, as `--aws-emulator` alone does,
   because the sidecar listens on an IP address that cannot take a host
