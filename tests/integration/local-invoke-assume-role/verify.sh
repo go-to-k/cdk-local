@@ -13,10 +13,11 @@
 #
 # Two test cases:
 #   1. Baseline: `cdkl invoke --from-cfn-stack <stack>` (no --assume-role)
-#      -> By design, cdkl does NOT inject the developer's shell credentials
-#         into the container; the in-container STS call fails with
-#         CredentialsProviderError. The assertion is just that no implicit
-#         assumed-role identity leaks in.
+#      -> With no credential flag and no AWS_ACCESS_KEY_ID in the
+#         environment, the container gets the host's default-chain
+#         credentials (#872), so the Lambda sees the HOST caller's ARN.
+#         The assertion is that it equals the host's caller ARN and is NOT
+#         an assumed-role identity (no implicit role assumption).
 #   2. Explicit: `cdkl invoke --from-cfn-stack <stack> --assume-role <arn>`
 #      -> Lambda sees `arn:aws:sts::<account>:assumed-role/<RoleName>/<...>`.
 #   3. Bare:     `cdkl invoke --from-cfn-stack <stack> --assume-role`
@@ -168,25 +169,27 @@ invoke_capture() {
 }
 
 echo "[verify] step 5: baseline — cdkl invoke --from-cfn-stack (no --assume-role)"
-# By design, cdkl does NOT inject the developer's shell credentials into
-# the container; it injects credentials ONLY when --assume-role is on.
-# So the Lambda sees no AWS_ACCESS_KEY_ID / etc. at all and the in-container
-# STS call fails with CredentialsProviderError. The negative assertion that
-# matters: no assumed-role marker appears (cdkl did NOT secretly assume
-# anything on the user's behalf).
+# Since #872 (documented in docs/cli-reference.md and docs/local-emulation.md),
+# a Lambda container gets the host's default-chain credentials when the
+# environment holds no AWS_ACCESS_KEY_ID. So the in-container STS call
+# resolves the HOST caller's identity. Assertions: it equals the host's
+# caller ARN, and it is NOT an assumed-role ARN (cdkl did NOT secretly
+# assume the execution role on the user's behalf).
+HOST_ARN=$(aws sts get-caller-identity --query 'Arn' --output text)
 RESULT_BASELINE=$(invoke_capture "${STACK}/EchoIdentityHandler" --from-cfn-stack)
 echo "[verify]   response: ${RESULT_BASELINE}"
-echo "${RESULT_BASELINE}" | grep -q 'CredentialsProviderError' || {
-  echo "[verify] FAIL: baseline expected CredentialsProviderError (no creds in container by default), got: ${RESULT_BASELINE}"
+BASELINE_ARN=$(printf '%s' "${RESULT_BASELINE}" | sed -n 's/.*"arn":"\([^"]*\)".*/\1/p')
+if [ "${BASELINE_ARN}" != "${HOST_ARN}" ]; then
+  echo "[verify] FAIL: baseline expected the host caller ARN (${HOST_ARN}) via default-chain credentials, got: ${RESULT_BASELINE}"
   echo "[verify]   stderr re-run:"
   ${CLI} invoke "${STACK}/EchoIdentityHandler" --from-cfn-stack --no-pull 2>&1 | tail -10
   exit 1
-}
+fi
 if echo "${RESULT_BASELINE}" | grep -q ':assumed-role/'; then
   echo "[verify] FAIL: baseline unexpectedly saw an assumed-role ARN: ${RESULT_BASELINE}"
   exit 1
 fi
-echo "[verify]   ok: baseline container has no AWS creds (no implicit credential injection)"
+echo "[verify]   ok: baseline container uses the host's default-chain identity (${HOST_ARN}), no implicit role assumption"
 
 echo "[verify] step 6: explicit ARN — cdkl invoke --assume-role <arn>"
 echo "[verify]   expect assumed-role/${ROLE_NAME} marker in the Lambda's STS identity"
