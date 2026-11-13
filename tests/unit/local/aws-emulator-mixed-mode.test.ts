@@ -208,7 +208,7 @@ describe('validateAwsEmulatorEnvVars', () => {
     expect(() => validateAwsEmulatorEnvVars({ ...scanOf(file), overrides: file }, true)).not.toThrow(/localhost/);
     // Without --aws-emulator a literal value is the user's own endpoint, as before.
     expect(() => validateAwsEmulatorEnvVars({ ...scanOf(file), overrides: file }, false)).not.toThrow();
-    for (const bad of ['http://', 'https:///x', 'http:localhost', ' https://127.0.0.1:1', 'https://h/ x']) {
+    for (const bad of ['  ', 'http://', 'https:///x', 'http:localhost', ' https://127.0.0.1:1', 'https://h/ x']) {
       const f = { Parameters: { AWS_ENDPOINT_URL_SQS: bad } };
       expect(() => validateAwsEmulatorEnvVars({ ...scanOf(f), overrides: f }, true), bad).toThrow(
         /nor an http\(s\) URL/

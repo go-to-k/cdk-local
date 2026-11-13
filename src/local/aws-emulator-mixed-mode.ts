@@ -247,7 +247,7 @@ function validateEndpointValues(overrides: unknown, awsEmulatorOn: boolean): voi
     for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
       if (typeof value !== 'string' || !ENDPOINT_KEY.test(key)) continue;
       const v = value.trim();
-      if (v === '' || v === REAL_AWS_SENTINEL || v === LEGACY_AWS_EMULATOR_SENTINEL) continue;
+      if (value === '' || v === REAL_AWS_SENTINEL || v === LEGACY_AWS_EMULATOR_SENTINEL) continue;
       const where = `--env-vars sets ${key} under ${displayUntrustedValue(section)}`;
       if (v.toLowerCase() === LEGACY_AWS_EMULATOR_SENTINEL) {
         throw new Error(
