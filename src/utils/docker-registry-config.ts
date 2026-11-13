@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { isAwsServiceRoutedToEmulator, type AwsEmulatorWorkload } from './aws-proxy.js';
@@ -110,6 +119,21 @@ function asRecord(v: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * `--pull never` for a `docker run` of an image in an ECR registry (same loose
+ * host test as {@link isEcrRegistryConfigKey}, `public.ecr.aws` excepted: its
+ * anonymous base-image pulls stay as they are). Every such image has already
+ * been pulled or cache-verified by `pullEcrImage` (or refused there under
+ * `--aws-emulator`), so the daemon must never pull it again on its own with the
+ * host's credentials (go-to-k/cdk-local#917).
+ */
+export function noImplicitEcrPullArgs(image: string): string[] {
+  const slash = image.indexOf('/');
+  if (slash <= 0) return [];
+  const host = image.slice(0, slash);
+  return /(^|\.)dkr[.-]ecr(-fips)?\./i.test(host) ? ['--pull', 'never'] : [];
+}
+
 /** The host docker client's config directory: `DOCKER_CONFIG`, else `~/.docker`. */
 export function hostDockerConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   const own = env['DOCKER_CONFIG'];
@@ -119,19 +143,76 @@ export function hostDockerConfigDir(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 let strippedDir: string | undefined;
+
+/** How old an orphaned per-run docker config dir must be before a later run removes it. */
+export const STALE_DOCKER_CONFIG_DIR_AGE_MS = 3 * 60 * 60 * 1000;
+
+function dockerConfigDirPrefix(): string {
+  return `${getEmbedConfig().resourceNamePrefix}-docker-config-`;
+}
+
+/**
+ * Remove per-run docker config dirs a killed run left behind (they can hold a
+ * copy of the host's non-ECR inline `auths`): `<tmpdir>/<prefix>-docker-config-*`
+ * owned by this user, older than {@link STALE_DOCKER_CONFIG_DIR_AGE_MS}, whose
+ * owning process (`owner.pid`) is gone. The same rules as the re-signing dir
+ * sweep: `lstat`, so a symlink planted under the prefix is skipped, never
+ * followed; `rmSync` removes the dir's own links without following them. Best
+ * effort: never throws.
+ */
+export function sweepStaleDockerConfigDirs(
+  now: number = Date.now(),
+  dir: string = tmpdir()
+): string[] {
+  const removed: string[] = [];
+  const prefix = dockerConfigDirPrefix();
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return removed;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const full = path.join(dir, name);
+    try {
+      const st = lstatSync(full);
+      if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) continue;
+      if (now - st.mtimeMs < STALE_DOCKER_CONFIG_DIR_AGE_MS) continue;
+      const pid = Number(readFileSync(path.join(full, 'owner.pid'), 'utf8').trim());
+      if (!Number.isInteger(pid) || pid <= 0 || processAlive(pid)) continue;
+      rmSync(full, { recursive: true, force: true });
+      removed.push(full);
+    } catch {
+      // Unreadable, no owner.pid, or gone meanwhile: leave it.
+    }
+  }
+  return removed;
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
 let exitHookInstalled = false;
 
 /**
  * Write (once per process) the per-run docker config directory: the host's
  * `config.json` through {@link stripEcrCredentials} (mode 0600 in a 0700
  * directory), plus links to the host's {@link LINKED_ENTRIES}. Removed on
- * normal exit; a process killed outright (SIGKILL) leaves it under the OS temp
- * directory, readable by this user only.
+ * normal exit; one a killed process left behind is removed by a later run
+ * ({@link sweepStaleDockerConfigDirs}).
  * A host config that is missing or not JSON yields an empty one: docker then
  * runs with no credential at all, which is the safe side.
  */
 function ensureStrippedConfigDir(): string {
   if (strippedDir !== undefined && existsSync(strippedDir)) return strippedDir;
+  sweepStaleDockerConfigDirs();
   const hostDir = hostDockerConfigDir();
   let hostConfig: Record<string, unknown> = {};
   try {
@@ -139,9 +220,7 @@ function ensureStrippedConfigDir(): string {
   } catch {
     hostConfig = {};
   }
-  const dir = mkdtempSync(
-    path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-docker-config-`)
-  );
+  const dir = mkdtempSync(path.join(tmpdir(), dockerConfigDirPrefix()));
   const stripped = stripEcrCredentials(hostConfig);
   for (const entry of LINKED_ENTRIES) {
     const target = path.join(hostDir, entry);
@@ -159,6 +238,7 @@ function ensureStrippedConfigDir(): string {
   writeFileSync(path.join(dir, 'config.json'), `${JSON.stringify(stripped, null, 2)}\n`, {
     mode: 0o600,
   });
+  writeFileSync(path.join(dir, 'owner.pid'), `${process.pid}\n`, { mode: 0o600 });
   strippedDir = dir;
   if (!exitHookInstalled) {
     exitHookInstalled = true;

@@ -545,8 +545,11 @@ The rules:
   container Lambda, AgentCore container or ECS task asset build follows its
   own workload's exceptions; an `--image-override`, AgentCore code-asset or
   MicroVM build follows `Parameters`. The
-  config is written under the OS temp directory and removed on exit. A
-  podman is pointed at the same file (`REGISTRY_AUTH_FILE`); a credential
+  config is written under the OS temp directory and removed on exit; a
+  later run removes one a killed run left behind. A container whose image is
+  in ECR is started with `--pull never` (with or without `--aws-emulator`):
+  the image was already pulled or found in the cache, so Docker never pulls
+  it again on its own. podman is pointed at the same file (`REGISTRY_AUTH_FILE`); a credential
   helper in podman's `registries.conf` or finch's `creds_helpers` is not
   covered.
 - **Host-prefixed operations.** Mixed mode sets

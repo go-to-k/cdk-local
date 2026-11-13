@@ -1,4 +1,5 @@
 import { describeExitWithoutArgv } from '../utils/docker-argv-redaction.js';
+import { noImplicitEcrPullArgs } from '../utils/docker-registry-config.js';
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
@@ -1945,7 +1946,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     entryPointTail = container.entryPoint.slice(1);
   }
 
-  both(image, ...entryPointTail, ...(container.command ?? []));
+  both(...noImplicitEcrPullArgs(image), image, ...entryPointTail, ...(container.command ?? []));
   const loopbackPorts = wiring ? effectiveLoopbackPorts(finalEnv, wiring) : [];
   return {
     args,

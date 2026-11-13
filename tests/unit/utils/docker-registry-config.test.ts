@@ -16,6 +16,8 @@ import {
   readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,7 +26,10 @@ import {
   dockerRegistryEnv,
   hostDockerConfigDir,
   isEcrRegistryConfigKey,
+  noImplicitEcrPullArgs,
   resetDockerRegistryConfigForTest,
+  STALE_DOCKER_CONFIG_DIR_AGE_MS,
+  sweepStaleDockerConfigDirs,
   stripEcrCredentials,
 } from '../../../src/utils/docker-registry-config.js';
 import { runDockerForeground, runDockerStreaming } from '../../../src/utils/docker-cmd.js';
@@ -271,5 +276,81 @@ describe('dockerRegistryEnv / runDocker* under --aws-emulator', () => {
     setAwsEndpointOverride(EMU);
     const dir = dockerRegistryEnv()['DOCKER_CONFIG']!;
     expect(JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8'))).toEqual({});
+  });
+});
+
+describe('noImplicitEcrPullArgs', () => {
+  it.each([
+    '123456789012.dkr.ecr.us-east-1.amazonaws.com/app:v1',
+    '123456789012.dkr-ecr.us-east-1.on.aws/app@sha256:abc',
+    // A host parseEcrUri rejects still matches the loose test.
+    '123456789012.dkr.ecr.xx-new-1.amazonaws.com/app:v1',
+  ])('forbids a daemon re-pull of %s', (image) => {
+    expect(noImplicitEcrPullArgs(image)).toEqual(['--pull', 'never']);
+  });
+
+  it.each(['public.ecr.aws/lambda/nodejs:20', 'busybox', 'ghcr.io/o/i:1', 'cdkl-invoke-abc'])(
+    'leaves %s alone',
+    (image) => {
+      expect(noImplicitEcrPullArgs(image)).toEqual([]);
+    }
+  );
+});
+
+describe('sweepStaleDockerConfigDirs (a killed run left its config copy behind)', () => {
+  it("removes only this user's old dirs whose owner process is gone, never following a link", async () => {
+    const { spawnSync } = await import('node:child_process');
+    const deadPid = spawnSync(process.execPath, ['-e', '0']).pid!;
+    const root = mkdtempSync(join(tmpdir(), 'sweep917-'));
+    const target = mkdtempSync(join(tmpdir(), 'sweep917-target-'));
+    writeFileSync(join(target, 'owner.pid'), String(deadPid));
+    const old = (Date.now() - STALE_DOCKER_CONFIG_DIR_AGE_MS - 60_000) / 1000;
+    const make = (name: string, pid: number | undefined, age: 'old' | 'new'): string => {
+      const d = join(root, name);
+      mkdirSync(d);
+      writeFileSync(join(d, 'config.json'), '{}');
+      // A link inside, as the real dir has: removed with the dir, not followed.
+      symlinkSync(target, join(d, 'contexts'));
+      if (pid !== undefined) writeFileSync(join(d, 'owner.pid'), String(pid));
+      if (age === 'old') utimesSync(d, old, old);
+      return d;
+    };
+    try {
+      const stale = make('cdkl-docker-config-dead', deadPid, 'old');
+      const live = make('cdkl-docker-config-live', process.pid, 'old');
+      const fresh = make('cdkl-docker-config-fresh', deadPid, 'new');
+      const noPid = make('cdkl-docker-config-nopid', undefined, 'old');
+      const other = make('other-docker-config-x', deadPid, 'old');
+      // A symlink planted under the prefix is skipped.
+      const planted = join(root, 'cdkl-docker-config-link');
+      symlinkSync(target, planted);
+      expect(sweepStaleDockerConfigDirs(Date.now(), root)).toEqual([stale]);
+      expect(existsSync(stale)).toBe(false);
+      for (const kept of [live, fresh, noPid, other, planted, target]) {
+        expect(existsSync(kept)).toBe(true);
+      }
+      expect(existsSync(join(target, 'owner.pid'))).toBe(true);
+      expect(sweepStaleDockerConfigDirs(Date.now(), join(root, 'missing'))).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it('the per-run dir records its owner pid', () => {
+    const saved = process.env['DOCKER_CONFIG'];
+    const host = mkdtempSync(join(tmpdir(), 'cdkl-917-host-'));
+    process.env['DOCKER_CONFIG'] = host;
+    try {
+      setAwsEndpointOverride(EMU);
+      const dir = dockerRegistryEnv()['DOCKER_CONFIG']!;
+      expect(readFileSync(join(dir, 'owner.pid'), 'utf-8').trim()).toBe(String(process.pid));
+    } finally {
+      setAwsEndpointOverride(undefined);
+      resetDockerRegistryConfigForTest();
+      if (saved === undefined) delete process.env['DOCKER_CONFIG'];
+      else process.env['DOCKER_CONFIG'] = saved;
+      rmSync(host, { recursive: true, force: true });
+    }
   });
 });
