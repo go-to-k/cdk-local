@@ -88,13 +88,15 @@ export function isRealAwsHost(hostname: string): boolean {
 /**
  * The origin a workload's SQS calls go to, when that is NOT real AWS: its
  * `AWS_ENDPOINT_URL_SQS`, else its global `AWS_ENDPOINT_URL` (the AWS SDKs'
- * order). `undefined` when SQS goes to real AWS: no endpoint (the SDK's
+ * order, an empty value skipped). `undefined` when SQS goes to real AWS: no endpoint (the SDK's
  * default), a real AWS host (a `"real-aws"` exception, or a literal real
  * endpoint), or a value that is not an http(s) URL.
  */
 export function sqsEmulatorOriginOf(env: Readonly<Record<string, string>>): string | undefined {
-  const endpoint = env['AWS_ENDPOINT_URL_SQS'] ?? env['AWS_ENDPOINT_URL'];
-  if (endpoint === undefined) return undefined;
+  // Truthy, as the SDKs read them: an empty `AWS_ENDPOINT_URL_SQS` falls back
+  // to the global endpoint there too.
+  const endpoint = env['AWS_ENDPOINT_URL_SQS'] || env['AWS_ENDPOINT_URL'];
+  if (!endpoint) return undefined;
   let url: URL;
   try {
     url = new URL(endpoint.trim());
@@ -122,6 +124,24 @@ export function rewriteSqsQueueUrlsInEnv(env: Record<string, string>, origin: st
     keys.push(k);
   }
   return keys;
+}
+
+/**
+ * Re-point each env value that is a queue URL on `fromOrigin`
+ * (`<fromOrigin>/<account>/<queue>`, as {@link rewriteSqsQueueUrlsInEnv}
+ * wrote it) to `toOrigin`, in place.
+ */
+export function repointLocalSqsQueueUrlsInEnv(
+  env: Record<string, string>,
+  fromOrigin: string,
+  toOrigin: string
+): void {
+  const from = new URL(fromOrigin).origin;
+  for (const [k, v] of Object.entries(env)) {
+    if (typeof v !== 'string' || !v.startsWith(`${from}/`)) continue;
+    const rest = v.slice(from.length + 1);
+    if (/^[0-9]{12}\/[A-Za-z0-9_-]{1,80}(?:\.fifo)?$/.test(rest)) env[k] = `${toOrigin}/${rest}`;
+  }
 }
 
 /** The region of a real SQS host (`sqs.<r>.amazonaws.com`, `<r>.queue.amazonaws.com`). */

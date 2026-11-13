@@ -208,6 +208,12 @@ describe('validateAwsEmulatorEnvVars', () => {
     expect(() => validateAwsEmulatorEnvVars({ ...scanOf(file), overrides: file }, true)).not.toThrow(/localhost/);
     // Without --aws-emulator a literal value is the user's own endpoint, as before.
     expect(() => validateAwsEmulatorEnvVars({ ...scanOf(file), overrides: file }, false)).not.toThrow();
+    for (const bad of ['http://', 'https:///x', 'http:localhost', ' https://127.0.0.1:1', 'https://h/ x']) {
+      const f = { Parameters: { AWS_ENDPOINT_URL_SQS: bad } };
+      expect(() => validateAwsEmulatorEnvVars({ ...scanOf(f), overrides: f }, true), bad).toThrow(
+        /nor an http\(s\) URL/
+      );
+    }
     const fine = {
       Parameters: { AWS_ENDPOINT_URL_SQS: 'http://127.0.0.1:4566', AWS_ENDPOINT_URL_S3: ' real-aws' },
       Fn: { AWS_ENDPOINT_URL_KMS: '', AWS_ENDPOINT_URL_SSM: null, OTHER: 'REAL-AWS' },
@@ -230,6 +236,9 @@ describe('describeRealAwsExceptions (#949)', () => {
       'Stack/PyFn': { AWS_ENDPOINT_URL_S3: 'real-aws', AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' },
       Other: { AWS_ENDPOINT_URL_S3: 'real-aws' },
     });
+    // A section repeated for one service, and the bare variable, add nothing.
+    ex.push({ section: 'Other', key: 'AWS_ENDPOINT_URL_S3', service: 'S3' });
+    ex.push({ section: 'Fn', key: 'AWS_ENDPOINT_URL', service: '' });
     expect(describeRealAwsExceptions(ex)).toBe(
       'DYNAMODB under Parameters (every workload), Stack/PyFn; S3 under Stack/PyFn, Other'
     );

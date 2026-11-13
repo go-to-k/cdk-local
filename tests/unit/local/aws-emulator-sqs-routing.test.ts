@@ -4,6 +4,7 @@ import {
   SQS_BLOCKED_REGIONS,
   isRealAwsHost,
   realSqsHostnames,
+  repointLocalSqsQueueUrlsInEnv,
   rewriteSqsQueueUrlsInEnv,
   sqsBlockedRegionsFor,
   sqsEmulatorOriginOf,
@@ -108,6 +109,15 @@ describe('applyWorkloadAwsWiringToEnv: SQS queue URLs in the env (#947)', () => 
     expect(out['QUEUE_URL']).toBe(Q);
   });
 
+  it('an empty AWS_ENDPOINT_URL_SQS falls back to the global endpoint, as in the SDKs', () => {
+    const out = applyWorkloadAwsWiringToEnv(
+      { QUEUE_URL: Q, AWS_ENDPOINT_URL_SQS: '', AWS_ENDPOINT_URL_DYNAMODB: 'real-aws', ...REAL_KEYS },
+      mixed(['DYNAMODB'])
+    );
+    expect(out['QUEUE_URL']).toBe(`${RESIGN}/000000000000/Stack-Queue4A7E3555-abc`);
+    expect(awsEmulatorSqsHostBlocks(out, mixed(['DYNAMODB'])).length).toBeGreaterThan(0);
+  });
+
   it('without --aws-emulator nothing is rewritten', () => {
     expect(applyWorkloadAwsWiringToEnv({ QUEUE_URL: Q }, forward)['QUEUE_URL']).toBe(Q);
   });
@@ -183,6 +193,8 @@ describe('aws-emulator-sqs-routing helpers', () => {
     expect(sqsEmulatorOriginOf({ AWS_ENDPOINT_URL_SQS: 'https://sqs.us-east-1.api.aws' })).toBeUndefined();
     expect(sqsEmulatorOriginOf({ AWS_ENDPOINT_URL_SQS: 'REAL-AWS' })).toBeUndefined();
     expect(sqsEmulatorOriginOf({})).toBeUndefined();
+    expect(sqsEmulatorOriginOf({ AWS_ENDPOINT_URL_SQS: 'ftp://127.0.0.1:1' })).toBeUndefined();
+    expect(sqsEmulatorOriginOf({ AWS_ENDPOINT_URL_SQS: 'file:///x' })).toBeUndefined();
   });
 
   it('isRealAwsHost', () => {
@@ -197,6 +209,20 @@ describe('aws-emulator-sqs-routing helpers', () => {
     const env = { A: Q, B: 'x' };
     expect(rewriteSqsQueueUrlsInEnv(env, 'http://h:1')).toEqual(['A']);
     expect(env.A).toBe('http://h:1/000000000000/Stack-Queue4A7E3555-abc');
+  });
+
+  it('repointLocalSqsQueueUrlsInEnv moves only queue URLs on that origin', () => {
+    const env = {
+      A: `${RESIGN}/000000000000/q`,
+      B: `${RESIGN}/health`,
+      C: 'https://127.0.0.1:9501/000000000000/q',
+    };
+    repointLocalSqsQueueUrlsInEnv(env, `${RESIGN}/`, 'https://127.0.0.1:9501');
+    expect(env).toEqual({
+      A: 'https://127.0.0.1:9501/000000000000/q',
+      B: `${RESIGN}/health`,
+      C: 'https://127.0.0.1:9501/000000000000/q',
+    });
   });
 
   it('realSqsHostnames / sqsBlockedRegionsFor', () => {

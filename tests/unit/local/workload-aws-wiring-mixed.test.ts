@@ -486,6 +486,32 @@ describe('activateWorkloadAwsWiring — exceptions in --env-vars', () => {
   });
 });
 
+describe('logMixedModeForWorkload outside mixed mode (#949)', () => {
+  it('is a no-op with no wiring, under --aws-emulator alone, and in forward mode', () => {
+    const info = vi.spyOn(getLogger(), 'info');
+    try {
+      resetWorkloadAwsWiringForTest();
+      expect(() => logMixedModeForWorkload({ logicalId: 'Fn' }, 'Lambda S/Fn')).not.toThrow();
+      for (const mode of ['emulator', 'forward'] as const) {
+        setActiveWorkloadAwsWiring({
+          mode,
+          env: {},
+          scrubEnvKeys: [],
+          mounts: [],
+          loopbackPorts: [],
+          probeHealth: false,
+          dispose: () => undefined,
+        });
+        expect(() => logMixedModeForWorkload({ logicalId: 'Fn' }, 'Lambda S/Fn')).not.toThrow();
+      }
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      resetWorkloadAwsWiringForTest();
+    }
+  });
+});
+
 describe('takeAwsEmulatorStateSourceHint (Plan A)', () => {
   it('answers once under --aws-emulator, naming the state-source flags and --env-vars; never without it', async () => {
     resetAwsEmulatorStateSourceHintForTest();

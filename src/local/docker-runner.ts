@@ -40,6 +40,7 @@ import {
   getActiveWorkloadAwsWiring,
   resolveHostDefaultCredentials,
 } from './workload-aws-wiring.js';
+import { repointLocalSqsQueueUrlsInEnv, sqsEmulatorOriginOf } from './aws-emulator-sqs-routing.js';
 import type { WorkloadAwsWiring } from './workload-aws-wiring.js';
 
 const execFileAsync = promisify(execFile);
@@ -344,13 +345,8 @@ export async function withWorkloadAwsWiring(
     delete env['AWS_ENDPOINT_URL_SQS'];
     // The env's queue URLs were pointed at the sidecar (go-to-k/cdk-local#947):
     // point them at the emulator, where SQS now goes.
-    const sidecarPrefix = `${wiring.sidecar.endpoint}/`;
-    const emulator = env['AWS_ENDPOINT_URL'] ? new URL(env['AWS_ENDPOINT_URL']).origin : undefined;
-    for (const [k, v] of Object.entries(env)) {
-      if (emulator && v.startsWith(sidecarPrefix)) {
-        env[k] = `${emulator}/${v.slice(sidecarPrefix.length)}`;
-      }
-    }
+    const emulator = sqsEmulatorOriginOf(env);
+    if (emulator) repointLocalSqsQueueUrlsInEnv(env, wiring.sidecar.endpoint, emulator);
   }
   // Under --aws-emulator, a real SQS host is unreachable from a container whose
   // SQS goes to the emulator (go-to-k/cdk-local#947).

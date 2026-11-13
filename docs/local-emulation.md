@@ -264,8 +264,8 @@ runs a command against a local AWS Emulator. The URL defaults to
   names) to `127.0.0.1`, so the SDK's connection is refused before a signed
   request is sent. Not covered: the FIPS and dual-stack hosts
   (`sqs-fips.<region>.amazonaws.com`, `sqs.<region>.api.aws`), which AWS
-  does not return as queue URLs, and a client given an explicit real
-  `endpoint` in code. A container whose SQS is excepted to real AWS (mixed
+  does not return as queue URLs, the AWS European Sovereign Cloud
+  (`amazonaws.eu`), and a client given an explicit real `endpoint` in code. A container whose SQS is excepted to real AWS (mixed
   mode, `"real-aws"`) gets neither: its queue URLs reach real SQS.
 - For Java, when the URL is https and the run wrote a `truststore.p12`, a
   trust store holding the run's CA (and the SQS sidecar's CA) is mounted
@@ -398,12 +398,13 @@ The rules:
   `--aws-emulator`, naming the spelling, since the SDKs would otherwise read
   it as an endpoint URL; so is any case of the old `"aws-emulator"`. Under
   `--aws-emulator`, any other value on an endpoint variable that is not an
-  `http(s)` URL is refused too (an empty string is left alone).
+  `http(s)` URL, or has spaces around it, is refused too (an empty string is
+  left alone).
 - **The startup line names where each exception is marked.** A command that
   serves several workloads prints each excepted service with the sections
   that mark it (`DYNAMODB under Parameters (every workload); S3 under
-  MyStack/PyFn`). `invoke`, which runs one function, prints that function's
-  exceptions only, once its target is resolved.
+  MyStack/PyFn`). `invoke` and `invoke-agentcore`, which run one workload,
+  print that workload's exceptions only, once the target is resolved.
 - **Each exception gets its real regional endpoint.** cdk-local writes
   `https://<endpoint prefix>.<region>.amazonaws.com` into that service's own
   variable (`https://secretsmanager.us-east-1.amazonaws.com`; the China

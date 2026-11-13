@@ -7,6 +7,7 @@ import {
 import {
   takeAwsEmulatorStateSourceHint,
   activateWorkloadAwsWiring,
+  logMixedModeForWorkload,
   getActiveWorkloadAwsWiring,
 } from '../../local/workload-aws-wiring.js';
 import { attachLoopbackForwarder } from '../../local/docker-runner.js';
@@ -365,7 +366,7 @@ async function localInvokeAgentCoreCommand(
   );
 
   try {
-    await activateWorkloadAwsWiring(options);
+    await activateWorkloadAwsWiring({ ...options, singleWorkload: true });
     warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
       roleFlag: '--assume-role',
       roleRequested: options.assumeRole !== undefined && options.assumeRole !== false,
@@ -436,6 +437,10 @@ async function localInvokeAgentCoreCommand(
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
     logger.info(
       `Target: ${displayStackName(`${resolved.stack.stackName}/${resolved.logicalId}`)} (${resolved.protocol})`
+    );
+    logMixedModeForWorkload(
+      { logicalId: resolved.logicalId, cdkPath: readCdkPathOrUndefined(resolved.resource) },
+      `AgentCore runtime ${displayStackName(`${resolved.stack.stackName}/${resolved.logicalId}`)}`
     );
     const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
     const isA2a = resolved.protocol === AGENTCORE_A2A_PROTOCOL;

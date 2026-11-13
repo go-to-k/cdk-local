@@ -236,8 +236,9 @@ export function legacyAwsEmulatorSentinelMessage(s: RealAwsException): string {
  * - in either mode, a sentinel in another case or spelling (`"REAL-AWS"`,
  *   `"Aws-Emulator"`): the sentinels match exactly, so it would otherwise reach
  *   the container as a literal endpoint;
- * - under `--aws-emulator`, any other value that is not an http(s) URL. An
- *   empty string is left alone. The value itself is never quoted.
+ * - under `--aws-emulator`, any other value that is not an http(s) URL with
+ *   no surrounding spaces (the container gets the value untrimmed). An empty
+ *   string is left alone. The value itself is never quoted.
  */
 function validateEndpointValues(overrides: unknown, awsEmulatorOn: boolean): void {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return;
@@ -263,9 +264,9 @@ function validateEndpointValues(overrides: unknown, awsEmulatorOn: boolean): voi
             `in lowercase, so the SDKs would read "${v}" as the endpoint URL. Write "${REAL_AWS_SENTINEL}".`
         );
       }
-      if (awsEmulatorOn && !/^https?:\/\/[^/\s]/i.test(v)) {
+      if (awsEmulatorOn && (value !== v || !/^https?:\/\/[^/\s]+(?:[/?#]\S*)?$/i.test(v))) {
         throw new Error(
-          `${where} to a value that is neither "${REAL_AWS_SENTINEL}" nor an http(s) URL, so the SDKs would fail ` +
+          `${where} to a value that is neither "${REAL_AWS_SENTINEL}" nor an http(s) URL (with no surrounding spaces), so the SDKs would fail ` +
             `on every call it routes. Under --aws-emulator, write "${REAL_AWS_SENTINEL}" to keep the service on ` +
             'real AWS, a full endpoint URL (https://...), or remove the entry to keep it on AWS Emulator.'
         );
