@@ -153,6 +153,21 @@ describe('awsEmulatorSqsHostBlocks (#947)', () => {
     expect(out).toContain('sqs.cn-north-1.amazonaws.com.cn:127.0.0.1');
   });
 
+  it('blocks every region of the aws, aws-cn and aws-us-gov partitions, with no region in the env', () => {
+    const env = applyWorkloadAwsWiringToEnv({}, emulator(false));
+    const out = hosts(env, emulator(false));
+    for (const r of ['me-west-1', 'sa-west-1', 'ap-southeast-7', 'mx-central-1']) {
+      expect(out).toContain(`sqs.${r}.amazonaws.com:127.0.0.1`);
+      expect(out).toContain(`${r}.queue.amazonaws.com:127.0.0.1`);
+    }
+    for (const r of ['cn-north-1', 'cn-northwest-1']) {
+      expect(out).toContain(`sqs.${r}.amazonaws.com.cn:127.0.0.1`);
+    }
+    expect(out).toContain('sqs.us-gov-west-1.amazonaws.com:127.0.0.1');
+    expect(out).toContain('sqs.us-gov-east-1.amazonaws.com:127.0.0.1');
+    expect(SQS_BLOCKED_REGIONS).toHaveLength(40);
+  });
+
   it('mixed mode: blocked unless the container excepts SQS', () => {
     const notExcepted = applyWorkloadAwsWiringToEnv(
       { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws', ...REAL_KEYS },
