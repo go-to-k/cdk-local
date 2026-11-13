@@ -44,7 +44,7 @@ vi.mock('@aws-sdk/client-lambda', () => ({
 import { materializeLayerFromArn } from '../../../src/local/layer-arn-materializer.js';
 import type { ResolvedArnLambdaLayer } from '../../../src/local/lambda-resolver.js';
 import { resetEmbedConfig, setEmbedConfig } from '../../../src/local/embed-config.js';
-import { setAwsEmulatorServiceRouting } from '../../../src/utils/aws-proxy.js';
+import { setAwsEmulatorServiceRouting, setAwsEndpointOverride } from '../../../src/utils/aws-proxy.js';
 import {
   recordAssumedRole,
   resetWorkloadIdentity,
@@ -154,6 +154,7 @@ describe('layer ARN materializer — AWS Emulator mixed mode follows "real-aws" 
   });
   afterEach(() => {
     setAwsEmulatorServiceRouting(undefined);
+    setAwsEndpointOverride(undefined);
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
@@ -173,9 +174,36 @@ describe('layer ARN materializer — AWS Emulator mixed mode follows "real-aws" 
     expect(lambdaConfigs.map((c) => c['endpoint'])).toEqual([undefined, EMU]);
   });
 
-  it('keeps an unmarked LAMBDA on the emulator', async () => {
+  it('keeps an unmarked LAMBDA on the emulator, without assuming --layer-role-arn', async () => {
+    stsConfigs.length = 0;
     route({ Parameters: { AWS_ENDPOINT_URL_S3: 'real-aws' } });
-    await run();
+    dirs.push(
+      await materializeLayerFromArn(LAYER, {
+        fetchZip: tinyZip,
+        roleArn: 'arn:aws:iam::111122223333:role/LayerRead',
+      })
+    );
+    expect(lambdaConfigs[0]!['endpoint']).toBe(EMU);
+    expect(lambdaConfigs[0]!['credentials']).not.toMatchObject({ accessKeyId: 'AKIAHOP' });
+    expect(stsConfigs).toHaveLength(0);
+  });
+
+  it('assumes --layer-role-arn on the real side when LAMBDA is excepted', async () => {
+    stsConfigs.length = 0;
+    route({ Parameters: { AWS_ENDPOINT_URL_LAMBDA: 'real-aws' } });
+    dirs.push(
+      await materializeLayerFromArn(LAYER, {
+        fetchZip: tinyZip,
+        roleArn: 'arn:aws:iam::111122223333:role/LayerRead',
+      })
+    );
+    expect(stsConfigs).toHaveLength(1);
+    expect(lambdaConfigs[0]!['credentials']).toMatchObject({ accessKeyId: 'AKIAHOP' });
+  });
+
+  it('full --aws-emulator mode (no exception) reads the emulator', async () => {
+    setAwsEndpointOverride({ endpoint: EMU, credentials: { accessKeyId: 'EMUKEY', secretAccessKey: 'x'.repeat(40) } });
+    await run({ logicalId: 'Fn' });
     expect(lambdaConfigs[0]!['endpoint']).toBe(EMU);
   });
 });

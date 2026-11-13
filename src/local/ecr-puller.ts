@@ -306,10 +306,12 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // the emulator with its own keys: a real AssumeRole would only be discarded.
   const tokenFromEmulator = deployArtifactsReadEmulator(ECR_SERVICE_ID, options.workload);
   if (tokenFromEmulator) {
-    logger.debug(`ECR token for ${canonicalUri} comes from AWS Emulator (--aws-emulator).`);
+    logger.debug(
+      `ECR token for ${displayUntrustedValue(canonicalUri)} comes from AWS Emulator (--aws-emulator).`
+    );
   } else if (awsEmulatorRealServices(options.workload) !== undefined) {
     logger.info(
-      `ECR is excepted to real AWS ("real-aws" on AWS_ENDPOINT_URL_ECR): pulling ${canonicalUri} from real ECR ` +
+      `ECR is excepted to real AWS ("real-aws" on AWS_ENDPOINT_URL_ECR): pulling ${displayUntrustedValue(canonicalUri)} from real ECR ` +
         'with your real credentials.'
     );
   }

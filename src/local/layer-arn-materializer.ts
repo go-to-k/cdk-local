@@ -178,7 +178,14 @@ export async function materializeLayerFromArn(
   const logger = getLogger();
 
   let credentials: AwsCredentials | undefined;
-  if (options.roleArn) {
+  // Under --aws-emulator (LAMBDA not excepted to real AWS) the layer is read
+  // from the emulator with its own keys: a real AssumeRole would only be
+  // discarded, as for the ECR token.
+  if (options.roleArn && deployArtifactsReadEmulator('LAMBDA', options.workload)) {
+    logger.debug(
+      '--layer-role-arn is not assumed under --aws-emulator: the layer is read from AWS Emulator.'
+    );
+  } else if (options.roleArn) {
     try {
       credentials = await assumeRoleForLayer(options.roleArn, layer.region, options);
       logger.debug(

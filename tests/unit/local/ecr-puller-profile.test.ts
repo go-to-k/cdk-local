@@ -68,7 +68,9 @@ vi.mock('../../../src/utils/docker-cmd.js', () => ({
 const { pullEcrImage, __resetStsCachesForTesting } = await import(
   '../../../src/local/ecr-puller.js'
 );
-const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');
+const { setAwsEmulatorServiceRouting, setAwsEndpointOverride } = await import(
+  '../../../src/utils/aws-proxy.js'
+);
 
 const IMAGE = '583942117338.dkr.ecr.ap-northeast-1.amazonaws.com/my-repo:latest';
 
@@ -258,7 +260,24 @@ describe('pullEcrImage — AWS Emulator mixed mode follows "real-aws" on ECR', (
     runFg.mockResolvedValue(undefined);
     runStream.mockResolvedValue(undefined);
   });
-  afterEach(() => setAwsEmulatorServiceRouting(undefined));
+  afterEach(() => {
+    setAwsEmulatorServiceRouting(undefined);
+    setAwsEndpointOverride(undefined);
+  });
+
+  it('full --aws-emulator mode (no exception) keeps the token on the emulator, skipping --ecr-role-arn', async () => {
+    setAwsEndpointOverride({ endpoint: EMU, credentials: { accessKeyId: 'EMUKEY', secretAccessKey: 'x'.repeat(40) } });
+    await pullEcrImage(IMAGE, {
+      skipPull: false,
+      region: 'ap-northeast-1',
+      profile: 'prod',
+      ecrRoleArn: roleArn,
+      workload: { containerName: 'web' },
+    });
+    expect(ecrCtorArgs[0]!['endpoint']).toBe(EMU);
+    expect(ecrCtorArgs[0]!).not.toHaveProperty('profile');
+    expect(stsSend.mock.calls.some(([c]) => (c as { kind?: string }).kind === 'assume')).toBe(false);
+  });
 
   it('takes the token from real ECR, as the real identity, when ECR is excepted', async () => {
     route({ Parameters: { AWS_ENDPOINT_URL_ECR: 'real-aws' } });

@@ -23,7 +23,9 @@ vi.mock('@aws-sdk/client-s3', () => ({
 }));
 
 const { downloadAndExtractS3Bundle } = await import('../../../src/local/agentcore-s3-bundle.js');
-const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');
+const { setAwsEmulatorServiceRouting, setAwsEndpointOverride } = await import(
+  '../../../src/utils/aws-proxy.js'
+);
 
 const EMU = 'https://127.0.0.1:9403';
 const CREDS = { accessKeyId: 'AKIAREAL', secretAccessKey: 'realSecret', sessionToken: 'tok' };
@@ -46,6 +48,7 @@ async function download(workload?: { logicalId: string }): Promise<void> {
 
 afterEach(() => {
   setAwsEmulatorServiceRouting(undefined);
+  setAwsEndpointOverride(undefined);
   s3Configs.length = 0;
 });
 
@@ -55,6 +58,14 @@ describe('fromS3 bundle download under AWS Emulator mixed mode', () => {
     await download({ logicalId: 'Agent' });
     expect(s3Configs[0]!['endpoint']).toBeUndefined();
     expect(s3Configs[0]!['credentials']).toMatchObject({ accessKeyId: 'AKIAREAL' });
+  });
+
+  it('full --aws-emulator mode (no exception) reads the emulator, dropping the real credentials', async () => {
+    setAwsEndpointOverride({ endpoint: EMU, credentials: { accessKeyId: 'EMUKEY', secretAccessKey: 'x'.repeat(40) } });
+    await download({ logicalId: 'Agent' });
+    expect(s3Configs[0]!['endpoint']).toBe(EMU);
+    const creds = s3Configs[0]!['credentials'] as () => Promise<unknown>;
+    expect(await creds()).toMatchObject({ accessKeyId: 'EMUKEY' });
   });
 
   it('keeps an unmarked S3 on the emulator, with its keys only', async () => {
