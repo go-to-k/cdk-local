@@ -93,11 +93,11 @@ a log line, and a served HTTP response body.
   ONLY `applyWorkloadAwsWiringToEnv` turns an exception into its real
   endpoint (`realAwsEndpointFor`, tables in `aws-real-endpoints.ts`), gives a
   container keeping none the emulator's keys only, and drops `"real-aws"`
-  without `--aws-emulator`. The re-signing sidecar
-  (`emulator-resign-sidecar.ts`) runs INSIDE the forwarder container, so
-  both layouts get it through `forwarderCommand`; `loopbackForwarderPlan`
-  splits a container's ports. Its secrets live in one 0600 file, never on
-  argv; the per-run CA key (`mixed-mode-tls.ts`) is never written.
+  without `--aws-emulator`. The sidecar (`emulator-resign-sidecar.ts`,
+  `wiring.sidecar`; full: SQS passthrough, #910) runs INSIDE the
+  forwarder container via `forwarderCommand`; `loopbackForwarderPlan` splits
+  a container's ports. Its secrets: one 0600 file, never argv; the
+  per-run CA key (`mixed-mode-tls.ts`) is never written.
   `createLocalStateProvider` wraps `--from-cfn-stack` in
   `createMixedModeStateProvider` (emulator primary). Own clients pass their
   endpoint service id (`service`) to `buildProxyClientConfig` /

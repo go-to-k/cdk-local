@@ -26,6 +26,7 @@ const {
   probeAwsEmulatorHealth,
   resolveAwsEmulatorOption,
   getActiveWorkloadAwsWiring,
+  loopbackForwarderPlan,
   parseAwsEndpoint,
   displayEndpointValue,
   readEmulatorRunFiles,
@@ -50,6 +51,12 @@ const EMU_KEY = { accessKeyId: 'EMULATOR0123456789AB', secretAccessKey: 'A'.repe
 let home: string;
 
 const TRUSTSTORE = Buffer.from([0x30, 0x82, 0x01, 0x00, 0xde, 0xad, 0xbe, 0xef]);
+
+/** The DER of the first PEM certificate in `text` (the END line may be cut off). */
+function pemBody(text: string): Buffer {
+  const b = text.split('-----BEGIN CERTIFICATE-----')[1]!.split('-----')[0]!;
+  return Buffer.from(b.replace(/\s+/g, ''), 'base64');
+}
 
 function writeEmulatorRun(
   port: number,
@@ -382,7 +389,9 @@ describe('resolveWorkloadAwsWiring — --aws-emulator', () => {
       });
       // The host's own service overrides are not forwarded under the flag.
       expect(w.env['AWS_ENDPOINT_URL_S3']).toBeUndefined();
-      expect(w.loopbackPorts).toEqual([9297]);
+      // SQS goes through the passthrough sidecar (#910); its port is forwarded too.
+      expect(w.env['AWS_ENDPOINT_URL_SQS']).toBe('https://127.0.0.1:47297');
+      expect(w.loopbackPorts).toEqual([9297, 47297]);
       expect(w.probeHealth).toBe(true);
       expect(readFileSync(w.caHostPath!, 'utf8').startsWith(PEM.trimEnd())).toBe(true);
     } finally {
@@ -402,7 +411,8 @@ describe('resolveWorkloadAwsWiring — --aws-emulator', () => {
       homeDir: home,
       probeHealth: healthy,
     });
-    expect(other.loopbackPorts).toEqual([9301]);
+    expect(other.loopbackPorts).toEqual([9301, 47297]);
+    expect(other.sidecar?.upstream.port).toBe(9301);
     other.dispose();
   });
 
@@ -433,21 +443,110 @@ describe('resolveWorkloadAwsWiring — --aws-emulator', () => {
   });
 });
 
+describe('--aws-emulator: the SQS sidecar (#910)', () => {
+  const healthy = vi.fn(async () => undefined);
+
+  it('writes a passthrough config holding no keys, and trusts its CA in the container bundle', async () => {
+    writeEmulatorRun(9297);
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    try {
+      const sc = w.sidecar!;
+      expect(sc).toMatchObject({ port: 47297, endpoint: 'https://127.0.0.1:47297', passthrough: true });
+      expect(sc.upstream.url).toBe('https://127.0.0.1:9297');
+      expect(statSync(sc.configHostPath).mode & 0o777).toBe(0o600);
+      expect(statSync(path.dirname(sc.configHostPath)).mode & 0o777).toBe(0o700);
+      const cfg = JSON.parse(readFileSync(sc.configHostPath, 'utf8')) as Record<string, unknown>;
+      expect(cfg).toMatchObject({ port: 47297, upstream: 'https://127.0.0.1:9297', passthrough: true });
+      expect(cfg['credentials']).toBeUndefined();
+      expect(JSON.stringify(cfg)).not.toContain(EMU_KEY.secretAccessKey);
+      expect(cfg['upstreamCaPem']).toContain('MIIBfake');
+      // The container bundle: the run's CA, then the sidecar's CA (its leaf's issuer).
+      const bundle = readFileSync(w.caHostPath!, 'utf8');
+      const { X509Certificate } = await import('node:crypto');
+      const leaf = new X509Certificate(String(cfg['certPem']));
+      const sidecarCa = new X509Certificate(pemBody(bundle.split('-----END CERTIFICATE-----')[1]!));
+      expect(leaf.verify(sidecarCa.publicKey)).toBe(true);
+      w.dispose();
+      expect(() => statSync(sc.configHostPath)).toThrow();
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it('a plain http emulator gets no sidecar: SQS keeps the global endpoint', async () => {
+    writeEmulatorRun(9302);
+    const w = await resolveWorkloadAwsWiring({
+      awsEmulator: 'http://127.0.0.1:9302',
+      env: {},
+      homeDir: home,
+      probeHealth: healthy,
+    });
+    try {
+      expect(w.sidecar).toBeUndefined();
+      expect(w.env['AWS_ENDPOINT_URL_SQS']).toBeUndefined();
+      expect(w.loopbackPorts).toEqual([9302]);
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it("forces the sidecar as the SQS endpoint, but keeps a container's own literal one", async () => {
+    writeEmulatorRun(9297);
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    try {
+      const plain = applyWorkloadAwsWiringToEnv({}, w);
+      expect(plain['AWS_ENDPOINT_URL_SQS']).toBe('https://127.0.0.1:47297');
+      expect(plain['AWS_ENDPOINT_URL']).toBe('https://127.0.0.1:9297');
+      // Applying twice is stable.
+      expect(applyWorkloadAwsWiringToEnv(plain, w)['AWS_ENDPOINT_URL_SQS']).toBe('https://127.0.0.1:47297');
+      const own = applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_SQS: 'https://127.0.0.1:4566' }, w);
+      expect(own['AWS_ENDPOINT_URL_SQS']).toBe('https://127.0.0.1:4566');
+    } finally {
+      w.dispose();
+    }
+  });
+
+  it('starts the sidecar in the forwarder only for a container that uses it', async () => {
+    writeEmulatorRun(9297);
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    try {
+      const uses = effectiveLoopbackPorts(applyWorkloadAwsWiringToEnv({}, w), w);
+      expect(uses).toEqual([9297, 47297]);
+      expect(loopbackForwarderPlan(w, uses)).toEqual({
+        ports: [9297],
+        resignConfigHostPath: w.sidecar!.configHostPath,
+      });
+      const own = effectiveLoopbackPorts(
+        applyWorkloadAwsWiringToEnv({ AWS_ENDPOINT_URL_SQS: 'https://sqs.example.com' }, w),
+        w
+      );
+      expect(own).toEqual([9297]);
+      expect(loopbackForwarderPlan(w, own)).toEqual({ ports: [9297] });
+    } finally {
+      w.dispose();
+    }
+  });
+});
+
 describe('--aws-emulator: Java trust store', () => {
   const healthy = vi.fn(async () => undefined);
   const JAVA_OPTS =
     '-Djavax.net.ssl.trustStore=/cdk-local-aws/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12';
 
-  it("mounts a world-readable copy of the run's truststore.p12 and points JAVA_TOOL_OPTIONS at it", async () => {
+  it("mounts a world-readable trust store of the run's CA and the SQS sidecar's CA, and points JAVA_TOOL_OPTIONS at it", async () => {
     writeEmulatorRun(9297, { truststore: true });
     const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
     try {
       expect(w.env['JAVA_TOOL_OPTIONS']).toBe(JAVA_OPTS);
       const mount = w.mounts.find((m) => m.containerPath === '/cdk-local-aws/truststore.p12');
       expect(mount).toBeDefined();
-      // A copy, not the private run file: the container user may not be the host user.
+      // Not the private run file: the container user may not be the host user.
       expect(mount!.hostPath).not.toContain(path.join('.aws', 'emulator'));
-      expect(readFileSync(mount!.hostPath)).toEqual(TRUSTSTORE);
+      // The run's own CA plus the sidecar's per-run CA, both trusted entries.
+      const store = readFileSync(mount!.hostPath);
+      expect(store.includes(Buffer.from('MIIBfake', 'base64'))).toBe(true);
+      const sidecarCa = pemBody(readFileSync(w.caHostPath!, 'utf8').split('-----END CERTIFICATE-----')[1]!);
+      expect(store.includes(sidecarCa)).toBe(true);
       expect(statSync(mount!.hostPath).mode & 0o777).toBe(0o644);
       // The PEM bundle mount is still there for the other runtimes.
       expect(w.mounts.map((m) => m.containerPath)).toContain('/cdk-local-aws/ca-bundle.pem');
@@ -483,14 +582,29 @@ describe('--aws-emulator: Java trust store', () => {
     w.dispose();
   });
 
+  it('without the SQS sidecar (no ca.pem in the run) the run\'s truststore.p12 is copied as-is', async () => {
+    const dir = writeEmulatorRun(9297, { truststore: true });
+    rmSync(path.join(dir, 'ca.pem'));
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    try {
+      expect(w.sidecar).toBeUndefined();
+      expect(w.env['AWS_ENDPOINT_URL_SQS']).toBeUndefined();
+      const mount = w.mounts.find((m) => m.containerPath === '/cdk-local-aws/truststore.p12');
+      expect(readFileSync(mount!.hostPath)).toEqual(TRUSTSTORE);
+    } finally {
+      w.dispose();
+    }
+  });
+
   it('an unreadable truststore.p12 skips only the Java wiring, with a warning', async () => {
     const dir = writeEmulatorRun(9297);
+    rmSync(path.join(dir, 'ca.pem')); // no sidecar: the run's own trust store is copied
     mkdirSync(path.join(dir, 'truststore.p12')); // EISDIR on read
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
     try {
       expect(w.env['JAVA_TOOL_OPTIONS']).toBeUndefined();
-      expect(w.mounts.map((m) => m.containerPath)).toEqual(['/cdk-local-aws/ca-bundle.pem']);
+      expect(w.mounts.map((m) => m.containerPath)).toEqual([]);
       expect(warn.mock.calls.some((c) => /truststore\.p12 cannot be read/.test(String(c[0])))).toBe(true);
     } finally {
       warn.mockRestore();

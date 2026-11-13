@@ -69,7 +69,7 @@ import {
   validateAwsEmulatorEnvVars,
 } from './aws-emulator-mixed-mode.js';
 import type { RealAwsException } from './aws-emulator-mixed-mode.js';
-import { createMixedModeTlsMaterials } from './mixed-mode-tls.js';
+import { buildJavaTrustStore, createMixedModeTlsMaterials } from './mixed-mode-tls.js';
 import {
   MIXED_MODE_RESIGN_BODY_CAP_BYTES,
   type ResignSidecarConfig,
@@ -395,12 +395,38 @@ export interface MixedModeWiring {
   emulatorClientOverride: AwsEndpointOverride;
 }
 
+/**
+ * The AWS Emulator sidecar inside each workload's network namespace
+ * (`emulator-resign-sidecar.ts`), in both `--aws-emulator` modes. Mixed mode:
+ * the global `AWS_ENDPOINT_URL`, re-signing every request. Full emulator mode:
+ * `AWS_ENDPOINT_URL_SQS` only, a passthrough that rewrites the SQS queue URLs
+ * in the emulator's responses to itself (go-to-k/cdk-local#910).
+ */
+export interface AwsEmulatorSidecarWiring {
+  /** The port it listens on, inside the workload's namespace. */
+  port: number;
+  /** `https://127.0.0.1:<port>`: what a workload env points at. */
+  endpoint: string;
+  /** The emulator it forwards to. */
+  upstream: ParsedAwsEndpoint;
+  /** Host path of its config (JSON, mode 0600, in a 0700 temp dir); removed by `dispose`. */
+  configHostPath: string;
+  /** True in full emulator mode: requests go upstream unchanged, never re-signed. */
+  passthrough: boolean;
+}
+
 /** The resolved wiring. Treat as immutable. */
 export interface WorkloadAwsWiring {
   /** `emulator` under `--aws-emulator` alone, else `forward` (mixed mode included). */
   mode: 'forward' | 'emulator';
   /** Set in mixed mode ({@link MixedModeWiring}). */
   mixed?: MixedModeWiring;
+  /**
+   * The AWS Emulator sidecar ({@link AwsEmulatorSidecarWiring}): always in
+   * mixed mode, and in full emulator mode with an https AWS Emulator whose run
+   * wrote its `ca.pem`.
+   */
+  sidecar?: AwsEmulatorSidecarWiring;
   /** The endpoint under `emulator` mode. */
   emulatorEndpoint?: ParsedAwsEndpoint;
   /**
@@ -660,6 +686,52 @@ function processAlive(pid: number): boolean {
 }
 
 /**
+ * Write the sidecar's config (its TLS key, and in mixed mode the emulator's
+ * keys): a 0700 directory holding one 0600 file, mounted read-only, removed by
+ * `dispose`. Returns the file's path. A SIGKILLed run cannot dispose: this
+ * first cleans up what such runs left behind.
+ */
+function writeSidecarConfig(config: ResignSidecarConfig, disposers: (() => void)[]): string {
+  sweepStaleResignDirs();
+  const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().productName}-resign-`));
+  disposers.push(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(path.join(dir, 'owner.pid'), String(process.pid), { mode: 0o600 });
+  const configPath = path.join(dir, 'resign.json');
+  writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+  return configPath;
+}
+
+/** The PEM certificates of each readable file in `sources`, deduplicated by path. */
+function readPemCertificates(sources: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const source of new Set(sources)) {
+    try {
+      out.push(...pemCertificates(readFileSync(source, 'utf8')));
+    } catch (err) {
+      throw new Error(
+        `--aws-emulator: the CA bundle ${displayUntrustedValue(source)} cannot be read ` +
+          `(${(err as NodeJS.ErrnoException).code ?? 'error'}).`
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * Write a Java trust store (PKCS#12, no password, mode 0644: certificates
+ * only) holding `pems` into a fresh temp dir.
+ */
+function writeJavaTrustStoreFile(pems: readonly string[]): {
+  hostPath: string;
+  dispose: () => void;
+} {
+  const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().productName}-truststore-`));
+  const hostPath = path.join(dir, 'truststore.p12');
+  writeFileSync(hostPath, buildJavaTrustStore(pems), { mode: 0o644 });
+  return { hostPath, dispose: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/**
  * The mixed-mode branch of {@link resolveWorkloadAwsWiring}: per-run TLS
  * material for the re-signing sidecar, its 0600 config, a CA bundle that
  * trusts the sidecar's CA and the emulator's (plus the public roots, so the
@@ -684,31 +756,13 @@ function resolveMixedModeWiring(args: {
   const resignEndpoint = `https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`;
   // Kept together, never one instead of another: a `--ca-bundle` for a
   // corporate proxy must not drop the trust in the emulator's own CA.
-  const caPems: string[] = [];
-  for (const source of caSources) {
-    try {
-      caPems.push(...pemCertificates(readFileSync(source, 'utf8')));
-    } catch (err) {
-      throw new Error(
-        `--aws-emulator: the CA bundle ${displayUntrustedValue(source)} cannot be read ` +
-          `(${(err as NodeJS.ErrnoException).code ?? 'error'}).`
-      );
-    }
-  }
+  const caPems = readPemCertificates(caSources);
   const upstreamCaPem = caPems.length > 0 ? caPems.join('\n') : undefined;
   // The CA's private key never leaves createMixedModeTlsMaterials.
   const tls = createMixedModeTlsMaterials();
   const bundle = writeCaBundleFile(undefined, [...caPems, tls.caCertPem]);
   disposers.push(bundle.dispose);
-  // Secrets (the sidecar's TLS key, the emulator's keys): a 0700 directory
-  // holding one 0600 file, mounted read-only, removed by `dispose`.
-  // A SIGKILLed run cannot dispose: clean up what such runs left behind.
-  sweepStaleResignDirs();
-  const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().productName}-resign-`));
-  disposers.push(() => rmSync(dir, { recursive: true, force: true }));
-  writeFileSync(path.join(dir, 'owner.pid'), String(process.pid), { mode: 0o600 });
-  const resignConfigHostPath = path.join(dir, 'resign.json');
-  const config: ResignSidecarConfig = {
+  const config: ResignSidecarConfig & { credentials: CallerCredentials } = {
     port: MIXED_MODE_RESIGN_PORT,
     upstream: ep.url,
     ...(upstreamCaPem ? { upstreamCaPem } : {}),
@@ -722,12 +776,19 @@ function resolveMixedModeWiring(args: {
     capBytes: MIXED_MODE_RESIGN_BODY_CAP_BYTES,
     ...(args.region ? { region: args.region } : {}),
   };
-  writeFileSync(resignConfigHostPath, JSON.stringify(config), { mode: 0o600 });
+  const resignConfigHostPath = writeSidecarConfig(config, disposers);
   const containerPath = getContainerCaBundlePath();
   const trust: Record<string, string> = {};
   for (const k of CA_TRUST_ENV_KEYS) trust[k] = containerPath;
   return {
     mode: 'forward',
+    sidecar: {
+      port: MIXED_MODE_RESIGN_PORT,
+      endpoint: resignEndpoint,
+      upstream: ep,
+      configHostPath: resignConfigHostPath,
+      passthrough: false,
+    },
     mixed: {
       realServices: services,
       emulatorEndpoint: ep,
@@ -785,9 +846,10 @@ export async function resolveWorkloadAwsWiring(
   };
   const caMount = (
     source: string,
-    keys: readonly string[] = CA_TRUST_ENV_KEYS
+    keys: readonly string[] = CA_TRUST_ENV_KEYS,
+    extraCertsPem: readonly string[] = []
   ): { hostPath: string; mounts: WorkloadMount[]; env: Record<string, string> } => {
-    const file = writeCaBundleFile(expandHome(source, homeDir));
+    const file = writeCaBundleFile(expandHome(source, homeDir), extraCertsPem);
     disposers.push(file.dispose);
     const containerPath = getContainerCaBundlePath();
     const caEnv: Record<string, string> = {};
@@ -859,18 +921,55 @@ export async function resolveWorkloadAwsWiring(
           region: env['AWS_REGION'] || env['AWS_DEFAULT_REGION'] || undefined,
         });
       }
-      const ca = caSource && ep.url.startsWith('https:') ? caMount(caSource) : undefined;
-      // Java reads none of the PEM variables: mount the run's PKCS12 copy of
-      // the same CA and point the JVM at it.
+      const https = ep.url.startsWith('https:');
+      // The SQS sidecar (go-to-k/cdk-local#910): AWS Emulator's queue URLs name
+      // real SQS, and the JavaScript SDK follows them. Only for an https AWS
+      // Emulator whose run wrote its CA (the sidecar verifies it upstream).
+      const sidecarTls = https && run.caPath ? createMixedModeTlsMaterials() : undefined;
+      const ca =
+        caSource && https
+          ? caMount(caSource, CA_TRUST_ENV_KEYS, sidecarTls ? [sidecarTls.caCertPem] : [])
+          : undefined;
+      let sidecar: AwsEmulatorSidecarWiring | undefined;
+      if (sidecarTls && run.caPath) {
+        const upstreamPems = readPemCertificates(
+          [run.caPath, ...(caSource ? [caSource] : [])].map((c) => expandHome(c, homeDir))
+        );
+        sidecar = {
+          port: MIXED_MODE_RESIGN_PORT,
+          endpoint: `https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`,
+          upstream: ep,
+          passthrough: true,
+          configHostPath: writeSidecarConfig(
+            {
+              port: MIXED_MODE_RESIGN_PORT,
+              upstream: ep.url,
+              ...(upstreamPems.length > 0 ? { upstreamCaPem: upstreamPems.join('\n') } : {}),
+              certPem: sidecarTls.certPem,
+              keyPem: sidecarTls.keyPem,
+              capBytes: MIXED_MODE_RESIGN_BODY_CAP_BYTES,
+              passthrough: true,
+            },
+            disposers
+          ),
+        };
+      }
+      // Java reads none of the PEM variables: mount a PKCS12 trust store of the
+      // same CA (the run's own `truststore.p12`, or with the SQS sidecar one
+      // that also holds the sidecar's CA) and point the JVM at it.
       let java: { mount: WorkloadMount; env: Record<string, string> } | undefined;
-      if (run.truststorePath && ep.url.startsWith('https:')) {
+      if (run.truststorePath && https) {
         // Optional: an unreadable trust store skips only the Java wiring.
         let file: { hostPath: string; dispose: () => void } | undefined;
+        const source = sidecarTls && run.caPath ? run.caPath : run.truststorePath;
         try {
-          file = copyTruststoreFile(run.truststorePath);
+          file =
+            sidecarTls && run.caPath
+              ? writeJavaTrustStoreFile([readFileSync(run.caPath, 'utf8'), sidecarTls.caCertPem])
+              : copyTruststoreFile(run.truststorePath);
         } catch (err) {
           getLogger().warn(
-            `--aws-emulator: ${run.truststorePath} cannot be read (${(err as NodeJS.ErrnoException).code ?? 'error'}); ` +
+            `--aws-emulator: ${source} cannot be read (${(err as NodeJS.ErrnoException).code ?? 'error'}); ` +
               'Java workloads get no JAVA_TOOL_OPTIONS trust store.'
           );
         }
@@ -886,8 +985,11 @@ export async function resolveWorkloadAwsWiring(
       return {
         mode: 'emulator',
         emulatorEndpoint: ep,
+        ...(sidecar ? { sidecar } : {}),
         env: {
           AWS_ENDPOINT_URL: ep.url,
+          // SQS goes through the sidecar; every other service straight to the emulator.
+          ...(sidecar ? { AWS_ENDPOINT_URL_SQS: sidecar.endpoint } : {}),
           AWS_EC2_METADATA_DISABLED: 'true',
           AWS_DISABLE_HOST_PREFIX_INJECTION: 'true',
           // Forced: an image-baked setting must not make the SDK skip the endpoint.
@@ -897,7 +999,7 @@ export async function resolveWorkloadAwsWiring(
         },
         scrubEnvKeys: EMULATOR_SCRUBBED_ENV_KEYS,
         mounts: [...(ca?.mounts ?? []), ...(java ? [java.mount] : [])],
-        loopbackPorts: ep.loopback ? [ep.port] : [],
+        loopbackPorts: [...(ep.loopback ? [ep.port] : []), ...(sidecar ? [sidecar.port] : [])],
         probeHealth: ca !== undefined,
         ...(ca ? { caHostPath: ca.hostPath } : {}),
         emulatorCredentials: credentials,
@@ -948,11 +1050,28 @@ export async function resolveWorkloadAwsWiring(
 }
 
 /**
+ * The wiring's AWS Emulator sidecar. A mixed-mode wiring built without the
+ * `sidecar` field (by a host, before it existed) still names one in `mixed`.
+ */
+function sidecarOf(wiring: WorkloadAwsWiring): AwsEmulatorSidecarWiring | undefined {
+  if (wiring.sidecar) return wiring.sidecar;
+  const mixed = wiring.mixed;
+  if (!mixed) return undefined;
+  return {
+    port: mixed.resignPort,
+    endpoint: mixed.resignEndpoint,
+    upstream: mixed.emulatorEndpoint,
+    configHostPath: mixed.resignConfigHostPath,
+    passthrough: false,
+  };
+}
+
+/**
  * The wiring's loopback ports that a container's FINAL env still points at
  * (`AWS_ENDPOINT_URL*`): when the template or `--env-vars` replaced the
- * forwarded endpoint, its port needs no forwarder. In mixed mode the
- * re-signing sidecar's port is among them when the env uses it, together with
- * the emulator's loopback port (the sidecar's upstream).
+ * forwarded endpoint, its port needs no forwarder. Under `--aws-emulator` the
+ * sidecar's port is among them when the env uses it, together with the
+ * emulator's loopback port (the sidecar's upstream).
  */
 export function effectiveLoopbackPorts(
   env: Readonly<Record<string, string>>,
@@ -968,16 +1087,16 @@ export function effectiveLoopbackPorts(
       /* not a URL: nothing to forward */
     }
   }
-  const mixed = wiring.mixed;
-  if (mixed && used.has(mixed.resignPort) && mixed.emulatorEndpoint.loopback) {
-    used.add(mixed.emulatorEndpoint.port);
+  const sidecar = sidecarOf(wiring);
+  if (sidecar && used.has(sidecar.port) && sidecar.upstream.loopback) {
+    used.add(sidecar.upstream.port);
   }
   return wiring.loopbackPorts.filter((p) => used.has(p));
 }
 
 /**
  * Split a container's forwarder ports ({@link effectiveLoopbackPorts}) into
- * the TCP ports the forwarder serves and, in mixed mode, the re-signing
+ * the TCP ports the forwarder serves and, under `--aws-emulator`, the
  * sidecar's config when the container uses it. Pass the result to
  * `startLoopbackForwarder` / `buildNamespaceOwnerForwarderDockerArgs`
  * (`ports`, `resignConfigHostPath`).
@@ -989,11 +1108,11 @@ export function loopbackForwarderPlan(
   wiring: WorkloadAwsWiring,
   ports: readonly number[]
 ): { ports: number[]; resignConfigHostPath?: string } {
-  const mixed = wiring.mixed;
-  if (!mixed || !ports.includes(mixed.resignPort)) return { ports: [...ports] };
+  const sidecar = sidecarOf(wiring);
+  if (!sidecar || !ports.includes(sidecar.port)) return { ports: [...ports] };
   return {
-    ports: ports.filter((p) => p !== mixed.resignPort),
-    resignConfigHostPath: mixed.resignConfigHostPath,
+    ports: ports.filter((p) => p !== sidecar.port),
+    resignConfigHostPath: sidecar.configHostPath,
   };
 }
 
@@ -1081,8 +1200,12 @@ export function applyWorkloadAwsWiringToEnv(
   };
   if (wiring.mode === 'emulator') {
     const ownJavaToolOptions = out['JAVA_TOOL_OPTIONS'];
+    const ownSqsEndpoint = out['AWS_ENDPOINT_URL_SQS'];
     for (const k of wiring.scrubEnvKeys) delete out[k];
     Object.assign(out, wiring.env);
+    // A container's own literal SQS endpoint is kept, as every other
+    // service's; the SQS sidecar only replaces the global endpoint for SQS.
+    if (ownSqsEndpoint !== undefined) out['AWS_ENDPOINT_URL_SQS'] = ownSqsEndpoint;
     // Forced like the rest, except that a container's own JVM options are
     // kept: the trust store options are appended to them.
     const javaToolOptions = wiring.env['JAVA_TOOL_OPTIONS'];

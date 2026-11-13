@@ -331,6 +331,16 @@ export async function withWorkloadAwsWiring(
       ? await resolveHostDefaultCredentials()
       : undefined;
   const env = applyWorkloadAwsWiringToEnv(opts.env, wiring, defaults);
+  // On the host network no sidecar runs (the workload's loopback is the
+  // host's, shared by every workload): full emulator mode then sends SQS
+  // straight to the emulator, as before the SQS sidecar existed.
+  if (
+    opts.network === 'host' &&
+    wiring.sidecar?.passthrough &&
+    env['AWS_ENDPOINT_URL_SQS'] === wiring.sidecar.endpoint
+  ) {
+    delete env['AWS_ENDPOINT_URL_SQS'];
+  }
   // The `--profile` credentials file's in-container path (local-profile-credentials-file.ts).
   const credsPath = `${getEmbedConfig().awsBindMountPath}/credentials`;
   // Emulator keys only (`--aws-emulator` alone, or a mixed-mode container

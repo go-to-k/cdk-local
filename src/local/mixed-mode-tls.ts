@@ -237,3 +237,50 @@ export function createMixedModeTlsMaterials(
     keyPem: leaf.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
   };
 }
+
+const OID_PKCS7_DATA = '1.2.840.113549.1.7.1';
+const OID_CERT_BAG = '1.2.840.113549.1.12.10.1.3';
+const OID_X509_CERTIFICATE = '1.2.840.113549.1.9.22.1';
+const OID_FRIENDLY_NAME = '1.2.840.113549.1.9.20';
+/** The JDK's "trusted certificate entry" bag attribute (ORACLE_TrustedKeyUsage). */
+const OID_JDK_TRUSTED_KEY_USAGE = '2.16.840.1.113894.746875.1.1';
+const OID_ANY_EXTENDED_KEY_USAGE = '2.5.29.37.0';
+
+/**
+ * A password-less PKCS#12 trust store (no MAC, certificates unencrypted)
+ * holding each PEM certificate in `pems` as a JDK trusted-certificate entry,
+ * aliased `<aliasPrefix>-<n>`. It is the same layout AWS Emulator writes for
+ * its own `truststore.p12`, so every JVM that reads that file reads this one
+ * (`-Djavax.net.ssl.trustStoreType=PKCS12`, no password). Certificates only:
+ * a trust store holds no key.
+ *
+ * Host-side use case: a host CLI that mounts a Java trust store for a
+ * workload it starts against the AWS Emulator sidecar.
+ */
+export function buildJavaTrustStore(pems: readonly string[], aliasPrefix = 'cdk-local'): Buffer {
+  const bags: Buffer[] = [];
+  for (const pem of pems) {
+    for (const block of pem.match(
+      /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g
+    ) ?? []) {
+      const body = block.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/\s+/g, '');
+      const certDer = Buffer.from(body, 'base64');
+      const alias = `${aliasPrefix}-${bags.length}`;
+      // BMPString: UTF-16 big endian.
+      const bmp = Buffer.from(alias, 'utf16le').swap16();
+      bags.push(
+        seq(
+          oid(OID_CERT_BAG),
+          explicit(0, seq(oid(OID_X509_CERTIFICATE), explicit(0, octets(certDer)))),
+          set(
+            seq(oid(OID_JDK_TRUSTED_KEY_USAGE), set(oid(OID_ANY_EXTENDED_KEY_USAGE))),
+            seq(oid(OID_FRIENDLY_NAME), set(der(0x1e, bmp)))
+          )
+        )
+      );
+    }
+  }
+  const safeContents = seq(...bags);
+  const authSafe = seq(seq(oid(OID_PKCS7_DATA), explicit(0, octets(safeContents))));
+  return seq(integer(Buffer.from([3])), seq(oid(OID_PKCS7_DATA), explicit(0, octets(authSafe))));
+}

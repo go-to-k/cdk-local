@@ -39,6 +39,20 @@
 //
 // It never logs a header, a body, a key or a signature.
 //
+// SQS queue URLs (go-to-k/cdk-local#910): AWS Emulator answers `CreateQueue`,
+// `GetQueueUrl`, `ListQueues` and `ListDeadLetterSourceQueues` with real-shaped
+// URLs (`https://sqs.<region>.amazonaws.com/<account>/<queue>`), and the AWS
+// SDK for JavaScript v3 sends an SQS request to its QueueUrl's host, which
+// would take it out of the emulator. The sidecar rewrites those URLs (JSON and
+// query/XML protocol, the URL fields only, never a message body) to its own
+// `https://127.0.0.1:<port>`, so the SDK's next call stays local.
+//
+// Full emulator mode runs the same server as a PASSTHROUGH (`passthrough` in
+// the config), as the workload's SQS endpoint only: the workload already
+// signs with the emulator's keys, so the request goes upstream unchanged and
+// streams, and only the SQS responses above are rewritten. The config then
+// holds no keys.
+//
 // The script is plain CommonJS for the container's Node.js (no TypeScript, no
 // template literals, so the `${` of this module's own template never
 // appears in it). Unit tests load {@link RESIGN_SIDECAR_CORE} as-is through
@@ -58,10 +72,12 @@
 export const MIXED_MODE_RESIGN_BODY_CAP_BYTES = 100 * 1024 * 1024;
 
 /**
- * Pure helpers: SigV4 signing, `aws-chunked` decoding and request
- * preparation. No I/O. Defines `prepareResign`, `signRequest`,
- * `decodeAwsChunked`, `canonicalPath`, `canonicalQuery`, `splitQuery`,
- * `parseAuthScope`, `isAwsChunked`, `upstreamHeaders` and `tooLargeByHeaders`.
+ * Pure helpers: SigV4 signing, `aws-chunked` decoding, request preparation
+ * and the SQS queue URL rewrite. No I/O. Defines `prepareResign`,
+ * `signRequest`, `decodeAwsChunked`, `canonicalPath`, `canonicalQuery`,
+ * `splitQuery`, `parseAuthScope`, `isAwsChunked`, `upstreamHeaders`,
+ * `tooLargeByHeaders`, `passthroughHeaders`, `localQueueUrl`, `isSqsRequest`,
+ * `sqsResponseMayCarryQueueUrl` and `rewriteSqsQueueUrls`.
  */
 export const RESIGN_SIDECAR_CORE = String.raw`
 var crypto=require('crypto');
@@ -217,6 +233,44 @@ function errorBody(err,service){
   if(service==='s3'||service===undefined)return {type:'application/xml',text:'<?xml version="1.0" encoding="UTF-8"?><Error><Code>'+err.code+'</Code><Message>'+err.message.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</Message></Error>'};
   return {type:'application/x-amz-json-1.0',text:JSON.stringify({__type:err.code,message:err.message})};
 }
+var PASS_DROP_HEADERS=new Set(['connection','keep-alive','proxy-authorization','proxy-connection','te','trailer','transfer-encoding','upgrade','expect']);
+function passthroughHeaders(incoming){
+  var out=Object.create(null);
+  Object.keys(incoming).forEach(function(k){var lk=k.toLowerCase();if(PASS_DROP_HEADERS.has(lk))return;var v=incoming[k];if(v===undefined)return;out[lk]=v;});
+  return out;
+}
+// Only a real SQS queue URL is rewritten: an AWS SQS host (either form, any
+// partition suffix), no port, user info, query or fragment, and a path of a
+// 12-digit account and a queue name.
+var SQS_QUEUE_URL=/^https?:\/\/(?:sqs\.[a-z0-9-]+|[a-z0-9-]+\.queue)\.amazonaws\.com(?:\.cn)?\/([0-9]{12}\/[A-Za-z0-9_-]{1,80}(?:\.fifo)?)$/;
+function localQueueUrl(u,origin){var m=SQS_QUEUE_URL.exec(String(u));return m?origin+'/'+m[1]:u;}
+var SQS_QUEUE_URL_OPERATIONS=new Set(['CreateQueue','GetQueueUrl','ListQueues','ListDeadLetterSourceQueues']);
+function isSqsRequest(headers,service){return service==='sqs'||String(headers['x-amz-target']||'').indexOf('AmazonSQS.')===0;}
+// JSON protocol: the target names the operation. Query protocol: unknown here,
+// so every response is a candidate.
+function sqsResponseMayCarryQueueUrl(headers){
+  var t=String(headers['x-amz-target']||'');
+  if(t==='')return true;
+  return t.indexOf('AmazonSQS.')===0&&SQS_QUEUE_URL_OPERATIONS.has(t.slice('AmazonSQS.'.length));
+}
+function rewriteSqsQueueUrls(text,contentType,origin){
+  var ct=String(contentType||'').toLowerCase(),changed=false;
+  function one(u){if(typeof u!=='string')return u;var n=localQueueUrl(u,origin);if(n!==u)changed=true;return n;}
+  if(ct.indexOf('json')>=0){
+    var o;
+    try{o=JSON.parse(text);}catch(e){return undefined;}
+    if(!o||typeof o!=='object'||Array.isArray(o))return undefined;
+    if(typeof o.QueueUrl==='string')o.QueueUrl=one(o.QueueUrl);
+    ['QueueUrls','queueUrls'].forEach(function(k){if(Array.isArray(o[k]))o[k]=o[k].map(one);});
+    return changed?JSON.stringify(o):undefined;
+  }
+  if(ct.indexOf('xml')>=0){
+    // A message body inside XML is escaped, so a literal element is never user data.
+    var out=String(text).replace(/<QueueUrl>([^<]*)<\/QueueUrl>/g,function(all,u){var n=one(u.trim());return n===u.trim()?all:'<QueueUrl>'+n+'</QueueUrl>';});
+    return changed?out:undefined;
+  }
+  return undefined;
+}
 `;
 
 /**
@@ -227,14 +281,52 @@ function errorBody(err,service){
  */
 export const RESIGN_SIDECAR_SERVER = String.raw`
 function startResigner(cfgPath){return new Promise(function(done){
-  var fs=require('fs'),https=require('https'),http=require('http'),tls=require('tls');
+  var fs=require('fs'),https=require('https'),http=require('http'),tls=require('tls'),net=require('net'),zlib=require('zlib');
   var cfg;
   try{cfg=JSON.parse(fs.readFileSync(cfgPath,'utf8'));}catch(e){done({error:'CONFIG_'+(e.code||'ERROR')});return;}
+  var passthrough=cfg.passthrough===true;
+  if(!passthrough&&!cfg.credentials){done({error:'CONFIG_ERROR'});return;}
+  var label=passthrough?'cdk-local --aws-emulator':'cdk-local mixed mode';
   var up=new URL(cfg.upstream),secure=up.protocol==='https:',mod=secure?https:http;
+  var upHost=up.hostname.replace(/^\[|\]$/g,'');
   cfg.upstreamHost=up.host;
   var agentOpts={keepAlive:true};
   if(secure&&cfg.upstreamCaPem)agentOpts.ca=tls.rootCertificates.concat([cfg.upstreamCaPem]);
   var agent=new mod.Agent(agentOpts);
+  // What a rewritten queue URL points at: this sidecar, the endpoint the workload already uses.
+  var origin='https://127.0.0.1:'+cfg.port;
+  var REWRITE_CAP=16*1048576;
+  var DECODERS={identity:null,gzip:zlib.gunzipSync,'x-gzip':zlib.gunzipSync,deflate:zlib.inflateSync,br:zlib.brotliDecompressSync};
+  // Relay an emulator response. An SQS response that may carry a queue URL is
+  // held (up to a cap) and its queue URLs point back here; anything else, and
+  // a response that needs no change, goes through byte for byte.
+  function relay(ur,resp,rewrite){
+    var h={};
+    Object.keys(ur.headers).forEach(function(k){if(k==='connection'||k==='keep-alive'||k==='transfer-encoding')return;h[k]=ur.headers[k];});
+    var status=ur.statusCode||502,enc=String(ur.headers['content-encoding']||'identity').trim().toLowerCase();
+    ur.on('error',function(){resp.destroy();});
+    if(!rewrite||status<200||status>=300||!Object.prototype.hasOwnProperty.call(DECODERS,enc)||Number(ur.headers['content-length'])>REWRITE_CAP){resp.writeHead(status,h);ur.pipe(resp);return;}
+    var chunks=[],n=0;
+    function onData(c){
+      n+=c.length;chunks.push(c);
+      if(n<=REWRITE_CAP)return;
+      ur.removeListener('data',onData);ur.removeListener('end',onEnd);
+      resp.writeHead(status,h);chunks.forEach(function(x){resp.write(x);});chunks=[];
+      ur.pipe(resp);
+    }
+    function onEnd(){
+      var raw=Buffer.concat(chunks),text,out;chunks=[];
+      try{var dec=DECODERS[enc];text=(dec?dec(raw,{maxOutputLength:4*REWRITE_CAP}):raw).toString('utf8');}catch(e){text=undefined;}
+      if(text!==undefined)out=rewriteSqsQueueUrls(text,ur.headers['content-type'],origin);
+      if(out===undefined){h['content-length']=String(raw.length);resp.writeHead(status,h);resp.end(raw);return;}
+      var b=Buffer.from(out,'utf8');
+      delete h['content-encoding'];delete h['content-md5'];delete h['x-amz-crc32'];
+      h['content-length']=String(b.length);
+      resp.writeHead(status,h);resp.end(b);
+    }
+    ur.on('data',onData);ur.on('end',onEnd);
+  }
+  function rewritesResponse(req,service){return isSqsRequest(req.headers,service)&&sqsResponseMayCarryQueueUrl(req.headers);}
   function send(resp,status,err,service){
     if(resp.headersSent){resp.destroy();return;}
     var b=errorBody(err,service);
@@ -261,37 +353,53 @@ function startResigner(cfgPath){return new Promise(function(done){
     req.on('error',function(){drop();resp.destroy();});
     resp.on('close',drop);
     req.on('end',function(){
-      if(busy){send(resp,503,{code:'SlowDown',message:'cdk-local mixed mode: the AWS Emulator re-signing sidecar is holding too many request bodies at once; retry.'},serviceOf(req));return;}
+      if(busy){send(resp,503,{code:'SlowDown',message:label+': the AWS Emulator re-signing sidecar is holding too many request bodies at once; retry.'},serviceOf(req));return;}
       if(over){process.stdout.write('CDKL-RESIGN rejected a streamed request body over the cap without holding it\n');send(resp,413,tooLargeError(seen,cfg.capBytes,serviceOf(req)),serviceOf(req));return;}
       var p;
       var joined=Buffer.concat(chunks);chunks=[];
-      try{p=prepareResign(req,joined,cfg,new Date());}catch(e){p={error:{status:400,code:'InvalidRequest',message:'cdk-local mixed mode: the request could not be re-signed.'}};}
+      try{p=prepareResign(req,joined,cfg,new Date());}catch(e){p={error:{status:400,code:'InvalidRequest',message:label+': the request could not be re-signed.'}};}
       joined=null;
       if(p.error){if(p.error.status===413)process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,p.error.status,p.error,serviceOf(req));return;}
       var r;
-      try{r=mod.request({host:up.hostname.replace(/^\[|\]$/g,''),port:up.port||(secure?443:80),method:req.method,path:p.path,headers:p.headers,agent:agent},function(ur){
-        var h={};
-        Object.keys(ur.headers).forEach(function(k){if(k==='connection'||k==='keep-alive'||k==='transfer-encoding')return;h[k]=ur.headers[k];});
-        resp.writeHead(ur.statusCode||502,h);
-        ur.pipe(resp);
-        ur.on('error',function(){resp.destroy();});
-      });}catch(e){send(resp,400,{code:'InvalidRequest',message:'cdk-local mixed mode: the request has a header the AWS Emulator re-signing sidecar cannot forward.'},p.service);return;}
-      // A client that hangs up (an aborted GetObject) frees the upstream socket too.
-      resp.on('close',function(){if(!resp.writableFinished)r.destroy();});
-      r.setTimeout(300000,function(){r.destroy(Object.assign(new Error('upstream timeout'),{code:'ETIMEDOUT'}));});
-      r.on('error',function(e){process.stdout.write('CDKL-RESIGN upstream error '+(e.code||'ERROR')+'\n');send(resp,502,{code:'BadGateway',message:'cdk-local mixed mode: the AWS Emulator at '+cfg.upstream+' did not answer ('+(e.code||'ERROR')+').'},p.service);});
-      r.end(p.body);
+      var r=upstreamRequest(req,resp,p.path,p.headers,p.service,{});
+      if(r)r.end(p.body);
     });
   }
-  var srv=https.createServer({key:cfg.keyPem,cert:cfg.certPem},handle);
+  // One upstream request; the response is relayed back. Undefined when the
+  // headers cannot be sent (the client got a 400).
+  function upstreamRequest(req,resp,path,headers,service,extra){
+    var r,opts={host:upHost,port:up.port||(secure?443:80),method:req.method,path:path,headers:headers,agent:agent};
+    Object.keys(extra).forEach(function(k){opts[k]=extra[k];});
+    try{r=mod.request(opts,function(ur){relay(ur,resp,rewritesResponse(req,service));});}
+    catch(e){send(resp,400,{code:'InvalidRequest',message:label+': the request has a header the AWS Emulator sidecar cannot forward.'},service);return undefined;}
+    // A client that hangs up (an aborted GetObject) frees the upstream socket too.
+    resp.on('close',function(){if(!resp.writableFinished)r.destroy();});
+    r.setTimeout(300000,function(){r.destroy(Object.assign(new Error('upstream timeout'),{code:'ETIMEDOUT'}));});
+    r.on('error',function(e){process.stdout.write('CDKL-RESIGN upstream error '+(e.code||'ERROR')+'\n');send(resp,502,{code:'BadGateway',message:label+': the AWS Emulator at '+cfg.upstream+' did not answer ('+(e.code||'ERROR')+').'},service);});
+    return r;
+  }
+  // Full emulator mode: the workload already signs with the emulator's keys,
+  // so the request goes upstream unchanged (its Host header too, which the
+  // signature covers) and streams; only hop-by-hop headers are dropped. TLS
+  // to the emulator is verified against the emulator's own host name.
+  function handlePassthrough(req,resp){
+    var service=serviceOf(req);
+    var extra=secure?{servername:net.isIP(upHost)?'':upHost,checkServerIdentity:function(h,cert){return tls.checkServerIdentity(upHost,cert);}}:{};
+    var r=upstreamRequest(req,resp,String(req.url||'/'),passthroughHeaders(req.headers),service,extra);
+    if(!r){req.resume();return;}
+    req.on('error',function(){r.destroy();resp.destroy();});
+    req.pipe(r);
+  }
+  var srv=https.createServer({key:cfg.keyPem,cert:cfg.certPem},passthrough?handlePassthrough:handle);
   srv.on('checkContinue',function(req,resp){
+    if(passthrough){resp.writeContinue();handlePassthrough(req,resp);return;}
     var n=tooLargeByHeaders(req.headers,cfg.capBytes);
     if(n>0){process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,413,tooLargeError(n,cfg.capBytes,serviceOf(req)),serviceOf(req));req.resume();return;}
     resp.writeContinue();
     handle(req,resp);
   });
   srv.once('error',function(e){done({error:e.code||'ERROR',port:cfg.port});});
-  // Loopback only: it signs with the emulator's keys for whoever connects.
+  // Loopback only: in mixed mode it signs with the emulator's keys for whoever connects.
   srv.listen(cfg.port,'127.0.0.1',function(){done({port:cfg.port,address:srv.address().address});});
 });}
 `;
@@ -301,8 +409,8 @@ export const RESIGN_SIDECAR_SCRIPT = RESIGN_SIDECAR_CORE + RESIGN_SIDECAR_SERVER
 
 /**
  * What the host writes (JSON, mode 0600) for the sidecar to read: its TLS key
- * pair, the emulator's keys, the upstream URL and CA, the port and the cap.
- * Holds secrets; mounted read-only, removed with the wiring.
+ * pair, the emulator's keys (mixed mode), the upstream URL and CA, the port
+ * and the cap. Holds secrets; mounted read-only, removed with the wiring.
  */
 export interface ResignSidecarConfig {
   /** The port the sidecar listens on, inside the workload's namespace. */
@@ -314,8 +422,16 @@ export interface ResignSidecarConfig {
   /** The sidecar's server certificate and key (PEM). */
   certPem: string;
   keyPem: string;
-  /** The emulator's keys: every forwarded request is signed with these. */
-  credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+  /**
+   * The emulator's keys: every forwarded request is signed with these (mixed
+   * mode). Absent with {@link passthrough}.
+   */
+  credentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+  /**
+   * Full emulator mode: forward each request unchanged (no re-signing, no
+   * body cap) and only rewrite SQS queue URLs in the responses.
+   */
+  passthrough?: boolean;
   /** Fallback region for a SigV4a request with no single region (the host's `AWS_REGION`, else `us-east-1`). */
   region?: string;
   /** {@link MIXED_MODE_RESIGN_BODY_CAP_BYTES} unless a test lowers it. */

@@ -3,7 +3,7 @@ import { createServer } from 'node:https';
 import { request } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vite-plus/test';
-import { createMixedModeTlsMaterials } from '../../../src/local/mixed-mode-tls.js';
+import { buildJavaTrustStore, createMixedModeTlsMaterials } from '../../../src/local/mixed-mode-tls.js';
 
 describe('createMixedModeTlsMaterials', () => {
   it('issues a CA and a 127.0.0.1 / ::1 / localhost leaf signed by it', () => {
@@ -92,5 +92,38 @@ describe('createMixedModeTlsMaterials', () => {
     } finally {
       await new Promise((r) => server.close(r));
     }
+  });
+});
+
+describe('buildJavaTrustStore', () => {
+  const der = (pem: string): Buffer =>
+    Buffer.from(pem.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/\s+/g, ''), 'base64');
+
+  it('lays out a password-less PKCS#12 of JDK trusted-certificate entries, one per certificate', () => {
+    const a = createMixedModeTlsMaterials().caCertPem;
+    const b = createMixedModeTlsMaterials().caCertPem;
+    const store = buildJavaTrustStore([a + b], 'x');
+    // PFX v3: SEQUENCE { INTEGER 3, ContentInfo(data) } and no MAC after it.
+    expect(store[0]).toBe(0x30);
+    const len = store[1] === 0x82 ? store.readUInt16BE(2) : store[1]!;
+    expect(store.length).toBe(len + (store[1] === 0x82 ? 4 : 2));
+    expect(store.subarray(4, 7)).toEqual(Buffer.from([0x02, 0x01, 0x03]));
+    for (const cert of [der(a), der(b)]) expect(store.includes(cert)).toBe(true);
+    // The JDK trusted-key-usage attribute (2.16.840.1.113894.746875.1.1), once per entry.
+    const trusted = Buffer.from([0x06, 0x0c, 0x60, 0x86, 0x48, 0x01, 0x86, 0xf9, 0x66, 0xad, 0xca, 0x7b, 0x01, 0x01]);
+    let n = 0;
+    for (let i = store.indexOf(trusted); i >= 0; i = store.indexOf(trusted, i + 1)) n++;
+    expect(n).toBe(2);
+    // Distinct aliases (BMPString friendly names).
+    expect(store.includes(Buffer.from('x-0', 'utf16le').swap16())).toBe(true);
+    expect(store.includes(Buffer.from('x-1', 'utf16le').swap16())).toBe(true);
+    // Certificates only: nothing that looks like a key bag (pkcs8ShroudedKeyBag / keyBag OIDs).
+    expect(store.includes(Buffer.from([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x0c, 0x0a, 0x01, 0x02]))).toBe(false);
+    expect(store.includes(Buffer.from([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x0c, 0x0a, 0x01, 0x01]))).toBe(false);
+  });
+
+  it('ignores anything that is not a certificate block', () => {
+    const empty = buildJavaTrustStore(['-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n']);
+    expect(empty.includes(Buffer.from([0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x0c, 0x0a, 0x01, 0x03]))).toBe(false);
   });
 });

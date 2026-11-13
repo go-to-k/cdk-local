@@ -222,6 +222,37 @@ describe('runDetached forwarder failure policy', () => {
     expect(runs[0]![1].some((a: string) => a.startsWith('AWS_PROFILE'))).toBe(false);
   });
 
+  it('full emulator mode with the SQS sidecar: the forwarder runs it; on the host network SQS falls back to the emulator', async () => {
+    const sidecar = {
+      port: 47297,
+      endpoint: 'https://127.0.0.1:47297',
+      upstream: { url: 'https://127.0.0.1:9297', hostname: '127.0.0.1', port: 9297, loopback: true },
+      configHostPath: '/tmp/resign-full/resign.json',
+      passthrough: true,
+    };
+    const w = emulatorWiring({
+      sidecar,
+      env: { ...emulatorWiring().env, AWS_ENDPOINT_URL_SQS: sidecar.endpoint },
+      loopbackPorts: [9297, 47297],
+    });
+    setActiveWorkloadAwsWiring(w);
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: args.includes('--pid') ? 'fwd\n' : 'id\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return { stdout: '' };
+    });
+    await runDetached({ ...baseRun, env: {} });
+    const fwd = execFileMock.mock.calls.find((c) => c[1][0] === 'run' && c[1].includes('--pid'))!;
+    expect(fwd[1]).toContain('/tmp/resign-full/resign.json:/cdkl-forwarder/resign.json:ro');
+    expect(fwd[1].slice(fwd[1].indexOf('-e') + 2)[0]).toBe('9297');
+    execFileMock.mockClear();
+    await runDetached({ ...baseRun, network: 'host', env: {} });
+    const runs = execFileMock.mock.calls.filter((c) => c[1][0] === 'run');
+    expect(runs).toHaveLength(1);
+    expect(runs[0]![1].some((a: string) => a.startsWith('AWS_ENDPOINT_URL_SQS'))).toBe(false);
+    expect(runs[0]![1]).toContain('AWS_ENDPOINT_URL=https://127.0.0.1:9297');
+  });
+
   it('a port the final env no longer points at gets no forwarder', async () => {
     setActiveWorkloadAwsWiring(emulatorWiring({ mode: 'forward', scrubEnvKeys: [] }));
     execFileMock.mockReturnValue({ stdout: 'id\n' });
@@ -516,7 +547,7 @@ describe('runDetached — mixed mode (--aws-emulator + a real-aws exception)', (
         ...baseRun,
         env: { ...realEnv, AWS_REGION: 'us-east-1', AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' },
       })
-    ).rejects.toThrow(/re-signing sidecar could not start on 127\.0\.0\.1:47297.*already listens/);
+    ).rejects.toThrow(/AWS Emulator sidecar could not start on 127\.0\.0\.1:47297.*already listens/);
     expect(execFileMock.mock.calls.some((c) => c[1][0] === 'rm' && c[1].includes('workload-id'))).toBe(true);
   });
 
@@ -567,7 +598,7 @@ describe('runDetached — mixed mode (--aws-emulator + a real-aws exception)', (
       if (args[0] === 'logs') return { stdout: `CDKL-FWD FAIL 0 RESIGN_CONFIG_ENOENT none\n` };
       return {};
     });
-    await expect(owner([9297, RESIGN])).rejects.toThrow(/re-signing sidecar could not start/);
+    await expect(owner([9297, RESIGN])).rejects.toThrow(/AWS Emulator sidecar could not start/);
     // A literal emulator URL only (no sidecar): a failure stays a warning, as in forward mode.
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     execFileMock.mockImplementation((_c: string, args: string[]) => {
