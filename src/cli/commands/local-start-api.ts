@@ -5,7 +5,10 @@ import {
   resolveDynamicReferencesInEnv,
 } from '../../local/dynamic-reference-resolver.js';
 import { addAwsEndpointOptions } from '../options.js';
-import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
+import {
+  activateWorkloadAwsWiring,
+  takeAwsEmulatorStateSourceHint,
+} from '../../local/workload-aws-wiring.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -2461,7 +2464,7 @@ export async function buildContainerSpec(args: {
   // env-resolver's generic warn loop so the user sees one warn per key.
   let templateEnv = getTemplateEnv(lambda.resource);
   const stackBundle = stateByStack.get(lambda.stack.stackName);
-  // Mixed mode: this function's own routed services pick its names (#905).
+  // Mixed mode: this function's own exceptions pick its names (#905).
   const stateBundle =
     stackBundle?.byLambda?.get(logicalId) ??
     (stackBundle?.withoutSharedState ? undefined : stackBundle);
@@ -2545,6 +2548,10 @@ export async function buildContainerSpec(args: {
         `or pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to recover deployed values.`
     );
   }
+  if (envResult.unresolved.length > 0 && !stateBundle) {
+    const hint = takeAwsEmulatorStateSourceHint();
+    if (hint) getLogger().warn(hint);
+  }
 
   // CloudFormation dynamic references (`{{resolve:...}}`) — the same
   // resolver every container-env builder uses (issue #784). Resolved once
@@ -2562,7 +2569,7 @@ export async function buildContainerSpec(args: {
     label: `Lambda ${logicalId}`,
     skipKeys: plaintextKeys,
     ...(profile !== undefined && { profile }),
-    // Mixed mode: this function's own sentinels route the fetches.
+    // Mixed mode: this function's own exceptions route the fetches.
     workload: { logicalId, cdkPath: lambdaCdkPath },
   });
 
@@ -3911,7 +3918,7 @@ export async function loadStateForRoutedStacks(
     if (!stack) continue;
     const region = await resolveCfnFallbackRegion(options, stack.region);
     // AWS Emulator mixed mode: the stack's names are the ones a function no
-    // `--env-vars` section names reads (`Parameters` sentinels only); a
+    // `--env-vars` section names reads (`Parameters` exceptions only); a
     // function whose own section routes other services reads its own (#905).
     const providerFor = (workload: AwsEmulatorWorkload): LocalStateProvider | undefined =>
       createLocalStateProvider(options, stack.stackName, region, extraStateProviders, {

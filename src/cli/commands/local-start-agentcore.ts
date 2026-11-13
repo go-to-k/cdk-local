@@ -323,7 +323,7 @@ async function localStartAgentCoreCommand(
     candidate?.stackName ?? '',
     await resolveCfnFallbackRegion(options, candidate?.region),
     extraStateProviders,
-    // Mixed mode: names resolve by this runtime's own sentinels.
+    // Mixed mode: names resolve by this runtime's own exceptions.
     { workload: agentCoreTargetWorkload(resolvedTarget, stacks) }
   );
   const { context: imageContext, loaded: loadedState } =

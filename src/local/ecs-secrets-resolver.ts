@@ -83,7 +83,7 @@ export async function resolveEcsSecrets(
   if (entries.length === 0) return [];
   const logger = getLogger().child('ecs-secrets');
 
-  // Mixed mode: each container's own sentinels decide where ITS secrets are
+  // Mixed mode: each container's own exceptions decide where ITS secrets are
   // read (AWS Emulator or real AWS), as they decide where its runtime calls go.
   // One client per (service, route), built on first use.
   const owned: Array<{ destroy(): void }> = [];

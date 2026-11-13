@@ -1,4 +1,5 @@
 import { workloadClientConfig } from '../utils/workload-identity.js';
+import { isAwsServiceRoutedToEmulator } from '../utils/aws-proxy.js';
 import { describeS3OriginDomain } from './cloudfront-resolver.js';
 
 /**
@@ -66,17 +67,19 @@ async function defaultGetOrigins(
   const { CloudFrontClient, GetDistributionConfigCommand } =
     await import('@aws-sdk/client-cloudfront');
   const client = new CloudFrontClient({
-    ...workloadClientConfig(),
+    ...workloadClientConfig({ service: 'CLOUDFRONT' }),
     region: 'us-east-1', // CloudFront is global; the control plane lives in us-east-1.
-    ...(options.credentials && {
-      credentials: {
-        accessKeyId: options.credentials.accessKeyId,
-        secretAccessKey: options.credentials.secretAccessKey,
-        ...(options.credentials.sessionToken && {
-          sessionToken: options.credentials.sessionToken,
-        }),
-      },
-    }),
+    // Under AWS Emulator the emulator's keys are the only identity.
+    ...(options.credentials &&
+      !isAwsServiceRoutedToEmulator('CLOUDFRONT') && {
+        credentials: {
+          accessKeyId: options.credentials.accessKeyId,
+          secretAccessKey: options.credentials.secretAccessKey,
+          ...(options.credentials.sessionToken && {
+            sessionToken: options.credentials.sessionToken,
+          }),
+        },
+      }),
   });
   try {
     const res = await client.send(new GetDistributionConfigCommand({ Id: options.distributionId }));

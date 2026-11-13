@@ -400,8 +400,8 @@ export interface DynamicReferenceResolverOptions {
   /**
    * The workload the values are resolved for. In AWS Emulator mixed mode a
    * fetch then goes where that workload's own runtime calls go (its
-   * `Parameters` plus own-section sentinels); without it, a sentinel in any
-   * section routes the service. A per-call {@link ResolveStringOptions.workload}
+   * `Parameters` plus own-section `"real-aws"` exceptions); without it, the
+   * `Parameters` exceptions alone. A per-call {@link ResolveStringOptions.workload}
    * wins over it.
    */
   workload?: AwsEmulatorWorkload | undefined;

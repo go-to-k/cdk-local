@@ -1,10 +1,10 @@
 /**
  * go-to-k/cdk-local#905 — AWS Emulator mixed mode in a command serving several
  * workloads (`start-api`, `run-task`, `start-service` / `start-alb`): each
- * function or container reads the names of ITS routed services (`Parameters`
- * plus its own `--env-vars` section) from the emulator, every other name from
- * real AWS. Workload A routes DynamoDB in its own section, B does not: B must
- * get the REAL table name.
+ * function or container reads the names of ITS excepted services (`Parameters`
+ * plus its own `--env-vars` section, marked `"real-aws"`) from real AWS, every
+ * other name from the emulator. Workload A excepts DynamoDB in its own
+ * section, B does not: B must get the EMULATOR table name.
  *
  * The state source is a host-registered provider (`--from-state`), built by
  * the real `createLocalStateProvider` dispatch: its factory resolves per
@@ -26,7 +26,7 @@ vi.mock('@aws-sdk/client-sts', () => ({
   GetCallerIdentityCommand: class {},
 }));
 
-const { setAwsEmulatorServiceRouting, awsEmulatorRoutedServices } = await import(
+const { setAwsEmulatorServiceRouting, awsEmulatorRealServices } = await import(
   '../../../src/utils/aws-proxy.js'
 );
 const { createMixedModeStateProvider } = await import(
@@ -67,11 +67,15 @@ function stateRecord(table: string): {
 }
 
 let realStackMissing = false;
+let emulatorStackMissing = false;
 
 function fakeProvider(table: string): LocalStateProvider {
   return {
     label: table,
-    load: async () => (table === REAL_TABLE && realStackMissing ? undefined : stateRecord(table)),
+    load: async () =>
+      (table === REAL_TABLE && realStackMissing) || (table === EMU_TABLE && emulatorStackMissing)
+        ? undefined
+        : stateRecord(table),
     buildCrossStackResolver: async () => undefined,
     // A SecureString template parameter, decrypted on the side this provider reads.
     resolveTemplateSsmParameters: async () => ({
@@ -87,27 +91,28 @@ const workloads: Array<unknown> = [];
 const extraStateProviders = {
   fromState: (_opts: unknown, behavior: { workload?: unknown }): LocalStateProvider => {
     workloads.push(behavior.workload);
-    const services = awsEmulatorRoutedServices(
-      behavior.workload as Parameters<typeof awsEmulatorRoutedServices>[0]
+    const realServices = awsEmulatorRealServices(
+      behavior.workload as Parameters<typeof awsEmulatorRealServices>[0]
     );
-    if (!services || services.length === 0) return fakeProvider(REAL_TABLE);
+    // A workload with no exception reads every name from the emulator.
+    if (!realServices || realServices.length === 0) return fakeProvider(EMU_TABLE);
     return createMixedModeStateProvider({
-      real: fakeProvider(REAL_TABLE),
       emulator: fakeProvider(EMU_TABLE),
-      emulatedServices: services,
+      real: fakeProvider(REAL_TABLE),
+      realServices,
     });
   },
 };
 
 function route(envOverrides: Record<string, unknown>): void {
   setAwsEmulatorServiceRouting({
-    services: ['DYNAMODB'],
+    realServices: [],
     override: { endpoint: EMU, credentials: { accessKeyId: 'EMU', secretAccessKey: 'e' } },
     envOverrides,
   });
 }
 
-const A_ROUTES_DYNAMODB = { A: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } };
+const A_EXCEPTS_DYNAMODB = { A: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } };
 
 beforeEach(() => {
   stsSendMock.mockReset();
@@ -118,30 +123,31 @@ afterEach(() => {
   setAwsEmulatorServiceRouting(undefined);
   workloads.length = 0;
   realStackMissing = false;
+  emulatorStackMissing = false;
 });
 
 describe('groupWorkloadsRoutedApart', () => {
-  it('returns the workloads whose own section changes the routed set, grouped by it', () => {
+  it('returns the workloads whose own section changes the excepted set, grouped by it', () => {
     route({
-      Parameters: { AWS_ENDPOINT_URL_SQS: 'aws-emulator' },
-      A: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' },
-      C: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' },
+      Parameters: { AWS_ENDPOINT_URL_SQS: 'real-aws' },
+      A: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' },
+      C: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' },
       D: { AWS_ENDPOINT_URL_SQS: null },
     });
     const groups = groupWorkloadsRoutedApart(['A', 'B', 'C', 'D'], (containerName) => ({
       containerName,
     }));
-    expect(groups.map((g) => [g.services, g.items])).toEqual([
+    expect(groups.map((g) => [g.realServices, g.items])).toEqual([
       [['DYNAMODB', 'SQS'], ['A', 'C']],
       [[], ['D']],
     ]);
   });
 
-  it('returns nothing outside mixed mode, or with only Parameters sentinels', () => {
+  it('returns nothing outside mixed mode, or with only Parameters exceptions', () => {
     expect(groupWorkloadsRoutedApart(['A'], (containerName) => ({ containerName }))).toEqual([]);
-    route({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
+    route({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } });
     expect(groupWorkloadsRoutedApart(['A'], (containerName) => ({ containerName }))).toEqual([]);
-    expect(awsEmulatorRoutedServices(UNNAMED_WORKLOAD)).toEqual(['DYNAMODB']);
+    expect(awsEmulatorRealServices(UNNAMED_WORKLOAD)).toEqual(['DYNAMODB']);
   });
 });
 
@@ -214,33 +220,39 @@ describe('start-api — names per function', () => {
     }
   };
 
-  it('A (routed in its own section) reads the emulator name, B the REAL one', async () => {
-    expect((await envOf(A_ROUTES_DYNAMODB, 'A'))['TABLE']).toBe(EMU_TABLE);
-    expect((await envOf(A_ROUTES_DYNAMODB, 'B'))['TABLE']).toBe(REAL_TABLE);
+  it('A (excepted in its own section) reads the REAL name, B the emulator one', async () => {
+    expect((await envOf(A_EXCEPTS_DYNAMODB, 'A'))['TABLE']).toBe(REAL_TABLE);
+    expect((await envOf(A_EXCEPTS_DYNAMODB, 'B'))['TABLE']).toBe(EMU_TABLE);
   });
 
   it('a WebSocket route Lambda reads its own names too', async () => {
-    const bRoutes = { B: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } };
-    expect((await envOf(bRoutes, 'B', { webSocketB: true }))['TABLE']).toBe(EMU_TABLE);
-    expect((await envOf(bRoutes, 'A', { webSocketB: true }))['TABLE']).toBe(REAL_TABLE);
+    const bExcepts = { B: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } };
+    expect((await envOf(bExcepts, 'B', { webSocketB: true }))['TABLE']).toBe(REAL_TABLE);
+    expect((await envOf(bExcepts, 'A', { webSocketB: true }))['TABLE']).toBe(EMU_TABLE);
   });
 
-  it('a stack only the emulator has: A still reads the emulator name, B none', async () => {
+  it('a stack only the emulator has: A (excepted) keeps the emulator name, B reads it too', async () => {
     realStackMissing = true;
-    expect((await envOf(A_ROUTES_DYNAMODB, 'A'))['TABLE']).toBe(EMU_TABLE);
-    expect((await envOf(A_ROUTES_DYNAMODB, 'B'))['TABLE']).toBeUndefined();
+    expect((await envOf(A_EXCEPTS_DYNAMODB, 'A'))['TABLE']).toBe(EMU_TABLE);
+    expect((await envOf(A_EXCEPTS_DYNAMODB, 'B'))['TABLE']).toBe(EMU_TABLE);
   });
 
-  it('a section by CDK path routes the function too', async () => {
-    const byPath = { 'S/A': { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } };
-    expect((await envOf(byPath, 'A'))['TABLE']).toBe(EMU_TABLE);
-    expect((await envOf(byPath, 'B'))['TABLE']).toBe(REAL_TABLE);
+  it('a stack only real AWS has: A reads the real name, B none', async () => {
+    emulatorStackMissing = true;
+    expect((await envOf(A_EXCEPTS_DYNAMODB, 'A'))['TABLE']).toBe(REAL_TABLE);
+    expect((await envOf(A_EXCEPTS_DYNAMODB, 'B'))['TABLE']).toBeUndefined();
   });
 
-  it('Parameters sentinels alone: every function reads the emulator name, one provider', async () => {
-    const params = { Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } };
-    expect((await envOf(params, 'A'))['TABLE']).toBe(EMU_TABLE);
-    expect((await envOf(params, 'B'))['TABLE']).toBe(EMU_TABLE);
+  it('a section by CDK path excepts the function too', async () => {
+    const byPath = { 'S/A': { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } };
+    expect((await envOf(byPath, 'A'))['TABLE']).toBe(REAL_TABLE);
+    expect((await envOf(byPath, 'B'))['TABLE']).toBe(EMU_TABLE);
+  });
+
+  it('Parameters exceptions alone: every function reads the real name, one provider', async () => {
+    const params = { Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } };
+    expect((await envOf(params, 'A'))['TABLE']).toBe(REAL_TABLE);
+    expect((await envOf(params, 'B'))['TABLE']).toBe(REAL_TABLE);
     expect(workloads).toEqual([UNNAMED_WORKLOAD, UNNAMED_WORKLOAD]);
   });
 });
@@ -282,8 +294,8 @@ describe('ECS — names per container', () => {
   const envByContainer = (containers: Array<{ name: string; environment: Record<string, string> }>) =>
     Object.fromEntries(containers.map((c) => [c.name, c.environment['TABLE']]));
 
-  it('run-task: A reads the emulator name, B the REAL one', async () => {
-    route(A_ROUTES_DYNAMODB);
+  it('run-task: A reads the REAL name, B the emulator one', async () => {
+    route(A_EXCEPTS_DYNAMODB);
     const stack = taskStack();
     const { stateProvider, stateProviderFor } = await createTargetStateProviders(
       'S:TaskDef',
@@ -293,11 +305,11 @@ describe('ECS — names per container', () => {
     );
     const ctx = await buildRunTaskContext(stack, stateProvider, {} as never, stateProviderFor);
     const task = resolveEcsTaskTarget('S:TaskDef', [stack], ctx);
-    expect(envByContainer(task.containers)).toEqual({ A: EMU_TABLE, B: REAL_TABLE });
+    expect(envByContainer(task.containers)).toEqual({ A: REAL_TABLE, B: EMU_TABLE });
   });
 
-  it('start-service: A reads the emulator name, B the REAL one', async () => {
-    route(A_ROUTES_DYNAMODB);
+  it('start-service: A reads the REAL name, B the emulator one', async () => {
+    route(A_EXCEPTS_DYNAMODB);
     const stack = taskStack();
     const { stateProvider, stateProviderFor } = await createTargetStateProviders(
       'S:Service',
@@ -309,11 +321,11 @@ describe('ECS — names per container', () => {
       stateProviderFor,
     });
     const service = resolveEcsServiceTarget('S:Service', [stack], ctx);
-    expect(envByContainer(service.task.containers)).toEqual({ A: EMU_TABLE, B: REAL_TABLE });
+    expect(envByContainer(service.task.containers)).toEqual({ A: REAL_TABLE, B: EMU_TABLE });
   });
 
   it('the cross-stack post-pass resolves same-stack names per container too', async () => {
-    route(A_ROUTES_DYNAMODB);
+    route(A_EXCEPTS_DYNAMODB);
     const stack = taskStack();
     const { stateProvider, stateProviderFor } = await createTargetStateProviders(
       'S:TaskDef',
@@ -333,12 +345,12 @@ describe('ECS — names per container', () => {
     );
     // The export name embeds a same-stack name of the consuming container.
     expect(Object.fromEntries(task.containers.map((c) => [c.name, c.environment['MIXED']]))).toEqual(
-      { A: `value-of-${EMU_TABLE}-arn`, B: `value-of-${REAL_TABLE}-arn` }
+      { A: `value-of-${REAL_TABLE}-arn`, B: `value-of-${EMU_TABLE}-arn` }
     );
   });
 
   it('a SecureString parameter stays off argv for each container, from its own side', async () => {
-    route({ A: { AWS_ENDPOINT_URL_SSM: 'aws-emulator' } });
+    route({ A: { AWS_ENDPOINT_URL_SSM: 'real-aws' } });
     const stack = taskStack();
     const tpl = stack.template as { Parameters?: Record<string, unknown>; Resources: Record<string, any> };
     tpl.Parameters = { DbPassword: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/db/pw' } };
@@ -347,10 +359,10 @@ describe('ECS — names per container', () => {
     }
     const ssmAware = {
       fromState: (_o: unknown, behavior: { workload?: unknown }): LocalStateProvider => {
-        const services = awsEmulatorRoutedServices(
-          behavior.workload as Parameters<typeof awsEmulatorRoutedServices>[0]
+        const realServices = awsEmulatorRealServices(
+          behavior.workload as Parameters<typeof awsEmulatorRealServices>[0]
         );
-        return fakeProvider(services?.includes('SSM') ? EMU_TABLE : REAL_TABLE);
+        return fakeProvider(realServices?.includes('SSM') ? REAL_TABLE : EMU_TABLE);
       },
     };
     const { stateProvider, stateProviderFor } = await createTargetStateProviders(
@@ -362,14 +374,14 @@ describe('ECS — names per container', () => {
     const ctx = await buildRunTaskContext(stack, stateProvider, {} as never, stateProviderFor);
     const task = resolveEcsTaskTarget('S:TaskDef', [stack], ctx);
     const byName = Object.fromEntries(task.containers.map((c) => [c.name, c]));
-    expect(byName['A']!.environment['PW']).toBe(`${EMU_TABLE}-pw`);
-    expect(byName['B']!.environment['PW']).toBe(`${REAL_TABLE}-pw`);
+    expect(byName['A']!.environment['PW']).toBe(`${REAL_TABLE}-pw`);
+    expect(byName['B']!.environment['PW']).toBe(`${EMU_TABLE}-pw`);
     expect(byName['A']!.sensitiveEnvKeys).toContain('PW');
     expect(byName['B']!.sensitiveEnvKeys).toContain('PW');
   });
 
-  it('no section sentinel: every container shares one Parameters-only provider (unchanged)', async () => {
-    route({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'aws-emulator' } });
+  it('no section exception: every container shares one Parameters-only provider (unchanged)', async () => {
+    route({ Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } });
     const stack = taskStack();
     const { stateProvider, stateProviderFor } = await createTargetStateProviders(
       'S:TaskDef',
@@ -380,7 +392,7 @@ describe('ECS — names per container', () => {
     const ctx = await buildRunTaskContext(stack, stateProvider, {} as never, stateProviderFor);
     expect(ctx?.containerStates).toBeUndefined();
     const task = resolveEcsTaskTarget('S:TaskDef', [stack], ctx);
-    expect(envByContainer(task.containers)).toEqual({ A: EMU_TABLE, B: EMU_TABLE });
+    expect(envByContainer(task.containers)).toEqual({ A: REAL_TABLE, B: REAL_TABLE });
     expect(workloads).toEqual([UNNAMED_WORKLOAD]);
   });
 });

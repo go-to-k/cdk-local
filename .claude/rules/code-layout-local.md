@@ -86,32 +86,31 @@ a log line, and a served HTTP response body.
 - `cdkl studio` activates the wiring for its own AWS calls and forwards
   `--aws-emulator <url>` / `--ca-bundle <abs path>` through
   `buildSharedChildArgs`.
-- Mixed mode (`aws-emulator-mixed-mode.ts`, go-to-k/cdkd#6150): an
-  `"aws-emulator"` sentinel in `--env-vars` keeps `mode: 'forward'` (real
-  identity) and sets `wiring.mixed`. The sentinel is substituted ONLY in
-  `applyWorkloadAwsWiringToEnv`, and the re-signing sidecar
+- Mixed mode (`aws-emulator-mixed-mode.ts`, go-to-k/cdk-local#908):
+  `--aws-emulator` plus a `"real-aws"` exception in `--env-vars` sets
+  `mode: 'forward'` and `wiring.mixed`, whose `AWS_ENDPOINT_URL` is the
+  sidecar, so every unexcepted service reaches the emulator (fail closed).
+  ONLY `applyWorkloadAwsWiringToEnv` turns an exception into its real
+  endpoint (`realAwsEndpointFor`, tables in `aws-real-endpoints.ts`), gives a
+  container keeping none the emulator's keys only, and drops `"real-aws"`
+  without `--aws-emulator`. The re-signing sidecar
   (`emulator-resign-sidecar.ts`) runs INSIDE the forwarder container, so
   both layouts get it through `forwarderCommand`; `loopbackForwarderPlan`
-  splits a container's ports. Its secrets live in one 0600 config file, never
-  on argv; the per-run CA key (`mixed-mode-tls.ts`) is never written.
+  splits a container's ports. Its secrets live in one 0600 file, never on
+  argv; the per-run CA key (`mixed-mode-tls.ts`) is never written.
   `createLocalStateProvider` wraps `--from-cfn-stack` in
-  `createMixedModeStateProvider` when the active wiring is mixed.
-  `activateWorkloadAwsWiring` installs `setAwsEmulatorServiceRouting`, and
-  every own client passes its endpoint service id to
-  `buildProxyClientConfig` / `workloadClientConfig` (`service`), so a routed
-  service's client reads the emulator (go-to-k/cdk-local#898). A client that
-  must stay real passes none and is listed, with its reason, in
-  `tests/unit/utils/own-aws-client-routing.test.ts`. The routing carries the
-  parsed `--env-vars` file, so a call made for ONE workload passes
-  `workload` (`AwsEmulatorWorkload`: logical ID + CDK path, or an ECS
-  container name) and routes by that workload's own sentinels
-  (`emulatedServicesForWorkload`), as its runtime calls do; a call with no
-  workload context routes by every sentinel (go-to-k/cdk-local#902). Keep
-  the route in any cache key (`DynamicReferenceResolver` keys its clients
-  and values by it). `validateAwsEmulatorSentinels` refuses a suffix outside
-  the pinned `aws-endpoint-service-ids.ts`. `--env-vars` is read through
-  `readEnvVarsFileText`, which keeps a pipe-backed path's text so the
-  sentinel scan and the command's reader both see it
+  `createMixedModeStateProvider` (emulator primary). Own clients pass their
+  endpoint service id (`service`) to `buildProxyClientConfig` /
+  `workloadClientConfig` and read the emulator unless excepted; identity STS
+  and `--from-cfn-stack`'s real side pass none, deploy artifacts use
+  `deployArtifactClientConfig`; `tests/unit/utils/own-aws-client-routing.test.ts`
+  lists each with its reason. A call for ONE workload passes `workload`
+  (`AwsEmulatorWorkload`) and routes by its own exceptions
+  (`realAwsServicesForWorkload`); one without routes by `Parameters`
+  (go-to-k/cdk-local#902). Keep the route in any cache key. `validateAwsEmulatorEnvVars` refuses the old
+  `"aws-emulator"` value and a suffix outside `aws-endpoint-service-ids.ts`.
+  `--env-vars` is read through `readEnvVarsFileText`, which keeps a
+  pipe-backed path's text for the scan and the command's reader
   (go-to-k/cdk-local#894).
 
 ## AgentCore

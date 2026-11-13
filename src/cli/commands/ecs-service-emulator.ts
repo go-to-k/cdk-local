@@ -1956,7 +1956,15 @@ async function resolveServiceAndRunnerOpts(
   // The shared sidecar is what containers read their task-role credentials
   // from; `runEcsTask` ignores `taskCredentials` for an existing network,
   // so hand them to the sidecar here (issue #854).
-  if (discovery.sharedNetwork && resolvedRoleArn !== undefined && assumedCredentials) {
+  // Mixed mode: the shared sidecar keeps serving no real identity; the role's
+  // credentials go only to the containers that keep a "real-aws" exception.
+  const mixedWiring = getActiveWorkloadAwsWiring()?.mixed;
+  if (
+    !mixedWiring &&
+    discovery.sharedNetwork &&
+    resolvedRoleArn !== undefined &&
+    assumedCredentials
+  ) {
     try {
       await serveTaskRoleFromSharedSidecar(discovery.sharedNetwork, {
         roleArn: resolvedRoleArn,
@@ -1980,7 +1988,10 @@ async function resolveServiceAndRunnerOpts(
   };
   if (envOverrides) taskOpts.envOverrides = envOverrides;
   if (options.stackRegion) taskOpts.stackRegion = options.stackRegion;
-  if (assumedCredentials) taskOpts.taskCredentials = assumedCredentials;
+  if (assumedCredentials && mixedWiring) {
+    taskOpts.taskCredentials = mixedWiring.emulatorCredentials;
+    taskOpts.mixedModeRoleCredentials = assumedCredentials;
+  } else if (assumedCredentials) taskOpts.taskCredentials = assumedCredentials;
   if (resolvedRoleArn) taskOpts.taskRoleArn = resolvedRoleArn;
   if (options.platform) taskOpts.platformOverride = options.platform;
   if (options.region) taskOpts.region = options.region;
@@ -3123,6 +3134,9 @@ export async function resolveSharedSidecarCredentials(options: {
 }): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
   const wiring = getActiveWorkloadAwsWiring();
   if (wiring?.mode === 'emulator') return wiring.emulatorCredentials;
+  // Mixed mode: the shared sidecar is reachable by every container, so it
+  // serves the emulator's keys (a task role goes to excepted containers as env).
+  if (wiring?.mixed) return wiring.mixed.emulatorCredentials;
   if (options.profile) return resolveProfileCredentials(options.profile);
   // No flag: the host's default credential chain (go-to-k/cdkd#6129).
   return resolveHostDefaultCredentials();

@@ -34,7 +34,7 @@
 import { CfnLocalStateProvider } from '../../local/cfn-local-state-provider.js';
 import { createMixedModeStateProvider } from '../../local/aws-emulator-mixed-mode.js';
 import { getActiveWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
-import { awsEmulatorRoutedServices, type AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
+import { awsEmulatorRealServices, type AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
 import { getEmbedConfig } from '../../local/embed-config.js';
 import { resolveProfileRegion } from '../../utils/profile-region.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
@@ -73,15 +73,10 @@ export interface LocalStateSourceOptions {
  */
 export interface LocalStateProviderBehavior {
   /**
-   * The caller reads the resolved resources itself with cdk-local's own
-   * real-AWS clients (`start-cloudfront`'s S3 origins), so AWS Emulator mixed
-   * mode must not hand it the emulator's names.
-   */
-  realAwsOnly?: boolean;
-  /**
-   * The one workload the names are resolved for. In mixed mode the emulated
-   * services are then that workload's own (`Parameters` plus its own
-   * `--env-vars` sections), as its runtime calls go; without it, the run's.
+   * The one workload the names are resolved for. In mixed mode the services
+   * excepted to real AWS are then that workload's own (`Parameters` plus its
+   * own `--env-vars` sections), as its runtime calls go; without it, the
+   * `Parameters` ones.
    */
   workload?: AwsEmulatorWorkload | undefined;
 }
@@ -92,8 +87,7 @@ export interface LocalStateProviderBehavior {
  * bag so the factory can read its own option fields directly, and with the
  * caller's {@link LocalStateProviderBehavior} (an empty object when the
  * caller asked for nothing): a host provider that resolves per service in
- * mixed mode honors `realAwsOnly` and `workload` the way `--from-cfn-stack`
- * does.
+ * mixed mode honors `workload` the way `--from-cfn-stack` does.
  */
 export type LocalStateProviderFactory = (
   options: LocalStateSourceOptions,
@@ -382,24 +376,27 @@ export function createLocalStateProvider(
       // An SSM-backed template parameter follows this workload's SSM route.
       ...(behavior.workload !== undefined && { workload: behavior.workload }),
     });
-    // Mixed mode (an `aws-emulator` sentinel in --env-vars): resources of the
-    // emulated services resolve from the stack deployed into AWS Emulator,
-    // the rest from real AWS.
-    const mixed = behavior.realAwsOnly ? undefined : getActiveWorkloadAwsWiring()?.mixed;
+    // Mixed mode (a "real-aws" exception in --env-vars): resources of the
+    // excepted services resolve from the stack deployed to real AWS, the rest
+    // from the stack deployed into AWS Emulator. Outside it, `real` is the
+    // only side: under --aws-emulator alone its clients read the emulator.
+    const mixed = getActiveWorkloadAwsWiring()?.mixed;
     if (!mixed) return real;
-    const emulatedServices = awsEmulatorRoutedServices(behavior.workload) ?? mixed.services;
-    // A workload whose own sentinels route nothing reads every name from real AWS.
-    if (emulatedServices.length === 0) return real;
-    return createMixedModeStateProvider({
-      real,
-      emulator: new CfnLocalStateProvider({
-        cfnStackName,
-        region,
-        endpointOverride: mixed.emulatorClientOverride,
-        label: '--from-cfn-stack (AWS Emulator)',
-      }),
-      emulatedServices,
+    const emulator = new CfnLocalStateProvider({
+      cfnStackName,
+      region,
+      endpointOverride: mixed.emulatorClientOverride,
+      label: '--from-cfn-stack (AWS Emulator)',
     });
+    // No routing installed (a host that skipped it): except nothing, so names
+    // fail closed to the emulator rather than to the run-wide union.
+    const realServices = awsEmulatorRealServices(behavior.workload) ?? [];
+    // A workload with no exception of its own reads every name from the emulator.
+    if (realServices.length === 0) {
+      real.dispose();
+      return emulator;
+    }
+    return createMixedModeStateProvider({ emulator, real, realServices });
   }
 
   if (activeExtras.length === 1) {
@@ -413,7 +410,7 @@ export function createLocalStateProvider(
 
 /**
  * The {@link AwsEmulatorWorkload} no `--env-vars` section names: in AWS
- * Emulator mixed mode its routed services are the `Parameters` sentinels
+ * Emulator mixed mode its excepted services are the `Parameters` exceptions
  * alone. A multi-workload command resolves its shared names (and every
  * workload {@link groupWorkloadsRoutedApart} does not return) for it.
  */
@@ -421,8 +418,8 @@ export const UNNAMED_WORKLOAD: AwsEmulatorWorkload = Object.freeze({});
 
 /** One group of {@link groupWorkloadsRoutedApart}. */
 export interface WorkloadRouteGroup<T> {
-  /** The services the group routes to AWS Emulator, sorted. */
-  services: string[];
+  /** The services the group excepts to real AWS, sorted (every other one goes to AWS Emulator). */
+  realServices: string[];
   /** A workload of the group: pass it as `behavior.workload`. */
   workload: AwsEmulatorWorkload;
   items: T[];
@@ -430,8 +427,8 @@ export interface WorkloadRouteGroup<T> {
 
 /**
  * AWS Emulator mixed mode in a command serving several workloads
- * (go-to-k/cdk-local#905): the `items` whose workload routes a different set
- * of services (`Parameters` plus its own `--env-vars` sections) than
+ * (go-to-k/cdk-local#905): the `items` whose workload excepts a different set
+ * of services to real AWS (`Parameters` plus its own `--env-vars` sections) than
  * {@link UNNAMED_WORKLOAD}, grouped by that set. Each group resolves its names
  * with its own provider (`createLocalStateProvider(..., { workload })`), so a
  * workload never reads an emulator name for a service its runtime sends to
@@ -442,18 +439,18 @@ export function groupWorkloadsRoutedApart<T>(
   items: readonly T[],
   workloadOf: (item: T) => AwsEmulatorWorkload
 ): WorkloadRouteGroup<T>[] {
-  const base = awsEmulatorRoutedServices(UNNAMED_WORKLOAD);
+  const base = awsEmulatorRealServices(UNNAMED_WORKLOAD);
   if (base === undefined) return [];
   const baseKey = base.join(',');
   const groups = new Map<string, WorkloadRouteGroup<T>>();
   for (const item of items) {
     const workload = workloadOf(item);
-    const services = awsEmulatorRoutedServices(workload) ?? base;
-    const key = services.join(',');
+    const realServices = awsEmulatorRealServices(workload) ?? base;
+    const key = realServices.join(',');
     if (key === baseKey) continue;
     const group = groups.get(key);
     if (group) group.items.push(item);
-    else groups.set(key, { services, workload, items: [item] });
+    else groups.set(key, { realServices, workload, items: [item] });
   }
   return [...groups.values()];
 }

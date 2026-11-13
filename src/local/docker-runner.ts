@@ -31,6 +31,7 @@ import {
   type LoopbackForwarderResult,
 } from './loopback-forwarder.js';
 import {
+  workloadGetsEmulatorKeysOnly,
   applyWorkloadAwsWiringToEnv,
   effectiveLoopbackPorts,
   loopbackForwarderPlan,
@@ -299,8 +300,9 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     // The sidecar listens on the workload's own loopback; on the host network
     // that is the host's, shared by every workload of the run.
     throw new DockerRunnerError(
-      'An aws-emulator sentinel (mixed mode) needs the AWS Emulator re-signing sidecar, which cannot run on the ' +
-        'host network. Drop the host network for this workload, or use --aws-emulator without a sentinel.'
+      'AWS Emulator mixed mode (a "real-aws" exception in --env-vars) needs the re-signing sidecar, which cannot ' +
+        'run on the host network. Drop the host network for this workload, or use --aws-emulator without a ' +
+        '"real-aws" exception.'
     );
   }
   const ports = opts.network === 'host' ? [] : effectiveLoopbackPorts(wired.env, wiring);
@@ -331,8 +333,11 @@ export async function withWorkloadAwsWiring(
   const env = applyWorkloadAwsWiringToEnv(opts.env, wiring, defaults);
   // The `--profile` credentials file's in-container path (local-profile-credentials-file.ts).
   const credsPath = `${getEmbedConfig().awsBindMountPath}/credentials`;
+  // Emulator keys only (`--aws-emulator` alone, or a mixed-mode container
+  // keeping no exception): no host credentials file either.
+  const emulatorOnly = workloadGetsEmulatorKeysOnly(opts.env, wiring);
   const extra = (opts.extraMounts ?? []).filter(
-    (m) => wiring.mode !== 'emulator' || m.containerPath !== credsPath
+    (m) => !emulatorOnly || m.containerPath !== credsPath
   );
   const taken = new Set([...opts.mounts, ...extra].map((m) => m.containerPath));
   for (const m of wiring.mounts) {

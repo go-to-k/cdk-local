@@ -1330,6 +1330,7 @@ export {
   readEmulatorRunFiles,
   readProfileEndpointSettings,
   resolveHostDefaultCredentials,
+  takeAwsEmulatorStateSourceHint,
   resolveWorkloadAwsWiring,
   setActiveWorkloadAwsWiring,
   writeCaBundleFile,
@@ -1363,31 +1364,35 @@ export {
 } from './utils/aws-proxy.js';
 /**
  * Per-service routing of a host's OWN AWS clients in AWS Emulator mixed mode
- * (go-to-k/cdk-local#898). `activateWorkloadAwsWiring` installs it; spread
+ * (go-to-k/cdk-local#898, inverted in go-to-k/cdk-local#908).
+ * `activateWorkloadAwsWiring` installs it; spread
  * `awsClientConfigForService('<ID>', { profile, workload })` FIRST in a client's config
  * (`<ID>` is the `AWS_ENDPOINT_URL_<ID>` suffix, e.g. `SECRETS_MANAGER`, or
- * the SDK's `serviceId`) and the client reads AWS Emulator exactly when a
- * sentinel routed that service — under `--aws-emulator` alone always, without
- * it never. When the fragment carries `endpoint`, add no credentials of your
- * own. For a read made FOR the workload (a secret or parameter it receives),
- * use `workloadClientConfig({ profile, service, workload })`, which also honors
- * `workloadIdentity: 'caller'`. Keep STS off both: it carries the real
- * identity.
+ * the SDK's `serviceId`) and the client reads AWS Emulator UNLESS a
+ * `"real-aws"` exception names that service — under `--aws-emulator` with no
+ * exception always, without the flag never. When the fragment carries
+ * `endpoint`, add no credentials of your own. For a read made FOR the
+ * workload (a secret or parameter it receives), use
+ * `workloadClientConfig({ profile, service, workload })`, which also honors
+ * `workloadIdentity: 'caller'`. Deploy-artifact reads (an image token, a code
+ * bundle, a layer) use `deployArtifactClientConfig`: the emulator under
+ * `--aws-emulator`, whatever the exceptions.
  *
  * `workload` ({@link AwsEmulatorWorkload}: a function's `logicalId` +
  * `cdkPath`, or an ECS `containerName`) routes by THAT workload's own
- * sentinels (`Parameters` plus its own `--env-vars` sections), exactly as its
+ * exceptions (`Parameters` plus its own `--env-vars` sections), exactly as its
  * runtime calls go (go-to-k/cdk-local#902). Omit it only for a call that
- * serves no single workload; that call follows every sentinel in the file.
- * `awsEmulatorRoutedServices(workload)` lists the routed ids (for per-service
+ * serves no single workload; that call follows the `Parameters` exceptions.
+ * `awsEmulatorRealServices(workload)` lists the excepted ids (for per-service
  * name resolution). A host that resolves the wiring itself installs it with
- * `setAwsEmulatorServiceRouting({ services: wiring.mixed.services, override:
- * wiring.mixed.emulatorClientOverride, envOverrides: <parsed --env-vars> })`;
- * without `envOverrides` every call routes by the run's set.
+ * `setAwsEmulatorServiceRouting({ realServices: wiring.mixed.realServices,
+ * override: wiring.mixed.emulatorClientOverride, envOverrides: <parsed
+ * --env-vars> })`; without `envOverrides` every call routes by `realServices`.
  */
 export {
   awsClientConfigForService,
-  awsEmulatorRoutedServices,
+  awsEmulatorRealServices,
+  deployArtifactClientConfig,
   isAwsServiceRoutedToEmulator,
   normalizeAwsEndpointServiceId,
   setAwsEmulatorServiceRouting,
@@ -1396,44 +1401,53 @@ export {
   type AwsEmulatorWorkload,
 } from './utils/aws-proxy.js';
 /**
- * AWS Emulator mixed mode (go-to-k/cdkd#6150): an `aws-emulator` sentinel on
- * `AWS_ENDPOINT_URL_<SERVICE>` in `--env-vars` routes that service to the
- * emulator through a re-signing sidecar, while the workload keeps the real
- * identity. `activateWorkloadAwsWiring({ envVars })` does it all for a host
- * that uses cdk-local's docker-run layer. A host that reads `--env-vars`
- * itself scans with `findAwsEmulatorSentinels` (or `readAwsEmulatorEnvVarsFile`,
- * which reads a pipe-backed path once; read the file's text through
- * `readEnvVarsFileText` so the host's own read sees the same text), refuses bad
- * ones with `validateAwsEmulatorSentinels` (a bare `AWS_ENDPOINT_URL`, a
- * suffix outside `AWS_ENDPOINT_SERVICE_IDS`, no `--aws-emulator`), and passes them to `resolveWorkloadAwsWiring`
- * (`awsEmulatorSentinels`); the wiring's `mixed` then carries the sidecar
- * endpoint and config, and `loopbackForwarderPlan` splits a container's ports.
- * Per-service name resolution: `createMixedModeStateProvider` over a real and
- * an emulator provider (`CfnLocalStateProviderOptions.endpointOverride`, or a
- * host's own provider built with `awsEndpointOverrideClientConfig(
- * wiring.mixed.emulatorClientOverride)`), with
- * `resourceTypeMatchesEmulatedService` for the type-to-service test.
+ * AWS Emulator mixed mode (go-to-k/cdkd#6150, go-to-k/cdk-local#908):
+ * `--aws-emulator` sends every service to the emulator; a `"real-aws"` value on
+ * `AWS_ENDPOINT_URL_<SERVICE>` in `--env-vars` carves that service out to real
+ * AWS. With at least one exception the workload holds the real identity, its
+ * global endpoint is a re-signing sidecar (the emulator's keys), and each
+ * excepted service gets its real endpoint (`realAwsEndpointFor`).
+ * `activateWorkloadAwsWiring({ envVars })` does it all for a host that uses
+ * cdk-local's docker-run layer. A host that reads `--env-vars` itself scans
+ * with `readAwsEmulatorEnvVarsFile` (reads a pipe-backed path once; read the
+ * file's text through `readEnvVarsFileText` so the host's own read sees the
+ * same text) or `findRealAwsExceptions` / `findLegacyAwsEmulatorSentinels`,
+ * refuses bad ones with `validateAwsEmulatorEnvVars` (the old `"aws-emulator"`
+ * sentinel in any mode; under `--aws-emulator` a bare `AWS_ENDPOINT_URL` and
+ * a suffix outside `AWS_ENDPOINT_SERVICE_IDS`), and passes the exceptions to
+ * `resolveWorkloadAwsWiring` (`realAwsExceptions`); the wiring's `mixed` then
+ * carries the sidecar endpoint and config, and `loopbackForwarderPlan` splits
+ * a container's ports. Per-service name resolution:
+ * `createMixedModeStateProvider` over an emulator and a real provider
+ * (`CfnLocalStateProviderOptions.endpointOverride`, or a host's own provider
+ * built with `awsEndpointOverrideClientConfig(
+ * wiring.mixed.emulatorClientOverride)`), with `resourceTypeMatchesService`
+ * for the type-to-service test.
  */
 export {
-  AWS_EMULATOR_SENTINEL,
+  LEGACY_AWS_EMULATOR_SENTINEL,
   MIXED_MODE_RESIGN_PORT,
+  REAL_AWS_SENTINEL,
   createMixedModeStateProvider,
-  emulatedServicesForWorkload,
-  emulatedServicesOf,
-  findAwsEmulatorSentinels,
-  isAwsEmulatorSentinel,
+  findLegacyAwsEmulatorSentinels,
+  findRealAwsExceptions,
+  isLegacyAwsEmulatorSentinel,
+  isRealAwsSentinel,
+  legacyAwsEmulatorSentinelMessage,
   readAwsEmulatorEnvVarsFile,
-  readAwsEmulatorSentinelsFromFile,
-  resourceTypeMatchesEmulatedService,
-  validateAwsEmulatorSentinels,
+  realAwsEndpointFor,
+  realAwsServicesForWorkload,
+  realAwsServicesOf,
+  resourceTypeMatchesService,
+  validateAwsEmulatorEnvVars,
   type AwsEmulatorEnvVarsScan,
-  type AwsEmulatorSentinel,
   type MixedModeStateProviderOptions,
+  type RealAwsException,
 } from './local/aws-emulator-mixed-mode.js';
 /**
  * Per-workload names in a command serving several workloads
  * (go-to-k/cdk-local#905): resolve the shared names for `UNNAMED_WORKLOAD`
- * (`Parameters` sentinels only), and each group `groupWorkloadsRoutedApart`
+ * (`Parameters` exceptions only), and each group `groupWorkloadsRoutedApart`
  * returns with its own provider (`behavior.workload` = the group's workload).
  * Host-side use case: a host's own multi-workload commands (cdkd's
  * `start-api` / `run-task`).

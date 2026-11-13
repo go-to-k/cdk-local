@@ -1,7 +1,7 @@
 // The endpoint service ids the AWS SDKs read from `AWS_ENDPOINT_URL_<ID>`:
 // each AWS service's `serviceId`, uppercased, spaces as underscores
-// (`Secrets Manager` -> `SECRETS_MANAGER`). An AWS Emulator sentinel on any
-// other suffix routes nothing, so `validateAwsEmulatorSentinels` refuses it.
+// (`Secrets Manager` -> `SECRETS_MANAGER`). A `"real-aws"` exception on any
+// other suffix routes nothing, so `validateAwsEmulatorEnvVars` refuses it.
 //
 // Pinned, not derived: the installed `@aws-sdk/client-*` packages cover only
 // the services cdk-local itself calls. Source: the `metadata.serviceId` of

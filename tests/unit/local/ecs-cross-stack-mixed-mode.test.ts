@@ -3,7 +3,7 @@
  * their cross-stack post-pass through `applyCrossStackValuesToTask`. A
  * `{{resolve:...}}` a producer hands across is read for the container that
  * consumes it, so in AWS Emulator mixed mode it follows that container's own
- * `--env-vars` sentinels, as its runtime calls do.
+ * `--env-vars` \`"real-aws"\` exceptions, as its runtime calls do.
  */
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
@@ -57,11 +57,11 @@ afterEach(() => {
 });
 
 describe('applyCrossStackValuesToTask — mixed-mode routing per container', () => {
-  it("reads the producer's secret where each container's own sentinels send it", async () => {
+  it("reads the producer's secret where each container's own exceptions send it", async () => {
     setAwsEmulatorServiceRouting({
-      services: ['SECRETS_MANAGER'],
+      realServices: [],
       override: { endpoint: EMU, credentials: { accessKeyId: 'EMU', secretAccessKey: 'e' } },
-      envOverrides: { app: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator' } },
+      envOverrides: { app: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } },
     });
     const task = resolveEcsTaskTarget('MyStack:TaskDef', [stack()]);
     await applyCrossStackValuesToTask(
@@ -73,7 +73,7 @@ describe('applyCrossStackValuesToTask — mixed-mode routing per container', () 
       { imageContext: undefined, consumerRegion: 'us-east-1' }
     );
     for (const c of task.containers) expect(c.environment['DB_PASSWORD']).toBe('pl41n');
-    // `app` routes Secrets Manager; `worker` has no sentinel: real AWS.
+    // `app` excepts Secrets Manager to real AWS; `worker` has no exception: the emulator.
     expect(smEndpoints.sort()).toEqual([EMU, undefined].sort());
   });
 });

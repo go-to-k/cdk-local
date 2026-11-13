@@ -431,7 +431,14 @@ async function localRunTaskCommand(
       detach: options.detach,
     };
     if (envOverrides) runOpts.envOverrides = envOverrides;
-    if (sidecarCredentials) runOpts.taskCredentials = sidecarCredentials;
+    // Mixed mode: the metadata sidecar (169.254.170.2, reachable by every
+    // container) serves the emulator's keys; a task role's real credentials go
+    // only to the containers that keep a "real-aws" exception.
+    const mixed = getActiveWorkloadAwsWiring()?.mixed;
+    if (mixed) {
+      runOpts.taskCredentials = mixed.emulatorCredentials;
+      if (assumedCredentials) runOpts.mixedModeRoleCredentials = assumedCredentials;
+    } else if (sidecarCredentials) runOpts.taskCredentials = sidecarCredentials;
     if (resolvedRoleArn) runOpts.taskRoleArn = resolvedRoleArn;
     if (options.platform) runOpts.platformOverride = options.platform;
     if (options.region) runOpts.region = options.region;

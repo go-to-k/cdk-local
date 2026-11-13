@@ -1,4 +1,5 @@
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { takeAwsEmulatorStateSourceHint } from './workload-aws-wiring.js';
 import { existsSync, statSync } from 'node:fs';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
@@ -151,6 +152,8 @@ export interface ResolvedEcsContainer {
    * understands why an expected env / secret is missing.
    */
   warnings: string[];
+  /** An intrinsic-valued env var was dropped because no state source was given. */
+  droppedEnvWithoutState?: boolean;
 }
 
 export type ResolvedEcsImage =
@@ -751,6 +754,11 @@ function extractTaskDefinitionProperties(
       warnings.push(`Container ${displayIdent(ctr.name)}: ${w}`);
     }
   }
+  // No state source and a resource-referencing env var dropped: one hint.
+  if (containers.some((c) => c.droppedEnvWithoutState)) {
+    const hint = takeAwsEmulatorStateSourceHint();
+    if (hint) warnings.push(hint);
+  }
 
   const rawVolumes = props['Volumes'];
   const volumes = Array.isArray(rawVolumes)
@@ -823,11 +831,12 @@ function parseContainerDefinition(
   const entryPoint = pickStringArray(c['EntryPoint']);
   const workingDirectory = pickString(c['WorkingDirectory']);
 
-  // Mixed mode: this container's own routed services pick its names (#905).
+  // Mixed mode: this container's own exceptions pick its names (#905).
   const subContext = buildSubstitutionContextFromImageContext(contextForContainer(context, name));
   const environment: Record<string, string> = {};
   const sensitiveEnvKeys: string[] = [];
   const droppedEnvKeys: { key: string; reason: string }[] = [];
+  let droppedEnvWithoutState = false;
   if (Array.isArray(c['Environment'])) {
     for (const entry of c['Environment'] as unknown[]) {
       if (!entry || typeof entry !== 'object') continue;
@@ -855,6 +864,7 @@ function parseContainerDefinition(
         }
         droppedEnvKeys.push({ key, reason: sub.reason });
       } else {
+        droppedEnvWithoutState = true;
         droppedEnvKeys.push({
           key,
           reason: 'intrinsic-valued; pass --from-state to substitute against deployed state',
@@ -1011,6 +1021,7 @@ function parseContainerDefinition(
     ulimits,
     warnings,
   };
+  if (droppedEnvWithoutState) out.droppedEnvWithoutState = true;
   if (droppedSecretKeys.length > 0) out.droppedSecretNames = droppedSecretKeys.map((d) => d.key);
   if (command !== undefined) out.command = command;
   if (entryPoint !== undefined) out.entryPoint = entryPoint;
@@ -1718,7 +1729,7 @@ export async function applyCrossStackResolverToTask(
     const containerName = pickString(c['Name']) ?? container.name;
     // Mixed mode: a `{{resolve:...}}` in this container's cross-stack value is
     // fetched where THIS container's runtime calls go, and its same-stack
-    // names are the ones its own routed services read (#905).
+    // names are the ones its own exceptions read (#905).
     const resolveRefs = context.resolveDynamicReferences;
     const ownState = containerState?.(container.name);
     const baseContext = ownState ? withContainerState(context, ownState) : context;

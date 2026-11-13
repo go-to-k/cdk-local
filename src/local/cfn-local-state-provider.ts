@@ -135,7 +135,8 @@ export interface CfnLocalStateProviderOptions {
   /**
    * The one workload this provider resolves for. In AWS Emulator mixed mode
    * an SSM-backed template parameter is then read where THAT workload's SSM
-   * calls go (its own sentinels); without it, by every sentinel in the file.
+   * calls go (its own `"real-aws"` exceptions); without it, by the
+   * `Parameters` exceptions.
    */
   workload?: AwsEmulatorWorkload | undefined;
 }

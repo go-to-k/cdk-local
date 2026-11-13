@@ -44,15 +44,16 @@ when they pass conflicting flags.
 
 A factory also receives the caller's `LocalStateProviderBehavior` as its
 second argument (an empty object when the caller asked for nothing). In AWS
-Emulator mixed mode, honor it the way `--from-cfn-stack` does: with
-`realAwsOnly` (`start-cloudfront`'s S3 origins) return real-AWS names only;
-otherwise resolve the routed services' resources from the emulator, using
-`awsEmulatorRoutedServices(behavior.workload)` from `cdk-local/internal` for
-the routed set (the named workload's own sentinels, or the run's when
-`workload` is absent) and `createMixedModeStateProvider` to combine the two
-sides. A command serving several workloads asks for `UNNAMED_WORKLOAD`
-(`Parameters` sentinels only) and then once more for each group
-`groupWorkloadsRoutedApart` returns.
+Emulator mixed mode, honor it the way `--from-cfn-stack` does: resolve every
+resource from the emulator's copy of the stack except those of the services
+excepted to real AWS, which resolve from the real copy, using
+`awsEmulatorRealServices(behavior.workload)` from `cdk-local/internal` for the
+excepted set (the named workload's own `"real-aws"` exceptions, or the
+`Parameters` ones when `workload` is absent; an empty set means read the
+emulator only) and `createMixedModeStateProvider({ emulator, real,
+realServices })` to combine the two sides. A command serving several
+workloads asks for `UNNAMED_WORKLOAD` (`Parameters` exceptions only) and then
+once more for each group `groupWorkloadsRoutedApart` returns.
 
 A registered flag reaches every state-backed path of the command it is
 passed to, exactly where `--from-cfn-stack` would: on `start-cloudfront` that

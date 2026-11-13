@@ -300,25 +300,25 @@ describe('resolveLambdaContainerEnv — cross-stack dynamic reference (host --fr
 });
 
 // go-to-k/cdk-local#902: the function is the workload. Its `{{resolve}}`
-// fetches and its `--from-cfn-stack` names follow ITS sentinels.
+// fetches and its `--from-cfn-stack` names follow ITS `real-aws` exceptions.
 const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');
 
 describe('resolveLambdaContainerEnv — AWS Emulator mixed mode, per workload', () => {
   const EMU = 'https://127.0.0.1:9395';
   const route = (section: string): void =>
     setAwsEmulatorServiceRouting({
-      services: ['SECRETS_MANAGER'],
+      realServices: [],
       override: { endpoint: EMU, credentials: { accessKeyId: 'EMU', secretAccessKey: 'e' } },
-      envOverrides: { [section]: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator' } },
+      envOverrides: { [section]: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } },
     });
 
-  it("reads the secret from the emulator only when the function's own section routes it", async () => {
+  it("reads the secret from real AWS only when the function's own section excepts it", async () => {
     try {
       route('Consumer/Handler');
       await resolveLambdaContainerEnv(zipLambda({ DB_PASSWORD: TOKEN }), {}, undefined);
       route('OtherFn');
       await resolveLambdaContainerEnv(zipLambda({ DB_PASSWORD: TOKEN }), {}, undefined);
-      expect(smEndpoints).toEqual([EMU, undefined]);
+      expect(smEndpoints).toEqual([undefined, EMU]);
     } finally {
       setAwsEmulatorServiceRouting(undefined);
     }
@@ -334,9 +334,9 @@ describe('resolveLambdaContainerEnv — AWS Emulator mixed mode, per workload', 
     });
   });
 
-  it('reads a pipe-backed --env-vars the sentinel scan already consumed (#894)', async () => {
+  it('reads a pipe-backed --env-vars the exception scan already consumed (#894)', async () => {
     const { execFileSync, spawn } = await import('node:child_process');
-    const { readAwsEmulatorSentinelsFromFile } = await import(
+    const { readAwsEmulatorEnvVarsFile } = await import(
       '../../../src/local/aws-emulator-mixed-mode.js'
     );
     const { resetEnvVarsFileTextsForTest } = await import('../../../src/local/env-resolver.js');
@@ -351,7 +351,7 @@ describe('resolveLambdaContainerEnv — AWS Emulator mixed mode, per workload', 
     // the text is kept.
     let empty: ReturnType<typeof spawn> | undefined;
     try {
-      readAwsEmulatorSentinelsFromFile(fifo);
+      readAwsEmulatorEnvVarsFile(fifo);
       await written;
       empty = spawn('sh', ['-c', ': > "$1"', 'sh', fifo]);
       const result = await resolveLambdaContainerEnv(zipLambda({}), { envVars: fifo }, undefined);

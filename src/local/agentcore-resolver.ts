@@ -224,7 +224,7 @@ export function resolveAgentCoreTarget(
  * The AWS Emulator mixed-mode workload of an AgentCore Runtime target (its
  * logical ID and `aws:cdk:path`), found BEFORE full resolution so the
  * `--from-cfn-stack` provider built ahead of it resolves names by this
- * runtime's own sentinels. `undefined` when the target does not resolve;
+ * runtime's own exceptions. `undefined` when the target does not resolve;
  * {@link resolveAgentCoreTarget} then reports why.
  */
 export function agentCoreTargetWorkload(

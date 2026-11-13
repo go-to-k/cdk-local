@@ -1,8 +1,9 @@
 /**
  * go-to-k/cdk-local#902 — `start-api` resolves each function's
  * `{{resolve:...}}` for THAT function: in AWS Emulator mixed mode the fetch
- * follows the sentinels of the function's own `--env-vars` section (by logical
- * ID or CDK path), as its runtime calls do.
+ * follows the `"real-aws"` exceptions of the function's own `--env-vars` section
+ * (by logical ID or CDK path), as its runtime calls do; every other service
+ * goes to the emulator.
  */
 import { rmSync } from 'node:fs';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
@@ -59,9 +60,9 @@ describe('start-api buildContainerSpec — mixed-mode routing per function', () 
 
   const buildFor = async (section: string): Promise<Record<string, string>> => {
     setAwsEmulatorServiceRouting({
-      services: ['SECRETS_MANAGER'],
+      realServices: [],
       override: { endpoint: EMU, credentials: { accessKeyId: 'EMU', secretAccessKey: 'e' } },
-      envOverrides: { [section]: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'aws-emulator' } },
+      envOverrides: { [section]: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } },
     });
     const spec = await buildContainerSpec({
       logicalId: 'Fn',
@@ -78,14 +79,14 @@ describe('start-api buildContainerSpec — mixed-mode routing per function', () 
     return spec.env;
   };
 
-  it('reads from the emulator when the function own section (CDK path or logical ID) routes the service', async () => {
+  it('reads from real AWS when the function own section (CDK path or logical ID) excepts the service', async () => {
     expect((await buildFor('S/Fn'))['TOKEN']).toBe('secret-value');
     await buildFor('Fn');
-    expect(smEndpoints).toEqual([EMU, EMU]);
+    expect(smEndpoints).toEqual([undefined, undefined]);
   });
 
-  it('reads from real AWS when only another function routes it', async () => {
+  it('reads from the emulator when only another function excepts it', async () => {
     await buildFor('S/Other');
-    expect(smEndpoints).toEqual([undefined]);
+    expect(smEndpoints).toEqual([EMU]);
   });
 });

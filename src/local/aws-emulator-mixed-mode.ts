@@ -1,87 +1,127 @@
-// AWS Emulator mixed mode (go-to-k/cdkd#6150): send only the services an
-// `--env-vars` file chooses to AWS Emulator, and everything else to real AWS.
+// AWS Emulator mixed mode (go-to-k/cdkd#6150): `--aws-emulator` makes the
+// emulator the target for everything; `"real-aws"` in the `--env-vars` file
+// carves out the services that must reach real AWS.
 //
-// The choice is the sentinel value `"aws-emulator"` on a standard
+// An exception is the value `"real-aws"` on a standard
 // `AWS_ENDPOINT_URL_<SERVICE>` variable, under `Parameters` (every workload)
 // or a per-resource section (one workload):
 //
-//   { "Parameters": { "AWS_ENDPOINT_URL_DYNAMODB": "aws-emulator" } }
+//   { "Parameters": { "AWS_ENDPOINT_URL_SECRETS_MANAGER": "real-aws" } }
 //
-// The sentinel is valid only with `--aws-emulator [url]`, which names the
-// emulator. When at least one is present the run is in mixed mode: the
-// workload keeps the developer's REAL identity, each sentinel becomes the
-// endpoint of the re-signing sidecar (`emulator-resign-sidecar.ts`), which
-// signs that service's requests again with the emulator's keys, and
-// `--from-cfn-stack` names resolve per service (emulated services from the
-// emulator, the rest from real AWS). A literal URL never re-signs.
+// Every service without an exception stays on the emulator, however many
+// exceptions there are, so a forgotten entry fails CLOSED: the call reaches
+// the emulator, never a shared real environment. With at least one exception
+// the run is in mixed mode: the workload holds the developer's REAL identity,
+// its global `AWS_ENDPOINT_URL` is the re-signing sidecar
+// (`emulator-resign-sidecar.ts`), which signs every request again with the
+// emulator's keys, and each excepted service gets its real regional endpoint
+// in its own `AWS_ENDPOINT_URL_<SERVICE>` (a service-specific variable wins
+// over the global one in the AWS SDKs). Names resolve per service: excepted
+// services from real AWS, the rest from the emulator.
 //
-// This module holds the pure parts: finding and validating sentinels, mapping
-// a CloudFormation resource type to an endpoint service, and the composite
-// state provider. The wiring lives in `workload-aws-wiring.ts`.
+// Without `--aws-emulator` an exception is a no-op (everything is real AWS
+// already): the variable is dropped, so one `--env-vars` file serves both
+// runs. The pre-inversion sentinel `"aws-emulator"` is refused in both modes.
+//
+// This module holds the pure parts: finding and validating exceptions, the
+// real endpoint of a service, mapping a CloudFormation resource type to an
+// endpoint service, and the composite state provider. The wiring lives in
+// `workload-aws-wiring.ts`.
 
 import { readEnvVarsFileText, type EnvOverrideFile } from './env-resolver.js';
 import { AWS_ENDPOINT_SERVICE_IDS } from './aws-endpoint-service-ids.js';
+import { AWS_ENDPOINT_PREFIX_OVERRIDES, AWS_GLOBAL_ENDPOINTS } from './aws-real-endpoints.js';
 import type { AwsEmulatorWorkload } from '../utils/aws-proxy.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
 import type { ResourceState } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 
-/** The `--env-vars` value that routes one service to AWS Emulator. */
-export const AWS_EMULATOR_SENTINEL = 'aws-emulator';
+/** The `--env-vars` value that sends one service to real AWS under `--aws-emulator`. */
+export const REAL_AWS_SENTINEL = 'real-aws';
+
+/**
+ * The pre-inversion sentinel (`"aws-emulator"` = send this service to the
+ * emulator). Refused with a migration message wherever it appears.
+ */
+export const LEGACY_AWS_EMULATOR_SENTINEL = 'aws-emulator';
 
 /**
  * The port the re-signing sidecar listens on, on `127.0.0.1` inside each
- * workload that uses a sentinel. Picked to be unlikely to clash with an app
- * port; a workload that already listens on it gets an error naming it.
+ * workload in mixed mode. Picked to be unlikely to clash with an app port; a
+ * workload that already listens on it gets an error naming it.
  */
 export const MIXED_MODE_RESIGN_PORT = 47297;
 
-/** One sentinel found in an `--env-vars` file. */
-export interface AwsEmulatorSentinel {
+/** One endpoint-variable sentinel found in an `--env-vars` file. */
+export interface RealAwsException {
   /** The file section: `Parameters`, a logical ID, a CDK path or a container name. */
   section: string;
-  /** The variable: `AWS_ENDPOINT_URL_DYNAMODB`. */
+  /** The variable: `AWS_ENDPOINT_URL_SECRETS_MANAGER`. */
   key: string;
-  /** The endpoint service id from the variable name: `DYNAMODB`. Empty for a bare `AWS_ENDPOINT_URL`. */
+  /** The endpoint service id from the variable name: `SECRETS_MANAGER`. Empty for a bare `AWS_ENDPOINT_URL`. */
   service: string;
 }
 
 const ENDPOINT_KEY = /^AWS_ENDPOINT_URL(?:_([A-Z0-9_]+))?$/;
 
-/** True when `key` / `value` is a sentinel (`AWS_ENDPOINT_URL[_<SERVICE>]` = `aws-emulator`). */
-export function isAwsEmulatorSentinel(key: string, value: unknown): boolean {
-  return (
-    typeof value === 'string' && value.trim() === AWS_EMULATOR_SENTINEL && ENDPOINT_KEY.test(key)
-  );
+function isSentinel(key: string, value: unknown, sentinel: string): boolean {
+  return typeof value === 'string' && value.trim() === sentinel && ENDPOINT_KEY.test(key);
 }
 
-/**
- * Every sentinel in a parsed `--env-vars` file, in file order.
- *
- * Host-side use case: a host CLI that reads `--env-vars` itself decides
- * mixed mode (and validates it) from the same scan.
- */
-export function findAwsEmulatorSentinels(
-  overrides: EnvOverrideFile | Record<string, unknown> | undefined
-): AwsEmulatorSentinel[] {
-  const found: AwsEmulatorSentinel[] = [];
+/** True when `key` / `value` is an exception (`AWS_ENDPOINT_URL[_<SERVICE>]` = `real-aws`). */
+export function isRealAwsSentinel(key: string, value: unknown): boolean {
+  return isSentinel(key, value, REAL_AWS_SENTINEL);
+}
+
+/** True when `key` / `value` is the refused pre-inversion sentinel (`aws-emulator`). */
+export function isLegacyAwsEmulatorSentinel(key: string, value: unknown): boolean {
+  return isSentinel(key, value, LEGACY_AWS_EMULATOR_SENTINEL);
+}
+
+function findSentinels(
+  overrides: EnvOverrideFile | Record<string, unknown> | undefined,
+  match: (key: string, value: unknown) => boolean
+): RealAwsException[] {
+  const found: RealAwsException[] = [];
   if (!overrides || typeof overrides !== 'object') return found;
   for (const [section, map] of Object.entries(overrides)) {
     if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
     for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
-      if (!isAwsEmulatorSentinel(key, value)) continue;
+      if (!match(key, value)) continue;
       found.push({ section, key, service: ENDPOINT_KEY.exec(key)![1] ?? '' });
     }
   }
   return found;
 }
 
+/**
+ * Every `"real-aws"` exception in a parsed `--env-vars` file, in file order.
+ *
+ * Host-side use case: a host CLI that reads `--env-vars` itself decides
+ * mixed mode (and validates it) from the same scan.
+ */
+export function findRealAwsExceptions(
+  overrides: EnvOverrideFile | Record<string, unknown> | undefined
+): RealAwsException[] {
+  return findSentinels(overrides, isRealAwsSentinel);
+}
+
+/** Every refused pre-inversion `"aws-emulator"` sentinel in a parsed `--env-vars` file. */
+export function findLegacyAwsEmulatorSentinels(
+  overrides: EnvOverrideFile | Record<string, unknown> | undefined
+): RealAwsException[] {
+  return findSentinels(overrides, isLegacyAwsEmulatorSentinel);
+}
+
 /** A parsed `--env-vars` file and its sentinels ({@link readAwsEmulatorEnvVarsFile}). */
 export interface AwsEmulatorEnvVarsScan {
   /** The parsed file, or `undefined` when there is none or it is not a JSON object. */
   overrides: Readonly<Record<string, unknown>> | undefined;
-  sentinels: AwsEmulatorSentinel[];
+  /** The `"real-aws"` exceptions. */
+  exceptions: RealAwsException[];
+  /** The refused `"aws-emulator"` sentinels. */
+  legacySentinels: RealAwsException[];
 }
 
 /**
@@ -92,28 +132,25 @@ export interface AwsEmulatorEnvVarsScan {
  * FIFO) is consumed once and the command's own read gets the same text.
  */
 export function readAwsEmulatorEnvVarsFile(filePath: string | undefined): AwsEmulatorEnvVarsScan {
-  if (!filePath) return { overrides: undefined, sentinels: [] };
+  const none: AwsEmulatorEnvVarsScan = {
+    overrides: undefined,
+    exceptions: [],
+    legacySentinels: [],
+  };
+  if (!filePath) return none;
   let parsed: unknown;
   try {
     parsed = JSON.parse(readEnvVarsFileText(filePath));
   } catch {
-    return { overrides: undefined, sentinels: [] };
+    return none;
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { overrides: undefined, sentinels: [] };
-  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return none;
   const overrides = parsed as Record<string, unknown>;
-  return { overrides, sentinels: findAwsEmulatorSentinels(overrides) };
-}
-
-/**
- * {@link findAwsEmulatorSentinels} over the `--env-vars` file at `filePath`
- * ({@link readAwsEmulatorEnvVarsFile}).
- */
-export function readAwsEmulatorSentinelsFromFile(
-  filePath: string | undefined
-): AwsEmulatorSentinel[] {
-  return readAwsEmulatorEnvVarsFile(filePath).sentinels;
+  return {
+    overrides,
+    exceptions: findRealAwsExceptions(overrides),
+    legacySentinels: findLegacyAwsEmulatorSentinels(overrides),
+  };
 }
 
 /**
@@ -131,16 +168,17 @@ function sectionAppliesTo(section: string, workload: AwsEmulatorWorkload): boole
 }
 
 /**
- * The endpoint service ids routed to AWS Emulator for ONE workload: the
- * sentinels its final env carries. That is the `Parameters` sentinels, then
- * each of its own sections in file order, where a sentinel adds a service and
- * any other value of the same variable (`null`, a literal URL) removes it, as
- * the env merge does. Sorted.
+ * The endpoint service ids excepted to real AWS for ONE workload: the
+ * exceptions its final env carries. That is the `Parameters` exceptions, then
+ * each of its own sections in file order, where `"real-aws"` adds a service
+ * and any other value of the same variable (`null`, a literal URL) removes it,
+ * as the env merge does. Sorted. The empty workload (`{}`) gets the
+ * `Parameters` exceptions alone.
  *
  * Host-side use case: a host routes its own pre-start calls for a workload the
  * way that workload's runtime calls go.
  */
-export function emulatedServicesForWorkload(
+export function realAwsServicesForWorkload(
   overrides: Readonly<Record<string, unknown>> | undefined,
   workload: AwsEmulatorWorkload
 ): string[] {
@@ -150,7 +188,7 @@ export function emulatedServicesForWorkload(
     for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
       const service = ENDPOINT_KEY.exec(key)?.[1];
       if (service === undefined) continue;
-      if (isAwsEmulatorSentinel(key, value)) out.add(service);
+      if (isRealAwsSentinel(key, value)) out.add(service);
       // Only what the env merge applies replaces it: `null` clears, a
       // primitive overwrites; any other shape is skipped there, so here too.
       else if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
@@ -177,53 +215,136 @@ function correctServiceIdSpelling(service: string): string | undefined {
 }
 
 /**
- * Refuse sentinels that cannot work: one on the bare `AWS_ENDPOINT_URL`
- * (every service: that is plain `--aws-emulator`), one whose suffix is not an
- * AWS SDK endpoint service id (the SDKs never read that variable, so the
- * workload's calls would go to real AWS; the error names the SDK spelling when
- * one matches), and any sentinel without `--aws-emulator` (the error names the
- * flag and its env var).
+ * The migration message for a pre-inversion `"aws-emulator"` sentinel.
+ * Exported so a host CLI refuses it with the same words.
+ */
+export function legacyAwsEmulatorSentinelMessage(s: RealAwsException): string {
+  return (
+    `--env-vars sets ${s.key} under ${displayUntrustedValue(s.section)} to "${LEGACY_AWS_EMULATOR_SENTINEL}", ` +
+    'which is no longer supported: --aws-emulator now sends EVERY service to AWS Emulator, and the ' +
+    `--env-vars file marks only the exceptions that must reach real AWS, with "${REAL_AWS_SENTINEL}". ` +
+    `Remove the "${LEGACY_AWS_EMULATOR_SENTINEL}" entries, and mark each service that must stay on real AWS ` +
+    `instead, e.g. "AWS_ENDPOINT_URL_SECRETS_MANAGER": "${REAL_AWS_SENTINEL}".`
+  );
+}
+
+/**
+ * Refuse sentinels that cannot work, from a {@link readAwsEmulatorEnvVarsFile}
+ * scan:
+ *
+ * - a pre-inversion `"aws-emulator"` sentinel, in either mode (migration message);
+ * - under `--aws-emulator`: `"real-aws"` on the bare `AWS_ENDPOINT_URL` (every
+ *   service to real AWS is running without the flag), and an exception whose
+ *   suffix is not an AWS SDK endpoint service id (the SDKs never read that
+ *   variable, so the service would silently stay on the emulator; the error
+ *   names the SDK spelling when one matches).
+ *
+ * Without `--aws-emulator` every `"real-aws"` is accepted: it is a no-op there
+ * (`applyWorkloadAwsWiringToEnv` drops it), so one file serves both runs.
  *
  * Host-side use case: a host CLI validates its own `--env-vars` the same way.
  */
-export function validateAwsEmulatorSentinels(
-  sentinels: readonly AwsEmulatorSentinel[],
-  awsEmulatorOn: boolean,
-  envVarName = 'CDK_LOCAL_AWS_EMULATOR'
+export function validateAwsEmulatorEnvVars(
+  scan: Pick<AwsEmulatorEnvVarsScan, 'exceptions' | 'legacySentinels'>,
+  awsEmulatorOn: boolean
 ): void {
-  const first = sentinels[0];
-  if (!first) return;
-  const where = (s: AwsEmulatorSentinel): string =>
-    `${s.key} under ${displayUntrustedValue(s.section)}`;
-  const bare = sentinels.find((s) => s.service === '');
-  if (bare) {
+  const legacy = scan.legacySentinels[0];
+  if (legacy) throw new Error(legacyAwsEmulatorSentinelMessage(legacy));
+  if (!awsEmulatorOn) return;
+  if (scan.exceptions.some((s) => s.service === '')) {
     throw new Error(
-      `--env-vars sets ${where(bare)} to "${AWS_EMULATOR_SENTINEL}", but the sentinel routes ONE service ` +
-        `(AWS_ENDPOINT_URL_<SERVICE>). To send every service to AWS Emulator, use --aws-emulator without a sentinel.`
+      `--env-vars: "AWS_ENDPOINT_URL": "${REAL_AWS_SENTINEL}" would send every AWS call to real AWS, which is ` +
+        'what running without --aws-emulator does. Remove --aws-emulator to run against real AWS, or keep it ' +
+        'and mark only the services that must reach real AWS, e.g. ' +
+        `"AWS_ENDPOINT_URL_SECRETS_MANAGER": "${REAL_AWS_SENTINEL}".`
     );
   }
-  const unknown = sentinels.find((s) => !AWS_ENDPOINT_SERVICE_IDS.has(s.service));
+  const unknown = scan.exceptions.find((s) => !AWS_ENDPOINT_SERVICE_IDS.has(s.service));
   if (unknown) {
     const fix = correctServiceIdSpelling(unknown.service);
     throw new Error(
-      `--env-vars sets ${where(unknown)} to "${AWS_EMULATOR_SENTINEL}", but the AWS SDKs do not read ` +
-        `${unknown.key}, so the workload's calls would still go to real AWS. ` +
+      `--env-vars sets ${unknown.key} under ${displayUntrustedValue(unknown.section)} to "${REAL_AWS_SENTINEL}", ` +
+        `but the AWS SDKs do not read ${unknown.key}, so the workload's calls would still go to AWS Emulator. ` +
         (fix
           ? `Use AWS_ENDPOINT_URL_${fix}.`
           : "The suffix must be the service's SDK endpoint id (its serviceId, uppercased, spaces as underscores).")
     );
   }
-  if (!awsEmulatorOn) {
-    throw new Error(
-      `--env-vars sets ${where(first)} to "${AWS_EMULATOR_SENTINEL}", which needs --aws-emulator [url] ` +
-        `(or ${envVarName}) to name the AWS Emulator to route it to.`
-    );
-  }
 }
 
-/** The distinct endpoint service ids of `sentinels`, sorted: `['DYNAMODB', 'S3']`. */
-export function emulatedServicesOf(sentinels: readonly AwsEmulatorSentinel[]): string[] {
-  return [...new Set(sentinels.map((s) => s.service).filter((s) => s !== ''))].sort();
+/** The distinct endpoint service ids of `exceptions`, sorted: `['SECRETS_MANAGER', 'STS']`. */
+export function realAwsServicesOf(exceptions: readonly RealAwsException[]): string[] {
+  return [...new Set(exceptions.map((s) => s.service).filter((s) => s !== ''))].sort();
+}
+
+/**
+ * Services whose real endpoint is not `<prefix>.<region>.amazonaws.com`: a
+ * per-resource host (API Gateway Management: the API id) or another domain
+ * (CloudFront KeyValueStore: `*.cloudfront-kvs.global.api.aws`).
+ */
+const NO_REGIONAL_ENDPOINT: ReadonlySet<string> = new Set([
+  'APIGATEWAYMANAGEMENTAPI',
+  'CLOUDFRONT_KEYVALUESTORE',
+]);
+
+const REGION_SHAPE = /^[a-z]{2}(-[a-z]+)+-\d+$/;
+
+/**
+ * The real AWS endpoint an excepted service gets in its
+ * `AWS_ENDPOINT_URL_<SERVICE>`, for a workload in `region`:
+ * `https://<endpoint prefix>.<region>.<DNS suffix>` (`SECRETS_MANAGER` in
+ * `us-east-1` -> `https://secretsmanager.us-east-1.amazonaws.com`;
+ * `amazonaws.com.cn` in the China regions). S3 gets its regional endpoint,
+ * where the SDKs address buckets virtual-hosted style as they do by default.
+ *
+ * A service served by one global endpoint (IAM, Route 53, CloudFront,
+ * Organizations, ...) gets that endpoint only when the workload's region is
+ * the endpoint's signing region: an SDK signs a request to an explicit
+ * endpoint for its own region, which a global endpoint refuses ("Credential
+ * should be scoped to a valid region"). Anywhere else, and in the China /
+ * GovCloud / isolated partitions, it throws a message that names the cause.
+ *
+ * Host-side use case: a host CLI assembling a container env itself.
+ */
+export function realAwsEndpointFor(service: string, region: string): string {
+  if (!REGION_SHAPE.test(region)) {
+    throw new Error(
+      `--env-vars marks AWS_ENDPOINT_URL_${service} "${REAL_AWS_SENTINEL}", but the workload's region ` +
+        `${displayUntrustedValue(region)} is not an AWS region name.`
+    );
+  }
+  if (NO_REGIONAL_ENDPOINT.has(service)) {
+    throw new Error(
+      `--env-vars marks AWS_ENDPOINT_URL_${service} "${REAL_AWS_SENTINEL}", but ${service} has no regional ` +
+        `endpoint to name. Set AWS_ENDPOINT_URL_${service} to the real endpoint URL instead (a literal URL is ` +
+        'passed through as-is).'
+    );
+  }
+  const prefix = AWS_ENDPOINT_PREFIX_OVERRIDES[service] ?? service.toLowerCase().replace(/_/g, '');
+  const isolated = /^(us|eu)-iso[a-z]*-/.test(region);
+  const china = region.startsWith('cn-');
+  const gov = region.startsWith('us-gov-');
+  const global = AWS_GLOBAL_ENDPOINTS[prefix];
+  if (isolated || (global && (china || gov))) {
+    throw new Error(
+      `--env-vars marks AWS_ENDPOINT_URL_${service} "${REAL_AWS_SENTINEL}", but ${displayUntrustedValue(region)} ` +
+        `has no known real ${service} endpoint. Set AWS_ENDPOINT_URL_${service} to the real ` +
+        'endpoint URL instead (a literal URL is passed through as-is).'
+    );
+  }
+  if (global) {
+    if (global.signingRegion !== region) {
+      throw new Error(
+        `--env-vars marks AWS_ENDPOINT_URL_${service} "${REAL_AWS_SENTINEL}", but ${service} is served by one ` +
+          `global endpoint (https://${global.hostname}) that accepts only requests signed for ` +
+          `${global.signingRegion}, and an SDK signs a request to an explicit endpoint for the workload's region ` +
+          `(${displayUntrustedValue(region)}), which that endpoint refuses. Leave ${service} on AWS Emulator, or ` +
+          `run the workload in ${global.signingRegion}.`
+      );
+    }
+    return `https://${global.hostname}`;
+  }
+  return `https://${prefix}.${region}.${china ? 'amazonaws.com.cn' : 'amazonaws.com'}`;
 }
 
 /**
@@ -243,13 +364,13 @@ const SERVICE_NAMESPACE_ALIASES: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * Whether a CloudFormation resource type (`AWS::DynamoDB::Table`) belongs to
- * one of the emulated endpoint services (`['DYNAMODB']`).
+ * Whether a CloudFormation resource type (`AWS::SecretsManager::Secret`)
+ * belongs to one of the endpoint services `services` (`['SECRETS_MANAGER']`).
  *
  * Host-side use case: a host's own per-service name resolution (cdkd's
  * `--from-state`).
  */
-export function resourceTypeMatchesEmulatedService(
+export function resourceTypeMatchesService(
   resourceType: string,
   services: readonly string[]
 ): boolean {
@@ -261,131 +382,132 @@ export function resourceTypeMatchesEmulatedService(
   });
 }
 
-/** How many unresolved resources the real-side-missing warning names. */
+/** How many unresolved resources the emulator-side-missing warning names. */
 const MISSING_LIST_LIMIT = 10;
 
 /** Inputs to {@link createMixedModeStateProvider}. */
 export interface MixedModeStateProviderOptions {
-  /** The provider reading real AWS. */
-  real: LocalStateProvider;
-  /** The same kind of provider, reading the stack deployed into AWS Emulator. */
+  /** The provider reading the stack deployed into AWS Emulator: the primary side. */
   emulator: LocalStateProvider;
-  /** Endpoint service ids routed to the emulator ({@link emulatedServicesOf}). */
-  emulatedServices: readonly string[];
+  /** The same kind of provider, reading real AWS: only the excepted services' resources. */
+  real: LocalStateProvider;
+  /** Endpoint service ids excepted to real AWS ({@link realAwsServicesForWorkload}). */
+  realServices: readonly string[];
 }
 
 /**
  * A state provider that resolves names per service: a resource whose type
- * belongs to an emulated service takes its record from the emulator's copy of
- * the stack, every other resource from real AWS. `--env-vars` values still
- * override the result, as they do for any provider (they are applied after
- * state substitution).
+ * belongs to an excepted (`"real-aws"`) service takes its record from the
+ * real AWS copy of the stack, every other resource from the stack deployed
+ * into AWS Emulator. `--env-vars` values still override the result, as they do
+ * for any provider (they are applied after state substitution).
  *
- * - When the emulator has no such stack, emulated resources keep their real
+ * - When real AWS has no such stack, excepted resources keep their emulator
  *   names, with one warning.
- * - When real AWS has no such stack but the emulator does, only the emulated
+ * - When the emulator has no such stack but real AWS does, only the excepted
  *   resources resolve; one warning per stack names the others (now
- *   unresolved) and the remedy.
- * - Outputs come from real AWS; an output whose value is the real physical ID
- *   of an emulated resource takes the emulator's ID instead. Outputs only the
- *   emulator's stack has are added.
- * - The deployed-function env fallback (`--from-cfn-stack` `Fn::GetAtt`)
- *   reads real AWS, with the same physical-ID swap applied to its values.
- * - Cross-stack resolution (`Fn::ImportValue`) and every other lookup use the
- *   real provider.
+ *   unresolved) and the remedy. Nothing else is read from real AWS.
+ * - Outputs come from the emulator; an output whose value is the emulator's
+ *   physical ID of an excepted resource takes the real ID instead.
+ * - The deployed-function env fallback (`--from-cfn-stack` `Fn::GetAtt`) and
+ *   cross-stack resolution (`Fn::ImportValue`) read the emulator's side, with
+ *   the same physical-ID swap applied to the function env. SSM-backed
+ *   template parameters follow the SSM route.
+ * - The deployed execution / runtime role ARNs (assumed for the workload's
+ *   real identity) come from real AWS.
  *
- * `emulatedServices` is the run's set ({@link emulatedServicesOf}) unless the
- * caller resolves names for one workload, which passes that workload's own set
- * ({@link emulatedServicesForWorkload}).
+ * `realServices` is the workload's own set ({@link realAwsServicesForWorkload}),
+ * or the `Parameters` set for names that serve no single workload.
  *
  * Host-side use case: cdkd wraps its own `--from-state` provider pair.
  */
 export function createMixedModeStateProvider(
   opts: MixedModeStateProviderOptions
 ): LocalStateProvider {
-  const { real, emulator, emulatedServices } = opts;
+  const { real, emulator, realServices } = opts;
   const swaps = new Map<string, string>();
+  // Every resource's emulator physical ID -> its real one, for the lookups
+  // that must read real AWS (the deployed role to assume).
+  const toReal = new Map<string, string>();
   const warned = new Set<string>();
-  const warnedReal = new Set<string>();
+  const warnedEmulator = new Set<string>();
   const swap = (v: string): string => swaps.get(v) ?? v;
+  const excepted = (res: ResourceState): boolean =>
+    resourceTypeMatchesService(res.resourceType, realServices);
   const provider: LocalStateProvider = {
-    label: real.label,
+    label: emulator.label,
     async load(stackName, synthRegion): Promise<LocalStateRecord | undefined> {
-      const [r, e] = await Promise.all([
-        real.load(stackName, synthRegion),
+      const [e, r] = await Promise.all([
         emulator.load(stackName, synthRegion),
+        real.load(stackName, synthRegion),
       ]);
-      if (!e) {
-        if (r && !warned.has(stackName)) {
-          const emulatedInReal = Object.values(r.resources).some((res) =>
-            resourceTypeMatchesEmulatedService(res.resourceType, emulatedServices)
-          );
-          if (emulatedInReal) {
-            warned.add(stackName);
-            const why = emulator.getLastLoadError?.();
-            getLogger().warn(
-              `${real.label}: stack ${displayUntrustedValue(stackName)} could not be read from AWS Emulator` +
-                `${why ? ` (${why})` : ''}; resources of the emulated services (${emulatedServices.join(', ')}) ` +
-                'keep their real AWS names. Override them with --env-vars, or deploy the stack into the emulator.'
-            );
-          }
-        }
-        return r;
-      }
-      const emulated = (res: ResourceState): boolean =>
-        resourceTypeMatchesEmulatedService(res.resourceType, emulatedServices);
       if (!r) {
+        if (e && !warned.has(stackName) && Object.values(e.resources).some(excepted)) {
+          warned.add(stackName);
+          const why = real.getLastLoadError?.();
+          getLogger().warn(
+            `${emulator.label}: stack ${displayUntrustedValue(stackName)} could not be read from real AWS` +
+              `${why ? ` (${why})` : ''}; resources of the services marked "${REAL_AWS_SENTINEL}" ` +
+              `(${realServices.join(', ')}) keep their AWS Emulator names. Override them with --env-vars, ` +
+              'or deploy the stack to real AWS too.'
+          );
+        }
+        return e;
+      }
+      if (!e) {
         const resources: Record<string, ResourceState> = {};
         const dropped: string[] = [];
-        for (const [id, res] of Object.entries(e.resources)) {
-          if (emulated(res)) resources[id] = res;
+        for (const [id, res] of Object.entries(r.resources)) {
+          if (excepted(res)) resources[id] = res;
           else
             dropped.push(
               `${displayUntrustedValue(id)} (${displayUntrustedValue(res.resourceType)})`
             );
         }
-        if (dropped.length > 0 && !warnedReal.has(stackName)) {
-          warnedReal.add(stackName);
-          const why = real.getLastLoadError?.();
+        if (dropped.length > 0 && !warnedEmulator.has(stackName)) {
+          warnedEmulator.add(stackName);
+          const why = emulator.getLastLoadError?.();
           const shown = dropped.slice(0, MISSING_LIST_LIMIT).join(', ');
           const more =
             dropped.length > MISSING_LIST_LIMIT
               ? ` and ${dropped.length - MISSING_LIST_LIMIT} more`
               : '';
           getLogger().warn(
-            `${real.label}: stack ${displayUntrustedValue(stackName)} could not be read from real AWS` +
-              `${why ? ` (${why})` : ''}, only from AWS Emulator; resources outside the emulated services ` +
-              `(${emulatedServices.join(', ')}) stay unresolved: ${shown}${more}. Deploy the stack to real AWS ` +
-              'too, under the same stack name (the same CDK context, e.g. -c stage=dev), or override them with --env-vars.'
+            `${emulator.label}: stack ${displayUntrustedValue(stackName)} could not be read from AWS Emulator` +
+              `${why ? ` (${why})` : ''}, only from real AWS; resources outside the services marked ` +
+              `"${REAL_AWS_SENTINEL}" (${realServices.join(', ')}) stay unresolved: ${shown}${more}. Deploy the ` +
+              'stack into AWS Emulator under the same stack name (the same CDK context, e.g. -c stage=dev), or ' +
+              'override them with --env-vars.'
           );
         }
-        return { resources, outputs: { ...e.outputs }, region: e.region };
+        return { resources, outputs: {}, region: r.region };
       }
-      const resources: Record<string, ResourceState> = { ...r.resources };
-      for (const [id, res] of Object.entries(e.resources)) {
-        if (!emulated(res)) continue;
-        const realRes = r.resources[id];
-        if (realRes?.physicalId && res.physicalId && realRes.physicalId !== res.physicalId) {
-          swaps.set(realRes.physicalId, res.physicalId);
+      const resources: Record<string, ResourceState> = { ...e.resources };
+      for (const [id, res] of Object.entries(r.resources)) {
+        const emuId = e.resources[id]?.physicalId;
+        if (emuId && res.physicalId) toReal.set(emuId, res.physicalId);
+        if (!excepted(res)) continue;
+        const emuRes = e.resources[id];
+        if (emuRes?.physicalId && res.physicalId && emuRes.physicalId !== res.physicalId) {
+          swaps.set(emuRes.physicalId, res.physicalId);
         }
         resources[id] = res;
       }
       const outputs: Record<string, string> = {};
-      for (const [k, v] of Object.entries(e.outputs)) outputs[k] = v;
-      for (const [k, v] of Object.entries(r.outputs)) outputs[k] = swap(v);
-      return { resources, outputs, region: r.region };
+      for (const [k, v] of Object.entries(e.outputs)) outputs[k] = swap(v);
+      return { resources, outputs, region: e.region };
     },
-    buildCrossStackResolver: (region) => real.buildCrossStackResolver(region),
+    buildCrossStackResolver: (region) => emulator.buildCrossStackResolver(region),
     dispose(): void {
       try {
-        real.dispose();
-      } finally {
         emulator.dispose();
+      } finally {
+        real.dispose();
       }
     },
   };
-  if (real.resolveDeployedFunctionEnv) {
-    const fn = real.resolveDeployedFunctionEnv.bind(real);
+  if (emulator.resolveDeployedFunctionEnv) {
+    const fn = emulator.resolveDeployedFunctionEnv.bind(emulator);
     provider.resolveDeployedFunctionEnv = async (id) => {
       const env = await fn(id);
       if (!env) return env;
@@ -394,15 +516,23 @@ export function createMixedModeStateProvider(
       return out;
     };
   }
+  // The resolved state names the emulator's function / runtime: look its real
+  // counterpart (same logical ID) up in real AWS.
   if (real.resolveLambdaExecutionRoleArn) {
-    provider.resolveLambdaExecutionRoleArn = real.resolveLambdaExecutionRoleArn.bind(real);
+    const fn = real.resolveLambdaExecutionRoleArn.bind(real);
+    provider.resolveLambdaExecutionRoleArn = (id) => fn(toReal.get(id) ?? id);
   }
   if (real.resolveAgentCoreRuntimeRoleArn) {
-    provider.resolveAgentCoreRuntimeRoleArn = real.resolveAgentCoreRuntimeRoleArn.bind(real);
+    const fn = real.resolveAgentCoreRuntimeRoleArn.bind(real);
+    provider.resolveAgentCoreRuntimeRoleArn = (id) => fn(toReal.get(id) ?? id);
   }
+  // The real side's SSM client routes per service (`service: 'SSM'`): the
+  // emulator unless SSM is excepted for the workload.
   if (real.resolveTemplateSsmParameters) {
     provider.resolveTemplateSsmParameters = real.resolveTemplateSsmParameters.bind(real);
   }
-  if (real.getLastLoadError) provider.getLastLoadError = real.getLastLoadError.bind(real);
+  if (emulator.getLastLoadError) {
+    provider.getLastLoadError = emulator.getLastLoadError.bind(emulator);
+  }
   return provider;
 }

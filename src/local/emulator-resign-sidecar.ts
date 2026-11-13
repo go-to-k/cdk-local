@@ -1,8 +1,10 @@
 // The AWS Emulator re-signing sidecar (mixed mode, go-to-k/cdkd#6150).
 //
-// In mixed mode a workload container holds the developer's REAL AWS identity,
-// and only the services its `--env-vars` file routes with the `aws-emulator`
-// sentinel go to AWS Emulator. Those requests arrive signed with real keys,
+// In mixed mode (`--aws-emulator` plus a `"real-aws"` exception in
+// `--env-vars`) a workload container holds the developer's REAL AWS identity,
+// and every service WITHOUT an exception still goes to AWS Emulator: the
+// container's global `AWS_ENDPOINT_URL` points here. Those requests arrive
+// signed with real keys,
 // which the emulator never issued. This sidecar receives them instead,
 // throws the signature away, and signs each request again with the
 // emulator's own keys before forwarding it, so the emulator keeps its
@@ -17,7 +19,8 @@
 //
 // The upstream TLS is verified against the emulator's CA only (plus the
 // public roots for a non-loopback emulator). Real-AWS traffic never reaches
-// it: only the sentinel-substituted `AWS_ENDPOINT_URL_<SERVICE>` points here.
+// it: each excepted service has its own `AWS_ENDPOINT_URL_<SERVICE>`, the real
+// endpoint, which the SDKs prefer over the global one.
 //
 // What it does to a request:
 //   - SigV4 (`AWS4-HMAC-SHA256`, header or presigned query) and SigV4a

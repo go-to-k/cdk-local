@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, sep } from 'node:path';
 import { unzipSync } from 'fflate';
-import { buildProxyClientConfig } from '../utils/aws-proxy.js';
+import { deployArtifactClientConfig, deployArtifactsReadEmulator } from '../utils/aws-proxy.js';
 import { CdkLocalError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -140,19 +140,24 @@ function defaultFetchObject(
 ): (location: S3BundleLocation) => Promise<Uint8Array> {
   return async (location) => {
     const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
+    // Under --aws-emulator the bundle is read from the emulator, where the
+    // stack was deployed; its keys are then the only identity.
     const client = new S3Client({
-      ...buildProxyClientConfig({ profile: options.profile }),
+      ...deployArtifactClientConfig({ profile: options.profile }),
       ...(options.region && { region: options.region }),
-      ...(options.profile && !options.credentials && { profile: options.profile }),
-      ...(options.credentials && {
-        credentials: {
-          accessKeyId: options.credentials.accessKeyId,
-          secretAccessKey: options.credentials.secretAccessKey,
-          ...(options.credentials.sessionToken && {
-            sessionToken: options.credentials.sessionToken,
-          }),
-        },
-      }),
+      ...(options.profile &&
+        !options.credentials &&
+        !deployArtifactsReadEmulator() && { profile: options.profile }),
+      ...(options.credentials &&
+        !deployArtifactsReadEmulator() && {
+          credentials: {
+            accessKeyId: options.credentials.accessKeyId,
+            secretAccessKey: options.credentials.secretAccessKey,
+            ...(options.credentials.sessionToken && {
+              sessionToken: options.credentials.sessionToken,
+            }),
+          },
+        }),
     });
     try {
       const res = await client.send(
