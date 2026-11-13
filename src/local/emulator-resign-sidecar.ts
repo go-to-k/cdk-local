@@ -367,7 +367,6 @@ function startResigner(cfgPath){return new Promise(function(done){
       try{p=prepareResign(req,joined,cfg,new Date());}catch(e){p={error:{status:400,code:'InvalidRequest',message:label+': the request could not be re-signed.'}};}
       joined=null;
       if(p.error){if(p.error.status===413)process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,p.error.status,p.error,serviceOf(req));return;}
-      var r;
       // Re-signed anyway (accept-encoding is not a signed header): ask for an
       // identity body, so an encoding the sidecar cannot decode never carries
       // a real queue URL past it.
