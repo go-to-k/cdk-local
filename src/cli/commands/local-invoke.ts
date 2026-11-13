@@ -100,6 +100,11 @@ import {
   runDetached,
   streamLogs,
 } from '../../local/docker-runner.js';
+import {
+  applyDebuggerEnv,
+  debugTimeoutNotice,
+  rieInvokeTimeoutMs,
+} from '../../local/debug-timeout.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
 import { pullEcrImage, parseEcrUri } from '../../local/ecr-puller.js';
@@ -423,7 +428,10 @@ async function localInvokeCommand(
       if (!Number.isInteger(debugPort) || debugPort <= 0 || debugPort > 65535) {
         throw new Error(`--debug-port must be an integer in 1..65535, got '${options.debugPort}'`);
       }
-      dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
+      // `--inspect-brk` + the lifted function timeout, so the RIE does not
+      // reset the runtime before a debugger attaches (go-to-k/cdk-local#948).
+      applyDebuggerEnv(dockerEnv, debugPort);
+      logger.info(debugTimeoutNotice('--debug-port'));
       if (lambda.kind === 'image') {
         logger.warn(
           '--debug-port sets NODE_OPTIONS unconditionally on container Lambdas. ' +
@@ -491,7 +499,7 @@ async function localInvokeCommand(
 
     await waitForRieReady(containerHost, hostPort, 5000);
 
-    const invokeTimeoutMs = Math.max(30_000, lambda.timeoutSec * 2 * 1000);
+    const invokeTimeoutMs = rieInvokeTimeoutMs(lambda.timeoutSec, debugPort !== undefined);
     const result = await invokeRie(containerHost, hostPort, event, invokeTimeoutMs);
 
     // Settle a few hundred ms so logs fully flush before we tear down.

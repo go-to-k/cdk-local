@@ -185,15 +185,24 @@ export class AssetManifestLoader {
  * references the bootstrap ECR repo and ends in `:<hash>` — that hash is
  * the same key used in `manifest.dockerImages[<hash>]`. cdk-local extracts the
  * hash by walking known image-URI shapes; on miss, when the manifest has
- * exactly one Docker image, we fall back to it (single-asset heuristic) so
- * locally-built non-bootstrapped images still work. This is documented as
- * a v1 limitation; immutable digest pins (`@sha256:<digest>`) hit the same
- * fallback path.
+ * exactly one Docker image AND the URI points at that asset's own
+ * destination repository (the `repositoryName` the synthesizer recorded for
+ * it, e.g. `cdk-hnb659fds-container-assets-<account>-<region>`), we fall back
+ * to it (single-asset heuristic) — this covers digest pins
+ * (`@sha256:<digest>`) and custom tags on the asset repository.
+ *
+ * A URI in any other repository (a literal registry path, a
+ * `DockerImageCode.fromEcr` repository) never takes the fallback, even when
+ * the stack has exactly one Docker image asset: that asset belongs to a
+ * different function, and running it would silently execute that
+ * function's code (go-to-k/cdk-local#946). Such a URI returns `undefined`
+ * so the caller takes its own ECR-pull / emulator-refusal path.
  *
  * Returns the `(hash, asset)` pair when matched, or `undefined` when both
  * the regex AND the single-asset fallback miss (typically: 0 docker assets,
- * or 2+ docker assets with no hash match — the caller should treat this as
- * "fall through to the ECR-pull path").
+ * 2+ docker assets with no hash match, or a URI outside the asset's
+ * repository — the caller should treat this as "fall through to the
+ * ECR-pull path").
  *
  * Exported as a free function (not a method) so the local-invoke modules
  * can reuse it without depending on the `AssetManifestLoader` instance —
@@ -220,15 +229,102 @@ export function getDockerImageBySourceHash(
   }
 
   // Single-asset fallback: when the user has exactly one Docker image in
-  // the stack, it's almost certainly the one being invoked. Avoids
-  // hard-failing on hash-extraction misses that would otherwise be common
-  // (digest pins, custom Code.fromAssetImage forms, etc.).
+  // the stack and the URI points at that asset's destination repository,
+  // it is the one being invoked. Avoids hard-failing on hash-extraction
+  // misses (digest pins, custom tags). A URI in any other repository is
+  // NOT that asset (go-to-k/cdk-local#946).
   if (entries.length === 1) {
     const [singleHash, singleAsset] = entries[0]!;
-    return { hash: singleHash, asset: singleAsset };
+    if (imageUriTargetsAssetRepository(imageUri, singleAsset)) {
+      return { hash: singleHash, asset: singleAsset };
+    }
   }
 
   return undefined;
+}
+
+/**
+ * Whether `imageUri`'s repository path is one of the asset's destination
+ * `repositoryName`s. Either side may still carry `${AWS::...}` placeholders
+ * (`${AWS::AccountId}` / `${AWS::Region}`) — the template body and the
+ * manifest are written by the same synthesizer, but a resolver may have
+ * substituted some of them on the URI side, and the two sides can each keep
+ * a different one — so a pseudo parameter on either side matches any
+ * non-empty run of characters on the other.
+ */
+function imageUriTargetsAssetRepository(imageUri: string, asset: DockerImageAsset): boolean {
+  const repo = extractRepositoryFromImageUri(imageUri);
+  if (repo === undefined) return false;
+  for (const dest of Object.values(asset.destinations ?? {})) {
+    const name = dest?.repositoryName;
+    if (typeof name !== 'string' || name.length === 0) continue;
+    if (pseudoParameterPatternsOverlap(name, repo)) return true;
+  }
+  return false;
+}
+
+/**
+ * The repository path of an image URI: everything after the registry host
+ * (the first `/`) with the `@<digest>` or `:<tag>` suffix removed.
+ * `undefined` when the URI has no registry host (a bare Docker Hub name is
+ * never a CDK asset destination).
+ */
+function extractRepositoryFromImageUri(imageUri: string): string | undefined {
+  const slash = imageUri.indexOf('/');
+  if (slash < 0) return undefined;
+  let path = imageUri.slice(slash + 1);
+  const at = path.indexOf('@');
+  if (at >= 0) path = path.slice(0, at);
+  const lastSlash = path.lastIndexOf('/');
+  const colon = path.lastIndexOf(':');
+  // A `:` after the last `/` is the tag separator; one inside a `${AWS::...}`
+  // placeholder is not (it is always followed by `}` before the end).
+  if (colon > lastSlash && !path.slice(colon).includes('}')) path = path.slice(0, colon);
+  return path.length > 0 ? path : undefined;
+}
+
+/** Stands for one `${AWS::...}` pseudo parameter in a tokenized repository name. */
+const PSEUDO_PARAMETER = Symbol('pseudo-parameter');
+
+/**
+ * Whether two repository names can denote the same repository, where each
+ * `${AWS::...}` pseudo parameter on EITHER side stands for any non-empty run
+ * of characters other than `/` on the other (so `a-123-${AWS::Region}` and
+ * `a-${AWS::AccountId}-us-east-1` overlap). Any other `${...}` (e.g. a
+ * `${MyRepo}` resource reference) is compared literally, so it can never
+ * widen into a wildcard.
+ */
+function pseudoParameterPatternsOverlap(a: string, b: string): boolean {
+  const ta = tokenizePseudoParameters(a);
+  const tb = tokenizePseudoParameters(b);
+  const memo = new Map<number, boolean>();
+  const match = (i: number, j: number): boolean => {
+    if (i === ta.length || j === tb.length) return i === ta.length && j === tb.length;
+    const key = i * (tb.length + 1) + j;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+    let result = false;
+    if (ta[i] === PSEUDO_PARAMETER) {
+      for (let k = j; k < tb.length && tb[k] !== '/' && !result; k++) result = match(i + 1, k + 1);
+    } else if (tb[j] === PSEUDO_PARAMETER) {
+      for (let k = i; k < ta.length && ta[k] !== '/' && !result; k++) result = match(k + 1, j + 1);
+    } else {
+      result = ta[i] === tb[j] && match(i + 1, j + 1);
+    }
+    memo.set(key, result);
+    return result;
+  };
+  return match(0, 0);
+}
+
+function tokenizePseudoParameters(value: string): (string | typeof PSEUDO_PARAMETER)[] {
+  const tokens: (string | typeof PSEUDO_PARAMETER)[] = [];
+  const parts = value.split(/\$\{AWS::[^}]*\}/);
+  parts.forEach((part, index) => {
+    if (index > 0) tokens.push(PSEUDO_PARAMETER);
+    tokens.push(...Array.from(part));
+  });
+  return tokens;
 }
 
 /**
