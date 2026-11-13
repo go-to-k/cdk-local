@@ -1,6 +1,8 @@
 import { redactDockerArgvValues } from '../utils/docker-argv-redaction.js';
 import type { DockerImageAssetSource } from '../types/assets.js';
 import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../utils/docker-cmd.js';
+import { dockerRegistryEnv } from '../utils/docker-registry-config.js';
+import type { AwsEmulatorWorkload } from '../utils/aws-proxy.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { displayToolOutput } from '../utils/ident-display.js';
@@ -75,6 +77,13 @@ export interface BuildDockerImageOptions {
    * when stdout is non-TTY.
    */
   progressLabel?: string;
+  /**
+   * The workload the image is built for. Under `--aws-emulator` the build's
+   * docker config holds no ECR credential unless a `"real-aws"` exception
+   * names ECR for it (`Parameters` plus its own section); without it, the
+   * `Parameters` exceptions alone decide (go-to-k/cdk-local#917).
+   */
+  workload?: AwsEmulatorWorkload;
   /**
    * The app's outdir — the CONTAINMENT bound for `source.directory`
    * (go-to-k/cdk-local#745). Callers pass `assetPathDirs(stack).assetOutdir`.
@@ -316,7 +325,7 @@ export async function buildDockerImage(
       // BUILDX_NO_DEFAULT_ATTESTATIONS=1 matches `cdk-assets-lib` — without
       // this, BuildKit/Buildx attaches provenance attestation manifests
       // that ECR's single-arch pull path rejects.
-      env: { BUILDX_NO_DEFAULT_ATTESTATIONS: '1' },
+      env: { ...dockerRegistryEnv(options.workload), BUILDX_NO_DEFAULT_ATTESTATIONS: '1' },
       ...(options.progressLabel !== undefined && { progressLabel: options.progressLabel }),
     });
   } catch (err) {

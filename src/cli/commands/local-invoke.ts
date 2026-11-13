@@ -711,6 +711,7 @@ export async function resolveContainerImagePlan(
       architecture: lambda.architecture,
       noBuild: options.build === false,
       assetOutdir: localBuild.assetOutdir,
+      workload: lambdaWorkload(lambda),
     });
   } else {
     if (!parseEcrUri(lambda.imageUri)) {

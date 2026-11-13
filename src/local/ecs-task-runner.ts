@@ -1239,6 +1239,7 @@ async function prepareOneImage(
               `(${displayUntrustedValue(asset.source.directory ?? asset.source.executable?.[0] ?? '')}): ${stderr}`
           ),
         progressLabel: `Building container image for ${displayIdent(container.name)}`,
+        workload: { containerName: container.name },
       });
       if (actualTag !== tag) {
         // `executable` source mode returns the script's own tag — re-tag

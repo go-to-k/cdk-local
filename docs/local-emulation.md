@@ -476,7 +476,11 @@ The rules:
   by `AWS_ENDPOINT_URL_S3`, a literal layer ARN by `AWS_ENDPOINT_URL_LAMBDA`.
   Unmarked, they come from the emulator, where the stack was deployed; marked,
   from real AWS with your real identity (`--ecr-role-arn` /
-  `--layer-role-arn` apply there as without `--aws-emulator`). See [Running
+  `--layer-role-arn` apply there as without `--aws-emulator`). An ECR image
+  is the exception to "unmarked comes from the emulator": its URI always
+  names the real registry host and AWS Emulator serves no registry Docker can
+  pull from, so an unmarked ECR pull is refused (a cached image still runs
+  with `--no-pull`). See [Running
   an image that only exists in real ECR](#running-an-image-that-only-exists-in-real-ecr). The STS calls
   that establish your real identity (`--assume-role`, `--role-arn`,
   `--ecr-role-arn`, `--profile`) stay on real AWS: they write nothing, and
@@ -523,8 +527,23 @@ The rules:
   or a repository imported with an explicit account) is used as written,
   while a URI built from `${AWS::AccountId}` or a same-stack repository can
   resolve to the emulator's account, which real ECR does not hold, so write
-  that one in literally. Without the exception the token comes from the
-  emulator, as before.
+  that one in literally. Without the exception the pull is refused before
+  any request leaves the machine, since it could only reach real ECR.
+
+  Unless ECR is excepted for the workload, every `docker pull` and
+  `docker build` cdk-local runs under `--aws-emulator` also uses a per-run
+  Docker client config with no credential for any ECR host (the host's
+  `auths`, `credHelpers` and `credsStore` entries for ECR hosts are left out;
+  every other registry keeps its login, and the context, CLI plugins and
+  buildx builder are linked from yours). So a Dockerfile `FROM` in real ECR is
+  not answered by a credential helper such as `docker-credential-ecr-login`
+  with your real identity: except ECR for that workload to build it. A
+  container Lambda, AgentCore container or ECS task asset build follows its
+  own workload's exceptions; an `--image-override`, AgentCore code-asset or
+  MicroVM build follows `Parameters`. The
+  config is written under the OS temp directory and removed on exit. A
+  client that keeps its own credential store (podman's `auth.json`,
+  finch's `creds_helpers`) is not covered.
 - **Host-prefixed operations.** Mixed mode sets
   `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, as `--aws-emulator` alone does,
   because the sidecar listens on an IP address that cannot take a host

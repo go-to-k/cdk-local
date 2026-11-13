@@ -1,0 +1,184 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import path from 'node:path';
+import { isAwsServiceRoutedToEmulator, type AwsEmulatorWorkload } from './aws-proxy.js';
+import { getEmbedConfig } from '../local/embed-config.js';
+
+/**
+ * The docker client config a registry-contacting docker spawn (`pull`, `build`)
+ * uses under `--aws-emulator` (go-to-k/cdk-local#917).
+ *
+ * AWS Emulator's ECR hands out repository URIs on the REAL
+ * `<account>.dkr.ecr.<region>.amazonaws.com` host and serves no registry docker
+ * can reach, so any registry request docker makes to an ECR host is a request
+ * to real ECR. Docker answers it with whatever the host's client config holds
+ * for that host: a `credHelpers` entry (`docker-credential-ecr-login`, which
+ * signs with the host's real AWS identity), a token an earlier `docker login`
+ * left in the `credsStore`, or an inline `auths` entry. Unless a `"real-aws"`
+ * exception names ECR, the docker spawn therefore gets a per-run
+ * `DOCKER_CONFIG` holding NO credential for any ECR host; every other host keeps
+ * its credentials, so Docker Hub, `public.ecr.aws` and private non-AWS
+ * registries work as before.
+ *
+ * Outside `--aws-emulator`, and when ECR is excepted, the host's own config is
+ * used unchanged.
+ */
+
+/** The `AWS_ENDPOINT_URL_<ID>` suffix of ECR (the SDK `serviceId`). */
+const ECR_SERVICE_ID = 'ECR';
+
+/**
+ * Entries of the host's docker config directory the per-run directory links
+ * to, so the client still reaches the daemon and runs as before: `contexts`
+ * (the `currentContext`'s endpoint, e.g. Docker Desktop's socket under
+ * `~/.docker/run/`; without it docker falls back to `/var/run/docker.sock`,
+ * which Docker Desktop need not provide), `cli-plugins` (`buildx`; Docker
+ * Desktop installs it there as a symlink) and `buildx` (the selected builder).
+ * None of them holds a registry credential.
+ */
+const LINKED_ENTRIES = ['contexts', 'cli-plugins', 'buildx'] as const;
+
+/**
+ * Whether a docker config `auths` / `credHelpers` key names an ECR registry
+ * host. Deliberately LOOSER than `parseEcrRegistryHost` (which must never point
+ * a login at a host AWS does not own): here a false positive only withholds a
+ * credential, so any host carrying an ECR label (`dkr.ecr`, `dkr.ecr-fips`,
+ * `dkr-ecr`, `dkr-ecr-fips`) matches, in any partition, with or without a
+ * scheme, port or path.
+ */
+export function isEcrRegistryConfigKey(key: string): boolean {
+  const host = key
+    .trim()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+    .split('/')[0]!
+    .toLowerCase();
+  return /(^|\.)dkr[.-]ecr(-fips)?\./.test(host);
+}
+
+/**
+ * The host docker config with every credential for an ECR host removed.
+ *
+ * - `auths` and `credHelpers` entries keyed by an ECR host are dropped; every
+ *   other entry is kept.
+ * - `credsStore` applies to EVERY host without a `credHelpers` entry, and it
+ *   may hold an ECR token from an earlier `docker login`, so it is removed; each
+ *   remaining `auths` key with no inline `auth` (docker writes `{}` there for a
+ *   login it put in the store) gets a `credHelpers` entry naming the store, so
+ *   those logins still work. A store entry with no `auths` key is lost (the
+ *   pull is anonymous), never sent.
+ * - Every other key (`currentContext`, `proxies`, `cliPluginsExtraDirs`, ...)
+ *   is kept as written.
+ */
+export function stripEcrCredentials(config: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...config };
+  const credsStore =
+    typeof config['credsStore'] === 'string' && config['credsStore'] !== ''
+      ? config['credsStore']
+      : undefined;
+  delete out['credsStore'];
+
+  const auths: Record<string, unknown> = {};
+  const helpers: Record<string, unknown> = {};
+  const hostAuths = asRecord(config['auths']);
+  for (const [key, value] of Object.entries(hostAuths)) {
+    if (isEcrRegistryConfigKey(key)) continue;
+    auths[key] = value;
+    const inline = asRecord(value);
+    if (credsStore !== undefined && typeof inline['auth'] !== 'string') {
+      helpers[key] = credsStore;
+    }
+  }
+  for (const [key, value] of Object.entries(asRecord(config['credHelpers']))) {
+    if (isEcrRegistryConfigKey(key)) continue;
+    helpers[key] = value;
+  }
+  if ('auths' in config) out['auths'] = auths;
+  if (Object.keys(helpers).length > 0) out['credHelpers'] = helpers;
+  else delete out['credHelpers'];
+  return out;
+}
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+}
+
+/** The host docker client's config directory: `DOCKER_CONFIG`, else `~/.docker`. */
+export function hostDockerConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const own = env['DOCKER_CONFIG'];
+  return own !== undefined && own !== '' ? own : path.join(homedir(), '.docker');
+}
+
+let strippedDir: string | undefined;
+let exitHookInstalled = false;
+
+/**
+ * Write (once per process) the per-run docker config directory: the host's
+ * `config.json` through {@link stripEcrCredentials} (mode 0600 in a 0700
+ * directory), plus links to the host's {@link LINKED_ENTRIES}. Removed on exit.
+ * A host config that is missing or not JSON yields an empty one: docker then
+ * runs with no credential at all, which is the safe side.
+ */
+function ensureStrippedConfigDir(): string {
+  if (strippedDir !== undefined && existsSync(strippedDir)) return strippedDir;
+  const hostDir = hostDockerConfigDir();
+  let hostConfig: Record<string, unknown> = {};
+  try {
+    hostConfig = asRecord(JSON.parse(readFileSync(path.join(hostDir, 'config.json'), 'utf-8')));
+  } catch {
+    hostConfig = {};
+  }
+  const dir = mkdtempSync(
+    path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-docker-config-`)
+  );
+  writeFileSync(
+    path.join(dir, 'config.json'),
+    `${JSON.stringify(stripEcrCredentials(hostConfig), null, 2)}\n`,
+    { mode: 0o600 }
+  );
+  for (const entry of LINKED_ENTRIES) {
+    const target = path.join(hostDir, entry);
+    if (!existsSync(target)) continue;
+    try {
+      symlinkSync(target, path.join(dir, entry));
+    } catch {
+      // A link that cannot be made (e.g. Windows without symlink rights) only
+      // loses that entry: docker then uses its built-in default for it.
+    }
+  }
+  strippedDir = dir;
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.once('exit', () => {
+      if (strippedDir !== undefined) rmSync(strippedDir, { recursive: true, force: true });
+    });
+  }
+  return dir;
+}
+
+/**
+ * The `env` a docker spawn that contacts a registry (`pull`, `build`) passes:
+ * under `--aws-emulator`, unless a `"real-aws"` exception names ECR for
+ * `workload` (or, without one, in `Parameters`), `DOCKER_CONFIG` names a
+ * per-run directory with no ECR credential ({@link stripEcrCredentials});
+ * otherwise `DOCKER_CONFIG` keeps the host's own value (unset stays unset).
+ *
+ * `runDockerStreaming` / `runDockerForeground` apply the `Parameters` answer to
+ * every spawn by default, so a site that knows its workload passes this
+ * explicitly to route by that workload's own exceptions.
+ */
+export function dockerRegistryEnv(
+  workload?: AwsEmulatorWorkload
+): Record<string, string | undefined> {
+  if (!isAwsServiceRoutedToEmulator(ECR_SERVICE_ID, workload)) {
+    return { DOCKER_CONFIG: process.env['DOCKER_CONFIG'] };
+  }
+  return { DOCKER_CONFIG: ensureStrippedConfigDir() };
+}
+
+/** Test hook: remove the per-run directory and forget it. */
+export function resetDockerRegistryConfigForTest(): void {
+  if (strippedDir !== undefined) rmSync(strippedDir, { recursive: true, force: true });
+  strippedDir = undefined;
+}

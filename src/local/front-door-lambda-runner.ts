@@ -208,6 +208,7 @@ async function resolveContainerImagePlan(
         architecture: lambda.architecture,
         // The containment bound for `source.directory` (go-to-k/cdk-local#745).
         assetOutdir: assetPathDirs(lambda.stack).assetOutdir,
+        workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
       });
       localBuilt = true;
     }

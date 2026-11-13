@@ -118,7 +118,9 @@ describe('pullEcrImage — --profile threading', () => {
     expect(ecrCtorArgs[0]!['profile']).toBe('mates_dev');
     // No assumed-role credentials on the same-account, no-ecrRoleArn path.
     expect(ecrCtorArgs[0]!['credentials']).toBeUndefined();
-    expect(runFg).toHaveBeenCalledWith(['pull', IMAGE]);
+    expect(runFg).toHaveBeenCalledWith(['pull', IMAGE], {
+      env: { DOCKER_CONFIG: process.env['DOCKER_CONFIG'] },
+    });
   });
 
   it('constructs the clients WITHOUT a profile key when --profile is unset', async () => {
@@ -257,6 +259,8 @@ describe('pullEcrImage — AWS Emulator mixed mode follows "real-aws" on ECR', (
     ecrSend.mockResolvedValue({
       authorizationData: [{ authorizationToken: Buffer.from('AWS:pw').toString('base64') }],
     });
+    runFg.mockReset();
+    runStream.mockReset();
     runFg.mockResolvedValue(undefined);
     runStream.mockResolvedValue(undefined);
   });
@@ -265,18 +269,37 @@ describe('pullEcrImage — AWS Emulator mixed mode follows "real-aws" on ECR', (
     setAwsEndpointOverride(undefined);
   });
 
-  it('full --aws-emulator mode (no exception) keeps the token on the emulator, skipping --ecr-role-arn', async () => {
+  // go-to-k/cdk-local#917: an ECR URI names the REAL registry host, so an
+  // unmarked pull is refused before any AWS call or docker spawn — the
+  // emulator's token would be sent to real ECR, and the host's docker
+  // credential helper would answer the pull with the real identity.
+  const expectRefusedWithoutContact = async (p: Promise<unknown>): Promise<void> => {
+    await expect(p).rejects.toThrow(/AWS_ENDPOINT_URL_ECR.*real-aws/);
+    expect(stsSend).not.toHaveBeenCalled();
+    expect(ecrCtorArgs).toHaveLength(0);
+    expect(runStream).not.toHaveBeenCalled();
+    expect(runFg).not.toHaveBeenCalled();
+  };
+
+  it('full --aws-emulator mode (no exception) refuses the pull before any AWS call or docker spawn', async () => {
     setAwsEndpointOverride({ endpoint: EMU, credentials: { accessKeyId: 'EMUKEY', secretAccessKey: 'x'.repeat(40) } });
-    await pullEcrImage(IMAGE, {
-      skipPull: false,
-      region: 'ap-northeast-1',
-      profile: 'prod',
-      ecrRoleArn: roleArn,
-      workload: { containerName: 'web' },
-    });
-    expect(ecrCtorArgs[0]!['endpoint']).toBe(EMU);
-    expect(ecrCtorArgs[0]!).not.toHaveProperty('profile');
-    expect(stsSend.mock.calls.some(([c]) => (c as { kind?: string }).kind === 'assume')).toBe(false);
+    await expectRefusedWithoutContact(
+      pullEcrImage(IMAGE, {
+        skipPull: false,
+        region: 'ap-northeast-1',
+        profile: 'prod',
+        ecrRoleArn: roleArn,
+        workload: { containerName: 'web' },
+      })
+    );
+  });
+
+  it('still verifies a cached image under --no-pull in full --aws-emulator mode', async () => {
+    setAwsEndpointOverride({ endpoint: EMU, credentials: { accessKeyId: 'EMUKEY', secretAccessKey: 'x'.repeat(40) } });
+    await expect(pullEcrImage(IMAGE, { skipPull: true })).resolves.toBe(IMAGE);
+    expect(runStream).toHaveBeenCalledWith(['image', 'inspect', IMAGE]);
+    expect(stsSend).not.toHaveBeenCalled();
+    expect(ecrCtorArgs).toHaveLength(0);
   });
 
   it('takes the token from real ECR, as the real identity, when ECR is excepted', async () => {
@@ -286,33 +309,38 @@ describe('pullEcrImage — AWS Emulator mixed mode follows "real-aws" on ECR', (
     expect(ecrCtorArgs[0]!['endpoint']).toBeUndefined();
     // --ecr-role-arn is honored on the real side.
     expect(ecrCtorArgs[0]!['credentials']).toMatchObject({ accessKeyId: 'AKIA' });
-    expect(runFg).toHaveBeenCalledWith(['pull', IMAGE]);
+    // The login and the pull use the host's own docker config (#917).
+    const hostEnv = { env: { DOCKER_CONFIG: process.env['DOCKER_CONFIG'] } };
+    expect(runFg).toHaveBeenCalledWith(['pull', IMAGE], hostEnv);
+    expect(runStream).toHaveBeenCalledWith(
+      expect.arrayContaining(['login']),
+      expect.objectContaining(hostEnv)
+    );
   });
 
   it("follows the workload's own section", async () => {
     route({ Parameters: {}, web: { AWS_ENDPOINT_URL_ECR: 'real-aws' } });
     await pullEcrImage(IMAGE, { skipPull: false, region: 'ap-northeast-1', workload: { containerName: 'web' } });
-    await pullEcrImage(IMAGE, {
-      skipPull: false,
-      region: 'ap-northeast-1',
-      workload: { containerName: 'worker' },
-    });
-    expect(ecrCtorArgs.map((c) => c['endpoint'])).toEqual([undefined, EMU]);
+    expect(ecrCtorArgs.map((c) => c['endpoint'])).toEqual([undefined]);
+    await expect(
+      pullEcrImage(IMAGE, {
+        skipPull: false,
+        region: 'ap-northeast-1',
+        workload: { containerName: 'worker' },
+      })
+    ).rejects.toThrow(/AWS_ENDPOINT_URL_ECR.*real-aws/);
+    expect(ecrCtorArgs).toHaveLength(1);
   });
 
-  it('keeps an unmarked ECR on the emulator, with its keys only', async () => {
+  it('refuses an unmarked ECR in mixed mode before any AWS call or docker spawn', async () => {
     route({ Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } });
-    await pullEcrImage(IMAGE, {
-      skipPull: false,
-      region: 'ap-northeast-1',
-      profile: 'prod',
-      ecrRoleArn: roleArn,
-    });
-    expect(ecrCtorArgs[0]!['endpoint']).toBe(EMU);
-    expect(ecrCtorArgs[0]!).not.toHaveProperty('profile');
-    expect(await (ecrCtorArgs[0]!['credentials'] as () => Promise<unknown>)()).toMatchObject({
-      accessKeyId: 'EMUKEY',
-    });
-    expect(stsSend.mock.calls.some(([c]) => (c as { kind?: string }).kind === 'assume')).toBe(false);
+    await expectRefusedWithoutContact(
+      pullEcrImage(IMAGE, {
+        skipPull: false,
+        region: 'ap-northeast-1',
+        profile: 'prod',
+        ecrRoleArn: roleArn,
+      })
+    );
   });
 });
