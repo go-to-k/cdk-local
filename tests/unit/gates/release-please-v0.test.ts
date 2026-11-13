@@ -99,8 +99,8 @@ describe('release-please v0 fence', () => {
     // The updater's own expression, verbatim — a COPY, so its provenance is
     // recorded here rather than left implicit: verified against
     // `DEFAULT_VERSION_HEADER_REGEX = '\n###? v?[0-9[]'` in release-please
-    // 17.3.0 (src/updaters/changelog.ts, built with the `s` flag), which is
-    // the version release-please-action@5c625bf (v4.4.1) locks — the sha
+    // 17.6.0 (src/updaters/changelog.ts, built with the `s` flag), which is
+    // the version release-please-action@45996ed (v5.0.0) locks — the sha
     // pinned in release.yml. Re-check this literal when that action pin is
     // bumped: the sha-pin case below fences THAT the action is pinned, not
     // WHICH sha, so a bump could otherwise change the real regex under this
