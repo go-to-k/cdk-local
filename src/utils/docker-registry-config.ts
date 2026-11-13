@@ -16,9 +16,9 @@ import { getEmbedConfig } from '../local/embed-config.js';
  * signs with the host's real AWS identity), a token an earlier `docker login`
  * left in the `credsStore`, or an inline `auths` entry. Unless a `"real-aws"`
  * exception names ECR, the docker spawn therefore gets a per-run
- * `DOCKER_CONFIG` holding NO credential for any ECR host; every other host keeps
- * its credentials, so Docker Hub, `public.ecr.aws` and private non-AWS
- * registries work as before.
+ * `DOCKER_CONFIG` holding NO credential for any ECR host (`public.ecr.aws`
+ * included, which then pulls anonymously); every other host keeps its
+ * credentials, so Docker Hub and private non-AWS registries work as before.
  *
  * Outside `--aws-emulator`, and when ECR is excepted, the host's own config is
  * used unchanged.
