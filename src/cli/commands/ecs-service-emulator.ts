@@ -1988,6 +1988,7 @@ async function resolveServiceAndRunnerOpts(
   };
   if (envOverrides) taskOpts.envOverrides = envOverrides;
   if (options.stackRegion) taskOpts.stackRegion = options.stackRegion;
+  if (imageContext?.stateRegion) taskOpts.stateRecordRegion = imageContext.stateRegion;
   if (assumedCredentials && mixedWiring) {
     taskOpts.taskCredentials = mixedWiring.emulatorCredentials;
     taskOpts.mixedModeRoleCredentials = assumedCredentials;
@@ -2841,6 +2842,7 @@ export async function buildEcsImageResolutionContext(
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
     if (loaded) {
       ctx.stateResources = loaded.resources;
+      ctx.stateRegion = loaded.region;
     } else {
       // load() returned undefined — capture the provider's failure
       // detail so the resolver's "needs deployed state" error reports

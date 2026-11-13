@@ -1,5 +1,54 @@
 import { STSClient } from '@aws-sdk/client-sts';
+import { firstUsableRegion } from '../local/dynamic-reference-resolver.js';
 import { buildStsClientConfig } from './profile-resolver.js';
+
+/**
+ * The region an ECS task container gets as `AWS_REGION`, in the order a
+ * deployed task would see it (go-to-k/cdk-local#925): `--region`, the host's
+ * `AWS_REGION`, `AWS_DEFAULT_REGION`, `--stack-region` or the stack's own
+ * `env.region`, the loaded state record's region, then the region the SDK
+ * resolves for the profile (`--profile`, else `AWS_PROFILE` / `default` in
+ * `~/.aws/config`). An env-agnostic stack's `unknown-region` placeholder is
+ * skipped, and the result is folded to lower case, AWS's only spelling of a
+ * region. `undefined` when nothing names one: the container then stays
+ * region-less, and its SDK's own "Region is missing" is the right signal.
+ */
+export async function resolveContainerRegion(sources: {
+  region?: string | undefined;
+  stackRegion?: string | undefined;
+  stateRegion?: string | undefined;
+  profile?: string | undefined;
+}): Promise<string | undefined> {
+  const named = firstUsableRegion(
+    sources.region,
+    process.env['AWS_REGION'],
+    process.env['AWS_DEFAULT_REGION'],
+    sources.stackRegion,
+    sources.stateRegion
+  );
+  if (named) return named.toLowerCase();
+  const fromProfile = firstUsableRegion(await resolveSdkDefaultRegion(sources.profile));
+  return fromProfile?.toLowerCase();
+}
+
+/**
+ * The region the SDK's default provider chain resolves for `profile`, or for
+ * the default profile (`AWS_PROFILE`, else `default`) when none is given.
+ * Unlike {@link resolveProfileRegion} it does not need a named profile.
+ * Best-effort: `undefined` when no region is configured.
+ */
+async function resolveSdkDefaultRegion(profile: string | undefined): Promise<string | undefined> {
+  const sts = new STSClient(buildStsClientConfig({ profile }));
+  try {
+    const regionProvider = sts.config.region;
+    const resolved = typeof regionProvider === 'function' ? await regionProvider() : regionProvider;
+    return typeof resolved === 'string' && resolved.length > 0 ? resolved : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    sts.destroy();
+  }
+}
 
 /**
  * Resolve the AWS region the SDK would pick for a named profile (the
@@ -28,14 +77,5 @@ export async function resolveProfileRegion(
   profile: string | undefined
 ): Promise<string | undefined> {
   if (profile === undefined || profile === '') return undefined;
-  const sts = new STSClient(buildStsClientConfig({ profile }));
-  try {
-    const regionProvider = sts.config.region;
-    const resolved = typeof regionProvider === 'function' ? await regionProvider() : regionProvider;
-    return typeof resolved === 'string' && resolved.length > 0 ? resolved : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    sts.destroy();
-  }
+  return resolveSdkDefaultRegion(profile);
 }

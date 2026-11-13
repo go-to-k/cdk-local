@@ -67,6 +67,7 @@ import {
 } from './workload-aws-wiring.js';
 import { applyEnvOverrideMap } from './env-resolver.js';
 import { formatAuthority } from '../utils/url-authority.js';
+import { resolveContainerRegion } from '../utils/profile-region.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -209,7 +210,11 @@ export interface RunEcsTaskOptions {
    * to flip the run to `running`.
    */
   onReady?: () => void;
-  /** AWS region for secret resolution + metadata sidecar. */
+  /**
+   * `--region`: AWS region for secret resolution, and the first source of each
+   * container's `AWS_REGION` (the full order is `resolveContainerRegion`'s,
+   * go-to-k/cdk-local#925).
+   */
   region?: string;
   /**
    * `--stack-region`: the region the task's stack lives in. Resolving a
@@ -217,6 +222,12 @@ export interface RunEcsTaskOptions {
    * and `region` (issue #784), the same precedence the Lambda env builder uses.
    */
   stackRegion?: string;
+  /**
+   * Region the task's state record was loaded from, when a state source
+   * loaded one. A container's `AWS_REGION` falls back to it after the stack's
+   * own region and before the profile's (go-to-k/cdk-local#925).
+   */
+  stateRecordRegion?: string;
   /**
    * Optional pre-resolved `ImagePlan` map — only used by tests. Production
    * callers leave undefined and let the runner walk every container's
@@ -674,6 +685,18 @@ export async function runEcsTask(
     dynamicRefs.dispose();
   }
 
+  // Each container's `AWS_REGION`: a deployed task always has its region in
+  // the environment, so not only `--region` but the host variables, the
+  // stack's / state record's region and the profile's reach it
+  // (go-to-k/cdk-local#925). The container's own `Environment` /
+  // `--env-vars` entry still wins (applied after the metadata env).
+  const containerRegion = await resolveContainerRegion({
+    region: options.region,
+    stackRegion: options.stackRegion ?? task.stack?.region,
+    stateRegion: options.stateRecordRegion,
+    profile: options.profile,
+  });
+
   // Bring the network + sidecar up. From this point on the cleanup
   // path is non-trivial — any failure must `destroyTaskNetwork(state.network)`
   // for runner-owned networks, but caller-owned (shared) networks survive
@@ -777,7 +800,7 @@ export async function runEcsTask(
       containerHost: options.containerHost,
       roleArn: options.taskRoleArn,
       platformOverride: options.platformOverride,
-      region: options.region,
+      region: containerRegion,
       sidecarIp: state.network.sidecarIp,
       ...(options.mixedModeRoleCredentials && {
         mixedModeRoleCredentials: options.mixedModeRoleCredentials,
