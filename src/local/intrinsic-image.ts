@@ -64,6 +64,20 @@ export interface ImageResolutionContext {
    */
   stateRegion?: string;
   /**
+   * Set when the record's `AWS::IAM::Role` entries are the WRONG side for a
+   * bare `--assume-task-role` (AWS Emulator mixed mode with IAM routed to the
+   * emulator, while the role is assumed in real AWS): the ECS role-ARN lookup
+   * then ignores them (go-to-k/cdkd#6223).
+   */
+  ignoreStateForRoles?: boolean;
+  /**
+   * Why {@link ignoreStateForRoles} is set when the mixed-mode provider could
+   * not read real AWS: the record's `"real-aws"` roles are the emulator's
+   * (`LocalStateRecord.realSideUnread`). Read by the bare `--assume-role`
+   * warning to name the cause.
+   */
+  roleRecordRealSideUnread?: boolean;
+  /**
    * Resolved SSM-backed template `Parameters`
    * (`AWS::SSM::Parameter::Value<String>`), keyed by parameter logical ID.
    * Fed into `state-resolver.ts`'s `SubstitutionContext.parameters` so a

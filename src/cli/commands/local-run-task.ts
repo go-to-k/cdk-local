@@ -42,8 +42,9 @@ import {
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
   parseEcsTarget,
+  fillTaskRolePlaceholders,
+  hasTaskRolePlaceholder,
   resolveEcsTaskTarget,
-  TASK_ROLE_ACCOUNT_PLACEHOLDER,
   type EcsImageResolutionContext,
   type ResolvedEcsTask,
 } from '../../local/ecs-task-resolver.js';
@@ -61,8 +62,11 @@ import {
   addEcsAssumeRoleOptions,
   addImageOverrideOptions,
   ecsClusterOption,
+  isBareAssumeRole,
   resolveEcsAssumeRoleOption,
   loadMixedModeContainerStates,
+  taskRoleRecordIsEmulatorSide,
+  warnIfTaskRoleIsLogicalId,
   type StateProviderForWorkload,
 } from './ecs-service-emulator.js';
 import {
@@ -384,10 +388,11 @@ async function localRunTaskCommand(
 
     // `--assume-task-role` branches: bare flag (boolean `true`) uses the
     // task definition's resolved `TaskRoleArn`; otherwise the
-    // user-supplied ARN is used. The resolver emits a synth-time
-    // placeholder ARN (`arn:aws:iam::${AWS::AccountId}:role/<LogicalId>`)
-    // when TaskRoleArn references an inline same-stack IAM Role; we fill
-    // in the account segment lazily via STS only when bare
+    // user-supplied ARN is used. When TaskRoleArn references an inline
+    // same-stack IAM Role the resolver emits the state record's deployed ARN
+    // under a state source (go-to-k/cdkd#6223), else a synth-time placeholder
+    // ARN (`arn:${AWS::Partition}:iam::${AWS::AccountId}:role/<LogicalId>`); we
+    // fill in the partition and account lazily via STS only when bare
     // `--assume-task-role` is set, so the STS round-trip does not fire
     // on the common pass-through path.
     // Issue #249 / C6 — collapse `--assume-task-role` (legacy) and
@@ -405,6 +410,7 @@ async function localRunTaskCommand(
             `Pass the ARN explicitly: --assume-role <arn>`
         );
       }
+      warnIfTaskRoleIsLogicalId(task, stateProvider, imageContext);
       resolvedRoleArn = await resolveTaskRoleArnForOptions(task.taskRoleArn, options);
       assumedCredentials = await assumeTaskRole(
         resolvedRoleArn,
@@ -613,7 +619,7 @@ async function resolvePlaceholderAccount(
   profile: string | undefined,
   readFromCfnStack: boolean
 ): Promise<string> {
-  if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
+  if (!hasTaskRolePlaceholder(arn)) return arn;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
   // Under `workloadIdentity: 'caller'` the account follows where the stack was
   // read: the caller under `--from-cfn-stack`, else the `--role-arn` role (the
@@ -628,7 +634,7 @@ async function resolvePlaceholderAccount(
           `Pass the ARN explicitly: --assume-task-role <arn>`
       );
     }
-    return arn.split(TASK_ROLE_ACCOUNT_PLACEHOLDER).join(account);
+    return fillTaskRolePlaceholders(arn, account, identity.Arn);
   } catch (err) {
     // Issue #579 review round 3 — the third instance of the `try { send }
     // finally { destroy }` with no `catch`. Its caller does not catch either,
@@ -727,15 +733,22 @@ export async function buildEcsImageResolutionContext(
   if (!candidate) return undefined;
 
   const needs = detectEcsImageResolutionNeeds(candidate);
+  // The bare `--assume-role` reads the task role's deployed ARN from the
+  // state record (go-to-k/cdkd#6223); no other path reads the task role.
+  const roleRecordUsable = !taskRoleRecordIsEmulatorSide();
+  const wantsStateForTaskRole =
+    !!stateProvider && needs.needsTaskRoleState && isBareAssumeRole(options) && roleRecordUsable;
   if (
     !needs.needsPseudoParameters &&
     !needs.needsStateResources &&
-    !needs.needsEnvOrSecretSubstitution
+    !needs.needsEnvOrSecretSubstitution &&
+    !wantsStateForTaskRole
   ) {
     return undefined;
   }
 
   const ctx: EcsImageResolutionContext = {};
+  if (!roleRecordUsable) ctx.ignoreStateForRoles = true;
 
   const wantsPseudoForEnvOrSecret = !!stateProvider && needs.needsEnvOrSecretSubstitution;
   if (needs.needsPseudoParameters || wantsPseudoForEnvOrSecret) {
@@ -774,12 +787,19 @@ export async function buildEcsImageResolutionContext(
     };
   }
 
-  const wantsState = needs.needsStateResources || needs.needsEnvOrSecretSubstitution;
+  const wantsState =
+    needs.needsStateResources || needs.needsEnvOrSecretSubstitution || wantsStateForTaskRole;
   if (stateProvider && wantsState) {
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
     if (loaded) {
       ctx.stateResources = loaded.resources;
       ctx.stateRegion = loaded.region;
+      // Mixed mode with real AWS unread: the record's "real-aws" roles are the
+      // emulator's, never to be assumed in real AWS (go-to-k/cdkd#6223).
+      if (loaded.realSideUnread) {
+        ctx.ignoreStateForRoles = true;
+        ctx.roleRecordRealSideUnread = true;
+      }
     } else {
       // load() returned undefined — capture the provider's failure
       // detail so the resolver's "needs deployed state" error reports

@@ -64,18 +64,27 @@ export interface ResolvedEcsTask {
   /**
    * Resolved task role ARN. Surfaced as either:
    *   - a flat string ARN passed through verbatim from the template, OR
+   *   - the deployed role's ARN when the `TaskRoleArn` is a `Ref` /
+   *     `Fn::GetAtt` against an `AWS::IAM::Role` in the same stack and the
+   *     state source's record holds that role (go-to-k/cdkd#6223), OR
    *   - a synth-time placeholder of the shape
-   *     `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` when the
-   *     `TaskRoleArn` is a `Ref` / `Fn::GetAtt` against an `AWS::IAM::Role`
-   *     in the same stack. The CLI substitutes the placeholder account
-   *     segment lazily via STS `GetCallerIdentity` when (and only when)
-   *     `--assume-task-role` is used in its bare form.
+   *     `arn:${AWS::Partition}:iam::${AWS::AccountId}:role/<RoleLogicalId>`
+   *     for the same reference with no such record ({@link taskRoleUnresolved}
+   *     is then set). The CLI substitutes the placeholders lazily via STS
+   *     `GetCallerIdentity` when (and only when) `--assume-task-role` is used
+   *     in its bare form.
    *   - `undefined` when the template's `TaskRoleArn` is missing OR is an
    *     intrinsic that doesn't reference a same-stack IAM Role (e.g.
    *     points at a non-IAM-Role resource type or is an unsupported
    *     intrinsic shape — see `resolveRoleArn`).
    */
   taskRoleArn?: string;
+  /**
+   * Set when {@link taskRoleArn} is the placeholder built from the role's
+   * LOGICAL id, with why no state record named the deployed role: the ARN is
+   * right only if the role's name is its logical id (go-to-k/cdkd#6223).
+   */
+  taskRoleUnresolved?: { logicalId: string; reason: TaskRoleUnresolvedReason };
   /** Resolved execution role ARN. Follows the same shape as `taskRoleArn`. */
   executionRoleArn?: string;
   containers: ResolvedEcsContainer[];
@@ -321,6 +330,13 @@ export interface EcsImageResolutionNeeds {
    * load cost.
    */
   needsCrossStackResolver: boolean;
+  /**
+   * Any task's `TaskRoleArn` is a `Ref` / `Fn::GetAtt` against a same-stack
+   * `AWS::IAM::Role`, whose deployed name only the state record holds
+   * (go-to-k/cdkd#6223). The CLI loads state for it on the bare
+   * `--assume-task-role` path only.
+   */
+  needsTaskRoleState: boolean;
 }
 
 export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolutionNeeds {
@@ -329,6 +345,7 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
   let needsStateResources = false;
   let needsEnvOrSecretSubstitution = false;
   let needsCrossStackResolver = false;
+  let needsTaskRoleState = false;
 
   for (const res of Object.values(resources)) {
     if (res.Type !== 'AWS::ECS::TaskDefinition') continue;
@@ -359,10 +376,14 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
         }
       }
     }
+    // A same-stack role's deployed name is only in the state record
+    // (go-to-k/cdkd#6223). Its own flag: the CLI loads state for it only on
+    // the bare `--assume-task-role` path, the one reader of the task role.
+    if (sameStackRoleLogicalId(props['TaskRoleArn'], resources) !== undefined) {
+      needsTaskRoleState = true;
+    }
     // TaskRoleArn / ExecutionRoleArn as a Fn::Sub / Fn::Join intrinsic
-    // (Gap 5 of #286). Ref / Fn::GetAtt shapes against AWS::IAM::Role
-    // resolve to a placeholder ARN without state, so they don't trigger
-    // state loading.
+    // (Gap 5 of #286). Ref / Fn::GetAtt shapes are `needsTaskRoleState`'s.
     if (
       isFnJoinOrSubIntrinsic(props['TaskRoleArn']) ||
       isFnJoinOrSubIntrinsic(props['ExecutionRoleArn'])
@@ -375,6 +396,7 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
     needsStateResources,
     needsEnvOrSecretSubstitution,
     needsCrossStackResolver,
+    needsTaskRoleState,
   };
 }
 
@@ -732,8 +754,23 @@ function extractTaskDefinitionProperties(
   const resources = stack.template.Resources ?? {};
 
   const subContext = buildSubstitutionContextFromImageContext(context);
-  const taskRoleArn = resolveRoleArn(props['TaskRoleArn'], resources, subContext);
-  const executionRoleArn = resolveRoleArn(props['ExecutionRoleArn'], resources, subContext);
+  // Mixed mode can make the record's roles the wrong side's (go-to-k/cdkd#6223):
+  // drop its IAM roles only, so a `Fn::Join` / `Fn::Sub` role ARN over pseudo
+  // parameters or other records still resolves.
+  const roleSubContext =
+    context?.ignoreStateForRoles && subContext
+      ? {
+          ...subContext,
+          resources: Object.fromEntries(
+            Object.entries(subContext.resources).filter(
+              ([, r]) => r.resourceType !== 'AWS::IAM::Role'
+            )
+          ),
+        }
+      : subContext;
+  const taskRole = resolveRoleArn(props['TaskRoleArn'], resources, roleSubContext);
+  const taskRoleArn = taskRole.arn;
+  const executionRoleArn = resolveRoleArn(props['ExecutionRoleArn'], resources, roleSubContext).arn;
 
   const runtimePlatform = parseRuntimePlatform(props['RuntimePlatform']);
 
@@ -788,6 +825,7 @@ function extractTaskDefinitionProperties(
     warnings,
   };
   if (taskRoleArn !== undefined) out.taskRoleArn = taskRoleArn;
+  if (taskRole.unresolved !== undefined) out.taskRoleUnresolved = taskRole.unresolved;
   if (executionRoleArn !== undefined) out.executionRoleArn = executionRoleArn;
   if (runtimePlatform !== undefined) out.runtimePlatform = runtimePlatform;
   return out;
@@ -1474,14 +1512,137 @@ function resolveVolumeSourcePath(
 export const TASK_ROLE_ACCOUNT_PLACEHOLDER = '${AWS::AccountId}';
 
 /**
+ * The partition segment's placeholder in the same ARN (go-to-k/cdkd#6223): the
+ * CLI fills it in from the same `GetCallerIdentity` answer, whose ARN carries
+ * the partition, so an `aws-cn` / `aws-us-gov` role is not named `arn:aws:`.
+ */
+export const TASK_ROLE_PARTITION_PLACEHOLDER = '${AWS::Partition}';
+
+/** `arn:${partition}:iam::${account}:role<path><name>`, both placeholders unfilled. */
+function placeholderRoleArn(pathAndName: string): string {
+  return `arn:${TASK_ROLE_PARTITION_PLACEHOLDER}:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role${pathAndName}`;
+}
+
+/**
+ * Fill a task-role ARN's placeholders from the caller's `GetCallerIdentity`
+ * answer: the account, and the partition read off the caller's own ARN (`aws`
+ * when it has none).
+ */
+export function fillTaskRolePlaceholders(
+  arn: string,
+  account: string,
+  callerArn: string | undefined
+): string {
+  const segment = callerArn?.split(':')[1];
+  const partition = callerArn?.startsWith('arn:') && segment ? segment : 'aws';
+  return arn
+    .split(TASK_ROLE_ACCOUNT_PLACEHOLDER)
+    .join(account)
+    .split(TASK_ROLE_PARTITION_PLACEHOLDER)
+    .join(partition);
+}
+
+/** Whether `arn` still carries a placeholder only `GetCallerIdentity` can fill. */
+export function hasTaskRolePlaceholder(arn: string): boolean {
+  return (
+    arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER) || arn.includes(TASK_ROLE_PARTITION_PLACEHOLDER)
+  );
+}
+
+/**
+ * The logical id of the same-stack `AWS::IAM::Role` a role-ARN value points
+ * at (`Ref` or `Fn::GetAtt [<LogicalId>, 'Arn']`), or `undefined` when the
+ * value is any other shape or names no `AWS::IAM::Role` in `resources`.
+ */
+export function sameStackRoleLogicalId(
+  value: unknown,
+  resources: Record<string, TemplateResource>
+): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const obj = value as Record<string, unknown>;
+  let refLogicalId: string | undefined;
+  if ('Ref' in obj && typeof obj['Ref'] === 'string') {
+    refLogicalId = obj['Ref'];
+  } else if ('Fn::GetAtt' in obj) {
+    const arg = obj['Fn::GetAtt'];
+    if (Array.isArray(arg) && typeof arg[0] === 'string') {
+      // Accept `[<LogicalId>, 'Arn']`; other attribute names (rare on IAM
+      // Role refs) fall through to undefined since the ARN we emit is always
+      // the role ARN shape.
+      const attr = typeof arg[1] === 'string' ? arg[1] : '';
+      if (attr === '' || attr === 'Arn') refLogicalId = arg[0];
+    }
+  }
+  if (refLogicalId === undefined) return undefined;
+  return resources[refLogicalId]?.Type === 'AWS::IAM::Role' ? refLogicalId : undefined;
+}
+
+/**
+ * Why a same-stack role's ARN is the placeholder built from its LOGICAL id
+ * rather than its deployed name (go-to-k/cdkd#6223):
+ *
+ * - `no-state` — no state record was read for the lookup.
+ * - `no-record` — the record has no entry for the role (or one carrying
+ *   neither an `Arn` nor a physical id).
+ * - `path-not-literal` — the record holds only the role's name
+ *   (`--from-cfn-stack`) and the template's `Path` is not a literal IAM path,
+ *   so the ARN cannot be built from it.
+ */
+export type TaskRoleUnresolvedReason = 'no-state' | 'no-record' | 'path-not-literal';
+
+/** A resolved role ARN plus, for the logical-id placeholder, why it was used. */
+interface RoleArnResolution {
+  arn?: string;
+  unresolved?: { logicalId: string; reason: TaskRoleUnresolvedReason };
+}
+
+/**
+ * The deployed ARN of a same-stack role, read from the state source's record
+ * of it (go-to-k/cdkd#6223). A role CDK creates without `roleName` is
+ * deployed as `<Stack>-<LogicalId>-<suffix>`, so only the record knows it.
+ *
+ *   - A record carrying the role's `Arn` attribute (cdkd's `--from-state`):
+ *     returned verbatim.
+ *   - A record with only the physical id (`--from-cfn-stack`), which for an
+ *     `AWS::IAM::Role` is the role NAME: the ARN is built from it plus the
+ *     template's `Path` (absent means `/`; anything but a literal IAM path is
+ *     refused, as the ARN would name another role), with the partition and
+ *     account left as the placeholders the CLI fills in.
+ */
+function roleArnFromStateRecord(
+  logicalId: string,
+  role: TemplateResource,
+  subContext: SubstitutionContext | undefined
+): { arn: string } | { reason: TaskRoleUnresolvedReason } {
+  if (!subContext) return { reason: 'no-state' };
+  const record = subContext.resources[logicalId];
+  if (!record) return { reason: 'no-record' };
+  const arn = record.attributes?.['Arn'];
+  if (typeof arn === 'string' && arn.length > 0) return { arn };
+  const name = record.physicalId;
+  if (typeof name !== 'string' || name.length === 0) return { reason: 'no-record' };
+  if (name.startsWith('arn:')) return { arn: name };
+  const rawPath = role.Properties?.['Path'];
+  if (rawPath === undefined) return { arn: placeholderRoleArn(`/${name}`) };
+  // IAM paths start and end with `/`.
+  if (typeof rawPath !== 'string' || !/^\/(?:.*\/)?$/.test(rawPath)) {
+    return { reason: 'path-not-literal' };
+  }
+  return { arn: placeholderRoleArn(`${rawPath}${name}`) };
+}
+
+/**
  * Resolve a Task / Execution role ARN reference. Accepts:
  *
  *   - A flat string ARN — returned verbatim.
  *   - `Ref` / `Fn::GetAtt[..., 'Arn']` against an `AWS::IAM::Role` in
- *     the same stack — returns a synth-time placeholder ARN of the shape
- *     `arn:aws:iam::${AWS::AccountId}:role/<RoleLogicalId>` (the CLI
- *     fills the account segment in lazily via STS when the bare
- *     `--assume-task-role` form is used).
+ *     the same stack — with a state source whose record holds the role, its
+ *     DEPLOYED ARN (go-to-k/cdkd#6223, see `roleArnFromStateRecord`);
+ *     otherwise a synth-time placeholder ARN of the shape
+ *     `arn:${AWS::Partition}:iam::${AWS::AccountId}:role/<RoleLogicalId>`,
+ *     which names the deployed role only when its name IS the logical id
+ *     (`unresolved` says why it was used). The CLI fills the placeholders in
+ *     lazily via STS when the bare `--assume-task-role` form is used.
  *   - `Fn::Join` / `Fn::Sub` — when the supplied substitution context
  *     can resolve every nested intrinsic to a literal (state + pseudo
  *     parameters via `--from-state` flow), the resulting flat ARN is
@@ -1491,7 +1652,7 @@ export const TASK_ROLE_ACCOUNT_PLACEHOLDER = '${AWS::AccountId}';
  *     ['arn','aws','iam','',cdk.Aws.ACCOUNT_ID,'role/Name']))`.
  *     Closes Gap 5 of #286.
  *
- * Returns `undefined` when the reference cannot be resolved (logical id
+ * The `arn` is `undefined` when the reference cannot be resolved (logical id
  * missing, non-IAM-Role target, unsupported intrinsic shape, or
  * intrinsic shape whose nested refs cannot be resolved without
  * `--from-state`).
@@ -1500,30 +1661,22 @@ function resolveRoleArn(
   value: unknown,
   resources: Record<string, TemplateResource>,
   subContext?: SubstitutionContext
-): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === 'string') return value;
-  if (typeof value !== 'object') return undefined;
+): RoleArnResolution {
+  if (value === undefined || value === null) return {};
+  if (typeof value === 'string') return { arn: value };
+  if (typeof value !== 'object') return {};
   const obj = value as Record<string, unknown>;
 
-  let refLogicalId: string | undefined;
-  if ('Ref' in obj && typeof obj['Ref'] === 'string') {
-    refLogicalId = obj['Ref'];
-  } else if ('Fn::GetAtt' in obj) {
-    const arg = obj['Fn::GetAtt'];
-    if (Array.isArray(arg) && typeof arg[0] === 'string') {
-      // Accept `[<LogicalId>, 'Arn']`; other attribute names (rare on IAM
-      // Role refs) fall through to undefined since the placeholder we emit
-      // is always the role ARN shape.
-      const attr = typeof arg[1] === 'string' ? arg[1] : '';
-      if (attr === '' || attr === 'Arn') refLogicalId = arg[0];
-    }
-  }
+  const refLogicalId = sameStackRoleLogicalId(value, resources);
   if (refLogicalId !== undefined) {
-    const role = resources[refLogicalId];
-    if (role?.Type !== 'AWS::IAM::Role') return undefined;
-    return `arn:aws:iam::${TASK_ROLE_ACCOUNT_PLACEHOLDER}:role/${refLogicalId}`;
+    const fromState = roleArnFromStateRecord(refLogicalId, resources[refLogicalId]!, subContext);
+    if ('arn' in fromState) return { arn: fromState.arn };
+    return {
+      arn: placeholderRoleArn(`/${refLogicalId}`),
+      unresolved: { logicalId: refLogicalId, reason: fromState.reason },
+    };
   }
+  if ('Ref' in obj || 'Fn::GetAtt' in obj) return {};
 
   // `Fn::Join` / `Fn::Sub` — `iam.Role.fromRoleArn(stack, id,
   // cdk.Fn.join(...))` shape. Resolve via state + pseudo parameters if
@@ -1531,15 +1684,15 @@ function resolveRoleArn(
   // when the context can't fully resolve the intrinsic — same posture
   // as the existing Ref-to-missing-resource path.
   if ('Fn::Join' in obj || 'Fn::Sub' in obj) {
-    if (!subContext) return undefined;
+    if (!subContext) return {};
     const sub = substituteAgainstState(value, subContext);
     if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
-      return sub.value;
+      return { arn: sub.value };
     }
-    return undefined;
+    return {};
   }
 
-  return undefined;
+  return {};
 }
 
 function pickString(value: unknown): string | undefined {

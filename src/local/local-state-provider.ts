@@ -70,6 +70,13 @@ export interface LocalStateRecord {
    * region the `cloudformation:DescribeStacks` call hit.
    */
   region: string;
+  /**
+   * Set by the AWS Emulator mixed-mode provider when real AWS could not be
+   * read, so the resources of the `"real-aws"` services carry their EMULATOR
+   * names. A caller about to send one of them to real AWS (the bare
+   * `--assume-role` task role, go-to-k/cdkd#6223) must not trust them.
+   */
+  realSideUnread?: boolean;
 }
 
 /**

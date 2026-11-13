@@ -452,7 +452,8 @@ export function createMixedModeStateProvider(
               'or deploy the stack to real AWS too.'
           );
         }
-        return e;
+        // The excepted resources are the emulator's (go-to-k/cdkd#6223).
+        return e ? { ...e, realSideUnread: true } : e;
       }
       if (!e) {
         const resources: Record<string, ResourceState> = {};
