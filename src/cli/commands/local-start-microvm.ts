@@ -1,5 +1,9 @@
 import { readFileSync } from 'fs';
-import { addAwsEndpointOptions } from '../options.js';
+import {
+  addAwsEndpointOptions,
+  emulateRoleViaOption,
+  warnIfEmulateRoleViaUnused,
+} from '../options.js';
 import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
@@ -101,6 +105,12 @@ export interface LocalStartMicrovmOptions extends LambdaContainerEnvOptions {
   autoResume?: boolean;
   /** `--assume-role <arn>`: the MicroVM execution role. */
   assumeRole?: string;
+  /**
+   * `--emulate-role-via <arn>`: when the role flag's AssumeRole is refused with
+   * AccessDenied, emulate the role's permissions by assuming THIS role with the
+   * execution role's policies as session policies (go-to-k/cdk-local#929).
+   */
+  emulateRoleVia?: string;
   /** Default hook / readiness deadline in ms (`--timeout`). */
   timeout: number;
 }
@@ -318,6 +328,10 @@ async function localStartMicrovmCommand(
   const teardown = (): Promise<void> => (teardownPromise ??= doTeardown());
 
   await activateWorkloadAwsWiring(options);
+  warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
+    roleFlag: '--assume-role',
+    roleRequested: options.assumeRole !== undefined,
+  });
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -677,6 +691,7 @@ export function addStartMicrovmSpecificOptions(cmd: Command): Command {
           'default: the shell credentials are forwarded.'
       )
     )
+    .addOption(emulateRoleViaOption('--assume-role'))
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',

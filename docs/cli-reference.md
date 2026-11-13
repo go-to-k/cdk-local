@@ -112,6 +112,56 @@ same two flags and forwards them to every command it starts:
 - **`AWS_DEFAULT_REGION` follows `AWS_REGION`**, as on Lambda and ECS, so
   boto3 finds the region.
 
+### A refused `--assume-role`: role permission emulation
+
+A role CDK creates trusts only its service principal (`lambda.amazonaws.com`,
+`ecs-tasks.amazonaws.com`, ...), so `--assume-role` / `--assume-task-role` of a
+deployed execution role is refused with `AccessDenied` unless you add your
+principal to the role's trust policy. When that happens, cdk-local
+**emulates** the role instead: it reads the role's inline and attached managed
+policies and gets credentials for **you** with those policies as STS session
+policies, so the workload can do only what both you and the role allow, and a
+permission the role lacks fails locally the way it would in AWS.
+
+- **IAM user credentials**: `sts:GetFederationToken`, no flag needed. A
+  GetFederationToken session cannot call IAM, nor STS except
+  `GetCallerIdentity`, and temporary IAM-user credentials (GetSessionToken /
+  MFA) cannot call it at all.
+- **Any other credentials** (IAM Identity Center, a role session): pass
+  `--emulate-role-via <arn>` naming a role you **can** assume; cdk-local
+  assumes it with the execution role's policies as session policies.
+- Reading the role needs `iam:ListRolePolicies`, `iam:GetRolePolicy` and
+  `iam:ListAttachedRolePolicies`, and the role must be in your credentials'
+  account.
+- Only `AccessDenied` triggers it: an expired or invalid token
+  (`ExpiredToken`, `InvalidClientTokenId`) keeps its error.
+- A role with no policy gets a deny-all session policy. STS limits session
+  policies to 10 managed policy ARNs and 2,048 characters (the inline
+  policies are combined into one minified document without `Sid`s); past
+  either limit, or when STS answers `PackedPolicyTooLarge`, cdk-local warns
+  and the command does what a refused assume did before: `start-service`,
+  `start-alb` (ECS services), `run-task` and `start-api` stop with the error,
+  and the Lambda-shaped and AgentCore commands warn and forward your own
+  credentials.
+- It is an **approximation**, and says so once per role: resource-based
+  policies, KMS key policies and `aws:PrincipalArn` conditions that name the
+  role see a different principal; the role's permissions boundary and
+  session tags are not reproduced; policy variables such as `aws:username`
+  take the session's values.
+- The IAM and STS calls go where the refused `AssumeRole` went: to the
+  endpoint under `--aws-emulator`, to real AWS in mixed mode.
+
+`--emulate-role-via` is on every command that takes `--assume-role` (`invoke`,
+`invoke-agentcore`, `start-agentcore`, `start-api`, `run-task`,
+`start-service`, `start-alb`, `start-cloudfront`, `start-web-function`,
+`start-microvm`); given without the role flag it has no effect and says so.
+Under `cdkl studio`, set it per target in "All options".
+
+```bash
+cdkl start-service MyStack/Service --from-cfn-stack --assume-role \
+  --emulate-role-via arn:aws:iam::123456789012:role/Developer
+```
+
 ### `--aws-emulator [url]`
 
 `--aws-emulator` (or `CDK_LOCAL_AWS_EMULATOR=1`, or `CDK_LOCAL_AWS_EMULATOR=<url>`)
@@ -429,6 +479,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
 | `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from the active state source (requires `--from-cfn-stack` or a host-provided extension); (3) `--no-assume-role` explicitly opts out. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` are passed through unchanged (SAM-compatible default; the region follows the container `AWS_REGION` order below), and with none in the environment the host's default credential chain fills them. STS failures degrade to a warn + dev-creds fallback. |
+| `--emulate-role-via <arn>` | — | When the `--assume-role` AssumeRole is refused with `AccessDenied`, emulate the role's permissions through this role (see [role permission emulation](#a-refused---assume-role-role-permission-emulation)). Not needed for IAM user credentials. |
 | `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Use only when the dev credentials cannot read the layer — typically cross-account layers. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in the Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. See [CloudFormation-driven env recovery](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region when `--from-cfn-stack` is set. |
@@ -834,6 +885,7 @@ prefix ([a `cdk.Stage` stack counts](#target-resolution)). Omit the target in a 
 | `--timeout <ms>` | `120000` | Per-request timeout in milliseconds. Applied to `POST /invocations`, `POST /mcp`, and the `/ws` open-to-close window. Raise this for long-running agent calls that exceed the default. |
 | `--watch` | off | Re-synth + reload the agent container on CDK source changes. Only meaningful with the long-running `--ws` session path: the single-shot HTTP `POST /invocations`, MCP `POST /mcp`, and A2A `POST /` paths run once and exit, so `--watch` is logged as a one-line WARN there and the single shot proceeds normally. The per-firing classifier shared with `start-service` / `start-alb` decides `'rebuild'` vs `'soft-reload'`: source-only edits on an interpreted-language handler (Node / Python / Ruby / shell) `docker cp` + `docker restart` the running container, Dockerfile / dependency / compiled-source / ambiguous edits SIGTERM the old container and rebuild from scratch. The active `/ws` socket is closed cleanly on every reload firing (AgentCore has no protocol-defined mid-session container handoff) so the next session connects to the rebuilt container — the honest local-dev semantic. Honors `cdk.json`'s `watch.include` / `watch.exclude` globs. |
 | `--assume-role [arn]` | off | Assume an execution role and forward STS temp creds. `--assume-role <arn>` uses the explicit ARN; bare `--assume-role` uses the runtime's `RoleArn` when it is a literal ARN, else resolves it from `--from-cfn-stack` state; `--no-assume-role` opts out. Off by default forwards the developer's shell credentials. |
+| `--emulate-role-via <arn>` | — | When the `--assume-role` AssumeRole is refused with `AccessDenied`, emulate the role's permissions through this role (see [role permission emulation](#a-refused---assume-role-role-permission-emulation)). Not needed for IAM user credentials. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR for cross-account / centralized registries. |
 | `--from-cfn-stack [name]` | — | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in env vars with the deployed physical IDs / exports, resolve a same-stack `AWS::ECR::Repository` ContainerUri to the deployed image, and resolve `AWS::SSM::Parameter::Value` env values (decrypted `SecureString` values are kept off the `docker run` argv; under `CDK_DOCKER=finch` on macOS / Windows they are refused unless `CDKL_ALLOW_SECRETS_ON_ARGV=1`, see [finch on macOS and Windows](local-emulation.md#finch-on-macos-and-windows)). Bare form uses the resolved stack name. |
 | `--stack-region <region>` | — | Region of the state record to read; the CFn client region for `--from-cfn-stack`. |
@@ -1182,6 +1234,7 @@ cdkl start-agentcore MyStack/Agent --from-cfn-stack
 | `--container-host <ip>` | `127.0.0.1` | Host IP used to bind the agent container port. |
 | `--timeout <ms>` | `120000` | Container-ready probe timeout (`GET /ping` for HTTP / AGUI; an HTTP-response probe to the protocol path for MCP / A2A). |
 | `--assume-role [arn]` | — | Assume the runtime's execution role and forward STS credentials to the container. |
+| `--emulate-role-via <arn>` | — | When the `--assume-role` AssumeRole is refused with `AccessDenied`, emulate the role's permissions through this role (see [role permission emulation](#a-refused---assume-role-role-permission-emulation)). Not needed for IAM user credentials. |
 | `--watch` | (off) | Re-synth + reload the warm container in place on a CDK source change, keeping the serve up. A per-firing classifier picks rebuild (boot a fresh container on a new port, re-point the serve) vs soft-reload (`docker cp` + `docker restart` the same container) — the same machinery as `start-service` / `invoke-agentcore --ws --watch`. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR. |
 | `--from-cfn-stack [name]` | — | Resolve intrinsic env values / ECR image URIs against a deployed stack. |
@@ -1298,6 +1351,7 @@ produces an error — they're mutually exclusive.
 | `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkl invoke`. |
 | `--assume-role <arn-or-pair>` | unset | Two forms. (1) `--assume-role <arn>` (global default) — STS-AssumeRole this ARN for every routed Lambda. (2) `--assume-role <LogicalId>=<arn>` (repeatable per-Lambda override) — wins over both the global default and `--assume-role-auto` for the named Lambda. Per-Lambda > (`--assume-role-auto` OR global default) > unset (developer creds passed through). |
 | `--assume-role-auto` | off | Issue #256 Option 1 — auto-resolve EACH routed Lambda's own `Role` (from the template's literal-ARN `Properties.Role`, or from `--from-cfn-stack` state for intrinsic-valued roles) and STS-AssumeRole that ARN per-Lambda. Slightly slower boot (N STS calls instead of 0) but the right shape when each routed Lambda's deployed role differs. Mutually exclusive with `--assume-role <arn>` (global default) on the global slot; combining them errors at boot. Compatible with `--assume-role <LogicalId>=<arn>` per-Lambda overrides (the map wins for named Lambdas, auto-resolve handles the rest). Misses (no literal ARN in the template AND no state loaded for the routed stack) warn-and-fall-through to dev creds for that one Lambda. |
+| `--emulate-role-via <arn>` | — | When the `--assume-role` AssumeRole is refused with `AccessDenied`, emulate the role's permissions through this role (see [role permission emulation](#a-refused---assume-role-role-permission-emulation)). Not needed for IAM user credentials. |
 | `--watch` | off | Hot reload: re-synth + re-discover routes when `cdk.out/` or any routed Lambda's asset directory changes. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). For HTTP API v2 routes, `requestContext.stage` is always `$default` regardless of this flag (AWS-side limitation); only `event.stageVariables` is affected. For REST v1 the selected StageName is also threaded into `requestContext.stage`. |
 | `--api <id>` | unset | **Deprecated** — use the positional `<targets...>` argument instead. Accepts a SINGLE identifier; for a subset pass multiple positional targets. Same accepted forms. Emits a deprecation warn on use. |
@@ -1373,6 +1427,7 @@ Path matching is prefix-based: an L2 path like
 | `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. |
 | `--assume-task-role [<arn>]` | unset | **Deprecated alias of `--assume-role`** (both forms accepted; `--assume-role` wins when both are passed and emits a one-time deprecation warn when only the legacy form is set). Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the account id of the identity the CLI resolved (via STS `GetCallerIdentity`: the `--profile` account when one is selected, otherwise the `--role-arn` role's account when one is given) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds (valid for one hour) are served by the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`. |
 | `--assume-role [<arn>]` | unset | Cross-command alias for `--assume-task-role` matching the same flag on `invoke` / `invoke-agentcore` / `start-api`. Same three-form grammar and the same `sts:AssumeRole`-via-metadata-sidecar semantic. Issue #249 / C6 — non-breaking superset of the legacy name. |
+| `--emulate-role-via <arn>` | — | When the `--assume-role` / `--assume-task-role` AssumeRole is refused with `AccessDenied`, emulate the role's permissions through this role (see [role permission emulation](#a-refused---assume-role-role-permission-emulation)). Not needed for IAM user credentials. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1. See [Env / Secrets substitution](#env--secrets-substitution---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
@@ -1679,6 +1734,7 @@ error.
 | `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. Single-replica services only. |
 | `--assume-task-role [arn]` | unset | **Deprecated alias of `--assume-role`** (both forms accepted; `--assume-role` wins when both are passed and emits a one-time deprecation warn when only the legacy form is set). Assume the task definition's `TaskRoleArn` (or the supplied ARN) and forward STS-issued temp credentials via the metadata sidecar so every replica's containers run with the deployed task role. Same three-form grammar as `cdkl run-task`. Every service in the run must resolve to the same role, and only one run with a task role can be active per host (see the shared-network note above). |
 | `--assume-role [arn]` | unset | Cross-command alias for `--assume-task-role` matching the same flag on `invoke` / `invoke-agentcore` / `start-api`. Same three-form grammar and the same `sts:AssumeRole`-via-metadata-sidecar semantic. Issue #249 / C6 — non-breaking superset of the legacy name. |
+| `--emulate-role-via <arn>` | — | When the `--assume-role` / `--assume-task-role` AssumeRole is refused with `AccessDenied`, emulate the role's permissions through this role (see [role permission emulation](#a-refused---assume-role-role-permission-emulation)). Not needed for IAM user credentials. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before ECR `docker pull` for cross-account / centralized registries. Same shape as `cdkl run-task`. |
 | `--platform <platform>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
@@ -2204,6 +2260,7 @@ On top of the [common flags](#common-flags):
 | `--stack-region <region>` | unset | Region of the state record to read; used with `--from-cfn-stack` as the CFn client region. |
 | `--env-vars <file>` | unset | SAM-shape JSON env-var overrides for the Lambda Function URL origins' backing functions and the Lambda Web Function endpoint origins' revisions — the same file and merge as `cdkl invoke --env-vars` ([override keys](#--env-vars-override-keys)): `Parameters` for every such origin, a function's or revision's logical ID / construct path for one, `null` removes a variable. Applied after `--from-cfn-stack` substitution. Not applied to Lambda@Edge functions (AWS does not allow environment variables on them); a distribution with no Function URL / Web Function origin logs a WARN that the flag has no effect. |
 | `--assume-role [arn]` | off | Assume a Function URL origin Lambda's deployed execution role (or a Web Function origin revision's `ServiceConfig.ExecutionRoleArn`, as `start-web-function --assume-role` does) and forward STS temp credentials into its container. `--assume-role <arn>` (explicit); `--assume-role` (bare, auto-resolves from state — requires `--from-cfn-stack`); `--no-assume-role` (opt out). Same semantics as `cdkl invoke --assume-role`. |
+| `--emulate-role-via <arn>` | — | When the `--assume-role` AssumeRole is refused with `AccessDenied`, emulate the role's permissions through this role (see [role permission emulation](#a-refused---assume-role-role-permission-emulation)). Not needed for IAM user credentials. |
 | `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `cdk.context.json`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container and a Web Function origin's server container are NOT rebuilt on reload (boot-time only). |
 
 ```bash
@@ -2324,7 +2381,8 @@ revision's `ServiceConfig.ExecutionRoleArn`: a literal role ARN as written, or
 the `Fn::GetAtt` / `Ref` CDK synthesizes, resolved against the deployed stack
 under `--from-cfn-stack` (the role's name and `Path` plus the caller's account).
 Without a state-source flag an intrinsic role cannot be resolved, so pass the
-ARN explicitly. `AWS_LAMBDA_FUNCTION_NAME` is the function's name.
+ARN explicitly. A refused assume is emulated ([role permission emulation](#a-refused---assume-role-role-permission-emulation), `--emulate-role-via <arn>`).
+`AWS_LAMBDA_FUNCTION_NAME` is the function's name.
 
 **Not reproduced (warned once at boot, never a failure).**
 `EgressNetworkConnectorArn` (the container uses Docker's default network);
@@ -2445,7 +2503,9 @@ through the same resolution as `cdkl invoke` (`--env-vars` keyed by the image's
 logical ID or construct path, `--from-cfn-stack`, `{{resolve:...}}`), with the
 developer's credentials forwarded. The execution role is a `run-microvm`
 parameter, not part of the template, so `--assume-role` takes the ARN
-explicitly.
+explicitly. A refused assume is emulated
+([role permission emulation](#a-refused---assume-role-role-permission-emulation),
+`--emulate-role-via <arn>`).
 
 **Not reproduced (warned once at boot, never a failure).** Each MicroVM is a
 Docker container started fresh, not a MicroVM restored from the image

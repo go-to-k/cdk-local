@@ -1,5 +1,9 @@
 import { Command, InvalidArgumentError, Option } from 'commander';
-import { addAwsEndpointOptions } from '../options.js';
+import {
+  addAwsEndpointOptions,
+  emulateRoleViaOption,
+  warnIfEmulateRoleViaUnused,
+} from '../options.js';
 import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import {
   appOptions,
@@ -86,6 +90,10 @@ async function localStartWebFunctionCommand(
   const forever = (): Promise<never> => new Promise<never>(() => undefined);
 
   await activateWorkloadAwsWiring(options);
+  warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
+    roleFlag: '--assume-role',
+    roleRequested: options.assumeRole !== undefined && options.assumeRole !== false,
+  });
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -323,6 +331,7 @@ export function addStartWebFunctionSpecificOptions(cmd: Command): Command {
           '`--no-assume-role` opts out. Off by default.'
       )
     )
+    .addOption(emulateRoleViaOption('--assume-role'))
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',

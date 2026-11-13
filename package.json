@@ -64,6 +64,7 @@
     "@aws-sdk/client-cloudfront-keyvaluestore": "^3.1060.0",
     "@aws-sdk/client-ecr": "^3.1019.0",
     "@aws-sdk/client-eventbridge": "^3.1017.0",
+    "@aws-sdk/client-iam": "^3.1053.0",
     "@aws-sdk/client-kinesis": "^3.1018.0",
     "@aws-sdk/client-lambda": "^3.0.0",
     "@aws-sdk/client-s3": "^3.1053.0",

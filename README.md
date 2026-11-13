@@ -150,6 +150,8 @@ cdkl invoke --from-cfn-stack --assume-role              # auto-assume deployed e
 
 Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with the deployed physical IDs / exports, decrypts `AWS::SSM::Parameter::Value` entries (kept off the `docker run` argv; under `CDK_DOCKER=finch` on macOS / Windows they are refused unless you opt in, see [docs/local-emulation.md#finch-on-macos-and-windows](docs/local-emulation.md#finch-on-macos-and-windows)), and resolves same-stack ECR `ContainerUri` to the deployed image. `Fn::GetAtt` in the Lambda's own env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Full resolution rules: [docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack](docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack).
 
+A CDK-created execution role trusts only its service principal, so `--assume-role` is usually refused with `AccessDenied`; cdk-local then emulates the role with its policies as STS session policies (IAM user credentials need nothing more; other credentials pass `--emulate-role-via <arn>`): [docs/cli-reference.md#a-refused---assume-role-role-permission-emulation](docs/cli-reference.md#a-refused---assume-role-role-permission-emulation).
+
 ## Corporate proxy — `HTTPS_PROXY` / `NO_PROXY`
 
 cdk-local routes its own AWS-bound traffic through the standard proxy environment variables: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`, with `NO_PROXY` exemptions. Lowercase spellings (`https_proxy`, `no_proxy`) are honored too and win over the uppercase ones. With none of them set, nothing changes. Two kinds of request are covered:
