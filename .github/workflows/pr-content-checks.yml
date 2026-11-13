@@ -71,7 +71,7 @@ jobs:
       # The checkout supplies the CHECKER; the CONTENT comes from
       # `git show $HEAD_SHA:<path>` inside the script. Those are different trust
       # levels, so they come from different places.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # SAME-REPO PR -> the head; FORK PR -> the base.
           #
