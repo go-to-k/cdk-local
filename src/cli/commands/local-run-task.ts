@@ -410,7 +410,7 @@ async function localRunTaskCommand(
             `Pass the ARN explicitly: --assume-role <arn>`
         );
       }
-      warnIfTaskRoleIsLogicalId(task, stateProvider);
+      warnIfTaskRoleIsLogicalId(task, stateProvider, imageContext);
       resolvedRoleArn = await resolveTaskRoleArnForOptions(task.taskRoleArn, options);
       assumedCredentials = await assumeTaskRole(
         resolvedRoleArn,
@@ -794,6 +794,12 @@ export async function buildEcsImageResolutionContext(
     if (loaded) {
       ctx.stateResources = loaded.resources;
       ctx.stateRegion = loaded.region;
+      // Mixed mode with real AWS unread: the record's "real-aws" roles are the
+      // emulator's, never to be assumed in real AWS (go-to-k/cdkd#6223).
+      if (loaded.realSideUnread) {
+        ctx.ignoreStateForRoles = true;
+        ctx.roleRecordRealSideUnread = true;
+      }
     } else {
       // load() returned undefined — capture the provider's failure
       // detail so the resolver's "needs deployed state" error reports

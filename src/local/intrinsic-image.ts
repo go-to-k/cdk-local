@@ -71,6 +71,13 @@ export interface ImageResolutionContext {
    */
   ignoreStateForRoles?: boolean;
   /**
+   * Why {@link ignoreStateForRoles} is set when the mixed-mode provider could
+   * not read real AWS: the record's `"real-aws"` roles are the emulator's
+   * (`LocalStateRecord.realSideUnread`). Read by the bare `--assume-role`
+   * warning to name the cause.
+   */
+  roleRecordRealSideUnread?: boolean;
+  /**
    * Resolved SSM-backed template `Parameters`
    * (`AWS::SSM::Parameter::Value<String>`), keyed by parameter logical ID.
    * Fed into `state-resolver.ts`'s `SubstitutionContext.parameters` so a

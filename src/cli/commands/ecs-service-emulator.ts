@@ -1964,7 +1964,7 @@ async function resolveServiceAndRunnerOpts(
           `has no resolvable TaskRoleArn. Pass the ARN explicitly: --assume-role <arn>`
       );
     }
-    warnIfTaskRoleIsLogicalId(service.task, stateProvider);
+    warnIfTaskRoleIsLogicalId(service.task, stateProvider, imageContext);
     resolvedRoleArn = await resolveTaskRoleArnForOptions(service.task.taskRoleArn, options);
     assumedCredentials = await assumeTaskRole(
       resolvedRoleArn,
@@ -2888,6 +2888,12 @@ export async function buildEcsImageResolutionContext(
     if (loaded) {
       ctx.stateResources = loaded.resources;
       ctx.stateRegion = loaded.region;
+      // Mixed mode with real AWS unread: the record's "real-aws" roles are the
+      // emulator's, never to be assumed in real AWS (go-to-k/cdkd#6223).
+      if (loaded.realSideUnread) {
+        ctx.ignoreStateForRoles = true;
+        ctx.roleRecordRealSideUnread = true;
+      }
     } else {
       // load() returned undefined — capture the provider's failure
       // detail so the resolver's "needs deployed state" error reports
@@ -3725,7 +3731,8 @@ export function taskRoleRecordIsEmulatorSide(): boolean {
  */
 export function warnIfTaskRoleIsLogicalId(
   task: Pick<ResolvedEcsTask, 'taskRoleUnresolved'>,
-  stateProvider: unknown
+  stateProvider: unknown,
+  imageContext?: Pick<EcsImageResolutionContext, 'ignoreStateForRoles' | 'roleRecordRealSideUnread'>
 ): void {
   if (task.taskRoleUnresolved === undefined) return;
   const { logicalId, reason } = task.taskRoleUnresolved;
@@ -3736,7 +3743,11 @@ export function warnIfTaskRoleIsLogicalId(
     why =
       `without a state-source flag (e.g. --from-cfn-stack) ${getEmbedConfig().binaryName} cannot read the name it was deployed under. ` +
       `A role CDK names for you is deployed as '<Stack>-<LogicalId>-<suffix>', where AssumeRole fails: pass a state-source flag, ${explicit}`;
-  } else if (taskRoleRecordIsEmulatorSide()) {
+  } else if (imageContext?.roleRecordRealSideUnread) {
+    why =
+      "in AWS Emulator mixed mode the stack could not be read from real AWS, so the record holds only the emulator's role, which is not assumed in real AWS. " +
+      `Deploy the stack to real AWS too, ${explicit}`;
+  } else if (imageContext?.ignoreStateForRoles || taskRoleRecordIsEmulatorSide()) {
     why =
       "in AWS Emulator mixed mode the task role is assumed in real AWS, but the state record's IAM roles are the emulator's, so it is not read. " +
       `Mark IAM as a "real-aws" exception under Parameters (AWS_ENDPOINT_URL_IAM), ${explicit}`;
