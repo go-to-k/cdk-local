@@ -58,6 +58,12 @@ export interface ImageResolutionContext {
    */
   stateResources?: Record<string, ResourceState>;
   /**
+   * Region the state record behind {@link stateResources} was loaded from
+   * (`LocalStateRecord.region`). An ECS task container's `AWS_REGION` falls
+   * back to it (go-to-k/cdk-local#925).
+   */
+  stateRegion?: string;
+  /**
    * Resolved SSM-backed template `Parameters`
    * (`AWS::SSM::Parameter::Value<String>`), keyed by parameter logical ID.
    * Fed into `state-resolver.ts`'s `SubstitutionContext.parameters` so a

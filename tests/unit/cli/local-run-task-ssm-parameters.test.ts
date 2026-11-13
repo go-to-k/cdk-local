@@ -125,4 +125,16 @@ describe('buildEcsImageResolutionContext SSM-parameter resolution (site binding)
     const ctx = await buildEcsImageResolutionContext(taskStackWithSsmParam(), provider, {} as never);
     expect(ctx?.stateParameters).toBeUndefined();
   });
+
+  it('records the region the state record was loaded from (go-to-k/cdk-local#925)', async () => {
+    const provider = {
+      label: '--from-state',
+      load: vi.fn().mockResolvedValue({ resources: {}, outputs: {}, region: 'sa-east-1' }),
+      buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn(),
+    } as unknown as LocalStateProvider;
+
+    const ctx = await buildEcsImageResolutionContext(taskStackWithSsmParam(), provider, {} as never);
+    expect(ctx?.stateRegion).toBe('sa-east-1');
+  });
 });

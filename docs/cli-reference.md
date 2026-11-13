@@ -1419,6 +1419,14 @@ For every task invocation cdk-local:
    file (`AWS_SHARED_CREDENTIALS_FILE` + `AWS_PROFILE`), and with no
    credential flag the default chain is set as `AWS_*` env. Neither happens
    under `--aws-emulator`.
+5. Sets each container's `AWS_REGION` from the first of `--region`, the
+   host's `AWS_REGION`, `AWS_DEFAULT_REGION`, `--stack-region` or the stack's
+   `env.region`, the loaded state record's region, then the profile's
+   `region` in `~/.aws/config` (`--profile`, else `AWS_PROFILE` / `default`),
+   as a deployed task always has its region in the environment. The same
+   applies to `start-service` and `start-alb`, which run their tasks through
+   this engine. A container's own `Environment` or `--env-vars` entry still
+   wins, and with no region anywhere `AWS_REGION` stays unset.
 
 AWS SDKs read `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` only from the fixed
 address `169.254.170.2`, so a run with a task role always uses

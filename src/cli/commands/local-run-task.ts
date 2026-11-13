@@ -443,6 +443,7 @@ async function localRunTaskCommand(
     if (options.platform) runOpts.platformOverride = options.platform;
     if (options.region) runOpts.region = options.region;
     if (options.stackRegion) runOpts.stackRegion = options.stackRegion;
+    if (imageContext?.stateRegion) runOpts.stateRecordRegion = imageContext.stateRegion;
     if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
     if (options.profile) runOpts.profile = options.profile;
     const hostPortOverrides = parseHostPortOverrides(options.hostPort);
@@ -741,6 +742,7 @@ export async function buildEcsImageResolutionContext(
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
     if (loaded) {
       ctx.stateResources = loaded.resources;
+      ctx.stateRegion = loaded.region;
     } else {
       // load() returned undefined — capture the provider's failure
       // detail so the resolver's "needs deployed state" error reports
