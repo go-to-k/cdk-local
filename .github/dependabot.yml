@@ -25,6 +25,12 @@ updates:
       prefix: "chore"
       prefix-development: "chore"
       include: "scope"
+    ignore:
+      # Typings track the `engines` floor (Node 22), not the newest Node: a
+      # newer major lets code use APIs the minimum runtime lacks with no type
+      # error. Raise it by hand together with `engines.node`.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       # The @aws-sdk/client-* deps release in lockstep; one PR, not many.
       aws-sdk:
