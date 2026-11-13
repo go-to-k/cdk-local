@@ -444,6 +444,13 @@ class AuthorizerLambdaUnresolvableError extends RouteDiscoveryError {
 // DISPLAY string its caller built from already-rendered parts (#761), never a key.
 function resolveLambdaArn(value: unknown, location: string): string {
   const outcome = resolveLambdaArnShared(value);
+  if (outcome.kind === 'resolved' && outcome.streaming === true) {
+    // The 2021-11-15 response-streaming wrapper (#922) is an integration
+    // URI; API Gateway invokes authorizers with the plain Invoke API.
+    throw new AuthorizerLambdaUnresolvableError(
+      `${location}: the response-streaming Lambda URI ('2021-11-15/functions/<fn>/response-streaming-invocations') is only valid on a REST API Lambda proxy integration, not on an authorizer (got ${shortJson(value)}).`
+    );
+  }
   if (outcome.kind === 'resolved') return outcome.logicalId;
   throw new AuthorizerLambdaUnresolvableError(
     `${location}: ${outcome.detail} (got ${shortJson(value)}). Only { Ref }, { Fn::GetAtt: [..., 'Arn'] }, the REST v1 invoke-ARN Fn::Join wrapper, and the Fn::Sub invoke-ARN wrapper are supported.`

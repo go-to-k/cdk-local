@@ -155,3 +155,49 @@ describe('resolveLambdaArnIntrinsic', () => {
     expect(r).toEqual({ kind: 'resolved', logicalId: 'First' });
   });
 });
+
+describe('resolveLambdaArnIntrinsic — response-streaming wrapper (#922)', () => {
+  it('resolves the 2021-11-15 Fn::Join wrapper and flags it as streaming', () => {
+    expect(
+      resolveLambdaArnIntrinsic({
+        'Fn::Join': [
+          '',
+          [
+            'arn:',
+            { Ref: 'AWS::Partition' },
+            ':apigateway:',
+            { Ref: 'AWS::Region' },
+            ':lambda:path/2021-11-15/functions/',
+            { 'Fn::GetAtt': ['ChatFn', 'Arn'] },
+            '/response-streaming-invocations',
+          ],
+        ],
+      })
+    ).toEqual({ kind: 'resolved', logicalId: 'ChatFn', streaming: true });
+  });
+
+  it('resolves the 2021-11-15 Fn::Sub 1-arg and 2-arg wrappers as streaming', () => {
+    expect(
+      resolveLambdaArnIntrinsic({
+        'Fn::Sub':
+          'arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${ChatFn.Arn}/response-streaming-invocations',
+      })
+    ).toEqual({ kind: 'resolved', logicalId: 'ChatFn', streaming: true });
+    expect(
+      resolveLambdaArnIntrinsic({
+        'Fn::Sub': [
+          'arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${A}/response-streaming-invocations',
+          { A: { 'Fn::GetAtt': ['ChatFn', 'Arn'] } },
+        ],
+      })
+    ).toEqual({ kind: 'resolved', logicalId: 'ChatFn', streaming: true });
+  });
+
+  it('does not flag the buffered 2015-03-31 wrapper as streaming', () => {
+    const r = resolveLambdaArnIntrinsic({
+      'Fn::Sub':
+        'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Fn.Arn}/invocations',
+    });
+    expect(r).toEqual({ kind: 'resolved', logicalId: 'Fn' });
+  });
+});

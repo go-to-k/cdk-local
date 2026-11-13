@@ -4,7 +4,11 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { stringifyValue } from '../utils/stringify.js';
-import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
+import {
+  invokeArnMarkerKind,
+  resolveLambdaArnIntrinsic as resolveLambdaArnShared,
+  type LambdaArnResolveOutcome,
+} from './intrinsic-lambda-arn.js';
 import { pickRefLogicalId } from './intrinsic-utils.js';
 import { isSupportedSubtype, type SupportedSubtype } from './httpv2-service-integration.js';
 import type {
@@ -135,8 +139,12 @@ export interface DiscoveredRoute {
    * server invokes the Lambda with the
    * `Lambda-Runtime-Function-Response-Mode: streaming` header and
    * pipes the response chunks to the HTTP client with
-   * `Transfer-Encoding: chunked`. Only set on `source: 'function-url'`
-   * routes; REST v1 / HTTP API v2 routes are always buffered.
+   * `Transfer-Encoding: chunked`. Set on `source: 'function-url'`
+   * routes and on REST v1 AWS_PROXY methods whose integration uses
+   * `ResponseTransferMode: STREAM` with the 2021-11-15
+   * `response-streaming-invocations` URI (#922 — same prelude + 8-NUL
+   * delimiter contract, v1 proxy event as input). HTTP API v2 routes are
+   * always buffered.
    */
   invokeMode?: 'BUFFERED' | 'RESPONSE_STREAM';
   /**
@@ -480,7 +488,47 @@ function discoverRestV1Method(
         unsupported: {
           reason: `${displayStackName(`${stackName}/${logicalId}`)}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(
             integrationUri
-          )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally; deploy the producer stack and use \`${getEmbedConfig().cliName} invoke --from-state\` shapes if you need it.`,
+          )}). ${unresolvedLambdaArnHint(integrationUri, true)}`,
+        },
+      },
+    ];
+  }
+
+  // Response streaming (#922): API Gateway pairs `ResponseTransferMode:
+  // STREAM` with the 2021-11-15 `response-streaming-invocations` URI
+  // (InvokeWithResponseStream). AWS documents every other pairing as
+  // unsupported, so a mismatch is surfaced as a 501 naming both values
+  // instead of guessing which one the author meant.
+  // https://docs.aws.amazon.com/apigateway/latest/developerguide/response-transfer-mode-lambda.html
+  const transferMode = integration['ResponseTransferMode'];
+  const wantsStream = transferMode === 'STREAM';
+  const streamingUri = arnOutcome.streaming === true;
+  if (transferMode !== undefined && transferMode !== 'STREAM' && transferMode !== 'BUFFERED') {
+    return [
+      {
+        ...baseRoute,
+        method: httpMethod,
+        pathPattern: path,
+        lambdaLogicalId: arnOutcome.logicalId,
+        unsupported: {
+          reason: `${displayStackName(`${stackName}/${logicalId}`)}.Integration.ResponseTransferMode: ${shortJson(
+            transferMode
+          )} is not a recognized value (expected 'BUFFERED' or 'STREAM').`,
+        },
+      },
+    ];
+  }
+  if (wantsStream !== streamingUri) {
+    return [
+      {
+        ...baseRoute,
+        method: httpMethod,
+        pathPattern: path,
+        lambdaLogicalId: arnOutcome.logicalId,
+        unsupported: {
+          reason: wantsStream
+            ? `${displayStackName(`${stackName}/${logicalId}`)}: Integration.ResponseTransferMode is 'STREAM' but Integration.Uri is the buffered '2015-03-31/functions/<fn>/invocations' wrapper; API Gateway requires the '2021-11-15/functions/<fn>/response-streaming-invocations' URI for response streaming.`
+            : `${displayStackName(`${stackName}/${logicalId}`)}: Integration.Uri is the response-streaming '2021-11-15/functions/<fn>/response-streaming-invocations' wrapper but Integration.ResponseTransferMode is not 'STREAM'; API Gateway does not support that combination.`,
         },
       },
     ];
@@ -492,8 +540,38 @@ function discoverRestV1Method(
       method: httpMethod,
       pathPattern: path,
       lambdaLogicalId: arnOutcome.logicalId,
+      ...(streamingUri && { invokeMode: 'RESPONSE_STREAM' as const }),
     },
   ];
+}
+
+/**
+ * Trailing hint for an `Integration.Uri` / `IntegrationUri` whose Lambda
+ * Arn could not be resolved. Blames a cross-stack / imported reference
+ * only when the value actually carries one (`Fn::ImportValue` anywhere,
+ * or a literal ARN string naming a function outside the template);
+ * any other shape is a template form cdk-local does not recognise, and
+ * saying "cross-stack" there sent users after the wrong cause (#922).
+ */
+function unresolvedLambdaArnHint(value: unknown, suggestFromState: boolean): string {
+  if (typeof value === 'string' || containsImportValue(value)) {
+    return `Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally${
+      suggestFromState
+        ? `; deploy the producer stack and use \`${getEmbedConfig().cliName} invoke --from-state\` shapes if you need it`
+        : ''
+    }.`;
+  }
+  return `${getEmbedConfig().binaryName} does not recognise this Lambda Arn shape; please report it with the synthesized value at https://github.com/go-to-k/cdk-local/issues.`;
+}
+
+function containsImportValue(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsImportValue);
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k === 'Fn::ImportValue' || containsImportValue(v)) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -565,14 +643,6 @@ function extractRestV1MockCorsConfig(
 
   return { statusCode, headers };
 }
-
-/**
- * Marker sequence on a Lambda invoke ARN — used to tell apart REST v1
- * `AWS` integrations whose backend is Lambda (`functions/<arn>/invocations`)
- * from other AWS-service integrations (`:s3:path/...`, `:sqs:path/...`).
- * Closes #457's AWS-vs-Lambda discrimination.
- */
-const LAMBDA_INVOKE_PATH = ':lambda:path/2015-03-31/functions/';
 
 /** Parsed AWS integration outcome — either a populated config or an unsupported reason. */
 type ConfigOrUnsupported<T> =
@@ -692,7 +762,14 @@ function buildAwsIntegrationConfig(
   if (arnOutcome.kind === 'unsupported') {
     return {
       kind: 'unsupported',
-      reason: `${displayStackName(`${stackName}/${logicalId}`)}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(uri)}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally.`,
+      reason: `${displayStackName(`${stackName}/${logicalId}`)}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(uri)}). ${unresolvedLambdaArnHint(uri, false)}`,
+    };
+  }
+  if (arnOutcome.streaming === true) {
+    // AWS supports response streaming only on Lambda PROXY integrations.
+    return {
+      kind: 'unsupported',
+      reason: `${displayStackName(`${stackName}/${logicalId}`)}: the response-streaming Lambda URI ('2021-11-15/functions/<fn>/response-streaming-invocations') is only supported on an AWS_PROXY integration, not on a Lambda non-proxy (AWS) integration.`,
     };
   }
   const requestTemplates = pickStringRecord(integration['RequestTemplates']);
@@ -715,19 +792,22 @@ function buildAwsIntegrationConfig(
  * never produces this Boolean directly, so we walk the shape here).
  */
 function uriContainsLambdaMarker(uri: unknown): boolean {
-  if (typeof uri === 'string') return uri.includes(LAMBDA_INVOKE_PATH);
+  // `invokeArnMarkerKind` matches both the buffered 2015-03-31 and the
+  // response-streaming 2021-11-15 Lambda invoke paths (#922).
+  const isLambdaPath = (text: string): boolean => invokeArnMarkerKind(text) !== undefined;
+  if (typeof uri === 'string') return isLambdaPath(uri);
   if (uri && typeof uri === 'object' && !Array.isArray(uri)) {
     const obj = uri as Record<string, unknown>;
     if ('Fn::Sub' in obj) {
       const v = obj['Fn::Sub'];
-      if (typeof v === 'string') return v.includes(LAMBDA_INVOKE_PATH);
-      if (Array.isArray(v) && typeof v[0] === 'string') return v[0].includes(LAMBDA_INVOKE_PATH);
+      if (typeof v === 'string') return isLambdaPath(v);
+      if (Array.isArray(v) && typeof v[0] === 'string') return isLambdaPath(v[0]);
     }
     if ('Fn::Join' in obj) {
       const join = obj['Fn::Join'];
       if (Array.isArray(join) && join.length === 2 && Array.isArray(join[1])) {
         for (const piece of join[1]) {
-          if (typeof piece === 'string' && piece.includes(LAMBDA_INVOKE_PATH)) return true;
+          if (typeof piece === 'string' && isLambdaPath(piece)) return true;
         }
       }
     }
@@ -1023,7 +1103,19 @@ function discoverHttpApiRoute(
         unsupported: {
           reason: `${displayStackName(`${stackName}/${integrationLogicalId}`)}.IntegrationUri: ${arnOutcome.detail} (got ${shortJson(
             integrationProps['IntegrationUri']
-          )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally.`,
+          )}). ${unresolvedLambdaArnHint(integrationProps['IntegrationUri'], false)}`,
+        },
+      },
+    ];
+  }
+  if (arnOutcome.streaming === true) {
+    // API Gateway documents Lambda response streaming for REST APIs only.
+    return [
+      {
+        ...baseRoute,
+        lambdaLogicalId: arnOutcome.logicalId,
+        unsupported: {
+          reason: `${displayStackName(`${stackName}/${integrationLogicalId}`)}.IntegrationUri: the response-streaming Lambda URI ('2021-11-15/functions/<fn>/response-streaming-invocations') is only supported on REST API (v1) Lambda proxy integrations, not on HTTP API (v2).`,
         },
       },
     ];
@@ -1266,9 +1358,7 @@ function readApiCdkPath(logicalId: string, template: CloudFormationTemplate): st
  * `cdkl start-api` runs purely against the synthesized template
  * and doesn't have any of that.
  */
-function resolveLambdaArnOutcome(
-  value: unknown
-): { kind: 'resolved'; logicalId: string } | { kind: 'unsupported'; detail: string } {
+function resolveLambdaArnOutcome(value: unknown): LambdaArnResolveOutcome {
   return resolveLambdaArnShared(value);
 }
 

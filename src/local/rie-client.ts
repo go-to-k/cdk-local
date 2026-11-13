@@ -276,6 +276,14 @@ export interface StreamingPrelude {
   headers: Record<string, string>;
   /** Lambda-declared cookies (HTTP API v2 shape — each rendered as a separate Set-Cookie). */
   cookies?: string[];
+  /**
+   * Lambda-declared multi-value headers. Part of the REST API (v1)
+   * response-streaming metadata contract (#922): API Gateway merges them
+   * with `headers`, and for a key present in both only the
+   * `multiValueHeaders` values survive.
+   * https://docs.aws.amazon.com/apigateway/latest/developerguide/response-transfer-mode-lambda.html
+   */
+  multiValueHeaders?: Record<string, string[]>;
 }
 
 /** Resolved streaming invocation result: parsed prelude + a Readable of the body chunks. */
@@ -287,6 +295,30 @@ export interface StreamingInvokeResult {
    * `ServerResponse` with `Transfer-Encoding: chunked`.
    */
   body: Readable;
+  /**
+   * `true` when the response carried no 8-NUL prelude/body delimiter and
+   * cdk-local synthesized a default prelude (status 200,
+   * `application/octet-stream`) so the raw bytes could still be served.
+   * Function URLs keep that lenient behavior; a REST API (v1)
+   * `ResponseTransferMode: STREAM` route turns it into a 500, as API
+   * Gateway does for a handler that does not emit the metadata +
+   * delimiter (#922).
+   */
+  preludeSynthesized: boolean;
+}
+
+/**
+ * Thrown by {@link invokeRieStreaming} when no prelude/body delimiter
+ * appeared within the caller's `preludeMaxBytes`. A distinct class so the
+ * HTTP server can map it to the status the route's AWS contract calls for
+ * (500 for a REST API streaming method, #922).
+ */
+export class StreamingPreludeLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StreamingPreludeLimitError';
+    Object.setPrototypeOf(this, StreamingPreludeLimitError.prototype);
+  }
 }
 
 /**
@@ -365,8 +397,10 @@ export async function invokeRieStreaming(
   host: string,
   port: number,
   event: unknown,
-  timeoutMs: number
+  timeoutMs: number,
+  options: { preludeMaxBytes?: number } = {}
 ): Promise<StreamingInvokeResult> {
+  const preludeMaxBytes = options.preludeMaxBytes ?? STREAM_PRELUDE_MAX_BYTES;
   const url = `http://${formatAuthority(host, port)}${INVOKE_PATH}`;
   const body = JSON.stringify(event ?? {});
 
@@ -420,11 +454,11 @@ export async function invokeRieStreaming(
       preludeBytes = preludeBytes.subarray(0, separatorIdx);
       break;
     }
-    if (preludeBytes.length > STREAM_PRELUDE_MAX_BYTES) {
+    if (preludeBytes.length > preludeMaxBytes) {
       clearTimeout(timer);
       reader.cancel().catch(() => undefined);
-      throw new Error(
-        `RIE streaming response did not emit the prelude/body separator within ${STREAM_PRELUDE_MAX_BYTES} bytes. ` +
+      throw new StreamingPreludeLimitError(
+        `RIE streaming response did not emit the prelude/body separator within ${preludeMaxBytes} bytes. ` +
           `The handler likely did not call awslambda.HttpResponseStream.from(stream, metadata).`
       );
     }
@@ -593,17 +627,19 @@ export async function invokeRieStreaming(
     }
   })();
 
-  return { prelude, body: stream };
+  return { prelude, body: stream, preludeSynthesized };
 }
 
 /**
  * Parse a streaming prelude payload (JSON text). Normalizes the shape
  * the http-server consumes: `statusCode` is coerced to a number (RIE
- * sometimes emits it as a string), `headers` is always an object (the
- * handler may omit it), `cookies` is preserved only when an array.
+ * sometimes emits it as a string) and defaults to 200 when absent,
+ * `headers` is always an object (the handler may omit it), `cookies` is
+ * preserved only when an array, `multiValueHeaders` only when an object
+ * of arrays.
  *
- * Exported for unit tests. Throws on invalid JSON or a non-numeric
- * statusCode (cdk-local cannot map that to HTTP).
+ * Exported for unit tests. Throws on invalid JSON or a present
+ * non-numeric statusCode (cdk-local cannot map that to HTTP).
  */
 export function parseStreamingPrelude(text: string): StreamingPrelude {
   const trimmed = text.trim();
@@ -618,7 +654,14 @@ export function parseStreamingPrelude(text: string): StreamingPrelude {
 
   const statusRaw = obj['statusCode'];
   let statusCode: number;
-  if (typeof statusRaw === 'number' && Number.isFinite(statusRaw)) {
+  if (statusRaw === undefined) {
+    // Both streaming contracts let the metadata omit `statusCode`: API
+    // Gateway REST streaming ("The headers, multiValueHeaders, cookies, and
+    // statusCode keys can be unspecified") and Lambda function URLs (whose
+    // response format assumes `statusCode` 200 when it is not returned).
+    // A PRESENT non-numeric value still throws below (#922).
+    statusCode = 200;
+  } else if (typeof statusRaw === 'number' && Number.isFinite(statusRaw)) {
     statusCode = Math.trunc(statusRaw);
   } else if (typeof statusRaw === 'string' && /^[0-9]+$/.test(statusRaw)) {
     statusCode = Number.parseInt(statusRaw, 10);
@@ -648,6 +691,15 @@ export function parseStreamingPrelude(text: string): StreamingPrelude {
   const cookiesRaw = obj['cookies'];
   if (Array.isArray(cookiesRaw)) {
     result.cookies = cookiesRaw.map((c) => String(c));
+  }
+  const mvhRaw = obj['multiValueHeaders'];
+  if (mvhRaw && typeof mvhRaw === 'object' && !Array.isArray(mvhRaw)) {
+    const mvh: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(mvhRaw as Record<string, unknown>)) {
+      if (!Array.isArray(v)) continue;
+      mvh[k] = v.filter((x) => x !== null && x !== undefined).map((x) => String(x));
+    }
+    if (Object.keys(mvh).length > 0) result.multiValueHeaders = mvh;
   }
   return result;
 }
