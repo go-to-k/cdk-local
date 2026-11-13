@@ -1081,6 +1081,10 @@ export async function resolveAgentCoreImage(
       ...(options.region !== undefined && { region: options.region }),
       ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
       ...(options.profile !== undefined && { profile: options.profile }),
+      workload: {
+        logicalId: resolved.logicalId,
+        cdkPath: readCdkPathOrUndefined(resolved.resource),
+      },
     });
   }
 
@@ -1242,6 +1246,7 @@ export async function resolveAgentCoreCodeImageFromS3(
     ...(region !== undefined && { region }),
     ...(options.profile !== undefined && { profile: options.profile }),
     ...(credentials !== undefined && { credentials }),
+    workload: { logicalId: resolved.logicalId, cdkPath: readCdkPathOrUndefined(resolved.resource) },
   });
   try {
     return await buildAgentCoreCodeImage({

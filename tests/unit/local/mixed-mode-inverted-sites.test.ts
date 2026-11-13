@@ -105,11 +105,42 @@ describe('takeAwsEmulatorStateSourceHint guard', () => {
     expect(takeAwsEmulatorStateSourceHint()).toBeUndefined();
   });
 
-  it('answers in mixed mode, and names the host deploy under a host embed config', async () => {
-    setEmbedConfig({ cliName: 'cdkd', binaryName: 'cdkd', productName: 'cdkd', envPrefix: 'CDKD' });
+  it('answers in mixed mode, and names the deploy command a host supplies', async () => {
+    setEmbedConfig({
+      cliName: 'cdkd local',
+      binaryName: 'cdkd',
+      productName: 'cdkd',
+      envPrefix: 'CDKD',
+      deployCommand: 'cdkd deploy',
+    });
     setActiveWorkloadAwsWiring(await wiring({ Parameters: { AWS_ENDPOINT_URL_STS: 'real-aws' } }));
-    expect(takeAwsEmulatorStateSourceHint()).toMatch(
+    const hint = takeAwsEmulatorStateSourceHint();
+    expect(hint).toMatch(
       /--from-state \(the stack deployed into AWS Emulator with `cdkd deploy --aws-emulator`\)/
+    );
+    expect(hint).not.toContain('cdkd local deploy');
+  });
+
+  it('never builds a deploy command from the subcommand group when the host supplies none', async () => {
+    setEmbedConfig({ cliName: 'cdkd local', binaryName: 'cdkd', productName: 'cdkd', envPrefix: 'CDKD' });
+    setActiveWorkloadAwsWiring(await wiring(undefined));
+    const hint = takeAwsEmulatorStateSourceHint();
+    expect(hint).toContain(
+      "--from-state (the stack deployed into AWS Emulator with cdkd's own deploy and --aws-emulator)"
+    );
+    expect(hint).not.toMatch(/local deploy/);
+  });
+
+  it('treats a blank deployCommand as unset', async () => {
+    setEmbedConfig({ cliName: 'cdkd local', productName: 'cdkd', deployCommand: '  ' });
+    setActiveWorkloadAwsWiring(await wiring(undefined));
+    expect(takeAwsEmulatorStateSourceHint()).toContain("with cdkd's own deploy and --aws-emulator");
+  });
+
+  it('standalone cdkl names a host CLI generically', async () => {
+    setActiveWorkloadAwsWiring(await wiring(undefined));
+    expect(takeAwsEmulatorStateSourceHint()).toContain(
+      "pass a host CLI's --from-state (the stack deployed into AWS Emulator with that host's own deploy)"
     );
   });
 });
@@ -152,19 +183,34 @@ describe('ECS task resolver prints the hint once, after the per-variable warning
   });
 });
 
-describe('deployArtifactClientConfig', () => {
-  it('reads the emulator in mixed mode whatever the exceptions', async () => {
-    routeMixed({ Parameters: { AWS_ENDPOINT_URL_S3: 'real-aws', AWS_ENDPOINT_URL_ECR: 'real-aws' } });
-    expect(deployArtifactsReadEmulator()).toBe(true);
-    const cfg = deployArtifactClientConfig({ profile: 'prod' });
+describe('deployArtifactClientConfig follows "real-aws"', () => {
+  it.each(['ECR', 'S3', 'LAMBDA'])('reads real AWS for an excepted %s', (service) => {
+    routeMixed({ Parameters: { [`AWS_ENDPOINT_URL_${service}`]: 'real-aws' } });
+    expect(deployArtifactsReadEmulator(service)).toBe(false);
+    const cfg = deployArtifactClientConfig({ service, profile: 'prod' });
+    expect(cfg.endpoint).toBeUndefined();
+    expect(cfg.credentials).toBeUndefined();
+  });
+
+  it.each(['ECR', 'S3', 'LAMBDA'])('reads the emulator for an unmarked %s', async (service) => {
+    routeMixed({ Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } });
+    expect(deployArtifactsReadEmulator(service)).toBe(true);
+    const cfg = deployArtifactClientConfig({ service, profile: 'prod' });
     expect(cfg.endpoint).toBe(EMU);
     expect(await cfg.credentials!({})).toMatchObject({ accessKeyId: EMU_KEY.accessKeyId });
   });
 
+  it("routes by the workload's own section", () => {
+    routeMixed({ Parameters: {}, web: { AWS_ENDPOINT_URL_ECR: 'real-aws' } });
+    expect(deployArtifactsReadEmulator('ECR', { containerName: 'web' })).toBe(false);
+    expect(deployArtifactsReadEmulator('ECR', { containerName: 'worker' })).toBe(true);
+    expect(deployArtifactsReadEmulator('ECR')).toBe(true);
+  });
+
   it('is the plain proxy config without --aws-emulator', () => {
     setAwsEmulatorServiceRouting(undefined);
-    expect(deployArtifactsReadEmulator()).toBe(false);
-    expect(deployArtifactClientConfig().endpoint).toBeUndefined();
+    expect(deployArtifactsReadEmulator('ECR')).toBe(false);
+    expect(deployArtifactClientConfig({ service: 'ECR' }).endpoint).toBeUndefined();
   });
 });
 

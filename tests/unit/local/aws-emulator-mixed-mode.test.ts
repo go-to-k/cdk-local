@@ -21,6 +21,7 @@ import {
   resetEnvVarsFileTextsForTest,
 } from '../../../src/local/env-resolver.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { normalizeAwsEndpointServiceId } from '../../../src/utils/aws-proxy.js';
 
 const scanOf = (file: Record<string, unknown>) => ({
   exceptions: findRealAwsExceptions(file),
@@ -99,6 +100,28 @@ describe('validateAwsEmulatorEnvVars', () => {
     expect(() => validateAwsEmulatorEnvVars(one, true)).not.toThrow();
     expect(() => validateAwsEmulatorEnvVars(scanOf({}), true)).not.toThrow();
     expect(() => validateAwsEmulatorEnvVars(scanOf({}), false)).not.toThrow();
+  });
+
+  // go-to-k/cdk-local#914: the deploy-artifact exceptions use the ECR / S3 /
+  // Lambda clients' own endpoint ids; a guess from the API host is refused.
+  it('accepts the ECR, S3 and LAMBDA exceptions the artifact reads route by, and refuses ECR_API', async () => {
+    const ok = scanOf({
+      Parameters: {
+        AWS_ENDPOINT_URL_ECR: 'real-aws',
+        AWS_ENDPOINT_URL_S3: 'real-aws',
+        AWS_ENDPOINT_URL_LAMBDA: 'real-aws',
+      },
+    });
+    expect(() => validateAwsEmulatorEnvVars(ok, true)).not.toThrow();
+    for (const key of ['AWS_ENDPOINT_URL_ECR_API', 'AWS_ENDPOINT_URL_ECRAPI']) {
+      expect(() => validateAwsEmulatorEnvVars(scanOf({ web: { [key]: 'real-aws' } }), true)).toThrow(
+        `but the AWS SDKs do not read ${key}`
+      );
+    }
+    const { ECRClient } = await import('@aws-sdk/client-ecr');
+    const ecr = new ECRClient({ region: 'us-east-1' });
+    expect(normalizeAwsEndpointServiceId(ecr.config.serviceId!)).toBe('ECR');
+    ecr.destroy();
   });
 
   it('without --aws-emulator every "real-aws" is accepted (a no-op): one file serves both runs', () => {

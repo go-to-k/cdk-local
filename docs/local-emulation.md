@@ -470,9 +470,14 @@ The rules:
   integration (SQS, SNS, EventBridge, Kinesis, Step Functions, SSM), which
   API Gateway makes, not a function, and `start-cloudfront`'s S3 origins and
   KeyValueStores. The `${AWS::AccountId}` lookup follows STS: the emulator's
-  account unless `Parameters` excepts STS. The deployed artifacts (the ECR
-  image token, a `fromS3` code bundle, a layer ARN) always come from the
-  emulator, where the stack was deployed, whatever you except. The STS calls
+  account unless `Parameters` excepts STS. The deployed artifacts follow the
+  same rule, by the workload they belong to: the ECR image token (and so the
+  `docker pull`) by `AWS_ENDPOINT_URL_ECR`, an AgentCore `fromS3` code bundle
+  by `AWS_ENDPOINT_URL_S3`, a literal layer ARN by `AWS_ENDPOINT_URL_LAMBDA`.
+  Unmarked, they come from the emulator, where the stack was deployed; marked,
+  from real AWS with your real identity (`--ecr-role-arn` /
+  `--layer-role-arn` apply there as without `--aws-emulator`). See [Running
+  an image that only exists in real ECR](#running-an-image-that-only-exists-in-real-ecr). The STS calls
   that establish your real identity (`--assume-role`, `--role-arn`,
   `--ecr-role-arn`, `--profile`) stay on real AWS: they write nothing, and
   the excepted services need that identity.
@@ -495,6 +500,31 @@ The rules:
   when that lookup fails, pass `--assume-role <arn>`. `start-cloudfront` finds a
   KeyValueStore through CloudFront and reads its keys through CloudFront
   KeyValueStore, so except both or neither.
+- **Running an image that only exists in real ECR.**
+  <a id="running-an-image-that-only-exists-in-real-ecr"></a>
+  Except ECR for the workload that runs it, and give the image a URI that
+  names the real registry:
+
+  ```json
+  { "web": { "AWS_ENDPOINT_URL_ECR": "real-aws" } }
+  ```
+
+  ```bash
+  cdkl run-task MyStack/Task --aws-emulator --env-vars env.json
+  ```
+
+  The ECR authorization token then comes from real ECR, signed by your real
+  identity (the default chain, `--profile`, or `--ecr-role-arn` for another
+  account), and `docker pull` reads the real registry; every other service of
+  the task stays on the emulator. The spelling is the SDK's endpoint id for
+  ECR, `AWS_ENDPOINT_URL_ECR` (`AWS_ENDPOINT_URL_ECR_API` or
+  `AWS_ENDPOINT_URL_ECRAPI` is refused). The URI must be the real one: a
+  literal URI (`ContainerImage.fromRegistry('123456789012.dkr.ecr.us-east-1.amazonaws.com/app:v1')`,
+  or a repository imported with an explicit account) is used as written,
+  while a URI built from `${AWS::AccountId}` or a same-stack repository can
+  resolve to the emulator's account, which real ECR does not hold, so write
+  that one in literally. Without the exception the token comes from the
+  emulator, as before.
 - **Host-prefixed operations.** Mixed mode sets
   `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, as `--aws-emulator` alone does,
   because the sidecar listens on an IP address that cannot take a host

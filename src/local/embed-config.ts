@@ -148,6 +148,16 @@ export interface CdkLocalEmbedConfig {
    * `withWorkloadAwsWiring` does. Default `false` with an embed config.
    */
   awsEmulatorSqsSidecar?: boolean;
+  /**
+   * The host's own deploy command, as a user types it (`'cdkd deploy'`), for
+   * the hint printed under `--aws-emulator` when a resource-referencing
+   * environment variable was dropped for want of a state source: it then
+   * names `<deployCommand> --aws-emulator` as the way the stack gets into AWS
+   * Emulator for the host's `--from-state`. Unset: the hint names the host's
+   * deploy generically (a host's subcommand group, `cliName`, is not where its
+   * deploy lives). Default: unset.
+   */
+  deployCommand?: string;
 }
 
 export interface ResolvedEmbedConfig {
@@ -162,6 +172,7 @@ export interface ResolvedEmbedConfig {
   logger?: EmbedHostLogger;
   workloadIdentity: 'role' | 'caller';
   awsEmulatorSqsSidecar: boolean;
+  deployCommand?: string;
 }
 
 const DEFAULTS: ResolvedEmbedConfig = {
@@ -200,6 +211,8 @@ export function setEmbedConfig(config?: CdkLocalEmbedConfig): void {
     awsEmulatorSqsSidecar:
       config === undefined ? DEFAULTS.awsEmulatorSqsSidecar : config.awsEmulatorSqsSidecar === true,
     ...(config?.logger !== undefined && { logger: config.logger }),
+    ...(config?.deployCommand !== undefined &&
+      config.deployCommand.trim() !== '' && { deployCommand: config.deployCommand.trim() }),
   };
 }
 

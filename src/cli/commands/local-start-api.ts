@@ -2436,7 +2436,10 @@ export async function buildContainerSpec(args: {
     // `lambda:GetLayerVersion` before the merge step. The per-ARN
     // tmpdirs are tracked in `layerTmpDirs` alongside multi-layer merge
     // dirs so the same shutdown path cleans every one.
-    optDir = await materializeLambdaLayers(lambda.layers, layerTmpDirs, layerRoleArn);
+    optDir = await materializeLambdaLayers(lambda.layers, layerTmpDirs, layerRoleArn, {
+      logicalId: lambda.logicalId,
+      cdkPath: readCdkPathOrUndefined(lambda.resource),
+    });
   } else {
     // IMAGE branch (closes #453): build locally from cdk.out asset
     // manifest, OR pull from ECR when no matching asset is found.
@@ -2795,6 +2798,7 @@ export async function resolveContainerImageForStartApi(
   logger.info(`No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull...`);
   const imageRef = await pullEcrImage(lambda.imageUri, {
     skipPull,
+    workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
     ...(profile !== undefined && { profile }),
     ...(options?.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
     ...(options?.region !== undefined && { region: options.region }),
@@ -2861,7 +2865,8 @@ async function resolveLocalBuildPlan(lambda: ResolvedStartApiImageLambda): Promi
 export async function materializeLambdaLayers(
   layers: ResolvedLambdaLayer[],
   layerTmpDirs: Set<string>,
-  layerRoleArn: string | undefined
+  layerRoleArn: string | undefined,
+  workload?: AwsEmulatorWorkload
 ): Promise<string | undefined> {
   if (layers.length === 0) return undefined;
 
@@ -2877,6 +2882,7 @@ export async function materializeLambdaLayers(
     }
     const dir = await materializeLayerFromArn(layer, {
       ...(layerRoleArn !== undefined && { roleArn: layerRoleArn }),
+      ...(workload !== undefined && { workload }),
     });
     layerTmpDirs.add(dir);
     flat.push({ logicalId: layer.arn, assetPath: dir });

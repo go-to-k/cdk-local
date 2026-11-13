@@ -1152,6 +1152,7 @@ async function prepareOneImage(
     case 'ecr': {
       return pullEcrImage(image.uri, {
         skipPull: options.skipPull,
+        workload: { containerName: container.name },
         ...(options.region !== undefined && { region: options.region }),
         ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
         ...(options.profile !== undefined && { profile: options.profile }),

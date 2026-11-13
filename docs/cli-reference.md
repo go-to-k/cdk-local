@@ -198,7 +198,10 @@ streaming uploads are re-signed up to 100 MiB per request.
 `--from-cfn-stack` resolves the excepted services' names from the stack
 deployed to real AWS and every other name from the emulator's copy, so deploy
 the stack to both under the same name; cdk-local's own reads for a workload
-(`{{resolve:...}}`, ECS `Secrets`) take the same per-service route. Without
+(`{{resolve:...}}`, ECS `Secrets`) take the same per-service route, and so
+do the deployed artifacts: with `AWS_ENDPOINT_URL_ECR` excepted the image is
+pulled from real ECR (likewise `S3` for an AgentCore `fromS3` bundle and
+`LAMBDA` for a literal layer ARN), and unmarked they come from the emulator. Without
 `--aws-emulator` a `"real-aws"` entry is a no-op, so one `env.json` works with
 and without the flag. **Breaking change:** the old `"aws-emulator"` value
 (which sent one service to the emulator) is refused with a migration message.

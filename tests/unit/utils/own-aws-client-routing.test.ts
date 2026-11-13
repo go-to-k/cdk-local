@@ -60,12 +60,6 @@ const NOT_PER_SERVICE: Readonly<Record<string, string>> = {
   '*#STSClient':
     'identity: --role-arn / --assume-role / --ecr-role-arn assumes establish the REAL identity a mixed-mode ' +
     'workload holds (real AWS); the ${AWS::AccountId} lookup routes STS itself (accountLookupStsClientConfig)',
-  'src/local/ecr-puller.ts#ECRClient':
-    'deploy artifact: deployArtifactClientConfig, the emulator under --aws-emulator whatever the exceptions',
-  'src/local/agentcore-s3-bundle.ts#S3Client':
-    'deploy artifact: deployArtifactClientConfig, the emulator under --aws-emulator whatever the exceptions',
-  'src/local/layer-arn-materializer.ts#LambdaClient':
-    'deploy artifact: deployArtifactClientConfig, the emulator under --aws-emulator whatever the exceptions',
   'src/local/cfn-local-state-provider.ts#CloudFormationClient':
     "--from-cfn-stack's real side; createMixedModeStateProvider builds the emulator side with an endpointOverride",
   'src/local/cfn-local-state-provider.ts#LambdaClient':

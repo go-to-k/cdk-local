@@ -27,6 +27,7 @@ function ecrLambda() {
     imageUri: '111122223333.dkr.ecr.ap-northeast-1.amazonaws.com/repo:latest',
     architecture: 'x86_64',
     stack: { stackName: 'S', assetManifestPath: undefined },
+    resource: { Type: 'AWS::Lambda::Function', Metadata: { 'aws:cdk:path': 'S/ImgFn/Resource' } },
   } as unknown as Parameters<typeof resolveContainerImageForStartApi>[0];
 }
 
@@ -50,13 +51,17 @@ describe('resolveContainerImageForStartApi — ECR-pull --profile forwarding', (
     expect(pullMock).toHaveBeenCalledWith(lambda.imageUri, {
       skipPull: false,
       profile: 'mates_dev',
+      workload: { logicalId: 'ImgFn', cdkPath: 'S/ImgFn/Resource' },
     });
   });
 
   it('omits the profile key when --profile is unset', async () => {
     const lambda = ecrLambda();
     await resolveContainerImageForStartApi(lambda, true);
-    expect(pullMock).toHaveBeenCalledWith(lambda.imageUri, { skipPull: true });
+    expect(pullMock).toHaveBeenCalledWith(lambda.imageUri, {
+      skipPull: true,
+      workload: { logicalId: 'ImgFn', cdkPath: 'S/ImgFn/Resource' },
+    });
   });
 });
 

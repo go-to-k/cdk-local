@@ -273,6 +273,18 @@ and `resignConfigHostPath` from `loopbackForwarderPlan`, and you remove
 `AWS_ENDPOINT_URL_SQS` from a host-network container's env (no sidecar can
 run there), as `withWorkloadAwsWiring` does.
 
+`deployCommand` (default unset) is the host's own deploy command as a user
+types it (`'cdkd deploy'`). Under `--aws-emulator`, when an environment
+variable that references a resource is dropped for want of a state source,
+cdk-local prints one hint naming the ways to resolve it;
+`takeAwsEmulatorStateSourceHint()` returns the same text for a host's own
+commands. With `deployCommand` the hint names
+`<deployCommand> --aws-emulator` as the way to put the stack into AWS
+Emulator for the host's `--from-state`; without it, the host's deploy is
+named generically (`<productName>'s own deploy and --aws-emulator`), never
+built from `cliName`, which is a subcommand group rather than where the
+host's deploy lives.
+
 ### Routing cdk-local's log lines through the host's logger
 
 By default cdk-local writes its own progress / warning lines to the console

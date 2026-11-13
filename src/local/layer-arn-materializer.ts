@@ -6,9 +6,9 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import {
-  deployArtifactClientConfig,
   deployArtifactsReadEmulator,
   proxyAwareFetch,
+  type AwsEmulatorWorkload,
 } from '../utils/aws-proxy.js';
 import { workloadClientConfig } from '../utils/workload-identity.js';
 import { getLogger } from '../utils/logger.js';
@@ -84,6 +84,12 @@ export interface MaterializeLayerOptions {
    * `Uint8Array` (the ZIP body) so the test can inject a fixture-built ZIP.
    */
   fetchZip?: (presignedUrl: string) => Promise<Uint8Array>;
+  /**
+   * The function the layer is attached to. Under `--aws-emulator` the layer
+   * is read from AWS Emulator unless a `"real-aws"` exception names Lambda
+   * (`AWS_ENDPOINT_URL_LAMBDA`) for it; then from real Lambda.
+   */
+  workload?: AwsEmulatorWorkload;
 }
 
 export interface AwsCredentials {
@@ -172,7 +178,14 @@ export async function materializeLayerFromArn(
   const logger = getLogger();
 
   let credentials: AwsCredentials | undefined;
-  if (options.roleArn) {
+  // Under --aws-emulator (LAMBDA not excepted to real AWS) the layer is read
+  // from the emulator with its own keys: a real AssumeRole would only be
+  // discarded, as for the ECR token.
+  if (options.roleArn && deployArtifactsReadEmulator('LAMBDA', options.workload)) {
+    logger.debug(
+      '--layer-role-arn is not assumed under --aws-emulator: the layer is read from AWS Emulator.'
+    );
+  } else if (options.roleArn) {
     try {
       credentials = await assumeRoleForLayer(options.roleArn, layer.region, options);
       logger.debug(
@@ -270,7 +283,8 @@ async function fetchLayerContentUrl(
   credentials: AwsCredentials | undefined,
   options: MaterializeLayerOptions
 ): Promise<string> {
-  const factory = options.lambdaClientFactory ?? (await defaultLambdaClientFactory());
+  const factory =
+    options.lambdaClientFactory ?? (await defaultLambdaClientFactory(options.workload));
   const client = factory(layer.region, credentials);
   try {
     // Layer ARN form used as LayerName lets the SDK resolve cross-
@@ -377,18 +391,20 @@ async function assumeRoleForLayer(
 }
 
 // A literal layer ARN is code the developer did not write, so it resolves as the workload identity, unlike the fromS3 bundle (see utils/workload-identity.ts).
-async function defaultLambdaClientFactory(): Promise<
-  (region: string, credentials?: AwsCredentials) => LambdaSendClient
-> {
+async function defaultLambdaClientFactory(
+  workload: AwsEmulatorWorkload | undefined
+): Promise<(region: string, credentials?: AwsCredentials) => LambdaSendClient> {
   const { LambdaClient } = await import('@aws-sdk/client-lambda');
   return (region, credentials) =>
     // Under --aws-emulator the layer is read from the emulator, where the
-    // stack was deployed; its keys are then the only identity.
+    // stack was deployed, and its keys are then the only identity — unless a
+    // "real-aws" exception names Lambda: then real Lambda, as the workload
+    // identity.
     new LambdaClient({
-      ...(deployArtifactsReadEmulator() ? deployArtifactClientConfig() : workloadClientConfig()),
+      ...workloadClientConfig({ service: 'LAMBDA', workload }),
       region,
       ...(credentials &&
-        !deployArtifactsReadEmulator() && {
+        !deployArtifactsReadEmulator('LAMBDA', workload) && {
           credentials: {
             accessKeyId: credentials.accessKeyId,
             secretAccessKey: credentials.secretAccessKey,
