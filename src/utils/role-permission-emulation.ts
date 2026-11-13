@@ -398,7 +398,15 @@ export async function readRolePolicies(args: {
     for (const PolicyName of names) {
       const got = await iam.send(new GetRolePolicyCommand({ RoleName, PolicyName }));
       // IAM returns the document URL-encoded.
-      inline.push(JSON.parse(decodeURIComponent(got.PolicyDocument ?? '{}')));
+      let doc: unknown;
+      try {
+        doc = JSON.parse(decodeURIComponent(got.PolicyDocument ?? '{}'));
+      } catch {
+        // Fixed text: a SyntaxError's message quotes part of the document,
+        // which would reach the --verbose debug line.
+        throw new Error('an inline policy document of the role is not valid JSON');
+      }
+      inline.push(doc);
     }
     const managedArns: string[] = [];
     let attachedMarker: string | undefined;

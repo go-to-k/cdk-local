@@ -126,6 +126,7 @@ vi.mock('@aws-sdk/client-iam', () => ({
         }
         if (cmd.__name === 'GetRolePolicy') {
           const doc = aws.inline[cmd.input['PolicyName'] as string];
+          if (typeof doc === 'string') return { PolicyDocument: encodeURIComponent(doc) };
           return { PolicyDocument: encodeURIComponent(JSON.stringify(doc)) };
         }
         if (cmd.__name === 'ListAttachedRolePolicies') {
@@ -467,6 +468,16 @@ describe('emulateRoleAfterDeniedAssume', () => {
     await emulateRoleAfterDeniedAssume(accessDenied(), args);
     await emulateRoleAfterDeniedAssume(accessDenied(), args);
     expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('a non-JSON inline policy document never reaches a log line', async () => {
+    const debug = vi.spyOn(getLogger(), 'debug').mockImplementation(() => undefined);
+    aws.inline = { Bad: 'SNIPPET-OF-THE-POLICY' };
+    expect(await emulateRoleAfterDeniedAssume(accessDenied(), args)).toBeUndefined();
+    const all = [...warn.mock.calls, ...debug.mock.calls].map((c) => String(c[0])).join('\n');
+    debug.mockRestore();
+    expect(all).toContain('not valid JSON');
+    expect(all).not.toContain('SNIPPET');
   });
 
   it('over the limits: warns and asks STS for nothing', async () => {
