@@ -1,5 +1,9 @@
 import { readFileSync } from 'fs';
-import { addAwsEndpointOptions } from '../options.js';
+import {
+  addAwsEndpointOptions,
+  emulateRoleViaOption,
+  warnIfEmulateRoleViaUnused,
+} from '../options.js';
 import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
@@ -318,6 +322,10 @@ async function localStartMicrovmCommand(
   const teardown = (): Promise<void> => (teardownPromise ??= doTeardown());
 
   await activateWorkloadAwsWiring(options);
+  warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
+    roleFlag: '--assume-role',
+    roleRequested: options.assumeRole !== undefined,
+  });
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -677,6 +685,7 @@ export function addStartMicrovmSpecificOptions(cmd: Command): Command {
           'default: the shell credentials are forwarded.'
       )
     )
+    .addOption(emulateRoleViaOption('--assume-role'))
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',

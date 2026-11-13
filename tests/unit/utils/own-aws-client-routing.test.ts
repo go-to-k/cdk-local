@@ -40,6 +40,7 @@ const CLIENT_PACKAGES: Readonly<Record<string, string>> = {
   CloudFrontKeyValueStoreClient: '@aws-sdk/client-cloudfront-keyvaluestore',
   ECRClient: '@aws-sdk/client-ecr',
   EventBridgeClient: '@aws-sdk/client-eventbridge',
+  IAMClient: '@aws-sdk/client-iam',
   KinesisClient: '@aws-sdk/client-kinesis',
   LambdaClient: '@aws-sdk/client-lambda',
   S3Client: '@aws-sdk/client-s3',
@@ -60,6 +61,9 @@ const NOT_PER_SERVICE: Readonly<Record<string, string>> = {
   '*#STSClient':
     'identity: --role-arn / --assume-role / --ecr-role-arn assumes establish the REAL identity a mixed-mode ' +
     'workload holds (real AWS); the ${AWS::AccountId} lookup routes STS itself (accountLookupStsClientConfig)',
+  'src/utils/role-permission-emulation.ts#IAMClient':
+    'reads the execution role whose --assume-role STS hop was refused, on that hop\'s route (#929): the role ' +
+    'lives where the real identity does, so it routes like the STS sites above',
   'src/local/cfn-local-state-provider.ts#CloudFormationClient':
     "--from-cfn-stack's real side; createMixedModeStateProvider builds the emulator side with an endpointOverride",
   'src/local/cfn-local-state-provider.ts#LambdaClient':

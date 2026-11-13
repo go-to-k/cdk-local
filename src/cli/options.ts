@@ -1,7 +1,8 @@
 import { InvalidArgumentError, Option } from 'commander';
 import type { Command } from 'commander';
 import { getEmbedConfig } from '../local/embed-config.js';
-import { isIamRoleArn } from '../utils/role-arn.js';
+import { describeRejectedRoleArn, isIamRoleArn } from '../utils/role-arn.js';
+import { getLogger } from '../utils/logger.js';
 import { awsEmulatorEnvName } from '../local/workload-aws-wiring.js';
 
 /**
@@ -170,6 +171,60 @@ export interface AssumeRoleOption {
    * {@link parseAssumeRoleToken}.
    */
   bareAutoResolve?: boolean;
+}
+
+/**
+ * The `--emulate-role-via <arn>` parser: a malformed ARN is refused at parse,
+ * before any AWS call, like the `--assume-role` value forms.
+ */
+export function parseEmulateRoleVia(raw: string): string {
+  const arn = raw.trim();
+  if (!isIamRoleArn(arn)) {
+    throw new InvalidArgumentError(
+      `Invalid --emulate-role-via value ${describeRejectedRoleArn(raw)}: expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole.`
+    );
+  }
+  return arn;
+}
+
+/**
+ * `--emulate-role-via <arn>` (go-to-k/cdk-local#929), added beside the role
+ * flag (`roleFlag`) of every command that assumes a workload's execution role.
+ * When that AssumeRole is refused with AccessDenied (the role trusts only its
+ * service principal), the role's permissions are emulated with session
+ * policies (`src/utils/role-permission-emulation.ts`): an IAM user needs no
+ * flag (GetFederationToken), any other caller names a role it can assume here.
+ */
+export function emulateRoleViaOption(roleFlag: string): Option {
+  return new Option(
+    '--emulate-role-via <arn>',
+    `When the ${roleFlag} AssumeRole is refused (the role does not trust you), emulate the ` +
+      "role's permissions: assume THIS role with the execution role's policies as session " +
+      'policies, so only what both allow is allowed. For callers that are not an IAM user ' +
+      '(IAM Identity Center, a role session); an IAM user gets the same through ' +
+      'sts:GetFederationToken without this flag. An approximation: resource-based policies, ' +
+      'key policies and conditions naming the role are not reproduced, and a role with a permissions boundary is not emulated.'
+  ).argParser(parseEmulateRoleVia);
+}
+
+/** Whether a `[arn]`-form role flag asks for a role (an ARN, or the bare flag). */
+export function isRoleFlagRequested(value: string | boolean | undefined): boolean {
+  return value === true || typeof value === 'string';
+}
+
+/**
+ * The entry check for `--emulate-role-via`: given without the role flag
+ * (absent, or `--no-assume-role`), nothing would ever read it, so say so.
+ * The ARN shape is checked by {@link parseEmulateRoleVia} at parse.
+ */
+export function warnIfEmulateRoleViaUnused(
+  value: string | undefined,
+  args: { roleFlag: string; roleRequested: boolean }
+): void {
+  if (value === undefined || args.roleRequested) return;
+  getLogger().warn(
+    `--emulate-role-via has no effect without ${args.roleFlag}: it is used only when that flag's AssumeRole is refused.`
+  );
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   readEnvCallerCredentials,
   recordAssumedRole,
 } from './workload-identity.js';
+import { emulateRoleAfterDeniedAssume } from './role-permission-emulation.js';
 
 /**
  * Upper bound on a value this module is willing to treat as a role ARN.
@@ -273,6 +274,17 @@ export async function assumeRoleCredentials(opts: {
   profile: string | undefined;
   sessionNameSuffix: string;
   makeError?: (message: string) => Error;
+  /**
+   * `--emulate-role-via <arn>` (go-to-k/cdk-local#929). When STS refuses the
+   * assume with AccessDenied (the role's trust policy does not allow the
+   * caller), the role's permissions are emulated with session policies
+   * (`role-permission-emulation.ts`): through this role when given, else
+   * through `sts:GetFederationToken` for an IAM user caller. When emulation is
+   * not possible, the original refusal is thrown as before.
+   */
+  emulateRoleVia?: string | undefined;
+  /** The flag the emulation warnings name. Default `--assume-role`. */
+  roleFlag?: string;
 }): Promise<AssumedRoleCredentials> {
   // GUARDED SEND (issue #607). This is the site that owns "may this value be
   // sent?" — as opposed to the resolution points, which own "where did this
@@ -308,7 +320,8 @@ export async function assumeRoleCredentials(opts: {
     workloadStsClientConfig({ region: opts.region, profile: opts.profile })
   );
   const shownArn = flattenToOneLine(opts.roleArn);
-  let response: AssumeRoleCommandOutput;
+  let response: AssumeRoleCommandOutput | undefined;
+  let refused: { err: unknown } | undefined;
   try {
     response = await sts.send(
       new AssumeRoleCommand({
@@ -318,16 +331,31 @@ export async function assumeRoleCredentials(opts: {
       })
     );
   } catch (err) {
-    const detail = describeAwsFailureForWarn(err, 'STS AssumeRole');
-    const message = `AssumeRole(${shownArn}) failed: ${detail}`;
-    throw opts.makeError ? opts.makeError(message) : new AssumeRoleFailure(message, detail);
+    refused = { err };
   } finally {
     sts.destroy();
+  }
+  if (refused !== undefined) {
+    // An AccessDenied refusal (the trust policy does not allow the caller) is
+    // emulated with session policies when possible (go-to-k/cdk-local#929);
+    // the helper never throws and warns itself when it cannot.
+    const emulated = await emulateRoleAfterDeniedAssume(refused.err, {
+      roleArn: opts.roleArn,
+      region: opts.region,
+      profile: opts.profile,
+      emulateRoleVia: opts.emulateRoleVia,
+      flag: opts.roleFlag ?? '--assume-role',
+      sessionNameSuffix: opts.sessionNameSuffix,
+    });
+    if (emulated !== undefined) return emulated;
+    const detail = describeAwsFailureForWarn(refused.err, 'STS AssumeRole');
+    const message = `AssumeRole(${shownArn}) failed: ${detail}`;
+    throw opts.makeError ? opts.makeError(message) : new AssumeRoleFailure(message, detail);
   }
 
   // Outside the `try` on purpose; see the note above. cdk-local's own text is
   // never routed through the withholding policy.
-  const creds = response.Credentials;
+  const creds = response?.Credentials;
   if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
     // `message` is BYTE-IDENTICAL to what this threw before issue #579 -- the
     // three direct-print paths and `credential-error.ts`'s own worked example

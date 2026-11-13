@@ -117,6 +117,7 @@ describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
       '--container-host',
       '--detach',
       '--ecr-role-arn',
+      '--emulate-role-via',
       '--env-vars',
       '--from-cfn-stack',
       '--host-port',
@@ -185,6 +186,7 @@ describe('invoke option surface contract (addInvokeSpecificOptions)', () => {
       '--container-host',
       '--debug-port',
       '--ecr-role-arn',
+      '--emulate-role-via',
       '--env-vars',
       '--event',
       '--event-stdin',
@@ -219,6 +221,7 @@ describe('invoke-agentcore option surface contract (addInvokeAgentCoreSpecificOp
       '--ca-bundle',
       '--container-host',
       '--ecr-role-arn',
+      '--emulate-role-via',
       '--env-vars',
       '--event',
       '--event-stdin',
@@ -270,6 +273,7 @@ describe('start-api option surface contract (addStartApiSpecificOptions)', () =>
       '--debug-port',
       '--debug-port-base',
       '--ecr-role-arn',
+      '--emulate-role-via',
       '--env-vars',
       '--from-cfn-stack',
       '--host',
@@ -312,6 +316,8 @@ describe('start-cloudfront option surface contract (addStartCloudFrontSpecificOp
       '--ca-bundle',
       // Issue #405 follow-up — in-memory read-through cache for a deployed-S3 origin.
       '--cache-origin',
+      // go-to-k/cdk-local#929 — emulate a refused --assume-role with session policies.
+      '--emulate-role-via',
       // go-to-k/cdk-local#863 — env overrides for Function URL / Web Function origins.
       '--env-vars',
       '--from-cfn-stack',

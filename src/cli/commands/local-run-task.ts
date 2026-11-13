@@ -1,6 +1,10 @@
 import { readEnvVarsFileText } from '../../local/env-resolver.js';
 import path from 'node:path';
-import { addAwsEndpointOptions } from '../options.js';
+import {
+  addAwsEndpointOptions,
+  isRoleFlagRequested,
+  warnIfEmulateRoleViaUnused,
+} from '../options.js';
 import { Command, Option } from 'commander';
 import {
   appOptions,
@@ -113,6 +117,12 @@ interface LocalRunTaskOptions {
    * one-time deprecation warn when only the legacy form is set.
    */
   assumeRole?: string | boolean;
+  /**
+   * `--emulate-role-via <arn>`: when the role flag's AssumeRole is refused with
+   * AccessDenied, emulate the role's permissions by assuming THIS role with the
+   * execution role's policies as session policies (go-to-k/cdk-local#929).
+   */
+  emulateRoleVia?: string;
   pull: boolean;
   /**
    * Issue #249 / C8 — `--no-build` parity with `cdkl invoke`. Commander
@@ -245,6 +255,10 @@ async function localRunTaskCommand(
 
   try {
     await activateWorkloadAwsWiring(options);
+    warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
+      roleFlag: '--assume-role',
+      roleRequested: isRoleFlagRequested(options.assumeRole ?? options.assumeTaskRole),
+    });
     await applyRoleArnIfSet({
       roleArn: options.roleArn,
       region: options.region,
@@ -392,10 +406,22 @@ async function localRunTaskCommand(
         );
       }
       resolvedRoleArn = await resolveTaskRoleArnForOptions(task.taskRoleArn, options);
-      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
+      assumedCredentials = await assumeTaskRole(
+        resolvedRoleArn,
+        options.region,
+        options.profile,
+        options.emulateRoleVia,
+        options.assumeRole !== undefined ? '--assume-role' : '--assume-task-role'
+      );
     } else if (typeof effectiveAssumeRole === 'string') {
       resolvedRoleArn = effectiveAssumeRole;
-      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
+      assumedCredentials = await assumeTaskRole(
+        resolvedRoleArn,
+        options.region,
+        options.profile,
+        options.emulateRoleVia,
+        options.assumeRole !== undefined ? '--assume-role' : '--assume-task-role'
+      );
     }
 
     // When `--assume-task-role` is NOT effective but `--profile <p>` IS
@@ -665,10 +691,21 @@ export { resolveTaskRoleArnForOptions as resolveTaskRoleArnForOptionsForTest };
 async function assumeTaskRole(
   roleArn: string,
   region: string | undefined,
-  profile: string | undefined
+  profile: string | undefined,
+  emulateRoleVia: string | undefined,
+  roleFlag = '--assume-role'
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  return assumeRoleCredentials({ roleArn, region, profile, sessionNameSuffix: 'run-task' });
+  return assumeRoleCredentials({
+    roleArn,
+    region,
+    profile,
+    sessionNameSuffix: 'run-task',
+    emulateRoleVia,
+    roleFlag,
+  });
 }
+/** @internal — test-only: the task-role assume a refused AssumeRole falls back from. */
+export { assumeTaskRole as assumeTaskRoleForTest };
 
 /**
  * Build the substitution context the ECS task resolver consumes.

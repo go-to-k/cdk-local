@@ -1,5 +1,9 @@
 import { execFile as execFileCb } from 'node:child_process';
-import { addAwsEndpointOptions } from '../options.js';
+import {
+  addAwsEndpointOptions,
+  emulateRoleViaOption,
+  warnIfEmulateRoleViaUnused,
+} from '../options.js';
 import {
   takeAwsEmulatorStateSourceHint,
   activateWorkloadAwsWiring,
@@ -29,6 +33,7 @@ import {
   isIamRoleArn,
   refusedRoleArnMessage,
 } from '../../utils/role-arn.js';
+import { emulateRoleAfterDeniedAssume } from '../../utils/role-permission-emulation.js';
 import { getDockerCmd } from '../../utils/docker-cmd.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -218,6 +223,12 @@ export interface LocalInvokeAgentCoreOptions {
    *   - `--no-assume-role` → `false`
    */
   assumeRole?: string | boolean;
+  /**
+   * `--emulate-role-via <arn>`: when the role flag's AssumeRole is refused with
+   * AccessDenied, emulate the role's permissions by assuming THIS role with the
+   * execution role's policies as session policies (go-to-k/cdk-local#929).
+   */
+  emulateRoleVia?: string;
   /** Role ARN to assume before authenticating against ECR for the container image pull. */
   ecrRoleArn?: string;
   fromCfnStack?: string | boolean;
@@ -355,6 +366,10 @@ async function localInvokeAgentCoreCommand(
 
   try {
     await activateWorkloadAwsWiring(options);
+    warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
+      roleFlag: '--assume-role',
+      roleRequested: options.assumeRole !== undefined && options.assumeRole !== false,
+    });
     await applyRoleArnIfSet({
       roleArn: options.roleArn,
       region: options.region,
@@ -956,7 +971,12 @@ export async function resolveHostCredentialsForSigV4(
   const assumeRoleArn = await resolveAssumeRoleArn(options, resolved, loaded, stateProvider);
   if (assumeRoleArn) {
     try {
-      return await assumeAgentCoreExecutionRole(assumeRoleArn, region, options.profile);
+      return await assumeAgentCoreExecutionRole(
+        assumeRoleArn,
+        region,
+        options.profile,
+        options.emulateRoleVia
+      );
     } catch (err) {
       // Issue #570: not on the issue's list of six, but the same class --
       // see `describeAwsFailureForWarn` in `src/local/credential-error.ts`.
@@ -1231,7 +1251,12 @@ export async function resolveAgentCoreCodeImageFromS3(
     | undefined;
   if (assumeRoleArn) {
     try {
-      credentials = await assumeAgentCoreExecutionRole(assumeRoleArn, region, options.profile);
+      credentials = await assumeAgentCoreExecutionRole(
+        assumeRoleArn,
+        region,
+        options.profile,
+        options.emulateRoleVia
+      );
     } catch (err) {
       // Issue #570: not on the issue's list of six, but the same class --
       // see `describeAwsFailureForWarn` in `src/local/credential-error.ts`.
@@ -1428,6 +1453,7 @@ async function buildContainerEnvWith(
   const stackRegion = options.stackRegion ?? resolved.stack.region;
   await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),
+    ...(options.emulateRoleVia !== undefined && { emulateRoleVia: options.emulateRoleVia }),
     ...(options.region !== undefined && { region: options.region }),
     ...(stackRegion !== undefined && { stackRegion }),
     ...(loaded?.region !== undefined && { stateRegion: loaded.region }),
@@ -1605,6 +1631,8 @@ export async function applyAgentCoreCredentialEnv(
   dockerEnv: Record<string, string>,
   args: {
     assumeRoleArn?: string;
+    /** `--emulate-role-via`: emulate a refused assume through this role (#929). */
+    emulateRoleVia?: string;
     region?: string;
     /** `--stack-region`, else the runtime stack's own `env.region`. */
     stackRegion?: string;
@@ -1630,7 +1658,12 @@ export async function applyAgentCoreCredentialEnv(
   if (args.assumeRoleArn) {
     const stsRegion = containerRegion;
     try {
-      const creds = await assumeAgentCoreExecutionRole(args.assumeRoleArn, stsRegion, args.profile);
+      const creds = await assumeAgentCoreExecutionRole(
+        args.assumeRoleArn,
+        stsRegion,
+        args.profile,
+        args.emulateRoleVia
+      );
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
@@ -1905,7 +1938,8 @@ function forwardAwsEnv(
 async function assumeAgentCoreExecutionRole(
   roleArn: string,
   region: string | undefined,
-  profile: string | undefined
+  profile: string | undefined,
+  emulateRoleVia: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   // GUARDED SEND (issue #607). The THIRD of the five `new AssumeRoleCommand(`
   // sites in `src/`, and the one that matters most after the two in
@@ -1940,13 +1974,30 @@ async function assumeAgentCoreExecutionRole(
   // credentials, not the default env-shadowed chain (issue #245).
   const sts = new STSClient(workloadStsClientConfig({ region, profile }));
   try {
-    const response = await sts.send(
-      new AssumeRoleCommand({
-        RoleArn: roleArn,
-        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-invoke-agentcore-${Date.now()}`,
-        DurationSeconds: 3600,
-      })
-    );
+    let response;
+    try {
+      response = await sts.send(
+        new AssumeRoleCommand({
+          RoleArn: roleArn,
+          RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-invoke-agentcore-${Date.now()}`,
+          DurationSeconds: 3600,
+        })
+      );
+    } catch (err) {
+      // A refusal by the role's trust policy is emulated with session
+      // policies when possible (go-to-k/cdk-local#929); otherwise the
+      // ORIGINAL error reaches the callers' renderers, as before.
+      const emulated = await emulateRoleAfterDeniedAssume(err, {
+        roleArn,
+        region,
+        profile,
+        emulateRoleVia,
+        flag: '--assume-role',
+        sessionNameSuffix: 'invoke-agentcore',
+      });
+      if (emulated !== undefined) return emulated;
+      throw err;
+    }
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
       // Issue #579 review round 5 — identifiable, for the same reason the
@@ -2834,6 +2885,7 @@ export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
           "Off by default — the developer's shell credentials are forwarded unchanged."
       )
     )
+    .addOption(emulateRoleViaOption('--assume-role'))
     .addOption(
       new Option(
         '--ecr-role-arn <arn>',

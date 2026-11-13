@@ -1,5 +1,10 @@
 import { readEnvVarsFileText } from '../../local/env-resolver.js';
-import { addAwsEndpointOptions } from '../options.js';
+import {
+  addAwsEndpointOptions,
+  emulateRoleViaOption,
+  isRoleFlagRequested,
+  warnIfEmulateRoleViaUnused,
+} from '../options.js';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import {
   appOptions,
@@ -191,6 +196,12 @@ export interface EcsServiceEmulatorOptions {
    * `--assume-task-role` is set.
    */
   assumeRole?: string | boolean;
+  /**
+   * `--emulate-role-via <arn>`: when the role flag's AssumeRole is refused with
+   * AccessDenied, emulate the role's permissions by assuming THIS role with the
+   * execution role's policies as session policies (go-to-k/cdk-local#929).
+   */
+  emulateRoleVia?: string;
   pull: boolean;
   /**
    * Issue #249 / C8 — `--no-build` parity with `cdkl invoke`.
@@ -671,6 +682,10 @@ export async function runEcsServiceEmulator(
 
   try {
     await activateWorkloadAwsWiring(options);
+    warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
+      roleFlag: '--assume-role',
+      roleRequested: isRoleFlagRequested(options.assumeRole ?? options.assumeTaskRole),
+    });
     await applyRoleArnIfSet({
       roleArn: options.roleArn,
       region: options.region,
@@ -1948,10 +1963,22 @@ async function resolveServiceAndRunnerOpts(
       );
     }
     resolvedRoleArn = await resolveTaskRoleArnForOptions(service.task.taskRoleArn, options);
-    assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
+    assumedCredentials = await assumeTaskRole(
+      resolvedRoleArn,
+      options.region,
+      options.profile,
+      options.emulateRoleVia,
+      options.assumeRole !== undefined ? '--assume-role' : '--assume-task-role'
+    );
   } else if (typeof effectiveAssumeRole === 'string') {
     resolvedRoleArn = effectiveAssumeRole;
-    assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
+    assumedCredentials = await assumeTaskRole(
+      resolvedRoleArn,
+      options.region,
+      options.profile,
+      options.emulateRoleVia,
+      options.assumeRole !== undefined ? '--assume-role' : '--assume-task-role'
+    );
   }
   // The shared sidecar is what containers read their task-role credentials
   // from; `runEcsTask` ignores `taskCredentials` for an existing network,
@@ -2117,6 +2144,7 @@ async function resolveAlbLambdaTargetEnv(
     ...(options.profile !== undefined && { profile: options.profile }),
     ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
     ...(options.envVars !== undefined && { envVars: options.envVars }),
+    ...(options.emulateRoleVia !== undefined && { emulateRoleVia: options.emulateRoleVia }),
   };
   const profileCredentials = options.profile
     ? await resolveProfileCredentials(options.profile)
@@ -2648,7 +2676,9 @@ export { resolveTaskRoleArnForOptions as resolveTaskRoleArnForOptionsForTest };
 async function assumeTaskRole(
   roleArn: string,
   region: string | undefined,
-  profile: string | undefined
+  profile: string | undefined,
+  emulateRoleVia: string | undefined,
+  roleFlag = '--assume-role'
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   return assumeRoleCredentials({
     roleArn,
@@ -2656,8 +2686,12 @@ async function assumeTaskRole(
     profile,
     sessionNameSuffix: 'start-service',
     makeError: (message) => new LocalStartServiceError(message),
+    emulateRoleVia,
+    roleFlag,
   });
 }
+/** @internal — test-only: the task-role assume a refused AssumeRole falls back from. */
+export { assumeTaskRole as assumeTaskRoleForTest };
 
 /**
  * The state provider of one service target, for the names a container no
@@ -3383,7 +3417,8 @@ export function addEcsAssumeRoleOptions(cmd: Command): Command {
           'Cross-command alias matching the same flag on `invoke` / `invoke-agentcore` / ' +
           '`start-api`; supersedes the older `--assume-task-role` (which still works).'
       )
-    );
+    )
+    .addOption(emulateRoleViaOption('--assume-role'));
 }
 
 /**

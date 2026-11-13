@@ -1,5 +1,9 @@
 import { Command, Option } from 'commander';
-import { addAwsEndpointOptions } from '../options.js';
+import {
+  addAwsEndpointOptions,
+  emulateRoleViaOption,
+  warnIfEmulateRoleViaUnused,
+} from '../options.js';
 import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import {
   getEmbedConfig,
@@ -142,6 +146,12 @@ interface LocalStartCloudFrontOptions {
    * execution role and inject the STS creds into its container.
    */
   assumeRole?: string | boolean;
+  /**
+   * `--emulate-role-via <arn>`: when the role flag's AssumeRole is refused with
+   * AccessDenied, emulate the role's permissions by assuming THIS role with the
+   * execution role's policies as session policies (go-to-k/cdk-local#929).
+   */
+  emulateRoleVia?: string;
   /**
    * `--env-vars <file>` — SAM-shape env overrides for the Lambda Function URL
    * and Web Function endpoint origins' containers (go-to-k/cdk-local#863).
@@ -719,6 +729,7 @@ export function buildLambdaEnvOptions(
     ...(options.profile !== undefined && { profile: options.profile }),
     ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
     ...(options.envVars !== undefined && { envVars: options.envVars }),
+    ...(options.emulateRoleVia !== undefined && { emulateRoleVia: options.emulateRoleVia }),
   };
 }
 
@@ -971,6 +982,10 @@ async function localStartCloudFrontCommand(
     options.tls === true || options.tlsCert !== undefined || options.tlsKey !== undefined;
 
   await activateWorkloadAwsWiring(options);
+  warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
+    roleFlag: '--assume-role',
+    roleRequested: options.assumeRole !== undefined && options.assumeRole !== false,
+  });
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -1393,6 +1408,7 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
           '--from-cfn-stack); `--no-assume-role` (opt out). Off by default (the dev shell credentials are forwarded).'
       )
     )
+    .addOption(emulateRoleViaOption('--assume-role'))
     .addOption(
       new Option(
         '--env-vars <file>',

@@ -4,7 +4,11 @@ import {
   keysNotFromTemplate,
   resolveDynamicReferencesInEnv,
 } from '../../local/dynamic-reference-resolver.js';
-import { addAwsEndpointOptions } from '../options.js';
+import {
+  addAwsEndpointOptions,
+  emulateRoleViaOption,
+  warnIfEmulateRoleViaUnused,
+} from '../options.js';
 import {
   activateWorkloadAwsWiring,
   takeAwsEmulatorStateSourceHint,
@@ -247,6 +251,12 @@ interface LocalStartApiOptions {
    */
   assumeRole?: AssumeRoleOption;
   /**
+   * `--emulate-role-via <arn>`: when the role flag's AssumeRole is refused with
+   * AccessDenied, emulate the role's permissions by assuming THIS role with the
+   * execution role's policies as session policies (go-to-k/cdk-local#929).
+   */
+  emulateRoleVia?: string;
+  /**
    * Issue #256 Option 1 — `--assume-role-auto`: auto-resolve EACH
    * routed Lambda's own execution role per-Lambda. Surfaced as a
    * separate boolean flag (not the `[arn]` optional-value shape) so
@@ -464,6 +474,10 @@ async function localStartApiCommand(
   }
 
   await activateWorkloadAwsWiring(options);
+  warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
+    roleFlag: '--assume-role',
+    roleRequested: normalizedAssumeRole !== undefined,
+  });
   await applyRoleArnIfSet({
     roleArn: options.roleArn,
     region: options.region,
@@ -859,6 +873,7 @@ async function localStartApiCommand(
         stacks: servedStacks,
         overrides,
         assumeRole: normalizedAssumeRole,
+        ...(options.emulateRoleVia !== undefined && { emulateRoleVia: options.emulateRoleVia }),
         containerHost: options.containerHost,
         ...(debugPortBase !== undefined && { debugPort: debugPortBase + i }),
         stsRegion: options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'],
@@ -2269,6 +2284,8 @@ export async function buildContainerSpec(args: {
   stacks: StackInfo[];
   overrides: EnvOverrideFile | undefined;
   assumeRole: AssumeRoleOption | undefined;
+  /** `--emulate-role-via`: emulate a refused `--assume-role` through this role (#929). */
+  emulateRoleVia?: string;
   containerHost: string;
   debugPort?: number;
   stsRegion: string | undefined;
@@ -2609,7 +2626,12 @@ export async function buildContainerSpec(args: {
     profile,
   });
   if (roleArn) {
-    const creds = await assumeLambdaExecutionRole(roleArn, containerRegion, profile);
+    const creds = await assumeLambdaExecutionRole(
+      roleArn,
+      containerRegion,
+      profile,
+      args.emulateRoleVia
+    );
     dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
     dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
     dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
@@ -3453,9 +3475,16 @@ export { resolveProfileCredentials };
 async function assumeLambdaExecutionRole(
   roleArn: string,
   region: string | undefined,
-  profile: string | undefined
+  profile: string | undefined,
+  emulateRoleVia: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  return assumeRoleCredentials({ roleArn, region, profile, sessionNameSuffix: 'start-api' });
+  return assumeRoleCredentials({
+    roleArn,
+    region,
+    profile,
+    sessionNameSuffix: 'start-api',
+    emulateRoleVia,
+  });
 }
 
 /**
@@ -4290,6 +4319,7 @@ export function addStartApiSpecificOptions(cmd: Command): Command {
             'Compatible with `--assume-role <LogicalId>=<arn>` per-Lambda overrides — the map wins for named Lambdas, auto-resolve handles the rest.'
         ).default(false)
       )
+      .addOption(emulateRoleViaOption('--assume-role'))
       .addOption(
         new Option(
           '--watch',

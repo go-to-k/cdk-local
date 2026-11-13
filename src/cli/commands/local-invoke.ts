@@ -1,5 +1,9 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { addAwsEndpointOptions } from '../options.js';
+import {
+  addAwsEndpointOptions,
+  emulateRoleViaOption,
+  warnIfEmulateRoleViaUnused,
+} from '../options.js';
 import {
   activateWorkloadAwsWiring,
   takeAwsEmulatorStateSourceHint,
@@ -148,6 +152,12 @@ interface LocalInvokeOptions {
    *   - `--no-assume-role` → `false` (explicit opt-out)
    */
   assumeRole?: string | boolean;
+  /**
+   * `--emulate-role-via <arn>`: when the role flag's AssumeRole is refused with
+   * AccessDenied, emulate the role's permissions by assuming THIS role with the
+   * execution role's policies as session policies (go-to-k/cdk-local#929).
+   */
+  emulateRoleVia?: string;
   /**
    * Issue #448: explicit role to `sts:AssumeRole` into before calling
    * `lambda:GetLayerVersion` for every literal-ARN entry in a Lambda's
@@ -309,6 +319,10 @@ async function localInvokeCommand(
 
   try {
     await activateWorkloadAwsWiring(options);
+    warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
+      roleFlag: '--assume-role',
+      roleRequested: options.assumeRole !== undefined && options.assumeRole !== false,
+    });
     await applyRoleArnIfSet({
       roleArn: options.roleArn,
       region: options.region,
@@ -1008,6 +1022,12 @@ export interface ResolvedProfileCredentials {
 export interface LambdaContainerEnvOptions extends LocalStateSourceOptions {
   /** `--assume-role` form (true=bare, string=ARN, undefined=off). */
   assumeRole?: string | boolean;
+  /**
+   * `--emulate-role-via <arn>`: when the role flag's AssumeRole is refused with
+   * AccessDenied, emulate the role's permissions by assuming THIS role with the
+   * execution role's policies as session policies (go-to-k/cdk-local#929).
+   */
+  emulateRoleVia?: string;
   /** `--env-vars` SAM-shape override file path. */
   envVars?: string;
   /**
@@ -1299,6 +1319,7 @@ async function resolveLambdaContainerEnvWith(
         region: stsRegion,
         profile: options.profile,
         sessionNameSuffix: 'invoke',
+        emulateRoleVia: options.emulateRoleVia,
       });
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
@@ -1699,6 +1720,7 @@ export function addInvokeSpecificOptions(cmd: Command): Command {
           'unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback.'
       )
     )
+    .addOption(emulateRoleViaOption('--assume-role'))
     .addOption(
       new Option(
         '--layer-role-arn <arn>',
