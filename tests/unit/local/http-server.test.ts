@@ -655,6 +655,68 @@ describe('startApiServer — REST v1 ResponseTransferMode STREAM dispatch (#922)
       await server.close();
     }
   });
+
+  const routeFor = (apiVersion: 'v1' | 'v2'): RouteWithAuth => ({
+    route: {
+      method: 'ANY',
+      pathPattern: '/{proxy+}',
+      lambdaLogicalId: 'Fn',
+      source: apiVersion === 'v1' ? 'rest-v1' : 'function-url',
+      apiVersion,
+      stage: apiVersion === 'v1' ? 'prod' : '$default',
+      apiStackName: 'S',
+      declaredAt: 'S/X',
+      invokeMode: 'RESPONSE_STREAM',
+    },
+  });
+  const serve = async (apiVersion: 'v1' | 'v2') => {
+    const server = await startApiServer({
+      state: { routes: [routeFor(apiVersion)], pool: makePool(), corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await http(`http://${server.host}:${server.port}/x`);
+      return { status: r.status, body: await r.text() };
+    } finally {
+      await server.close();
+    }
+  };
+  const synthesized = async () => {
+    const { Readable } = await import('node:stream');
+    return {
+      prelude: { statusCode: 200, headers: { 'Content-Type': 'application/octet-stream' } },
+      body: Readable.from([Buffer.from('{"statusCode":200,"body":"plain"}')]),
+      preludeSynthesized: true,
+    };
+  };
+
+  it('answers 500 for a REST STREAM handler that emitted no metadata prelude + delimiter', async () => {
+    invokeRieStreamingMock.mockImplementation(synthesized);
+    const r = await serve('v1');
+    expect(r.status).toBe(500);
+    expect(r.body).toBe('{"message":"Internal server error"}');
+  });
+
+  it('keeps serving the raw bytes for a Function URL with no prelude (unchanged)', async () => {
+    invokeRieStreamingMock.mockImplementation(synthesized);
+    const r = await serve('v2');
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"statusCode":200,"body":"plain"}');
+  });
+
+  it('passes the 16 KB delimiter limit for REST only and maps its error to 500 (Function URL 502)', async () => {
+    invokeRieStreamingMock.mockImplementation(async () => {
+      const err = new Error('no delimiter within 16384 bytes');
+      err.name = 'StreamingPreludeLimitError';
+      throw err;
+    });
+    expect((await serve('v1')).status).toBe(500);
+    expect(invokeRieStreamingMock.mock.calls[0]?.[4]).toEqual({ preludeMaxBytes: 16 * 1024 });
+    expect((await serve('v2')).status).toBe(502);
+    expect(invokeRieStreamingMock.mock.calls[1]?.[4]).toEqual({});
+  });
 });
 
 describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {

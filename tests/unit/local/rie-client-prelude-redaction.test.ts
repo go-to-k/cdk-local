@@ -149,11 +149,13 @@ describe('invokeRieStreaming prelude failure message (go-to-k/cdkd#2203)', () =>
 
   it('keeps the statusCode diagnosis verbatim (valid JSON object, bad statusCode)', async () => {
     const message = await rejectionMessage(
-      Buffer.concat([Buffer.from('{"foo":1}'), SEPARATOR, Buffer.from('body')])
+      // An ABSENT statusCode now defaults to 200 (#922); a present
+      // non-numeric one is still the input-independent statusCode throw.
+      Buffer.concat([Buffer.from('{"statusCode":"abc"}'), SEPARATOR, Buffer.from('body')])
     );
 
     expect(message).toContain('statusCode must be a number');
-    expect(message).toContain('got undefined');
+    expect(message).toContain('got string');
     expect(message).not.toContain('is not valid JSON');
     expect(message).not.toContain('HttpResponseStream.from');
   });

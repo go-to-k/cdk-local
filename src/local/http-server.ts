@@ -600,14 +600,33 @@ async function handleRequest(
   // `Transfer-Encoding: chunked` (Node's default when no Content-Length
   // is set).
   if (match.route.invokeMode === 'RESPONSE_STREAM') {
+    // REST v1 streaming follows API Gateway's contract, which is stricter
+    // than a Function URL's (#922): the 8-NUL delimiter must appear within
+    // the first 16 KB, and a handler that emits no metadata + delimiter
+    // gets a 500 instead of the raw bytes.
+    const restStream = match.route.apiVersion === 'v1';
     let streamResult: import('./rie-client.js').StreamingInvokeResult | undefined;
     try {
       streamResult = await invokeRieStreaming(
         handle.containerHost,
         handle.hostPort,
         baseEvent,
-        opts.rieTimeoutMs
+        opts.rieTimeoutMs,
+        restStream ? { preludeMaxBytes: REST_STREAM_PRELUDE_MAX_BYTES } : {}
       );
+      if (restStream && streamResult.preludeSynthesized) {
+        streamResult.body.on('error', () => {
+          /* swallow — the stream is discarded on purpose */
+        });
+        streamResult.body.destroy();
+        logger.error(
+          `REST API streaming response from ${displayIdent(match.route.lambdaLogicalId)} has no metadata prelude + 8-NUL delimiter; API Gateway answers 500 for a ResponseTransferMode STREAM integration whose handler does not emit them. Wrap the handler with awslambda.streamifyResponse and call awslambda.HttpResponseStream.from(responseStream, { statusCode, headers }) before writing.`
+        );
+        applyCors();
+        writeError(res, 500);
+        state.pool.release(handle);
+        return;
+      }
       try {
         applyCors();
         writeStreamingResponse(res, streamResult, () => state.pool.release(handle));
@@ -641,14 +660,17 @@ async function handleRequest(
       // function returns.
       return;
     } catch (err) {
+      // Checked by name: many unit tests replace rie-client with a factory
+      // mock that does not export the error class.
+      const preludeLimit = err instanceof Error && err.name === 'StreamingPreludeLimitError';
       logger.error(
         `RIE streaming invoke failed for ${displayIdent(match.route.lambdaLogicalId)}: ${
           err instanceof Error ? err.message : String(err)
-        }`
+        }${preludeLimit && restStream ? ' API Gateway requires the delimiter within the first 16 KB of a REST API response stream and answers 500 otherwise.' : ''}`
       );
       if (!res.headersSent) {
         applyCors();
-        writeError(res, 502);
+        writeError(res, preludeLimit && restStream ? 500 : 502);
       } else {
         res.end();
       }
@@ -717,6 +739,13 @@ async function handleRequest(
  * Content-Length is set, which is what streaming Function URLs
  * always want.
  */
+/**
+ * API Gateway requires the 8-NUL delimiter of a REST API (v1) Lambda
+ * response stream within the first 16 KB of stream data (#922):
+ * https://docs.aws.amazon.com/apigateway/latest/developerguide/response-transfer-mode-lambda.html
+ */
+export const REST_STREAM_PRELUDE_MAX_BYTES = 16 * 1024;
+
 function writeStreamingResponse(
   res: ServerResponse,
   result: import('./rie-client.js').StreamingInvokeResult,
