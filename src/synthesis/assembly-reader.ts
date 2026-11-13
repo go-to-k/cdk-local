@@ -1,7 +1,5 @@
-import type {
-  AssetManifestArtifact,
-  CloudFormationStackArtifact,
-} from '@aws-cdk/cloud-assembly-api';
+import type { AssetManifestArtifact } from '@aws-cdk/cloud-assembly-api';
+import type { Toolkit } from '@aws-cdk/toolkit-lib';
 import type { CloudFormationTemplate } from '../types/resource.js';
 
 /**
@@ -241,6 +239,14 @@ export class AssemblyReader {
 }
 
 /**
+ * The assembly types are taken from what `Toolkit.synth` returns, never from
+ * our own `@aws-cdk/cloud-assembly-api`: toolkit-lib pins its own exact copy,
+ * so ours is a different (type-incompatible) copy on any version skew.
+ */
+type SynthesizedAssembly = Awaited<ReturnType<Toolkit['synth']>>['cloudAssembly'];
+type SynthesizedStackArtifact = SynthesizedAssembly['stacksRecursively'][number];
+
+/**
  * Every stack the assembly holds — a `cdk.Stage`'s included, at any depth —
  * each bounded by the assembly ROOT.
  *
@@ -262,10 +268,7 @@ export class AssemblyReader {
  *   `cdk.out/assembly-<Stage>/` (see `StackInfo.assetOutdir`).
  */
 function collectStacks(
-  assembly: {
-    directory: string;
-    stacksRecursively: CloudFormationStackArtifact[];
-  },
+  assembly: SynthesizedAssembly,
   assetManifestClass: typeof AssetManifestArtifact
 ): StackInfo[] {
   return assembly.stacksRecursively.map((stack) =>
@@ -281,7 +284,7 @@ function collectStacks(
  * `StackInfo.assetOutdir`.
  */
 function mapStackArtifact(
-  stack: CloudFormationStackArtifact,
+  stack: SynthesizedStackArtifact,
   assetOutdir: string,
   assetManifestClass: typeof AssetManifestArtifact
 ): StackInfo {
@@ -315,9 +318,19 @@ function mapStackArtifact(
   // against the user's CWD instead of cdk.out, so `cdkl invoke`'s
   // asset-directory existence check fires a `LocalInvokeResolutionError`
   // for every Lambda whose code was synthesized as a separate asset.
-  const assetManifest = stack.dependencies.find(
-    (d): d is AssetManifestArtifact => d instanceof assetManifestClass
-  );
+  //
+  // `isAssetManifestArtifact`, never `instanceof`: the artifacts come from the
+  // copy of `@aws-cdk/cloud-assembly-api` that `@aws-cdk/toolkit-lib` itself
+  // depends on, which is a DIFFERENT copy whenever its version leaves our own
+  // range (toolkit-lib 1.45.0 moved to 3.x while we pinned ^2.5.0). The class
+  // test then fails silently, dropping `assetManifestPath` and with it every
+  // container-image Lambda / ECS image / BucketDeployment asset. The static
+  // check matches on a `Symbol.for` brand shared across copies.
+  // The guard's `art is AssetManifestArtifact` names OUR copy's class, which
+  // narrows toolkit-lib's artifact type to `never`, hence `: boolean` + cast.
+  const assetManifest = stack.dependencies.find((d): boolean =>
+    assetManifestClass.isAssetManifestArtifact(d)
+  ) as unknown as AssetManifestArtifact | undefined;
   if (assetManifest) {
     info.assetManifestPath = assetManifest.file;
   }

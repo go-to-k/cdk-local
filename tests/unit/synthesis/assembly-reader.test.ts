@@ -48,9 +48,21 @@ vi.mock('@aws-cdk/toolkit-lib', () => ({
   },
 }));
 
-vi.mock('@aws-cdk/cloud-assembly-api', () => ({
-  AssetManifestArtifact: class {},
-}));
+// Mirrors the real class's cross-copy brand: `isAssetManifestArtifact` tests a
+// `Symbol.for` key, so an artifact built by ANOTHER copy of the package (the
+// one toolkit-lib pins) still matches. See `otherCopyAssetManifest` below.
+vi.mock('@aws-cdk/cloud-assembly-api', () => {
+  const brand = Symbol.for('@aws-cdk/cx-api.AssetManifestArtifact');
+  class AssetManifestArtifact {
+    constructor() {
+      Object.defineProperty(this, brand, { value: true });
+    }
+    static isAssetManifestArtifact(art: unknown): boolean {
+      return art !== null && typeof art === 'object' && brand in art;
+    }
+  }
+  return { AssetManifestArtifact };
+});
 
 import { AssetManifestArtifact } from '@aws-cdk/cloud-assembly-api';
 
@@ -254,6 +266,36 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
 
     expect(stacks[0]?.assetManifestPath).toBe('/app/cdk.out/assembly-MyStage/Stk.assets.json');
     expect(stacks[0]?.assetOutdir).toBe('/app/cdk.out');
+  });
+
+  it('finds an asset manifest built by ANOTHER copy of cloud-assembly-api', async () => {
+    // toolkit-lib pins its own exact `@aws-cdk/cloud-assembly-api`, so on any
+    // version skew the artifacts it returns are NOT instances of our copy's
+    // class. An `instanceof` test then dropped `assetManifestPath` silently
+    // (toolkit-lib 1.45.0 -> cloud-assembly-api 3.x against our ^2.5.0), and
+    // every container-image Lambda failed with "no matching asset in cdk.out".
+    const otherCopyAssetManifest = {
+      file: '/app/cdk.out/Stk.assets.json',
+      [Symbol.for('@aws-cdk/cx-api.AssetManifestArtifact')]: true,
+    };
+    const unrelated = { file: '/app/cdk.out/not-a-manifest.json' };
+    const stack = {
+      stackName: 'Stk',
+      hierarchicalId: 'Stk',
+      id: 'Stk',
+      template: { Resources: {} },
+      dependencies: [unrelated, otherCopyAssetManifest],
+      environment: {},
+    };
+    mockSynth.mockResolvedValueOnce({
+      cloudAssembly: { directory: '/app/cdk.out', stacks: [stack], stacksRecursively: [stack] },
+      dispose: mockDispose,
+    });
+
+    const stacks = await new AssemblyReader().readFromDirectory('/app/cdk.out');
+
+    expect(otherCopyAssetManifest).not.toBeInstanceOf(AssetManifestArtifact);
+    expect(stacks[0]?.assetManifestPath).toBe('/app/cdk.out/Stk.assets.json');
   });
 
   it("enumerates a Stage's stacks, displayed by their hierarchical id (#746)", async () => {
