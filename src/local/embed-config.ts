@@ -136,6 +136,18 @@ export interface CdkLocalEmbedConfig {
    * identity there instead of the profile. See `src/utils/workload-identity.ts`. Default `'role'`.
    */
   workloadIdentity?: 'role' | 'caller';
+  /**
+   * Full `--aws-emulator` mode's SQS sidecar (go-to-k/cdk-local#910): the
+   * wiring points `AWS_ENDPOINT_URL_SQS` at a sidecar on
+   * `127.0.0.1:47297` inside each workload, which rewrites AWS Emulator's
+   * real-shaped queue URLs so the AWS SDK for JavaScript v3 stays on the
+   * emulator. On for standalone cdk-local. A host that sets an embed config
+   * opts in with `true` once every forwarder it starts itself goes through
+   * `loopbackForwarderPlan` (which carries the sidecar's config) and it
+   * removes `AWS_ENDPOINT_URL_SQS` for a host-network container, as
+   * `withWorkloadAwsWiring` does. Default `false` with an embed config.
+   */
+  awsEmulatorSqsSidecar?: boolean;
 }
 
 export interface ResolvedEmbedConfig {
@@ -149,6 +161,7 @@ export interface ResolvedEmbedConfig {
   sigV4OptFlag: string;
   logger?: EmbedHostLogger;
   workloadIdentity: 'role' | 'caller';
+  awsEmulatorSqsSidecar: boolean;
 }
 
 const DEFAULTS: ResolvedEmbedConfig = {
@@ -161,6 +174,7 @@ const DEFAULTS: ResolvedEmbedConfig = {
   sigV4StrictByDefault: false,
   sigV4OptFlag: '--strict-sigv4',
   workloadIdentity: 'role',
+  awsEmulatorSqsSidecar: true,
 };
 
 let current: ResolvedEmbedConfig = DEFAULTS;
@@ -182,6 +196,9 @@ export function setEmbedConfig(config?: CdkLocalEmbedConfig): void {
     sigV4StrictByDefault: config?.sigV4StrictByDefault ?? DEFAULTS.sigV4StrictByDefault,
     sigV4OptFlag: config?.sigV4OptFlag ?? DEFAULTS.sigV4OptFlag,
     workloadIdentity: config?.workloadIdentity === 'caller' ? 'caller' : 'role',
+    // Standalone (no embed config): on. A host opts in explicitly.
+    awsEmulatorSqsSidecar:
+      config === undefined ? DEFAULTS.awsEmulatorSqsSidecar : config.awsEmulatorSqsSidecar === true,
     ...(config?.logger !== undefined && { logger: config.logger }),
   };
 }

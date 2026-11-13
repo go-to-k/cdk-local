@@ -244,8 +244,11 @@ runs a command against a local AWS Emulator. The URL defaults to
   against the emulator's CA, and serves its own certificate from a CA made
   for each run, which the container's CA bundle and Java trust store also
   trust. Every other service goes straight to the emulator. A container's own
-  `AWS_ENDPOINT_URL_SQS` wins; on the host network no sidecar runs and SQS
-  uses `AWS_ENDPOINT_URL`.
+  `AWS_ENDPOINT_URL_SQS` wins. On the host network, with a plain http URL
+  or with no run `ca.pem`, no sidecar runs and SQS uses `AWS_ENDPOINT_URL`:
+  the AWS SDK for JavaScript v3 then follows the queue URL to real SQS, which
+  refuses the emulator's keys (pass `useQueueUrlAsEndpoint: false` to its
+  `SQSClient` there).
 - For Java, when the URL is https and the run wrote a `truststore.p12`, a
   trust store holding the run's CA (and the SQS sidecar's CA) is mounted
   read-only at `/cdk-local-aws/truststore.p12` and `JAVA_TOOL_OPTIONS` gets
@@ -415,7 +418,10 @@ The rules:
   it. It logs no header, body or key. It also rewrites the SQS queue URLs in
   the emulator's answers to its own address, as in full emulator mode, so the
   AWS SDK for JavaScript v3 does not follow them to real SQS with your real
-  keys.
+  keys. A real-shaped queue URL the handler gets from elsewhere (an
+  `--env-vars` value, a name resolved from a real deployment) is not
+  rewritten, and that SDK still sends to its host; pass
+  `useQueueUrlAsEndpoint: false` to the `SQSClient` in that case.
 - **TLS stays verified on both legs** (with an `https` emulator URL; an
   `http` one is forwarded as plain HTTP). The sidecar's certificate for
   `127.0.0.1` comes from a CA made for each run. The containers' CA bundle
@@ -496,7 +502,8 @@ The rules:
   operation with a host prefix (such as Step Functions'
   `StartSyncExecution`) is sent without it.
 - Port `47297` is reserved for the sidecar inside every workload of a
-  mixed-mode run, and a host-network workload cannot run in mixed mode.
+  mixed-mode run (and of a full emulator run that uses the SQS sidecar), and
+  a host-network workload cannot run in mixed mode.
   `cdkl studio` passes `--env-vars` and `--aws-emulator` to the commands it
   starts, but studio's own `--from-cfn-stack` reads still follow plain
   `--aws-emulator`.

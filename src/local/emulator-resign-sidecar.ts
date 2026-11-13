@@ -245,6 +245,8 @@ function passthroughHeaders(incoming){
 var SQS_QUEUE_URL=/^https?:\/\/(?:sqs\.[a-z0-9-]+|[a-z0-9-]+\.queue)\.amazonaws\.com(?:\.cn)?\/([0-9]{12}\/[A-Za-z0-9_-]{1,80}(?:\.fifo)?)$/;
 function localQueueUrl(u,origin){var m=SQS_QUEUE_URL.exec(String(u));return m?origin+'/'+m[1]:u;}
 var SQS_QUEUE_URL_OPERATIONS=new Set(['CreateQueue','GetQueueUrl','ListQueues','ListDeadLetterSourceQueues']);
+// An unsigned request (an emulator run with --auth off and an SDK that signs
+// nothing) has no scope: only the JSON protocol's target names SQS then.
 function isSqsRequest(headers,service){return service==='sqs'||String(headers['x-amz-target']||'').indexOf('AmazonSQS.')===0;}
 // JSON protocol: the target names the operation. Query protocol: unknown here,
 // so every response is a candidate.
@@ -296,6 +298,9 @@ function startResigner(cfgPath){return new Promise(function(done){
   // What a rewritten queue URL points at: this sidecar, the endpoint the workload already uses.
   var origin='https://127.0.0.1:'+cfg.port;
   var REWRITE_CAP=16*1048576;
+  // Response bytes held at once across concurrent requests; past it a
+  // response streams through unrewritten.
+  var heldResp=0,HELD_RESP_CAP=4*REWRITE_CAP;
   var DECODERS={identity:null,gzip:zlib.gunzipSync,'x-gzip':zlib.gunzipSync,deflate:zlib.inflateSync,br:zlib.brotliDecompressSync};
   // Relay an emulator response. An SQS response that may carry a queue URL is
   // held (up to a cap) and its queue URLs point back here; anything else, and
@@ -306,15 +311,17 @@ function startResigner(cfgPath){return new Promise(function(done){
     var status=ur.statusCode||502,enc=String(ur.headers['content-encoding']||'identity').trim().toLowerCase();
     ur.on('error',function(){resp.destroy();});
     if(!rewrite||status<200||status>=300||!Object.prototype.hasOwnProperty.call(DECODERS,enc)||Number(ur.headers['content-length'])>REWRITE_CAP){resp.writeHead(status,h);ur.pipe(resp);return;}
-    var chunks=[],n=0;
+    var chunks=[],n=0,released=false;
+    function release(){if(!released){released=true;heldResp-=n;}}
     function onData(c){
-      n+=c.length;chunks.push(c);
-      if(n<=REWRITE_CAP)return;
-      ur.removeListener('data',onData);ur.removeListener('end',onEnd);
+      n+=c.length;heldResp+=c.length;chunks.push(c);
+      if(n<=REWRITE_CAP&&heldResp<=HELD_RESP_CAP)return;
+      ur.removeListener('data',onData);ur.removeListener('end',onEnd);release();
       resp.writeHead(status,h);chunks.forEach(function(x){resp.write(x);});chunks=[];
       ur.pipe(resp);
     }
     function onEnd(){
+      release();
       var raw=Buffer.concat(chunks),text,out;chunks=[];
       try{var dec=DECODERS[enc];text=(dec?dec(raw,{maxOutputLength:4*REWRITE_CAP}):raw).toString('utf8');}catch(e){text=undefined;}
       if(text!==undefined)out=rewriteSqsQueueUrls(text,ur.headers['content-type'],origin);
@@ -324,7 +331,7 @@ function startResigner(cfgPath){return new Promise(function(done){
       h['content-length']=String(b.length);
       resp.writeHead(status,h);resp.end(b);
     }
-    ur.on('data',onData);ur.on('end',onEnd);
+    ur.on('data',onData);ur.on('end',onEnd);ur.on('close',release);
   }
   function rewritesResponse(req,service){return isSqsRequest(req.headers,service)&&sqsResponseMayCarryQueueUrl(req.headers);}
   function send(resp,status,err,service){
@@ -361,6 +368,10 @@ function startResigner(cfgPath){return new Promise(function(done){
       joined=null;
       if(p.error){if(p.error.status===413)process.stdout.write('CDKL-RESIGN rejected a request body over the cap\n');send(resp,p.error.status,p.error,serviceOf(req));return;}
       var r;
+      // Re-signed anyway (accept-encoding is not a signed header): ask for an
+      // identity body, so an encoding the sidecar cannot decode never carries
+      // a real queue URL past it.
+      if(rewritesResponse(req,p.service))delete p.headers['accept-encoding'];
       var r=upstreamRequest(req,resp,p.path,p.headers,p.service,{});
       if(r)r.end(p.body);
     });
@@ -381,10 +392,12 @@ function startResigner(cfgPath){return new Promise(function(done){
   // Full emulator mode: the workload already signs with the emulator's keys,
   // so the request goes upstream unchanged (its Host header too, which the
   // signature covers) and streams; only hop-by-hop headers are dropped. TLS
-  // to the emulator is verified against the emulator's own host name.
+  // to the emulator is verified against the emulator's host name.
   function handlePassthrough(req,resp){
     var service=serviceOf(req);
-    var extra=secure?{servername:net.isIP(upHost)?'':upHost,checkServerIdentity:function(h,cert){return tls.checkServerIdentity(upHost,cert);}}:{};
+    // The incoming Host names the sidecar, not the emulator: SNI (and with it
+    // the certificate check) uses the emulator's own host name instead.
+    var extra=secure?{servername:net.isIP(upHost)?'':upHost}:{};
     var r=upstreamRequest(req,resp,String(req.url||'/'),passthroughHeaders(req.headers),service,extra);
     if(!r){req.resume();return;}
     req.on('error',function(){r.destroy();resp.destroy();});

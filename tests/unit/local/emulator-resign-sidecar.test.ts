@@ -769,7 +769,29 @@ describe('SQS queue URLs through the sidecar, end to end with the AWS SDK (#910)
             res.end(out);
           };
           if (target === 'AmazonSQS.CreateQueue' || target === 'AmazonSQS.GetQueueUrl') json({ QueueUrl: REAL_QURL });
-          else if (target === 'AmazonSQS.ListQueues') json({ QueueUrls: [REAL_QURL] }, true);
+          else if (target === 'AmazonSQS.ListQueues') {
+            const prefix = (JSON.parse(body.toString() || '{}') as { QueueNamePrefix?: string }).QueueNamePrefix;
+            if (prefix === 'big' || prefix === 'biglen') {
+              // Past the 16 MiB hold cap: streamed as-is.
+              const big = Buffer.from(JSON.stringify({ QueueUrls: [REAL_QURL], Pad: 'x'.repeat(17 * 1024 * 1024) }));
+              res.writeHead(200, {
+                'content-type': 'application/x-amz-json-1.0',
+                ...(prefix === 'biglen' ? { 'content-length': big.length } : {}),
+              });
+              if (prefix === 'big') {
+                for (let i = 0; i < big.length; i += 1024 * 1024) res.write(big.subarray(i, i + 1024 * 1024));
+                res.end();
+              } else res.end(big);
+            } else if (prefix === 'none') json({}, true); // held, nothing to change: stays gzip
+            else if (prefix === 'cut') {
+              res.writeHead(200, { 'content-type': 'application/x-amz-json-1.0' });
+              res.write('{"QueueUrls":[');
+              setTimeout(() => res.socket?.destroy(), 50);
+            } else json({ QueueUrls: [REAL_QURL] }, true);
+          } else if (target === 'AmazonSQS.DeleteQueue') {
+            res.writeHead(400, { 'content-type': 'application/x-amz-json-1.0' });
+            res.end(JSON.stringify({ __type: 'QueueDoesNotExist', message: REAL_QURL, QueueUrl: REAL_QURL }));
+          }
           else if (target === 'AmazonSQS.SendMessage') {
             const b = JSON.parse(body.toString()) as { MessageBody: string };
             json({ MessageId: 'm1', MD5OfMessageBody: createHash('md5').update(b.MessageBody).digest('hex') });
@@ -904,6 +926,85 @@ describe('SQS queue URLs through the sidecar, end to end with the AWS SDK (#910)
     expect(r.body.toString()).toContain(`<QueueUrl>https://127.0.0.1:${ports.passthrough}/000000000000/orders</QueueUrl>`);
   });
 
+  it('a response over the hold cap streams through byte for byte (chunked and with a length)', async () => {
+    for (const prefix of ['big', 'biglen']) {
+      const r = await raw(
+        ports.passthrough,
+        { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': 'AmazonSQS.ListQueues' },
+        JSON.stringify({ QueueNamePrefix: prefix })
+      );
+      expect(r.body.length).toBeGreaterThan(16 * 1024 * 1024);
+      expect(r.body.subarray(0, 80).toString()).toContain(REAL_QURL);
+      expect(JSON.parse(r.body.toString()).QueueUrls).toEqual([REAL_QURL]);
+    }
+  });
+
+  it('a held response with nothing to change keeps its encoding and length; an error answer is never rewritten', async () => {
+    const r = await raw(
+      ports.passthrough,
+      { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': 'AmazonSQS.ListQueues' },
+      JSON.stringify({ QueueNamePrefix: 'none' })
+    );
+    expect(r.headers['content-encoding']).toBe('gzip');
+    expect(Number(r.headers['content-length'])).toBe(r.body.length);
+    const { gunzipSync } = await import('node:zlib');
+    expect(JSON.parse(gunzipSync(r.body).toString())).toEqual({});
+    const e = await raw(
+      ports.passthrough,
+      { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': 'AmazonSQS.DeleteQueue' },
+      '{}'
+    );
+    expect(e.status).toBe(400);
+    expect(JSON.parse(e.body.toString()).QueueUrl).toBe(REAL_QURL);
+  });
+
+  it('an emulator that drops the connection mid-answer fails the client call (no truncated 200)', async () => {
+    await expect(
+      raw(
+        ports.passthrough,
+        { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': 'AmazonSQS.ListQueues' },
+        JSON.stringify({ QueueNamePrefix: 'cut' })
+      )
+    ).rejects.toThrow();
+  });
+
+  it('passthrough with Expect: 100-continue forwards the body after the 100, without the Expect header', async () => {
+    const port = ports.passthrough;
+    const body = JSON.stringify({ QueueName: 'orders' });
+    const signer = new SignatureV4({ credentials: EMU, region: 'us-east-1', service: 'sqs', sha256: Sha256 });
+    const signed = await signer.sign({
+      method: 'POST',
+      protocol: 'https:',
+      hostname: '127.0.0.1',
+      port,
+      path: '/',
+      headers: {
+        host: `127.0.0.1:${port}`,
+        'content-type': 'application/x-amz-json-1.0',
+        'x-amz-target': 'AmazonSQS.GetQueueUrl',
+        'content-length': String(body.length),
+      },
+      body,
+    });
+    const before = received.length;
+    const out = await new Promise<string>((resolve, reject) => {
+      const q = httpsRequest(
+        { host: '127.0.0.1', port, method: 'POST', path: '/', headers: { ...signed.headers, expect: '100-continue' }, ca: [tls.caCertPem] },
+        (m) => {
+          let b = '';
+          m.on('data', (d: Buffer) => (b += d.toString()));
+          m.on('end', () => resolve(b));
+        }
+      );
+      q.on('continue', () => q.end(body));
+      q.on('error', reject);
+    });
+    expect(JSON.parse(out)).toEqual({ QueueUrl: `https://127.0.0.1:${port}/000000000000/orders` });
+    const got = received.slice(before)[0]!;
+    expect(got.sigOk).toBe(true);
+    expect(got.body.toString()).toBe(body);
+  });
+
   it('a response to another service passes through untouched, CRC header included', async () => {
     const signer = new SignatureV4({ credentials: EMU, region: 'us-east-1', service: 'dynamodb', sha256: Sha256 });
     const port = ports.passthrough;
@@ -928,6 +1029,57 @@ describe('SQS queue URLs through the sidecar, end to end with the AWS SDK (#910)
     expect(JSON.parse(r.body)).toEqual({ QueueUrl: REAL_QURL });
     expect(r.headers['x-amz-crc32']).toBe('1');
     expect(received.at(-1)!.sigOk).toBe(true);
+  });
+});
+
+describe('passthrough upstream TLS', () => {
+  it('refuses an emulator whose certificate is not from the trusted CA (502, nothing forwarded); verifies by host name', async () => {
+    const good = createMixedModeTlsMaterials();
+    const other = createMixedModeTlsMaterials();
+    const tls = createMixedModeTlsMaterials();
+    let hits = 0;
+    const emu = createHttpsServer({ key: good.keyPem, cert: good.certPem }, (_req, res) => {
+      hits++;
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('ok');
+    });
+    await new Promise<void>((r) => emu.listen(0, '127.0.0.1', () => r()));
+    const dir = mkdtempSync(path.join(tmpdir(), 'resign-tls-'));
+    const procs: ChildProcess[] = [];
+    try {
+      const start = async (upstream: string, caPem: string): Promise<number> => {
+        const port = 44000 + Math.floor(Math.random() * 900) + procs.length;
+        const cfgPath = path.join(dir, `${port}.json`);
+        const cfg: ResignSidecarConfig = { port, upstream, upstreamCaPem: caPem, certPem: tls.certPem, keyPem: tls.keyPem, capBytes: 1024, passthrough: true };
+        writeFileSync(cfgPath, JSON.stringify(cfg), { mode: 0o600 });
+        const p = spawn(process.execPath, ['-e', `${RESIGN_SIDECAR_SCRIPT}\nstartResigner(process.argv[1]).then((r)=>process.stdout.write('STARTED '+JSON.stringify(r)+'\\n'));`, cfgPath], { stdio: ['ignore', 'pipe', 'ignore'] });
+        procs.push(p);
+        await new Promise<void>((resolve) => p.stdout!.on('data', (d: Buffer) => d.toString().includes('STARTED') && resolve()));
+        return port;
+      };
+      const get = (port: number): Promise<{ status: number; body: string }> =>
+        new Promise((resolve, reject) => {
+          const q = httpsRequest({ host: '127.0.0.1', port, path: '/__admin/health', ca: [tls.caCertPem] }, (m) => {
+            let b = '';
+            m.on('data', (d: Buffer) => (b += d.toString()));
+            m.on('end', () => resolve({ status: m.statusCode!, body: b }));
+          });
+          q.on('error', reject);
+          q.end();
+        });
+      const emuPort = (emu.address() as AddressInfo).port;
+      const wrong = await get(await start(`https://127.0.0.1:${emuPort}`, other.caCertPem));
+      expect(wrong.status).toBe(502);
+      expect(wrong.body).toMatch(/--aws-emulator: the AWS Emulator at .* did not answer/);
+      expect(hits).toBe(0);
+      // A host-name upstream: SNI and the identity check use the emulator's name (the leaf names localhost).
+      const byName = await get(await start(`https://localhost:${emuPort}`, good.caCertPem));
+      expect(byName).toEqual({ status: 200, body: 'ok' });
+    } finally {
+      for (const p of procs) p.kill();
+      await new Promise((r) => emu.close(r));
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -473,6 +473,26 @@ describe('--aws-emulator: the SQS sidecar (#910)', () => {
     }
   });
 
+  it('a host embed config without awsEmulatorSqsSidecar keeps the old wiring; opting in turns it on', async () => {
+    writeEmulatorRun(9297, { truststore: true });
+    try {
+      setEmbedConfig({ cliName: 'host local' });
+      const off = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+      expect(off.sidecar).toBeUndefined();
+      expect(off.env['AWS_ENDPOINT_URL_SQS']).toBeUndefined();
+      expect(off.loopbackPorts).toEqual([9297]);
+      const store = off.mounts.find((m) => m.containerPath.endsWith('truststore.p12'))!;
+      expect(readFileSync(store.hostPath)).toEqual(TRUSTSTORE);
+      off.dispose();
+      setEmbedConfig({ cliName: 'host local', awsEmulatorSqsSidecar: true });
+      const on = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+      expect(on.sidecar?.passthrough).toBe(true);
+      on.dispose();
+    } finally {
+      setEmbedConfig(undefined);
+    }
+  });
+
   it('a plain http emulator gets no sidecar: SQS keeps the global endpoint', async () => {
     writeEmulatorRun(9302);
     const w = await resolveWorkloadAwsWiring({

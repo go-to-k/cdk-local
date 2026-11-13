@@ -244,13 +244,53 @@ describe('runDetached forwarder failure policy', () => {
     await runDetached({ ...baseRun, env: {} });
     const fwd = execFileMock.mock.calls.find((c) => c[1][0] === 'run' && c[1].includes('--pid'))!;
     expect(fwd[1]).toContain('/tmp/resign-full/resign.json:/cdkl-forwarder/resign.json:ro');
-    expect(fwd[1].slice(fwd[1].indexOf('-e') + 2)[0]).toBe('9297');
+    expect(fwd[1].slice(fwd[1].indexOf('-e') + 2)).toEqual([
+      '9297',
+      'health',
+      '/cdkl-forwarder/ca.pem',
+      '/cdkl-forwarder/resign.json',
+    ]);
     execFileMock.mockClear();
     await runDetached({ ...baseRun, network: 'host', env: {} });
     const runs = execFileMock.mock.calls.filter((c) => c[1][0] === 'run');
     expect(runs).toHaveLength(1);
     expect(runs[0]![1].some((a: string) => a.startsWith('AWS_ENDPOINT_URL_SQS'))).toBe(false);
     expect(runs[0]![1]).toContain('AWS_ENDPOINT_URL=https://127.0.0.1:9297');
+    // A container's own SQS endpoint stays, on the host network too.
+    execFileMock.mockClear();
+    await runDetached({ ...baseRun, network: 'host', env: { AWS_ENDPOINT_URL_SQS: 'http://127.0.0.1:4566' } });
+    const own = execFileMock.mock.calls.find((c) => c[1][0] === 'run')!;
+    expect(own[1]).toContain('AWS_ENDPOINT_URL_SQS=http://127.0.0.1:4566');
+    // ECS owner forwarder in full mode: runs the passthrough sidecar, and its failure is fatal.
+    const owner = (ports: number[]) =>
+      startNamespaceOwnerForwarder({
+        name: 'cdkl-fam-app-abc-awsfwd',
+        namespace: { network: 'cdkl-task-x' },
+        ports,
+        wiring: w,
+        workloadLabel: 'container app',
+      });
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD READY 192.168.65.254\n' };
+      return {};
+    });
+    await expect(owner([9297, 47297])).resolves.toBe('fid');
+    const ownerRun = execFileMock.mock.calls.map((c) => c[1] as string[]).find((a) => a[0] === 'run')!;
+    expect(ownerRun).toContain('/tmp/resign-full/resign.json:/cdkl-forwarder/resign.json:ro');
+    expect(ownerRun.slice(ownerRun.indexOf('-e') + 2)).toEqual([
+      '9297',
+      'health',
+      '/cdkl-forwarder/ca.pem',
+      '/cdkl-forwarder/resign.json',
+    ]);
+    execFileMock.mockImplementation((_c: string, args: string[]) => {
+      if (args[0] === 'run') return { stdout: 'fid\n' };
+      if (args[0] === 'logs') return { stdout: 'CDKL-FWD FAIL 47297 RESIGN_UPSTREAM_HTTP_502 none\n' };
+      return {};
+    });
+    await expect(owner([9297, 47297])).rejects.toThrow(/AWS Emulator sidecar started, but a health check/);
   });
 
   it('a port the final env no longer points at gets no forwarder', async () => {

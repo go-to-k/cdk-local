@@ -102,6 +102,18 @@ describe('resolveWorkloadAwsWiring — mixed mode', () => {
         emulatorClientOverride: { endpoint: 'https://127.0.0.1:9361', credentials: EMU_KEY },
       });
       expect(w.loopbackPorts).toEqual([9361, MIXED_MODE_RESIGN_PORT]);
+      expect(w.sidecar).toEqual({
+        port: MIXED_MODE_RESIGN_PORT,
+        endpoint: `https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`,
+        upstream: w.mixed!.emulatorEndpoint,
+        configHostPath: w.mixed!.resignConfigHostPath,
+        passthrough: false,
+      });
+      // A host-built mixed wiring without `sidecar` still gets its sidecar from `mixed`.
+      expect(loopbackForwarderPlan({ ...w, sidecar: undefined }, [9361, MIXED_MODE_RESIGN_PORT])).toEqual({
+        ports: [9361],
+        resignConfigHostPath: w.mixed!.resignConfigHostPath,
+      });
       expect(w.probeHealth).toBe(true);
       for (const k of CA_TRUST_ENV_KEYS) expect(w.env[k]).toBe('/cdk-local-aws/ca-bundle.pem');
       expect(w.env['AWS_ENDPOINT_URL']).toBe(`https://127.0.0.1:${MIXED_MODE_RESIGN_PORT}`);

@@ -924,8 +924,12 @@ export async function resolveWorkloadAwsWiring(
       const https = ep.url.startsWith('https:');
       // The SQS sidecar (go-to-k/cdk-local#910): AWS Emulator's queue URLs name
       // real SQS, and the JavaScript SDK follows them. Only for an https AWS
-      // Emulator whose run wrote its CA (the sidecar verifies it upstream).
-      const sidecarTls = https && run.caPath ? createMixedModeTlsMaterials() : undefined;
+      // Emulator whose run wrote its CA (the sidecar verifies it upstream), and
+      // for a host only once it opted in (`awsEmulatorSqsSidecar`).
+      const sidecarTls =
+        https && run.caPath && getEmbedConfig().awsEmulatorSqsSidecar
+          ? createMixedModeTlsMaterials()
+          : undefined;
       const ca =
         caSource && https
           ? caMount(caSource, CA_TRUST_ENV_KEYS, sidecarTls ? [sidecarTls.caCertPem] : [])
@@ -956,7 +960,10 @@ export async function resolveWorkloadAwsWiring(
       }
       // Java reads none of the PEM variables: mount a PKCS12 trust store of the
       // same CA (the run's own `truststore.p12`, or with the SQS sidecar one
-      // that also holds the sidecar's CA) and point the JVM at it.
+      // that also holds the sidecar's CA) and point the JVM at it. AWS
+      // Emulator's `truststore.p12` holds exactly the certificate in its
+      // `ca.pem`, so the rebuilt store trusts what the copy did, plus the
+      // sidecar's CA.
       let java: { mount: WorkloadMount; env: Record<string, string> } | undefined;
       if (run.truststorePath && https) {
         // Optional: an unreadable trust store skips only the Java wiring.
