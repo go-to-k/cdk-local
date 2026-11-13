@@ -197,7 +197,10 @@ describe('discoverRoutes — REST v1', () => {
     });
     const routes = discoverRoutes([stack]);
     expect(routes).toHaveLength(1);
-    expect(routes[0]?.unsupported?.reason).toMatch(/Lambda Arn intrinsics/);
+    // #922: a same-template shape cdk-local does not recognise is no longer
+    // blamed on a cross-stack reference.
+    expect(routes[0]?.unsupported?.reason).toMatch(/does not recognise this Lambda Arn shape/);
+    expect(routes[0]?.unsupported?.reason).not.toMatch(/cross-stack/);
     expect(routes[0]?.lambdaLogicalId).toBe('');
   });
 
@@ -1432,10 +1435,173 @@ describe('discoverRoutes — HTTP API v2 unresolvable Lambda Arn (deferred-error
     });
     const routes = discoverRoutes([stack]);
     expect(routes).toHaveLength(1);
-    expect(routes[0]?.unsupported?.reason).toMatch(/Lambda Arn intrinsics/);
+    expect(routes[0]?.unsupported?.reason).toMatch(/does not recognise this Lambda Arn shape/);
     expect(routes[0]?.lambdaLogicalId).toBe('');
     expect(routes[0]?.apiLogicalId).toBe('Api'); // route identity preserved for the route table
     expect(routes[0]?.method).toBe('GET');
     expect(routes[0]?.pathPattern).toBe('/items');
+  });
+});
+
+describe('discoverRoutes — REST v1 response streaming (#922)', () => {
+  const streamingJoinUri = (fn: string) => ({
+    'Fn::Join': [
+      '',
+      [
+        'arn:',
+        { Ref: 'AWS::Partition' },
+        ':apigateway:',
+        { Ref: 'AWS::Region' },
+        ':lambda:path/2021-11-15/functions/',
+        { 'Fn::GetAtt': [fn, 'Arn'] },
+        '/response-streaming-invocations',
+      ],
+    ],
+  });
+  const bufferedJoinUri = (fn: string) => ({
+    'Fn::Join': [
+      '',
+      [
+        'arn:',
+        { Ref: 'AWS::Partition' },
+        ':apigateway:',
+        { Ref: 'AWS::Region' },
+        ':lambda:path/2015-03-31/functions/',
+        { 'Fn::GetAtt': [fn, 'Arn'] },
+        '/invocations',
+      ],
+    ],
+  });
+  const restMethod = (integration: Record<string, unknown>) =>
+    buildStack('S', {
+      Api: { Type: 'AWS::ApiGateway::RestApi', Properties: {} },
+      Method: {
+        Type: 'AWS::ApiGateway::Method',
+        Properties: {
+          HttpMethod: 'POST',
+          RestApiId: { Ref: 'Api' },
+          ResourceId: { 'Fn::GetAtt': ['Api', 'RootResourceId'] },
+          Integration: integration,
+        },
+      },
+    });
+
+  it('serves the exact CDK LambdaIntegration({ responseTransferMode: STREAM }) shape as a streaming route', () => {
+    // Integration block copied from a real `cdk synth` (aws-cdk-lib 2.257).
+    const routes = discoverRoutes([
+      restMethod({
+        IntegrationHttpMethod: 'POST',
+        ResponseTransferMode: 'STREAM',
+        Type: 'AWS_PROXY',
+        Uri: streamingJoinUri('ChatFn'),
+      }),
+    ]);
+    expect(routes).toHaveLength(1);
+    expect(routes[0]?.unsupported).toBeUndefined();
+    expect(routes[0]?.lambdaLogicalId).toBe('ChatFn');
+    expect(routes[0]?.invokeMode).toBe('RESPONSE_STREAM');
+    expect(routes[0]?.apiVersion).toBe('v1');
+  });
+
+  it('serves the Fn::Sub 1-arg and 2-arg streaming wrappers too', () => {
+    const oneArg = discoverRoutes([
+      restMethod({
+        Type: 'AWS_PROXY',
+        ResponseTransferMode: 'STREAM',
+        Uri: {
+          'Fn::Sub':
+            'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${ChatFn.Arn}/response-streaming-invocations',
+        },
+      }),
+    ]);
+    expect(oneArg[0]?.lambdaLogicalId).toBe('ChatFn');
+    expect(oneArg[0]?.invokeMode).toBe('RESPONSE_STREAM');
+    const twoArg = discoverRoutes([
+      restMethod({
+        Type: 'AWS_PROXY',
+        ResponseTransferMode: 'STREAM',
+        Uri: {
+          'Fn::Sub': [
+            'arn:aws:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${FnArn}/response-streaming-invocations',
+            { FnArn: { 'Fn::GetAtt': ['ChatFn', 'Arn'] } },
+          ],
+        },
+      }),
+    ]);
+    expect(twoArg[0]?.lambdaLogicalId).toBe('ChatFn');
+    expect(twoArg[0]?.invokeMode).toBe('RESPONSE_STREAM');
+  });
+
+  it('keeps a buffered method buffered (no invokeMode)', () => {
+    const routes = discoverRoutes([restMethod({ Type: 'AWS_PROXY', Uri: bufferedJoinUri('GetFn') })]);
+    expect(routes[0]?.invokeMode).toBeUndefined();
+    expect(routes[0]?.unsupported).toBeUndefined();
+  });
+
+  it('flags STREAM paired with the buffered 2015-03-31 URI (unsupported by API Gateway), without blaming cross-stack', () => {
+    const routes = discoverRoutes([
+      restMethod({ Type: 'AWS_PROXY', ResponseTransferMode: 'STREAM', Uri: bufferedJoinUri('Fn') }),
+    ]);
+    expect(routes[0]?.unsupported?.reason).toMatch(/ResponseTransferMode is 'STREAM'.*2021-11-15/);
+    expect(routes[0]?.unsupported?.reason).not.toMatch(/cross-stack/);
+  });
+
+  it('flags the streaming URI without ResponseTransferMode: STREAM', () => {
+    const routes = discoverRoutes([restMethod({ Type: 'AWS_PROXY', Uri: streamingJoinUri('Fn') })]);
+    expect(routes[0]?.unsupported?.reason).toMatch(/response-streaming.*not 'STREAM'/);
+  });
+
+  it('flags an unrecognized ResponseTransferMode value', () => {
+    const routes = discoverRoutes([
+      restMethod({ Type: 'AWS_PROXY', ResponseTransferMode: 'CHUNKED', Uri: streamingJoinUri('Fn') }),
+    ]);
+    expect(routes[0]?.unsupported?.reason).toMatch(/not a recognized value/);
+  });
+
+  it('flags the streaming URI on a Lambda non-proxy AWS integration as proxy-only', () => {
+    const routes = discoverRoutes([restMethod({ Type: 'AWS', Uri: streamingJoinUri('Fn') })]);
+    expect(routes[0]?.unsupported?.reason).toMatch(/only supported on an AWS_PROXY integration/);
+  });
+
+  it('still blames a cross-stack reference when the Uri carries Fn::ImportValue', () => {
+    const routes = discoverRoutes([
+      restMethod({
+        Type: 'AWS_PROXY',
+        Uri: {
+          'Fn::Join': [
+            '',
+            [
+              'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/',
+              { 'Fn::ImportValue': 'ProducerFnArn' },
+              '/invocations',
+            ],
+          ],
+        },
+      }),
+    ]);
+    expect(routes[0]?.unsupported?.reason).toMatch(/cross-stack \/ imported references/);
+  });
+
+  it('flags the streaming URI on an HTTP API v2 integration as REST-only', () => {
+    const stack = buildStack('S', {
+      Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },
+      Integ: {
+        Type: 'AWS::ApiGatewayV2::Integration',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          IntegrationType: 'AWS_PROXY',
+          IntegrationUri: streamingJoinUri('Handler'),
+        },
+      },
+      Route: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'Api' },
+          RouteKey: 'GET /x',
+          Target: { 'Fn::Join': ['/', ['integrations', { Ref: 'Integ' }]] },
+        },
+      },
+    });
+    expect(discoverRoutes([stack])[0]?.unsupported?.reason).toMatch(/only supported on REST API \(v1\)/);
   });
 });

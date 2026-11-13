@@ -276,6 +276,14 @@ export interface StreamingPrelude {
   headers: Record<string, string>;
   /** Lambda-declared cookies (HTTP API v2 shape — each rendered as a separate Set-Cookie). */
   cookies?: string[];
+  /**
+   * Lambda-declared multi-value headers. Part of the REST API (v1)
+   * response-streaming metadata contract (#922): API Gateway merges them
+   * with `headers`, and for a key present in both only the
+   * `multiValueHeaders` values survive.
+   * https://docs.aws.amazon.com/apigateway/latest/developerguide/response-transfer-mode-lambda.html
+   */
+  multiValueHeaders?: Record<string, string[]>;
 }
 
 /** Resolved streaming invocation result: parsed prelude + a Readable of the body chunks. */
@@ -648,6 +656,15 @@ export function parseStreamingPrelude(text: string): StreamingPrelude {
   const cookiesRaw = obj['cookies'];
   if (Array.isArray(cookiesRaw)) {
     result.cookies = cookiesRaw.map((c) => String(c));
+  }
+  const mvhRaw = obj['multiValueHeaders'];
+  if (mvhRaw && typeof mvhRaw === 'object' && !Array.isArray(mvhRaw)) {
+    const mvh: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(mvhRaw as Record<string, unknown>)) {
+      if (!Array.isArray(v)) continue;
+      mvh[k] = v.filter((x) => x !== null && x !== undefined).map((x) => String(x));
+    }
+    if (Object.keys(mvh).length > 0) result.multiValueHeaders = mvh;
   }
   return result;
 }

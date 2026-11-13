@@ -590,8 +590,10 @@ async function handleRequest(
     return;
   }
 
-  // Function URL routes with InvokeMode: RESPONSE_STREAM dispatch via
-  // the RIE streaming protocol (issue #467). The streaming Lambda's
+  // Function URL routes with InvokeMode: RESPONSE_STREAM (issue #467) and
+  // REST v1 methods with ResponseTransferMode: STREAM (issue #922 — same
+  // metadata + delimiter contract, v1 proxy event as input) dispatch via
+  // the RIE streaming protocol. The streaming Lambda's
   // response is a JSON prelude carrying status + headers, an 8-NULL-byte
   // separator, and then raw body chunks the handler streams. cdk-local writes
   // the prelude to `res.writeHead(...)` and pipes the chunks via
@@ -736,6 +738,16 @@ function writeStreamingResponse(
     const lower = key.toLowerCase();
     if (lower === 'content-length' || lower === 'transfer-encoding') continue;
     headersOut[key] = value;
+  }
+  // REST v1 streaming metadata may carry `multiValueHeaders` (#922); for a
+  // key present in both, API Gateway keeps only the multi-value entries.
+  for (const [key, values] of Object.entries(prelude.multiValueHeaders ?? {})) {
+    const lower = key.toLowerCase();
+    if (lower === 'content-length' || lower === 'transfer-encoding') continue;
+    for (const existing of Object.keys(headersOut)) {
+      if (existing.toLowerCase() === lower) delete headersOut[existing];
+    }
+    headersOut[key] = values;
   }
   if (prelude.cookies && prelude.cookies.length > 0) {
     headersOut['set-cookie'] = prelude.cookies;

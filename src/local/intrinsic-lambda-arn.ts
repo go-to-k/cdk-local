@@ -13,7 +13,11 @@
  *      'AWS::Region' }, ':lambda:path/2015-03-31/functions/', { 'Fn::GetAtt':
  *      [<LambdaLogicalId>, 'Arn'] }, '/invocations']] }` — the shape both
  *      `apigateway.LambdaIntegration({proxy: true})` and
- *      `apigatewayv2-authorizers.HttpLambdaAuthorizer` synthesize.
+ *      `apigatewayv2-authorizers.HttpLambdaAuthorizer` synthesize. The
+ *      response-streaming variant (`:lambda:path/2021-11-15/functions/`
+ *      ... `/response-streaming-invocations`, emitted for
+ *      `ResponseTransferMode: STREAM`) resolves the same way and sets
+ *      `streaming: true` on the outcome (#922).
  *   4. **`Fn::Sub` invoke-ARN** (issue #286 Gaps 3 / 4): hand-written /
  *      non-canonical CDK constructs may emit `Fn::Sub` instead of
  *      `Fn::Join`, e.g.
@@ -43,7 +47,18 @@
  * `detail` appended.
  */
 export type LambdaArnResolveOutcome =
-  | { kind: 'resolved'; logicalId: string }
+  | {
+      kind: 'resolved';
+      logicalId: string;
+      /**
+       * `true` when the value is the response-streaming invoke-ARN wrapper
+       * (`:lambda:path/2021-11-15/functions/<fn>/response-streaming-invocations`)
+       * — the URI API Gateway uses for a REST API Lambda proxy integration
+       * with `ResponseTransferMode: STREAM` (#922). Absent for the buffered
+       * `2015-03-31/.../invocations` wrapper and for bare `Ref` / `Fn::GetAtt`.
+       */
+      streaming?: boolean;
+    }
   | { kind: 'unsupported'; detail: string };
 
 /**
@@ -56,6 +71,28 @@ export type LambdaArnResolveOutcome =
  * unrelated intrinsic that happens to land on the same field.
  */
 const INVOKE_ARN_MARKER = ':lambda:path/2015-03-31/functions/';
+
+/**
+ * Marker substring of the **response-streaming** invoke ARN AWS documents
+ * for a REST API Lambda proxy integration with `ResponseTransferMode:
+ * STREAM` (API Gateway calls `InvokeWithResponseStream`):
+ * `arn:aws:apigateway:<region>:lambda:path/2021-11-15/functions/<fn-arn>/response-streaming-invocations`
+ * — https://docs.aws.amazon.com/apigateway/latest/developerguide/response-transfer-mode-lambda.html.
+ * CDK's `LambdaIntegration({ responseTransferMode: ResponseTransferMode.STREAM })`
+ * synthesizes it as the same `Fn::Join` shape as the buffered wrapper (#922).
+ */
+const STREAMING_INVOKE_ARN_MARKER = ':lambda:path/2021-11-15/functions/';
+
+/**
+ * Classify a literal invoke-ARN template fragment: `'streaming'` for the
+ * 2021-11-15 response-streaming wrapper, `'buffered'` for the 2015-03-31
+ * wrapper, `undefined` when neither marker is present.
+ */
+export function invokeArnMarkerKind(text: string): 'buffered' | 'streaming' | undefined {
+  if (text.includes(STREAMING_INVOKE_ARN_MARKER)) return 'streaming';
+  if (text.includes(INVOKE_ARN_MARKER)) return 'buffered';
+  return undefined;
+}
 
 /**
  * Resolve a Lambda ARN intrinsic to the Lambda's logical ID. Accepts
@@ -98,7 +135,8 @@ export function resolveLambdaArnIntrinsic(value: unknown): LambdaArnResolveOutco
       // entry, then pluck the GetAtt logical ID out of the parts list.
       const parts = join[1] as unknown[];
       const literalParts = parts.filter((p): p is string => typeof p === 'string').join('');
-      if (literalParts.includes(INVOKE_ARN_MARKER)) {
+      const markerKind = invokeArnMarkerKind(literalParts);
+      if (markerKind !== undefined) {
         for (const p of parts) {
           if (p && typeof p === 'object' && !Array.isArray(p)) {
             const inner = p as Record<string, unknown>;
@@ -109,7 +147,7 @@ export function resolveLambdaArnIntrinsic(value: unknown): LambdaArnResolveOutco
               typeof arg[0] === 'string' &&
               arg[1] === 'Arn'
             ) {
-              return { kind: 'resolved', logicalId: arg[0] };
+              return withStreaming({ kind: 'resolved', logicalId: arg[0] }, markerKind);
             }
           }
         }
@@ -177,7 +215,8 @@ function resolveFnSubInvokeArn(arg: unknown): LambdaArnResolveOutcome {
     };
   }
 
-  if (!template.includes(INVOKE_ARN_MARKER)) {
+  const markerKind = invokeArnMarkerKind(template);
+  if (markerKind === undefined) {
     return {
       kind: 'unsupported',
       detail: 'Fn::Sub template does not look like an invoke-ARN wrapper',
@@ -211,7 +250,7 @@ function resolveFnSubInvokeArn(arg: unknown): LambdaArnResolveOutcome {
       const logicalId = key.slice(0, dot);
       const attr = key.slice(dot + 1);
       if (attr === 'Arn') {
-        return { kind: 'resolved', logicalId };
+        return withStreaming({ kind: 'resolved', logicalId }, markerKind);
       }
       // `${X.SomeOtherAttr}` doesn't look like a Lambda ARN reference;
       // skip to the next placeholder.
@@ -230,7 +269,7 @@ function resolveFnSubInvokeArn(arg: unknown): LambdaArnResolveOutcome {
           typeof getAtt[0] === 'string' &&
           getAtt[1] === 'Arn'
         ) {
-          return { kind: 'resolved', logicalId: getAtt[0] };
+          return withStreaming({ kind: 'resolved', logicalId: getAtt[0] }, markerKind);
         }
       }
       // Var map entry didn't resolve to a `Fn::GetAtt: [..., 'Arn']`
@@ -244,4 +283,12 @@ function resolveFnSubInvokeArn(arg: unknown): LambdaArnResolveOutcome {
     detail:
       "Fn::Sub invoke-ARN template did not contain a recognizable ${LogicalId.Arn} placeholder or matching var-map entry with Fn::GetAtt: [..., 'Arn']",
   };
+}
+
+/** Tag a resolved outcome with `streaming: true` for the 2021-11-15 wrapper. */
+function withStreaming(
+  outcome: { kind: 'resolved'; logicalId: string },
+  markerKind: 'buffered' | 'streaming'
+): LambdaArnResolveOutcome {
+  return markerKind === 'streaming' ? { ...outcome, streaming: true } : outcome;
 }

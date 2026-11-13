@@ -163,3 +163,32 @@ describe('authorizer refusals render assembly-chosen identifiers (#761)', () => 
     );
   });
 });
+
+describe('resolveRestV1Authorizer — response-streaming URI is integration-only (#922)', () => {
+  it('refuses the 2021-11-15 response-streaming wrapper as an AuthorizerUri', () => {
+    const template = {
+      Resources: {
+        Auth: {
+          Type: 'AWS::ApiGateway::Authorizer',
+          Properties: {
+            Type: 'TOKEN',
+            IdentitySource: 'method.request.header.Authorization',
+            AuthorizerUri: {
+              'Fn::Join': [
+                '',
+                [
+                  'arn:aws:apigateway:us-east-1:lambda:path/2021-11-15/functions/',
+                  { 'Fn::GetAtt': ['AuthFn', 'Arn'] },
+                  '/response-streaming-invocations',
+                ],
+              ],
+            },
+          },
+        },
+      },
+    } as never;
+    expect(() =>
+      resolveRestV1Authorizer('Auth', template, STACK_NAME, `${STACK_NAME}/Method`)
+    ).toThrow(/only valid on a REST API Lambda proxy integration, not on an authorizer/);
+  });
+});

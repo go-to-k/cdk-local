@@ -599,6 +599,64 @@ describe('startApiServer — mockCors preflight', () => {
   });
 });
 
+describe('startApiServer — REST v1 ResponseTransferMode STREAM dispatch (#922)', () => {
+  beforeEach(() => {
+    invokeRieMock.mockReset();
+    invokeRieStreamingMock.mockReset();
+  });
+
+  it('streams a REST v1 STREAM method with the v1 proxy event and merges multiValueHeaders', async () => {
+    const { Readable } = await import('node:stream');
+    invokeRieStreamingMock.mockImplementation(async () => ({
+      prelude: {
+        statusCode: 201,
+        headers: { 'Content-Type': 'text/plain', 'X-Multi': 'dropped' },
+        multiValueHeaders: { 'x-multi': ['a', 'b'] },
+      },
+      body: Readable.from([Buffer.from('chunk-1|'), Buffer.from('chunk-2|')]),
+    }));
+    const route: RouteWithAuth = {
+      route: {
+        method: 'POST',
+        pathPattern: '/chat',
+        lambdaLogicalId: 'ChatFn',
+        source: 'rest-v1',
+        apiVersion: 'v1',
+        stage: 'prod',
+        apiLogicalId: 'Api',
+        apiStackName: 'S',
+        declaredAt: 'S/Method',
+        invokeMode: 'RESPONSE_STREAM',
+      },
+    };
+    const server = await startApiServer({
+      state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
+      rieTimeoutMs: 5000,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const r = await http(`http://${server.host}:${server.port}/chat`, {
+        method: 'POST',
+        body: 'hi',
+      });
+      expect(r.status).toBe(201);
+      expect(r.headers.get('transfer-encoding')).toBe('chunked');
+      expect(r.headers.get('x-multi')).toBe('a, b');
+      expect(await r.text()).toBe('chunk-1|chunk-2|');
+      expect(invokeRieMock).not.toHaveBeenCalled();
+      expect(invokeRieStreamingMock).toHaveBeenCalledTimes(1);
+      // Same input format as the buffered proxy integration: the v1 event.
+      const event = invokeRieStreamingMock.mock.calls[0]?.[2] as Record<string, unknown>;
+      expect(event['httpMethod']).toBe('POST');
+      expect(event['resource']).toBe('/chat');
+      expect(event['body']).toBe('hi');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
   beforeEach(() => {
     invokeRieMock.mockReset();
