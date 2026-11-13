@@ -1476,6 +1476,7 @@ export {
   REAL_SQS_QUEUE_URL,
   isRealAwsHost,
   realSqsHostnames,
+  repointLocalSqsQueueUrlsInEnv,
   rewriteSqsQueueUrlsInEnv,
   sqsEmulatorOriginOf,
 } from './local/aws-emulator-sqs-routing.js';

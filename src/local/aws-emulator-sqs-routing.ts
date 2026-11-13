@@ -32,10 +32,14 @@ export const REAL_SQS_QUEUE_URL =
   /^https?:\/\/(?:sqs\.[a-z0-9-]+|[a-z0-9-]+\.queue|queue)\.amazonaws\.com(?:\.cn)?\/([0-9]{12}\/[A-Za-z0-9_-]{1,80}(?:\.fifo)?)$/;
 
 /**
- * The AWS Regions whose SQS hosts are blocked, pinned (botocore
- * `endpoints.json`, the `aws`, `aws-cn` and `aws-us-gov` partitions). The
- * workload's own region, and the region of any queue URL in its environment,
- * are added at run time, so a Region newer than this list is covered there.
+ * The AWS Regions whose SQS hosts are blocked: every Region of the `aws`
+ * (commercial, opt-in Regions included), `aws-cn` and `aws-us-gov` partitions
+ * (40), pinned from the AWS SDK for JavaScript v3's partition data
+ * (`partitionsInfo` in `@aws-sdk/core` 3.981.0, `dist-cjs/submodules/client`).
+ * The workload's own region, and the region of any queue URL in its
+ * environment, are still added at run time, so a Region newer than this list
+ * is covered there. FIPS (`sqs-fips.*`) and dual-stack (`*.api.aws`) hosts
+ * are not blocked.
  */
 export const SQS_BLOCKED_REGIONS: readonly string[] = [
   'af-south-1',
@@ -68,8 +72,10 @@ export const SQS_BLOCKED_REGIONS: readonly string[] = [
   'il-central-1',
   'me-central-1',
   'me-south-1',
+  'me-west-1',
   'mx-central-1',
   'sa-east-1',
+  'sa-west-1',
   'us-east-1',
   'us-east-2',
   'us-gov-east-1',

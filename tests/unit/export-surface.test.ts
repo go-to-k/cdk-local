@@ -30,6 +30,7 @@ describe('package export surface', () => {
     expect(internalKeys.length).toBeGreaterThan(0);
     // Spot-check a few internal-only helpers a shim host consumes.
     expect(internal).toHaveProperty('pickRefLogicalId');
+    expect(internal).toHaveProperty('repointLocalSqsQueueUrlsInEnv');
     expect(internal).toHaveProperty('resolveLambdaArnIntrinsic');
     // Issue #570: the two credential-error policy entry points. Their JSDoc in
     // `src/internal.ts` advertises them as a host-reuse contract, which is not

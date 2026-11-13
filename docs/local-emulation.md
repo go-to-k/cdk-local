@@ -260,7 +260,8 @@ runs a command against a local AWS Emulator. The URL defaults to
   the container's `/etc/hosts` maps the real SQS host names
   (`sqs.<region>.amazonaws.com`, `<region>.queue.amazonaws.com` and
   `queue.amazonaws.com`, `amazonaws.com.cn` in China, for every Region
-  cdk-local knows plus the container's own and any a queue URL in its env
+  of the `aws`, `aws-cn` and `aws-us-gov` partitions (40, from the AWS SDK's
+  partition data) plus the container's own and any a queue URL in its env
   names) to `127.0.0.1`, so the SDK's connection is refused before a signed
   request is sent. Not covered: the FIPS and dual-stack hosts
   (`sqs-fips.<region>.amazonaws.com`, `sqs.<region>.api.aws`), which AWS
