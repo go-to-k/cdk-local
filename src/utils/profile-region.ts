@@ -32,6 +32,19 @@ export async function resolveContainerRegion(sources: {
 }
 
 /**
+ * Give a Lambda-shaped container its region: BOTH `AWS_REGION` and
+ * `AWS_DEFAULT_REGION`, as the Lambda service sets both. Writing only the
+ * first would leave a forwarded host `AWS_DEFAULT_REGION` naming another
+ * region beside it, and boto3 reads the second (go-to-k/cdk-local#926). A
+ * no-op for an absent region.
+ */
+export function setContainerRegion(env: Record<string, string>, region: string | undefined): void {
+  if (!region) return;
+  env['AWS_REGION'] = region;
+  env['AWS_DEFAULT_REGION'] = region;
+}
+
+/**
  * The region the SDK's default provider chain resolves for `profile`, or for
  * the default profile (`AWS_PROFILE`, else `default`) when none is given.
  * Unlike {@link resolveProfileRegion} it does not need a named profile.

@@ -22,7 +22,7 @@ import { displayUntrustedValue, isPasteableCommandArg } from './assembly-path.js
  * `AWS_REGION` / `AWS_DEFAULT_REGION` env) yields `region: undefined`
  * rather than throwing — a missing region is not a missing-credentials
  * error. The caller layers this region behind other sources via
- * `resolveContainerFallbackRegion`.
+ * `resolveContainerRegion` (`src/utils/profile-region.ts`).
  */
 export async function resolveProfileCredentials(profile: string): Promise<{
   accessKeyId: string;

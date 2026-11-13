@@ -21,7 +21,7 @@ import {
   applyWorkloadEnvCredentials,
   warnWorkloadCredentialsStripped,
 } from '../../utils/workload-identity.js';
-import { resolveContainerFallbackRegion } from './local-start-api.js';
+import { resolveContainerRegion, setContainerRegion } from '../../utils/profile-region.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import {
@@ -1280,10 +1280,19 @@ async function resolveLambdaContainerEnvWith(
     AWS_LAMBDA_LOG_STREAM_NAME: 'local',
     ...dynamic.env,
   };
+  // The region the container runs in, which is also the `--assume-role` STS
+  // hop's region: `--region`, the host variables, `--stack-region` or the
+  // stack's own region, the loaded state record's, then the profile's (the
+  // default profile without `--profile`), as on ECS (go-to-k/cdk-local#926).
+  const containerRegion = await resolveContainerRegion({
+    region: options.region,
+    stackRegion: options.stackRegion ?? lambda.stack.region,
+    stateRegion: ownerRegion,
+    profile: options.profile,
+  });
   let assumeSucceeded = false;
   if (resolvedAssumeRoleArn) {
-    const stsRegion =
-      options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
+    const stsRegion = containerRegion;
     try {
       const creds = await assumeRoleCredentials({
         roleArn: resolvedAssumeRoleArn,
@@ -1294,7 +1303,6 @@ async function resolveLambdaContainerEnvWith(
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-      if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
       assumeSucceeded = true;
     } catch (err) {
       // Issue #570: not on the issue's list of six, but the same class --
@@ -1332,14 +1340,9 @@ async function resolveLambdaContainerEnvWith(
       warnWorkloadCredentialsStripped();
     }
   }
-  if (!dockerEnv['AWS_REGION'] && !dockerEnv['AWS_DEFAULT_REGION']) {
-    const fallbackRegion = resolveContainerFallbackRegion({
-      stackRegionOverride: options.region,
-      synthRegion: lambda.stack.region,
-      profileRegion: profileCredentials?.region,
-    });
-    if (fallbackRegion) dockerEnv['AWS_REGION'] = fallbackRegion;
-  }
+  // On both credential arms, after the forwarded host variables: `--region`
+  // outranks a shell `AWS_REGION` (go-to-k/cdk-local#926).
+  setContainerRegion(dockerEnv, containerRegion);
 
   return {
     env: dockerEnv,
