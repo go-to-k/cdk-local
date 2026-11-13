@@ -51,12 +51,7 @@ import { isLoopbackHostname } from '../utils/loopback-host.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { describeCredentialLoadFailure } from './credential-error.js';
-import {
-  awsEmulatorRealServices,
-  getAwsEmulatorServiceRouting,
-  setAwsEmulatorServiceRouting,
-  setAwsEndpointOverride,
-} from '../utils/aws-proxy.js';
+import { setAwsEmulatorServiceRouting, setAwsEndpointOverride } from '../utils/aws-proxy.js';
 import { assumedRoleRecorded } from '../utils/workload-identity.js';
 import type { CallerCredentials } from '../utils/workload-identity.js';
 import type { AwsCredentialIdentityProvider } from '@smithy/types';
@@ -895,6 +890,8 @@ export async function resolveWorkloadAwsWiring(
           AWS_ENDPOINT_URL: ep.url,
           AWS_EC2_METADATA_DISABLED: 'true',
           AWS_DISABLE_HOST_PREFIX_INJECTION: 'true',
+          // Forced: an image-baked setting must not make the SDK skip the endpoint.
+          AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: 'false',
           ...(ca?.env ?? {}),
           ...(java?.env ?? {}),
         },
@@ -1098,7 +1095,9 @@ export function applyWorkloadAwsWiringToEnv(
     // only, never the real identity (nor an ECS task-role URI to it).
     for (const k of EMULATOR_SCRUBBED_ENV_KEYS) delete out[k];
     delete out['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
-    delete out['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'];
+    // `false`, not removed: an image-baked ENV or an in-image config file
+    // could otherwise make the SDK skip the endpoint variables.
+    out['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'] = 'false';
     for (const [k, v] of Object.entries(wiring.env)) {
       if (out[k] === undefined) out[k] = v;
     }
@@ -1106,7 +1105,10 @@ export function applyWorkloadAwsWiringToEnv(
   } else {
     // A mixed-mode container holds the real identity: an SDK told to ignore
     // the endpoint variables would send every service to real AWS with it.
-    if (wiring.mixed) delete out['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'];
+    // `false`, not removed: an image-baked `ENV` or an in-image config file
+    // (`ignore_configured_endpoint_urls`) would otherwise stay in force; the
+    // env variable outranks the config file in every SDK.
+    if (wiring.mixed) out['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS'] = 'false';
     for (const [k, v] of Object.entries(wiring.env)) {
       if (out[k] === undefined) out[k] = v;
     }
@@ -1146,28 +1148,6 @@ export function workloadGetsEmulatorKeysOnly(
   return (
     wiring.mode === 'emulator' || (wiring.mixed !== undefined && !envKeepsRealAwsException(env))
   );
-}
-
-/**
- * The credentials an ECS metadata sidecar serves in AWS Emulator mixed mode
- * when NO container among `containerNames` keeps a `"real-aws"` exception (by
- * the `--env-vars` sections, `Parameters` included): the emulator's keys, so
- * no container can read the real identity from the metadata endpoint.
- * `undefined` outside mixed mode, or when some container needs the real one.
- *
- * Host-side use case: a host's own ECS metadata sidecar.
- */
-export function mixedModeSidecarEmulatorCredentials(
-  containerNames: readonly string[]
-): CallerCredentials | undefined {
-  const mixed = active?.mixed;
-  if (!mixed) return undefined;
-  const real = getAwsEmulatorServiceRouting();
-  if (!real) return undefined;
-  const needsReal = containerNames.some(
-    (containerName) => (awsEmulatorRealServices({ containerName }) ?? []).length > 0
-  );
-  return needsReal ? undefined : mixed.emulatorCredentials;
 }
 
 /**

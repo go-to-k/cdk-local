@@ -143,6 +143,17 @@ export interface RunEcsTaskOptions {
    * injected by tests for deterministic ports.
    */
   allocateHostPort?: () => Promise<number>;
+  /**
+   * AWS Emulator mixed mode: the assumed task role's REAL credentials. The
+   * metadata sidecar then serves the emulator's keys (`taskCredentials`), and
+   * only a container that keeps a `"real-aws"` exception gets these, as env
+   * keys, so no other container can read the real role from 169.254.170.2.
+   */
+  mixedModeRoleCredentials?: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
   /** Optional STS-issued temp credentials to expose via the metadata sidecar (`--assume-task-role`). */
   taskCredentials?: {
     accessKeyId: string;
@@ -767,6 +778,9 @@ export async function runEcsTask(
       platformOverride: options.platformOverride,
       region: options.region,
       sidecarIp: state.network.sidecarIp,
+      ...(options.mixedModeRoleCredentials && {
+        mixedModeRoleCredentials: options.mixedModeRoleCredentials,
+      }),
       ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
       ...(effectiveHostPortOverrides ? { hostPortOverrides: effectiveHostPortOverrides } : {}),
       ...(autoRemappedContainerPorts ? { autoRemappedContainerPorts } : {}),
@@ -1361,6 +1375,12 @@ interface BuildDockerRunArgs {
    * point at their own sidecar instance.
    */
   sidecarIp?: string;
+  /** {@link RunEcsTaskOptions.mixedModeRoleCredentials}. */
+  mixedModeRoleCredentials?: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
   /**
    * Issue #585 — when true, omit EVERY `-p <hostPort>:<containerPort>`
    * flag. Set by `cdkl start-service` for multi-replica services
@@ -1789,6 +1809,20 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     ...(opts.sidecarIp !== undefined && { sidecarIp: opts.sidecarIp }),
   });
   Object.assign(finalEnv, metaEnv);
+  // Mixed mode with a task role: the sidecar serves the emulator's keys, and
+  // the real role reaches only a container that keeps an exception, as env.
+  if (
+    opts.mixedModeRoleCredentials &&
+    wiring?.mixed &&
+    !workloadGetsEmulatorKeysOnly(previewEnv, wiring)
+  ) {
+    delete finalEnv['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    finalEnv['AWS_ACCESS_KEY_ID'] = opts.mixedModeRoleCredentials.accessKeyId;
+    finalEnv['AWS_SECRET_ACCESS_KEY'] = opts.mixedModeRoleCredentials.secretAccessKey;
+    if (opts.mixedModeRoleCredentials.sessionToken) {
+      finalEnv['AWS_SESSION_TOKEN'] = opts.mixedModeRoleCredentials.sessionToken;
+    }
+  }
   // Point the container's SDK chain at the bind-mounted credentials file
   // so `fromIni({ profile })` calls inside
   // the handler resolve to the same creds. `AWS_PROFILE` makes

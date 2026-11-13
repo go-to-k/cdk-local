@@ -131,8 +131,9 @@ runs a command against a local AWS Emulator. The URL defaults to
   resource is dropped with a warning, and one hint follows: pass
   `--from-cfn-stack` (a stack deployed into the emulator with `cdk deploy`),
   a host CLI's `--from-state`, or `--env-vars`.
-- Containers get `AWS_ENDPOINT_URL=<url>`, `AWS_EC2_METADATA_DISABLED=true`
-  and `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, and only the emulator's
+- Containers get `AWS_ENDPOINT_URL=<url>`, `AWS_EC2_METADATA_DISABLED=true`,
+  `AWS_DISABLE_HOST_PREFIX_INJECTION=true` and
+  `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=false`, and only the emulator's
   credentials: the keys in `~/.aws/emulator/<port>/emulator_credentials`,
   or fixed placeholder keys when that file is missing but the emulator is
   healthy (it runs with `--auth off`; cdk-local says so in one line). Host

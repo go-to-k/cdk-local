@@ -219,8 +219,9 @@ runs a command against a local AWS Emulator. The URL defaults to
   emulator with `cdk deploy`), a host CLI's `--from-state` (a stack deployed
   into the emulator with that host's own deploy), or set the values with
   `--env-vars`.
-- Containers get `AWS_ENDPOINT_URL=<url>`, `AWS_EC2_METADATA_DISABLED=true`
-  and `AWS_DISABLE_HOST_PREFIX_INJECTION=true`, and only the emulator's
+- Containers get `AWS_ENDPOINT_URL=<url>`, `AWS_EC2_METADATA_DISABLED=true`,
+  `AWS_DISABLE_HOST_PREFIX_INJECTION=true` and
+  `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=false`, and only the emulator's
   credentials: the keys in `~/.aws/emulator/<port>/emulator_credentials`,
   or fixed placeholder keys when that file is missing but the emulator is
   healthy (it runs with `--auth off`; cdk-local says so in one line). Host
@@ -296,8 +297,8 @@ call reaches the emulator, never a shared real environment. That holds for an
 SDK that reads `AWS_ENDPOINT_URL` (the AWS SDK for JavaScript v3, boto3, Go v2,
 Java 2.x); an older SDK that does not (JavaScript v2, Go v1, Java 1.x) would
 send its calls to real AWS with the real identity, so keep such a workload out
-of mixed mode. cdk-local removes `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS` from a
-mixed-mode container for the same reason.
+of mixed mode. cdk-local sets `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=false` in every
+`--aws-emulator` container for the same reason.
 
 Two setups this is made for:
 
@@ -373,9 +374,12 @@ The rules:
   without `--aws-emulator` (the default chain, `--profile` or
   `--assume-role`), because its excepted services need it; a container whose
   env keeps none still gets the emulator's keys only, and no `--profile`
-  credentials file or ECS task-role endpoint either. An ECS task's metadata
-  endpoint serves one identity for the whole task: the real one when any
-  container the run serves keeps an exception, else the emulator's keys. Your shell's
+  credentials file or ECS task-role endpoint either. An ECS metadata endpoint
+  (`169.254.170.2`, which every container of a task reaches) serves only the
+  emulator's keys in mixed mode; an assumed task role reaches only the
+  containers that keep an exception, as env keys. Every `--aws-emulator`
+  container gets `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=false`, so a setting
+  baked into the image cannot make its SDK skip the endpoints. Your shell's
   `AWS_ENDPOINT_URL*` values are not forwarded in mixed mode, so no host
   variable can take a service around the emulator.
 - **Every other request is signed again.** The container's global

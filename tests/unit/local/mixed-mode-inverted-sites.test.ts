@@ -29,7 +29,6 @@ vi.mock('@aws-sdk/client-cloudfront', async (orig) => ({
 
 const {
   applyWorkloadAwsWiringToEnv,
-  mixedModeSidecarEmulatorCredentials,
   workloadGetsEmulatorKeysOnly,
   resetAwsEmulatorStateSourceHintForTest,
   resetWorkloadAwsWiringForTest,
@@ -46,6 +45,8 @@ const { accountLookupStsClientConfig } = await import('../../../src/utils/worklo
 const { resetEmbedConfig, setEmbedConfig } = await import('../../../src/local/embed-config.js');
 const { resolveEcsTaskTarget } = await import('../../../src/local/ecs-task-resolver.js');
 const { withWorkloadAwsWiring } = await import('../../../src/local/docker-runner.js');
+const { buildDockerRunArgs } = await import('../../../src/local/ecs-task-runner.js');
+const { resolveSharedSidecarCredentials } = await import('../../../src/cli/commands/ecs-service-emulator.js');
 const { resolveDeployedOriginBucket } = await import(
   '../../../src/local/cloudfront-distribution-config.js'
 );
@@ -265,7 +266,7 @@ describe('a mixed-mode container keeping no exception reaches no real credential
       );
       expect(none.extraMounts!.some((m) => m.containerPath === credsMount.containerPath)).toBe(false);
       expect(none.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI']).toBeUndefined();
-      expect(none.env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS']).toBeUndefined();
+      expect(none.env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS']).toBe('false');
       expect(none.env['AWS_ACCESS_KEY_ID']).toBe(EMU_KEY.accessKeyId);
 
       const kept = await withWorkloadAwsWiring(
@@ -283,7 +284,7 @@ describe('a mixed-mode container keeping no exception reaches no real credential
       expect(kept.extraMounts!.some((m) => m.containerPath === credsMount.containerPath)).toBe(true);
       expect(kept.env['AWS_ACCESS_KEY_ID']).toBe('AKIAREAL');
       // The real identity must not meet an SDK told to ignore the endpoint variables.
-      expect(kept.env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS']).toBeUndefined();
+      expect(kept.env['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS']).toBe('false');
     } finally {
       w.dispose();
     }
@@ -305,13 +306,81 @@ describe('a mixed-mode container keeping no exception reaches no real credential
     }
   });
 
-  it('the ECS metadata sidecar serves the emulator keys unless some container keeps an exception', async () => {
+  it('ECS with a task role: only a container keeping an exception gets the real role, as env; others get the emulator keys and no role URI', async () => {
     const w = await wiring({ app: { AWS_ENDPOINT_URL_STS: 'real-aws' } });
     setActiveWorkloadAwsWiring(w);
-    routeMixed({ app: { AWS_ENDPOINT_URL_STS: 'real-aws' } });
-    expect(mixedModeSidecarEmulatorCredentials(['worker'])).toEqual(EMU_KEY);
-    expect(mixedModeSidecarEmulatorCredentials(['app', 'worker'])).toBeUndefined();
-    routeMixed({ Parameters: { AWS_ENDPOINT_URL_STS: 'real-aws' } });
-    expect(mixedModeSidecarEmulatorCredentials(['worker'])).toBeUndefined();
+    const role = { accessKeyId: 'ASIAROLE', secretAccessKey: 'role-secret', sessionToken: 'role-tok' };
+    const container = (name: string) =>
+      ({
+        name,
+        image: { kind: 'public', uri: 'busybox' },
+        environment: { AWS_REGION: 'us-east-1' },
+        sensitiveEnvKeys: [],
+        secrets: [],
+        portMappings: [],
+        mountPoints: [],
+        dependsOn: [],
+        links: [],
+        essential: true,
+        ulimits: [],
+        warnings: [],
+      }) as never;
+    const build = (name: string) =>
+      buildDockerRunArgs({
+        task: { family: 'fam' } as never,
+        container: container(name),
+        image: 'busybox',
+        network: 'net',
+        volumeByName: new Map(),
+        secrets: [],
+        envOverrides: { app: { AWS_ENDPOINT_URL_STS: 'real-aws' } },
+        containerHost: '127.0.0.1',
+        roleArn: 'arn:aws:iam::111111111111:role/task',
+        platformOverride: undefined,
+        region: 'us-east-1',
+        mixedModeRoleCredentials: role,
+      });
+    const all = (r: ReturnType<typeof build>) => [
+      ...r.args,
+      ...Object.entries(r.sensitiveEnv).map(([k, v]) => `${k}=${v}`),
+    ];
+    const app = all(build('app'));
+    expect(app).toContain('AWS_ACCESS_KEY_ID=ASIAROLE');
+    expect(app).toContain('AWS_SESSION_TOKEN=role-tok');
+    expect(app.some((a) => a.startsWith('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI='))).toBe(false);
+    expect(app).toContain('AWS_ENDPOINT_URL_STS=https://sts.us-east-1.amazonaws.com');
+    const worker = all(build('worker'));
+    expect(worker).toContain(`AWS_ACCESS_KEY_ID=${EMU_KEY.accessKeyId}`);
+    expect(worker.some((a) => a.includes('ASIAROLE') || a.includes('role-secret'))).toBe(false);
+    expect(worker.some((a) => a.startsWith('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI='))).toBe(false);
+    w.dispose();
+  });
+
+  it('the shared ECS metadata sidecar serves the emulator keys in mixed mode', async () => {
+    const w = await wiring({ app: { AWS_ENDPOINT_URL_STS: 'real-aws' } }, 9393);
+    setActiveWorkloadAwsWiring(w);
+    expect(await resolveSharedSidecarCredentials({ profile: 'prod' })).toEqual(EMU_KEY);
+    w.dispose();
+  });
+
+  it('forces AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=false in every --aws-emulator container', async () => {
+    const full = await wiring(undefined, 9391);
+    const mixed = await wiring({ Parameters: { AWS_ENDPOINT_URL_STS: 'real-aws' } }, 9392);
+    try {
+      for (const [w, env] of [
+        [full, {}],
+        [mixed, {}],
+        [mixed, { AWS_ENDPOINT_URL_STS: 'real-aws' }],
+      ] as const) {
+        const out = applyWorkloadAwsWiringToEnv(
+          { ...env, AWS_REGION: 'us-east-1', AWS_IGNORE_CONFIGURED_ENDPOINT_URLS: 'true' },
+          w
+        );
+        expect(out['AWS_IGNORE_CONFIGURED_ENDPOINT_URLS']).toBe('false');
+      }
+    } finally {
+      full.dispose();
+      mixed.dispose();
+    }
   });
 });
