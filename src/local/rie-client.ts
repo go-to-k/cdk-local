@@ -1,3 +1,4 @@
+import { request as httpRequest } from 'node:http';
 import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { formatAuthority } from '../utils/url-authority.js';
@@ -186,7 +187,7 @@ export async function invokeRie(
 
   let response: Response;
   try {
-    response = await fetchWithStartupRetry(url, body, controller.signal);
+    response = await fetchWithStartupRetry(url, body, controller.signal, undefined, timeoutMs);
   } catch (err) {
     if ((err as { name?: string }).name === 'AbortError') {
       throw new Error(
@@ -229,17 +230,29 @@ async function fetchWithStartupRetry(
   url: string,
   body: string,
   signal: AbortSignal,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string>,
+  timeoutMs?: number
 ): Promise<Response> {
   const maxAttempts = 3;
+  const headers = { 'Content-Type': 'application/json', ...extraHeaders };
+  // Node's global `fetch` (undici) gives up on a response whose headers or
+  // body stall for 300 s (`headersTimeout` / `bodyTimeout`) with a
+  // `TypeError: fetch failed` that is NOT an AbortError — this loop would
+  // then re-POST the same event while the first invoke is still running.
+  // A deadline past that (a long `Timeout`, or the lifted debugger timeout
+  // of go-to-k/cdk-local#948 while paused at a breakpoint) goes through
+  // `node:http`, which has no such client-side timeout; the caller's
+  // AbortSignal stays the only deadline.
+  const longWait = timeoutMs !== undefined && timeoutMs > UNDICI_DEFAULT_TIMEOUT_MS;
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
+      if (longWait) return await postWithoutClientTimeout(url, body, headers, signal);
       // proxy-audit: ignore: a loopback Docker container on this host — routing it
       // through the developer's forward proxy would break the local run, not fix it.
       return await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...extraHeaders },
+        headers,
         body,
         signal,
       });
@@ -252,6 +265,55 @@ async function fetchWithStartupRetry(
     }
   }
   throw lastError;
+}
+
+/** undici's default `headersTimeout` / `bodyTimeout` for Node's global `fetch`. */
+const UNDICI_DEFAULT_TIMEOUT_MS = 300_000;
+
+/**
+ * POST via `node:http` and wrap the reply as a WHATWG `Response`, so the
+ * callers read it exactly like a `fetch` result (`.text()` / `.body`).
+ * No client-side timeout: the AbortSignal is the deadline. A connection
+ * error before any response rejects with the socket error (retried by the
+ * caller like `fetch failed`); an abort rejects with an `AbortError`.
+ */
+function postWithoutClientTimeout(
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+  signal: AbortSignal
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    // proxy-audit: ignore: a loopback Docker container on this host — routing it
+    // through the developer's forward proxy would break the local run, not fix it.
+    const req = httpRequest(
+      url,
+      {
+        method: 'POST',
+        headers: { ...headers, 'Content-Length': String(Buffer.byteLength(body)) },
+        signal,
+      },
+      (res) => {
+        const responseHeaders = new Headers();
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (v === undefined) continue;
+          for (const one of Array.isArray(v) ? v : [v]) responseHeaders.append(k, one);
+        }
+        const status = res.statusCode ?? 502;
+        // `Response` refuses a body on a null-body status.
+        const nullBody = status === 204 || status === 205 || status === 304;
+        if (nullBody) res.resume();
+        resolve(
+          new Response(nullBody ? null : (Readable.toWeb(res) as ReadableStream<Uint8Array>), {
+            status,
+            headers: responseHeaders,
+          })
+        );
+      }
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 /**
@@ -409,9 +471,13 @@ export async function invokeRieStreaming(
 
   let response: Response;
   try {
-    response = await fetchWithStartupRetry(url, body, controller.signal, {
-      'Lambda-Runtime-Function-Response-Mode': 'streaming',
-    });
+    response = await fetchWithStartupRetry(
+      url,
+      body,
+      controller.signal,
+      { 'Lambda-Runtime-Function-Response-Mode': 'streaming' },
+      timeoutMs
+    );
   } catch (err) {
     clearTimeout(timer);
     if ((err as { name?: string }).name === 'AbortError') {

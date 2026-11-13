@@ -248,8 +248,9 @@ export function getDockerImageBySourceHash(
  * `repositoryName`s. Either side may still carry `${AWS::...}` placeholders
  * (`${AWS::AccountId}` / `${AWS::Region}`) — the template body and the
  * manifest are written by the same synthesizer, but a resolver may have
- * substituted some pseudo parameters on the URI side — so a pseudo parameter
- * on either side matches any non-empty run of characters on the other.
+ * substituted some of them on the URI side, and the two sides can each keep
+ * a different one — so a pseudo parameter on either side matches any
+ * non-empty run of characters on the other.
  */
 function imageUriTargetsAssetRepository(imageUri: string, asset: DockerImageAsset): boolean {
   const repo = extractRepositoryFromImageUri(imageUri);
@@ -257,9 +258,7 @@ function imageUriTargetsAssetRepository(imageUri: string, asset: DockerImageAsse
   for (const dest of Object.values(asset.destinations ?? {})) {
     const name = dest?.repositoryName;
     if (typeof name !== 'string' || name.length === 0) continue;
-    if (placeholderPatternMatches(name, repo) || placeholderPatternMatches(repo, name)) {
-      return true;
-    }
+    if (pseudoParameterPatternsOverlap(name, repo)) return true;
   }
   return false;
 }
@@ -284,18 +283,48 @@ function extractRepositoryFromImageUri(imageUri: string): string | undefined {
   return path.length > 0 ? path : undefined;
 }
 
+/** Stands for one `${AWS::...}` pseudo parameter in a tokenized repository name. */
+const PSEUDO_PARAMETER = Symbol('pseudo-parameter');
+
 /**
- * Whether `value` matches `pattern`, where each `${AWS::...}` pseudo
- * parameter in `pattern` stands for any non-empty run of characters other
- * than `/`. Any other `${...}` (e.g. a `${MyRepo}` resource reference) is
- * compared literally, so it can never widen into a wildcard.
+ * Whether two repository names can denote the same repository, where each
+ * `${AWS::...}` pseudo parameter on EITHER side stands for any non-empty run
+ * of characters other than `/` on the other (so `a-123-${AWS::Region}` and
+ * `a-${AWS::AccountId}-us-east-1` overlap). Any other `${...}` (e.g. a
+ * `${MyRepo}` resource reference) is compared literally, so it can never
+ * widen into a wildcard.
  */
-function placeholderPatternMatches(pattern: string, value: string): boolean {
-  const source = pattern
-    .split(/\$\{AWS::[^}]*\}/)
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('[^/]+');
-  return new RegExp(`^${source}$`).test(value);
+function pseudoParameterPatternsOverlap(a: string, b: string): boolean {
+  const ta = tokenizePseudoParameters(a);
+  const tb = tokenizePseudoParameters(b);
+  const memo = new Map<number, boolean>();
+  const match = (i: number, j: number): boolean => {
+    if (i === ta.length || j === tb.length) return i === ta.length && j === tb.length;
+    const key = i * (tb.length + 1) + j;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+    let result = false;
+    if (ta[i] === PSEUDO_PARAMETER) {
+      for (let k = j; k < tb.length && tb[k] !== '/' && !result; k++) result = match(i + 1, k + 1);
+    } else if (tb[j] === PSEUDO_PARAMETER) {
+      for (let k = i; k < ta.length && ta[k] !== '/' && !result; k++) result = match(k + 1, j + 1);
+    } else {
+      result = ta[i] === tb[j] && match(i + 1, j + 1);
+    }
+    memo.set(key, result);
+    return result;
+  };
+  return match(0, 0);
+}
+
+function tokenizePseudoParameters(value: string): (string | typeof PSEUDO_PARAMETER)[] {
+  const tokens: (string | typeof PSEUDO_PARAMETER)[] = [];
+  const parts = value.split(/\$\{AWS::[^}]*\}/);
+  parts.forEach((part, index) => {
+    if (index > 0) tokens.push(PSEUDO_PARAMETER);
+    tokens.push(...Array.from(part));
+  });
+  return tokens;
 }
 
 /**

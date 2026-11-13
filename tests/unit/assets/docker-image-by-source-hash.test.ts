@@ -59,6 +59,19 @@ describe('getDockerImageBySourceHash', () => {
     expect(getDockerImageBySourceHash(m, `${ASSET_URI_BODY}:custom`)?.hash).toBe(HASH);
   });
 
+  it('falls back when each side keeps a DIFFERENT pseudo parameter', () => {
+    const m = manifest('cdk-hnb659fds-container-assets-123456789012-${AWS::Region}');
+    const uri =
+      '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdk-hnb659fds-container-assets-${AWS::AccountId}-us-east-1:custom';
+    expect(getDockerImageBySourceHash(m, uri)?.hash).toBe(HASH);
+  });
+
+  it('a pseudo parameter never spans a path separator', () => {
+    const m = manifest('cdk-${AWS::AccountId}');
+    const uri = '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdk-team/repo:custom';
+    expect(getDockerImageBySourceHash(m, uri)).toBeUndefined();
+  });
+
   it.each([
     ['a literal ECR URI', '123456789012.dkr.ecr.us-east-1.amazonaws.com/some-repo:latest'],
     ['a literal ECR digest pin', `123456789012.dkr.ecr.us-east-1.amazonaws.com/some-repo@sha256:${'b'.repeat(64)}`],
