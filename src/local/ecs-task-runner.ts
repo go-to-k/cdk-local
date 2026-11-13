@@ -62,6 +62,7 @@ import type { LoopbackForwarderNamespace } from './loopback-forwarder.js';
 import {
   workloadGetsEmulatorKeysOnly,
   applyWorkloadAwsWiringToEnv,
+  awsEmulatorSqsHostBlocks,
   effectiveLoopbackPorts,
   getActiveWorkloadAwsWiring,
 } from './workload-aws-wiring.js';
@@ -1907,6 +1908,14 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
       finalEnv,
       wiring.mode === 'emulator' ? wiring : { ...wiring, env: {} }
     );
+    // Under --aws-emulator, a real SQS host is unreachable from a container
+    // whose SQS goes to the emulator (go-to-k/cdk-local#947). On a joiner the
+    // entries go to the namespace owner, whose `/etc/hosts` it shares.
+    for (const h of awsEmulatorSqsHostBlocks(finalEnv, wiring)) {
+      const mapping = `${h.host}:${h.ip}`;
+      args.push('--add-host', mapping);
+      ownerAddHosts.push(mapping);
+    }
   }
 
   // Resolved secret values (and any AWS credentials that landed in the

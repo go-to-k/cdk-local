@@ -209,9 +209,16 @@ runs a command against a local AWS Emulator. The URL defaults to
   trust. Every other service goes straight to the emulator. A container's own
   `AWS_ENDPOINT_URL_SQS` wins. On the host network, with a plain http URL
   or with no run `ca.pem`, no sidecar runs and SQS uses `AWS_ENDPOINT_URL`:
-  the AWS SDK for JavaScript v3 then follows the queue URL to real SQS, which
-  refuses the emulator's keys (pass `useQueueUrlAsEndpoint: false` to its
-  `SQSClient` there).
+  the AWS SDK for JavaScript v3's call to a real-shaped queue URL from an
+  answer is then refused inside the container (pass
+  `useQueueUrlAsEndpoint: false` to its `SQSClient` there).
+- A container env value that is exactly a real SQS queue URL is rewritten to
+  the same queue on the container's SQS endpoint, and every real SQS host
+  name maps to `127.0.0.1` in the container's `/etc/hosts`, so a queue URL
+  read at run time (SSM, Secrets Manager, a file) fails closed instead of
+  reaching real SQS (go-to-k/cdk-local#947; a container whose SQS is
+  excepted to real AWS gets neither). See
+  [local-emulation.md](local-emulation.md#--aws-emulator-url) for what is covered.
 - For Java, when the URL is https and the run wrote a `truststore.p12`, a
   trust store holding the run's CA (and the SQS sidecar's CA) is mounted
   read-only at `/cdk-local-aws/truststore.p12` and `JAVA_TOOL_OPTIONS` gets

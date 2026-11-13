@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   REAL_AWS_SENTINEL,
   createMixedModeStateProvider,
+  describeRealAwsExceptions,
   findLegacyAwsEmulatorSentinels,
   findRealAwsExceptions,
   readAwsEmulatorEnvVarsFile,
@@ -173,11 +174,74 @@ describe('validateAwsEmulatorEnvVars', () => {
     }
   });
 
+  // go-to-k/cdk-local#949: a case variant reached the container as a literal endpoint.
+  it('refuses a case variant of a sentinel in both modes, naming the exact spelling', () => {
+    for (const on of [true, false]) {
+      for (const v of ['REAL-AWS', 'Real-AWS', ' real-AWS ']) {
+        const s = { ...scanOf({ Fn: { AWS_ENDPOINT_URL_DYNAMODB: v } }), overrides: { Fn: { AWS_ENDPOINT_URL_DYNAMODB: v } } };
+        expect(() => validateAwsEmulatorEnvVars(s, on), v).toThrow(
+          `to "${v.trim()}", which is not the exception value "real-aws": it is matched exactly, in lowercase, ` +
+            `so the SDKs would read "${v.trim()}" as the endpoint URL. Write "real-aws".`
+        );
+      }
+      const legacy = { Fn: { AWS_ENDPOINT_URL_DYNAMODB: 'AWS-Emulator' } };
+      expect(() => validateAwsEmulatorEnvVars({ ...scanOf(legacy), overrides: legacy }, on)).toThrow(
+        /no longer supported/
+      );
+    }
+    // The scan readAwsEmulatorEnvVarsFile returns carries the file, so activation refuses it too.
+    const dir = mkdtempSync(path.join(tmpdir(), 'cdkl-949-'));
+    try {
+      const f = path.join(dir, 'a.json');
+      writeFileSync(f, JSON.stringify({ 'Stack/NodeFn': { AWS_ENDPOINT_URL_DYNAMODB: 'REAL-AWS' } }));
+      expect(() => validateAwsEmulatorEnvVars(readAwsEmulatorEnvVarsFile(f), true)).toThrow(/Write "real-aws"/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('under --aws-emulator refuses any other endpoint value that is not an http(s) URL, without quoting it', () => {
+    const file = { Parameters: { AWS_ENDPOINT_URL_SQS: 'localhost:4566' } };
+    expect(() => validateAwsEmulatorEnvVars({ ...scanOf(file), overrides: file }, true)).toThrow(
+      /AWS_ENDPOINT_URL_SQS under "?Parameters"? to a value that is neither "real-aws" nor an http\(s\) URL/
+    );
+    expect(() => validateAwsEmulatorEnvVars({ ...scanOf(file), overrides: file }, true)).not.toThrow(/localhost/);
+    // Without --aws-emulator a literal value is the user's own endpoint, as before.
+    expect(() => validateAwsEmulatorEnvVars({ ...scanOf(file), overrides: file }, false)).not.toThrow();
+    for (const bad of ['  ', 'http://', 'https:///x', 'http:localhost', ' https://127.0.0.1:1', 'https://h/ x']) {
+      const f = { Parameters: { AWS_ENDPOINT_URL_SQS: bad } };
+      expect(() => validateAwsEmulatorEnvVars({ ...scanOf(f), overrides: f }, true), bad).toThrow(
+        /nor an http\(s\) URL/
+      );
+    }
+    const fine = {
+      Parameters: { AWS_ENDPOINT_URL_SQS: 'http://127.0.0.1:4566', AWS_ENDPOINT_URL_S3: ' real-aws' },
+      Fn: { AWS_ENDPOINT_URL_KMS: '', AWS_ENDPOINT_URL_SSM: null, OTHER: 'REAL-AWS' },
+    };
+    expect(() => validateAwsEmulatorEnvVars({ ...scanOf(fine), overrides: fine }, true)).not.toThrow();
+  });
+
   it('accepts the SDK spellings of the services commonly excepted', () => {
     for (const id of ['SECRETS_MANAGER', 'STS', 'SSM', 'COGNITO_IDENTITY_PROVIDER', 'BEDROCK_RUNTIME', 'S3', 'KMS']) {
       const s = scanOf({ Parameters: { [`AWS_ENDPOINT_URL_${id}`]: 'real-aws' } });
       expect(() => validateAwsEmulatorEnvVars(s, true), id).not.toThrow();
     }
+  });
+});
+
+describe('describeRealAwsExceptions (#949)', () => {
+  it('names each service with the sections that mark it', () => {
+    const ex = findRealAwsExceptions({
+      Parameters: { AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' },
+      'Stack/PyFn': { AWS_ENDPOINT_URL_S3: 'real-aws', AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' },
+      Other: { AWS_ENDPOINT_URL_S3: 'real-aws' },
+    });
+    // A section repeated for one service, and the bare variable, add nothing.
+    ex.push({ section: 'Other', key: 'AWS_ENDPOINT_URL_S3', service: 'S3' });
+    ex.push({ section: 'Fn', key: 'AWS_ENDPOINT_URL', service: '' });
+    expect(describeRealAwsExceptions(ex)).toBe(
+      'DYNAMODB under Parameters (every workload), Stack/PyFn; S3 under Stack/PyFn, Other'
+    );
   });
 });
 

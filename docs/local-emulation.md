@@ -246,9 +246,30 @@ runs a command against a local AWS Emulator. The URL defaults to
   trust. Every other service goes straight to the emulator. A container's own
   `AWS_ENDPOINT_URL_SQS` wins. On the host network, with a plain http URL
   or with no run `ca.pem`, no sidecar runs and SQS uses `AWS_ENDPOINT_URL`:
-  the AWS SDK for JavaScript v3 then follows the queue URL to real SQS, which
-  refuses the emulator's keys (pass `useQueueUrlAsEndpoint: false` to its
-  `SQSClient` there).
+  the emulator's answers then keep their real-shaped queue URLs, and the AWS
+  SDK for JavaScript v3's next call to one is refused inside the container
+  (next item); pass `useQueueUrlAsEndpoint: false` to its `SQSClient` there.
+- **Queue URLs outside the emulator's answers stay local or fail closed**
+  (go-to-k/cdk-local#947). A container env value that is exactly a real SQS
+  queue URL (from a host's `--from-state`, `--from-cfn-stack` or
+  `--env-vars`) is rewritten to the same queue on the container's SQS
+  endpoint (the sidecar, else the emulator), so a `SendMessage` to
+  `process.env.QUEUE_URL` lands in the emulator. Any other real queue URL (one
+  read at run time from SSM Parameter Store, Secrets Manager or a file, or one
+  inside a larger value such as a JSON document) cannot leave the machine:
+  the container's `/etc/hosts` maps the real SQS host names
+  (`sqs.<region>.amazonaws.com`, `<region>.queue.amazonaws.com` and
+  `queue.amazonaws.com`, `amazonaws.com.cn` in China, for every Region
+  cdk-local knows plus the container's own and any a queue URL in its env
+  names) to `127.0.0.1`, so the SDK's connection is refused before a signed
+  request is sent. Not covered: the FIPS and dual-stack hosts
+  (`sqs-fips.<region>.amazonaws.com`, `sqs.<region>.api.aws`), which AWS
+  does not return as queue URLs, the AWS European Sovereign Cloud
+  (`amazonaws.eu`), a client given an explicit real `endpoint` in code, and
+  a literal real `AWS_ENDPOINT_URL_SQS` in the container's env (a literal
+  endpoint is passed through as-is, so SQS then goes to real AWS by your own
+  choice). A container whose SQS is excepted to real AWS (mixed
+  mode, `"real-aws"`) gets neither: its queue URLs reach real SQS.
 - For Java, when the URL is https and the run wrote a `truststore.p12`, a
   trust store holding the run's CA (and the SQS sidecar's CA) is mounted
   read-only at `/cdk-local-aws/truststore.p12` and `JAVA_TOOL_OPTIONS` gets
@@ -312,7 +333,11 @@ the excepted resources resolve, and a warning names every other one.
 Every service goes to the emulator except Secrets Manager (for every
 workload) and Bedrock Runtime (for `MyStack/AgentHandler` only). A service you
 forget to list stays on the emulator, so a missing entry fails closed: the
-call reaches the emulator, never a shared real environment. That holds for an
+call reaches the emulator, never a shared real environment. For SQS, whose
+queue URL names the host the AWS SDK for JavaScript v3 sends to, a queue URL
+in the container's env is rewritten to the emulator's and every other real
+SQS host is unreachable from the container (see "Queue URLs outside the
+emulator's answers" above). That holds for an
 SDK that reads `AWS_ENDPOINT_URL` (the AWS SDK for JavaScript v3, boto3, Go v2,
 Java 2.x); an older SDK that does not (JavaScript v2, Go v1, Java 1.x) would
 send its calls to real AWS with the real identity, so keep such a workload out
@@ -371,6 +396,18 @@ The rules:
   Functions). Under `--aws-emulator` a misspelled one is refused (the SDKs
   would never read it, so the service would quietly stay on the emulator),
   and the error names the right spelling when one matches.
+- **The value is exactly `"real-aws"`**, lowercase (surrounding spaces are
+  ignored). Another case (`"REAL-AWS"`) is refused with or without
+  `--aws-emulator`, naming the spelling, since the SDKs would otherwise read
+  it as an endpoint URL; so is any case of the old `"aws-emulator"`. Under
+  `--aws-emulator`, any other value on an endpoint variable that is not an
+  `http(s)` URL, or has spaces around it, is refused too (an empty string is
+  left alone).
+- **The startup line names where each exception is marked.** A command that
+  serves several workloads prints each excepted service with the sections
+  that mark it (`DYNAMODB under Parameters (every workload); S3 under
+  MyStack/PyFn`). `invoke` and `invoke-agentcore`, which run one workload,
+  print that workload's exceptions only, once the target is resolved.
 - **Each exception gets its real regional endpoint.** cdk-local writes
   `https://<endpoint prefix>.<region>.amazonaws.com` into that service's own
   variable (`https://secretsmanager.us-east-1.amazonaws.com`; the China
@@ -418,10 +455,9 @@ The rules:
   it. It logs no header, body or key. It also rewrites the SQS queue URLs in
   the emulator's answers to its own address, as in full emulator mode, so the
   AWS SDK for JavaScript v3 does not follow them to real SQS with your real
-  keys. A real-shaped queue URL the handler gets from elsewhere (an
-  `--env-vars` value, a name resolved from a real deployment) is not
-  rewritten, and that SDK still sends to its host; pass
-  `useQueueUrlAsEndpoint: false` to the `SQSClient` in that case.
+  keys. When SQS is not excepted, a queue URL in the container's env is
+  rewritten to the sidecar and every other real SQS host is unreachable from
+  the container, as in full emulator mode.
 - **TLS stays verified on both legs** (with an `https` emulator URL; an
   `http` one is forwarded as plain HTTP). The sidecar's certificate for
   `127.0.0.1` comes from a CA made for each run. The containers' CA bundle

@@ -34,11 +34,13 @@ import {
 import {
   workloadGetsEmulatorKeysOnly,
   applyWorkloadAwsWiringToEnv,
+  awsEmulatorSqsHostBlocks,
   effectiveLoopbackPorts,
   loopbackForwarderPlan,
   getActiveWorkloadAwsWiring,
   resolveHostDefaultCredentials,
 } from './workload-aws-wiring.js';
+import { repointLocalSqsQueueUrlsInEnv, sqsEmulatorOriginOf } from './aws-emulator-sqs-routing.js';
 import type { WorkloadAwsWiring } from './workload-aws-wiring.js';
 
 const execFileAsync = promisify(execFile);
@@ -341,7 +343,16 @@ export async function withWorkloadAwsWiring(
     env['AWS_ENDPOINT_URL_SQS'] === wiring.sidecar.endpoint
   ) {
     delete env['AWS_ENDPOINT_URL_SQS'];
+    // The env's queue URLs were pointed at the sidecar (go-to-k/cdk-local#947):
+    // point them at the emulator, where SQS now goes.
+    const emulator = sqsEmulatorOriginOf(env);
+    if (emulator) repointLocalSqsQueueUrlsInEnv(env, wiring.sidecar.endpoint, emulator);
   }
+  // Under --aws-emulator, a real SQS host is unreachable from a container whose
+  // SQS goes to the emulator (go-to-k/cdk-local#947).
+  const sqsBlocks = awsEmulatorSqsHostBlocks(env, wiring);
+  const extraHosts =
+    sqsBlocks.length > 0 ? [...(opts.extraHosts ?? []), ...sqsBlocks] : opts.extraHosts;
   // The `--profile` credentials file's in-container path (local-profile-credentials-file.ts).
   const credsPath = `${getEmbedConfig().awsBindMountPath}/credentials`;
   // Emulator keys only (`--aws-emulator` alone, or a mixed-mode container
@@ -354,7 +365,7 @@ export async function withWorkloadAwsWiring(
   for (const m of wiring.mounts) {
     if (!taken.has(m.containerPath)) extra.push({ ...m, readOnly: true });
   }
-  return { ...opts, env, extraMounts: extra };
+  return { ...opts, env, extraMounts: extra, ...(extraHosts ? { extraHosts } : {}) };
 }
 
 /**

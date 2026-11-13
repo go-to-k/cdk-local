@@ -16,6 +16,7 @@ const {
   CA_TRUST_ENV_KEYS,
   activateWorkloadAwsWiring,
   applyWorkloadAwsWiringToEnv,
+  logMixedModeForWorkload,
   effectiveLoopbackPorts,
   loopbackForwarderPlan,
   resetWorkloadAwsWiringForTest,
@@ -36,6 +37,7 @@ const {
   setAwsEndpointOverride,
 } = await import('../../../src/utils/aws-proxy.js');
 const { createMixedModeTlsMaterials } = await import('../../../src/local/mixed-mode-tls.js');
+const { getLogger } = await import('../../../src/utils/logger.js');
 const { buildLoopbackForwarderDockerArgs, buildNamespaceOwnerForwarderDockerArgs } = await import(
   '../../../src/local/loopback-forwarder.js'
 );
@@ -430,8 +432,37 @@ describe('activateWorkloadAwsWiring — exceptions in --env-vars', () => {
         Fn: { AWS_ENDPOINT_URL_STS: 'real-aws' },
       };
       const f = envFile(file);
+      const info = vi.spyOn(getLogger(), 'info');
       const w = await activateWorkloadAwsWiring({ envVars: f, awsEmulator: `https://127.0.0.1:${port}` });
       expect(w.mixed?.realServices).toEqual(['SECRETS_MANAGER', 'STS']);
+      // The startup line names where each exception is marked, never claiming
+      // a per-resource one for every workload (go-to-k/cdk-local#949).
+      const banner = info.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith('Mixed mode:'))!;
+      expect(banner).toContain(
+        ': SECRETS_MANAGER under Parameters (every workload); STS under Fn. A workload with no exception gets ' +
+          "AWS Emulator's keys only."
+      );
+      // A single-workload command prints its own target's exceptions only.
+      info.mockClear();
+      await activateWorkloadAwsWiring({ envVars: f, awsEmulator: `https://127.0.0.1:${port}`, singleWorkload: true });
+      expect(info.mock.calls.some((c) => String(c[0]).startsWith('Mixed mode:'))).toBe(false);
+      logMixedModeForWorkload({ logicalId: 'Other' }, 'Lambda Stack/Other');
+      logMixedModeForWorkload({ logicalId: 'Fn' }, 'Lambda Stack/Fn');
+      const lines = info.mock.calls.map((c) => String(c[0]));
+      expect(lines[lines.length - 2]).toMatch(
+        /^Mixed mode: every AWS call of Lambda Stack\/Other goes to AWS Emulator at \S+ \(signed with its keys\) except SECRETS_MANAGER, which go to real AWS/
+      );
+      expect(lines[lines.length - 1]).toMatch(/except SECRETS_MANAGER, STS, which go to real AWS/);
+      // A workload with no exception at all.
+      const g = path.join(home, 'env-pyfn.json');
+      writeFileSync(g, JSON.stringify({ 'Stack/PyFn': { AWS_ENDPOINT_URL_S3: 'real-aws' } }));
+      await activateWorkloadAwsWiring({ envVars: g, awsEmulator: `https://127.0.0.1:${port}`, singleWorkload: true });
+      logMixedModeForWorkload({ logicalId: 'NodeFn', cdkPath: 'Stack/NodeFn/Resource' }, 'Lambda Stack/NodeFn');
+      expect(String(info.mock.calls.at(-1)![0])).toMatch(
+        /^Mixed mode: Lambda Stack\/NodeFn keeps no "real-aws" exception in --env-vars, so every AWS call it makes goes to AWS Emulator at \S+, with its keys only\.$/
+      );
+      info.mockRestore();
+      await activateWorkloadAwsWiring({ envVars: f, awsEmulator: `https://127.0.0.1:${port}` });
       // No process-wide override: each client picks its side per service.
       expect(getAwsEndpointOverride()).toBeUndefined();
       expect(getAwsEmulatorServiceRouting()).toEqual({
@@ -451,6 +482,32 @@ describe('activateWorkloadAwsWiring — exceptions in --env-vars', () => {
     } finally {
       process.env['HOME'] = savedHome;
       await new Promise((r) => server.close(r));
+    }
+  });
+});
+
+describe('logMixedModeForWorkload outside mixed mode (#949)', () => {
+  it('is a no-op with no wiring, under --aws-emulator alone, and in forward mode', () => {
+    const info = vi.spyOn(getLogger(), 'info');
+    try {
+      resetWorkloadAwsWiringForTest();
+      expect(() => logMixedModeForWorkload({ logicalId: 'Fn' }, 'Lambda S/Fn')).not.toThrow();
+      for (const mode of ['emulator', 'forward'] as const) {
+        setActiveWorkloadAwsWiring({
+          mode,
+          env: {},
+          scrubEnvKeys: [],
+          mounts: [],
+          loopbackPorts: [],
+          probeHealth: false,
+          dispose: () => undefined,
+        });
+        expect(() => logMixedModeForWorkload({ logicalId: 'Fn' }, 'Lambda S/Fn')).not.toThrow();
+      }
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      resetWorkloadAwsWiringForTest();
     }
   });
 });

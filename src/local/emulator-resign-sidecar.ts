@@ -55,8 +55,11 @@
 //
 // The script is plain CommonJS for the container's Node.js (no TypeScript, no
 // template literals, so the `${` of this module's own template never
-// appears in it). Unit tests load {@link RESIGN_SIDECAR_CORE} as-is through
+// appears in it; the one substitution is the queue URL pattern, shared with
+// `aws-emulator-sqs-routing.ts`). Unit tests load {@link RESIGN_SIDECAR_CORE} as-is through
 // `new Function`, so the tested code is the shipped code.
+
+import { REAL_SQS_QUEUE_URL } from './aws-emulator-sqs-routing.js';
 
 /**
  * The largest request body the sidecar re-signs: 100 MiB.
@@ -242,7 +245,7 @@ function passthroughHeaders(incoming){
 // Only a real SQS queue URL is rewritten: an AWS SQS host (either form, any
 // partition suffix), no port, user info, query or fragment, and a path of a
 // 12-digit account and a queue name.
-var SQS_QUEUE_URL=/^https?:\/\/(?:sqs\.[a-z0-9-]+|[a-z0-9-]+\.queue)\.amazonaws\.com(?:\.cn)?\/([0-9]{12}\/[A-Za-z0-9_-]{1,80}(?:\.fifo)?)$/;
+var SQS_QUEUE_URL=/${REAL_SQS_QUEUE_URL.source}/;
 function localQueueUrl(u,origin){var m=SQS_QUEUE_URL.exec(String(u));return m?origin+'/'+m[1]:u;}
 var SQS_QUEUE_URL_OPERATIONS=new Set(['CreateQueue','GetQueueUrl','ListQueues','ListDeadLetterSourceQueues']);
 // An unsigned request (an emulator run with --auth off and an SDK that signs

@@ -51,7 +51,12 @@ import { isLoopbackHostname } from '../utils/loopback-host.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { describeCredentialLoadFailure } from './credential-error.js';
-import { setAwsEmulatorServiceRouting, setAwsEndpointOverride } from '../utils/aws-proxy.js';
+import {
+  awsEmulatorRealServices,
+  setAwsEmulatorServiceRouting,
+  setAwsEndpointOverride,
+} from '../utils/aws-proxy.js';
+import type { AwsEmulatorWorkload } from '../utils/aws-proxy.js';
 import { assumedRoleRecorded } from '../utils/workload-identity.js';
 import type { CallerCredentials } from '../utils/workload-identity.js';
 import type { AwsCredentialIdentityProvider } from '@smithy/types';
@@ -60,6 +65,7 @@ import type { AwsEndpointOverride } from '../utils/aws-proxy.js';
 import {
   MIXED_MODE_RESIGN_PORT,
   REAL_AWS_SENTINEL,
+  describeRealAwsExceptions,
   isLegacyAwsEmulatorSentinel,
   isRealAwsSentinel,
   legacyAwsEmulatorSentinelMessage,
@@ -70,6 +76,12 @@ import {
 } from './aws-emulator-mixed-mode.js';
 import type { RealAwsException } from './aws-emulator-mixed-mode.js';
 import { buildJavaTrustStore, createMixedModeTlsMaterials } from './mixed-mode-tls.js';
+import {
+  realSqsHostnames,
+  rewriteSqsQueueUrlsInEnv,
+  sqsBlockedRegionsFor,
+  sqsEmulatorOriginOf,
+} from './aws-emulator-sqs-routing.js';
 import {
   MIXED_MODE_RESIGN_BODY_CAP_BYTES,
   type ResignSidecarConfig,
@@ -1151,6 +1163,12 @@ export function isEmptyWorkloadAwsWiring(w: WorkloadAwsWiring): boolean {
  *   re-signed: it is signed with whatever identity the container holds, the
  *   REAL one when the container keeps an exception.
  * - The pre-inversion `"aws-emulator"` sentinel throws, in every mode.
+ * - Under `--aws-emulator`, when the container's SQS calls go to the emulator,
+ *   an env value that is exactly a real SQS queue URL is rewritten to the
+ *   same queue on the container's SQS endpoint (go-to-k/cdk-local#947): the
+ *   AWS SDK for JavaScript v3 sends SQS calls to the queue URL's host. Pair
+ *   with {@link awsEmulatorSqsHostBlocks} for the queue URLs the env does not
+ *   carry.
  *
  * Host-side use case: a host CLI's own container env assembly.
  */
@@ -1248,7 +1266,59 @@ export function applyWorkloadAwsWiringToEnv(
   // only the former, so without it a Python handler fails with NoRegionError.
   if (out['AWS_REGION'] && !out['AWS_DEFAULT_REGION'])
     out['AWS_DEFAULT_REGION'] = out['AWS_REGION'];
+  // A real-shaped queue URL in the env would take an SQS call out of the
+  // emulator (go-to-k/cdk-local#947): point it at the endpoint the workload's
+  // SQS calls already use.
+  const sqsOrigin = awsEmulatorSqsOriginFor(out, wiring);
+  if (sqsOrigin !== undefined) {
+    const keys = rewriteSqsQueueUrlsInEnv(out, sqsOrigin);
+    if (keys.length > 0) {
+      getLogger().debug(
+        `--aws-emulator: SQS queue URLs in ${keys.join(', ')} now point at ${sqsOrigin} (SQS is on AWS Emulator).`
+      );
+    }
+  }
   return out;
+}
+
+/**
+ * The origin a container's SQS calls go to when they go to AWS Emulator
+ * (`--aws-emulator`, SQS not excepted to real AWS in `env`, the container's
+ * env as {@link applyWorkloadAwsWiringToEnv} returns it); `undefined`
+ * otherwise, including every run without `--aws-emulator`.
+ */
+function awsEmulatorSqsOriginFor(
+  env: Readonly<Record<string, string>>,
+  wiring: WorkloadAwsWiring
+): string | undefined {
+  if (wiring.mode !== 'emulator' && !wiring.mixed) return undefined;
+  return sqsEmulatorOriginOf(env);
+}
+
+/**
+ * The `/etc/hosts` entries (`--add-host <host>:127.0.0.1`) that make a
+ * container's real SQS hosts unreachable when its SQS calls go to AWS Emulator
+ * (go-to-k/cdk-local#947). `finalEnv` is the env
+ * {@link applyWorkloadAwsWiringToEnv} returned. A queue URL the workload
+ * reads at runtime (SSM, Secrets Manager, a file) is not in its env and keeps
+ * its real host; the AWS SDK for JavaScript v3 would send the SQS call there,
+ * signed with whatever identity the container holds. With these entries the
+ * connection is refused inside the container instead: it fails closed. Empty
+ * without `--aws-emulator`, and for a container whose SQS is excepted to
+ * real AWS.
+ *
+ * Host-side use case: a host CLI's own `docker run` assembly for a workload
+ * container (on the container itself, or on the namespace owner it joins).
+ */
+export function awsEmulatorSqsHostBlocks(
+  finalEnv: Readonly<Record<string, string>>,
+  wiring: WorkloadAwsWiring | undefined
+): { host: string; ip: string }[] {
+  if (!wiring || awsEmulatorSqsOriginFor(finalEnv, wiring) === undefined) return [];
+  return realSqsHostnames(sqsBlockedRegionsFor(finalEnv)).map((host) => ({
+    host,
+    ip: '127.0.0.1',
+  }));
 }
 
 /**
@@ -1390,6 +1460,12 @@ export interface WorkloadAwsWiringCommandOptions {
    * mixed mode under `--aws-emulator` (and are a no-op without it).
    */
   envVars?: string | undefined;
+  /**
+   * The command runs ONE workload, named once its target is resolved: the
+   * mixed-mode startup line is then left to {@link logMixedModeForWorkload},
+   * which names that workload's exceptions only (go-to-k/cdk-local#949).
+   */
+  singleWorkload?: boolean | undefined;
 }
 
 /**
@@ -1462,11 +1538,14 @@ export async function activateWorkloadAwsWiring(
       override: wiring.mixed.emulatorClientOverride,
       envOverrides: overrides,
     });
-    getLogger().info(
-      `Mixed mode: every AWS call goes to AWS Emulator at ${wiring.mixed.emulatorEndpoint.url} (signed with ` +
-        `its keys) except ${wiring.mixed.realServices.join(', ')}, which go to real AWS with your real ` +
-        `credentials, for the workload and for ${getEmbedConfig().productName}'s own calls.`
-    );
+    if (!options.singleWorkload)
+      getLogger().info(
+        `Mixed mode: every AWS call goes to AWS Emulator at ${wiring.mixed.emulatorEndpoint.url} (signed with ` +
+          `its keys), except the services --env-vars marks "${REAL_AWS_SENTINEL}" for a workload, which go to real ` +
+          `AWS with your real credentials, for that workload and for ${getEmbedConfig().productName}'s own calls ` +
+          `for it: ${describeRealAwsExceptions(scan.exceptions)}. A workload with no exception gets AWS ` +
+          "Emulator's keys only."
+      );
   } else if (wiring.mode === 'emulator' && wiring.emulatorEndpoint) {
     setAwsEmulatorServiceRouting(undefined);
     setAwsEndpointOverride({
@@ -1482,6 +1561,34 @@ export async function activateWorkloadAwsWiring(
     setAwsEmulatorServiceRouting(undefined);
   }
   return wiring;
+}
+
+/**
+ * The mixed-mode line for the one workload a command runs
+ * (`singleWorkload`, go-to-k/cdk-local#949): the services ITS `--env-vars`
+ * exceptions send to real AWS (`Parameters` plus its own sections), never
+ * another workload's. No-op outside mixed mode.
+ *
+ * Host-side use case: a host's single-workload command that activated the
+ * wiring with `singleWorkload`.
+ */
+export function logMixedModeForWorkload(workload: AwsEmulatorWorkload, label: string): void {
+  const mixed = active?.mixed;
+  if (!mixed) return;
+  const services = awsEmulatorRealServices(workload) ?? [];
+  const at = `AWS Emulator at ${mixed.emulatorEndpoint.url}`;
+  if (services.length === 0) {
+    getLogger().info(
+      `Mixed mode: ${label} keeps no "${REAL_AWS_SENTINEL}" exception in --env-vars, so every AWS call it makes ` +
+        `goes to ${at}, with its keys only.`
+    );
+    return;
+  }
+  getLogger().info(
+    `Mixed mode: every AWS call of ${label} goes to ${at} (signed with its keys) except ` +
+      `${services.join(', ')}, which go to real AWS with your real credentials, for the workload and for ` +
+      `${getEmbedConfig().productName}'s own calls for it.`
+  );
 }
 
 let stateSourceHintShown = false;

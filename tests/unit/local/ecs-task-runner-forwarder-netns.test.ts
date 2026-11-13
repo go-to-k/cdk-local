@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import type { ResolvedEcsContainer, ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
 import {
+  awsEmulatorSqsHostBlocks,
   resetWorkloadAwsWiringForTest,
   setActiveWorkloadAwsWiring,
   type WorkloadAwsWiring,
@@ -145,9 +146,18 @@ describe('buildDockerRunArgs: the namespace-owning forwarder (issue #878)', () =
       network: 'net',
       networkAliases: ['app', 'api.local'],
       publish: ['127.0.0.1:8080:8080/tcp', '127.0.0.1::9000/tcp'],
-      addHosts: ['peer.ns:10.0.0.9', 'host.docker.internal:host-gateway'],
+      // The SQS host blocks of an emulator-side container follow the task's own (#947).
+      addHosts: [
+        'peer.ns:10.0.0.9',
+        'host.docker.internal:host-gateway',
+        ...awsEmulatorSqsHostBlocks({ AWS_ENDPOINT_URL: 'https://127.0.0.1:4566' }, wiring).map(
+          (h) => `${h.host}:${h.ip}`
+        ),
+      ],
       links: ['db:db'],
     });
+    // On its own network endpoint the container carries the SQS host blocks itself (#947).
+    expect(built.args[built.args.indexOf('sqs.us-east-1.amazonaws.com:127.0.0.1') - 1]).toBe('--add-host');
     // The joiner: same name, the forwarder's network, none of the refused flags.
     expect(flagValues(fwd.args, '--name')).toEqual([name]);
     expect(flagValues(fwd.args, '--network')).toEqual([`container:${fwd.name}`]);
@@ -366,5 +376,42 @@ describe('cleanupEcsRun: forwarders go after their containers (issue #878)', () 
     const calls = execFileMock.mock.calls.map((c) => (c[1] as string[]).join(' '));
     expect(calls).toEqual(['rm -f fid2']);
     expect(state.forwarders.map((f) => f.name)).toEqual(['f1']);
+  });
+});
+
+describe('buildDockerRunArgs: the SQS host blocks (#947)', () => {
+  const mixedWiring = (): WorkloadAwsWiring => ({
+    mode: 'forward',
+    mixed: {
+      realServices: ['SQS'],
+      emulatorEndpoint: { url: 'https://127.0.0.1:9351', hostname: '127.0.0.1', port: 9351, loopback: true },
+      resignPort: 47297,
+      resignEndpoint: 'https://127.0.0.1:47297',
+      emulatorCredentials: { accessKeyId: 'EMULATOR0123456789AB', secretAccessKey: 'EMUSECRET' },
+      region: 'us-east-1',
+      resignConfigHostPath: '/tmp/resign.json',
+      emulatorClientOverride: { endpoint: 'https://127.0.0.1:9351' },
+    },
+    env: { AWS_ENDPOINT_URL: 'https://127.0.0.1:47297' },
+    scrubEnvKeys: [],
+    mounts: [],
+    loopbackPorts: [9351, 47297],
+    probeHealth: true,
+    dispose: () => undefined,
+  });
+  const sqsHosts = (argv: string[]) => argv.filter((a) => /(^|\.)(sqs|queue)\..*:127\.0\.0\.1$|^queue\.amazonaws/.test(a));
+
+  it('a container that excepts SQS gets none; one that does not, in a newer region, gets that region too', () => {
+    setActiveWorkloadAwsWiring(mixedWiring());
+    const excepted = build(
+      container({ environment: { AWS_REGION: 'us-east-1', AWS_ENDPOINT_URL_SQS: 'real-aws' } })
+    );
+    expect(sqsHosts(excepted.args)).toEqual([]);
+    expect(sqsHosts(excepted.forwarder?.namespace.addHosts ?? [])).toEqual([]);
+    const other = build(
+      container({ environment: { AWS_REGION: 'xx-future-1', AWS_ENDPOINT_URL_DYNAMODB: 'real-aws' } })
+    );
+    expect(other.forwarder!.namespace.addHosts).toContain('sqs.xx-future-1.amazonaws.com:127.0.0.1');
+    expect(other.args).toContain('sqs.xx-future-1.amazonaws.com:127.0.0.1');
   });
 });
