@@ -357,14 +357,17 @@ describe('resolveLambdaContainerEnv — AWS Emulator mixed mode, per workload', 
       const result = await resolveLambdaContainerEnv(zipLambda({}), { envVars: fifo }, undefined);
       expect(result.env['FROM_PIPE']).toBe('yes');
     } finally {
-      writer.kill();
-      rmSync(dir, { recursive: true, force: true });
-      // Reap it: the suite refuses a test file that leaves a child running.
-      if (empty && empty.exitCode === null && empty.signalCode === null) {
-        const exited = new Promise((r) => empty!.once('exit', r));
-        empty.kill();
-        await exited;
+      // Reap both children BEFORE removing the dir: a still-pending `: >` would
+      // otherwise create a regular file inside it mid-rmSync (ENOTEMPTY). The
+      // suite also refuses a test file that leaves a child running.
+      for (const child of [writer, empty]) {
+        if (child && child.exitCode === null && child.signalCode === null) {
+          const exited = new Promise((r) => child.once('exit', r));
+          child.kill();
+          await exited;
+        }
       }
+      rmSync(dir, { recursive: true, force: true });
       resetEnvVarsFileTextsForTest();
     }
   });
