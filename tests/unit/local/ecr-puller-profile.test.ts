@@ -68,6 +68,7 @@ vi.mock('../../../src/utils/docker-cmd.js', () => ({
 const { pullEcrImage, __resetStsCachesForTesting } = await import(
   '../../../src/local/ecr-puller.js'
 );
+const { setAwsEmulatorServiceRouting } = await import('../../../src/utils/aws-proxy.js');
 
 const IMAGE = '583942117338.dkr.ecr.ap-northeast-1.amazonaws.com/my-repo:latest';
 
@@ -219,5 +220,80 @@ describe('pullEcrImage — --profile threading', () => {
       // ...while the proxy plumbing itself still survives the override.
       expect(cfg['requestHandler']).toBeDefined();
     });
+  });
+});
+
+describe('pullEcrImage — AWS Emulator mixed mode follows "real-aws" on ECR', () => {
+  const EMU = 'https://127.0.0.1:9403';
+  const route = (envOverrides: Record<string, unknown>): void =>
+    setAwsEmulatorServiceRouting({
+      realServices: [],
+      override: { endpoint: EMU, credentials: { accessKeyId: 'EMUKEY', secretAccessKey: 'x'.repeat(40) } },
+      envOverrides,
+    });
+  const roleArn = 'arn:aws:iam::583942117338:role/EcrPull';
+
+  beforeEach(() => {
+    stsCtorArgs.length = 0;
+    ecrCtorArgs.length = 0;
+    __resetStsCachesForTesting();
+    stsSend.mockReset();
+    stsSend.mockImplementation((cmd: { kind?: string }) =>
+      Promise.resolve(
+        cmd?.kind === 'assume'
+          ? {
+              Credentials: {
+                AccessKeyId: 'AKIA',
+                SecretAccessKey: 'secret',
+                SessionToken: 'token',
+                Expiration: new Date(Date.now() + 3600_000),
+              },
+            }
+          : { Account: '583942117338' }
+      )
+    );
+    ecrSend.mockResolvedValue({
+      authorizationData: [{ authorizationToken: Buffer.from('AWS:pw').toString('base64') }],
+    });
+    runFg.mockResolvedValue(undefined);
+    runStream.mockResolvedValue(undefined);
+  });
+  afterEach(() => setAwsEmulatorServiceRouting(undefined));
+
+  it('takes the token from real ECR, as the real identity, when ECR is excepted', async () => {
+    route({ Parameters: { AWS_ENDPOINT_URL_ECR: 'real-aws' } });
+    await pullEcrImage(IMAGE, { skipPull: false, region: 'ap-northeast-1', ecrRoleArn: roleArn });
+    expect(ecrCtorArgs).toHaveLength(1);
+    expect(ecrCtorArgs[0]!['endpoint']).toBeUndefined();
+    // --ecr-role-arn is honored on the real side.
+    expect(ecrCtorArgs[0]!['credentials']).toMatchObject({ accessKeyId: 'AKIA' });
+    expect(runFg).toHaveBeenCalledWith(['pull', IMAGE]);
+  });
+
+  it("follows the workload's own section", async () => {
+    route({ Parameters: {}, web: { AWS_ENDPOINT_URL_ECR: 'real-aws' } });
+    await pullEcrImage(IMAGE, { skipPull: false, region: 'ap-northeast-1', workload: { containerName: 'web' } });
+    await pullEcrImage(IMAGE, {
+      skipPull: false,
+      region: 'ap-northeast-1',
+      workload: { containerName: 'worker' },
+    });
+    expect(ecrCtorArgs.map((c) => c['endpoint'])).toEqual([undefined, EMU]);
+  });
+
+  it('keeps an unmarked ECR on the emulator, with its keys only', async () => {
+    route({ Parameters: { AWS_ENDPOINT_URL_SECRETS_MANAGER: 'real-aws' } });
+    await pullEcrImage(IMAGE, {
+      skipPull: false,
+      region: 'ap-northeast-1',
+      profile: 'prod',
+      ecrRoleArn: roleArn,
+    });
+    expect(ecrCtorArgs[0]!['endpoint']).toBe(EMU);
+    expect(ecrCtorArgs[0]!).not.toHaveProperty('profile');
+    expect(await (ecrCtorArgs[0]!['credentials'] as () => Promise<unknown>)()).toMatchObject({
+      accessKeyId: 'EMUKEY',
+    });
+    expect(stsSend.mock.calls.some(([c]) => (c as { kind?: string }).kind === 'assume')).toBe(false);
   });
 });

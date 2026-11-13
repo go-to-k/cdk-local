@@ -1494,8 +1494,9 @@ let stateSourceHintShown = false;
  * after the per-variable warnings).
  *
  * `--from-state` is a host CLI's state source: under a host's embed config the
- * hint names the host's own deploy (`<cli> deploy --aws-emulator`); standalone
- * it names the flag generically.
+ * hint names the host's own deploy — `<deployCommand> --aws-emulator` when the
+ * host supplies the embed config's `deployCommand`, else the host's
+ * deploy generically; standalone it names a host CLI's flag generically.
  *
  * Host-side use case: a host's own container commands print the same hint.
  */
@@ -1505,11 +1506,13 @@ export function takeAwsEmulatorStateSourceHint(): string | undefined {
     return undefined;
   }
   stateSourceHintShown = true;
-  const { cliName } = getEmbedConfig();
+  const { cliName, productName, deployCommand } = getEmbedConfig();
   const fromState =
-    cliName === 'cdkl'
-      ? "a host CLI's --from-state (the stack deployed into AWS Emulator with that host's own deploy)"
-      : `--from-state (the stack deployed into AWS Emulator with \`${cliName} deploy --aws-emulator\`)`;
+    deployCommand !== undefined
+      ? `--from-state (the stack deployed into AWS Emulator with \`${deployCommand} --aws-emulator\`)`
+      : cliName === 'cdkl'
+        ? "a host CLI's --from-state (the stack deployed into AWS Emulator with that host's own deploy)"
+        : `--from-state (the stack deployed into AWS Emulator with ${productName}'s own deploy and --aws-emulator)`;
   return (
     'Under --aws-emulator, the environment variables above that reference a resource need deployed names: ' +
     `pass ${fromState}, or --from-cfn-stack (the stack deployed into AWS Emulator with \`cdk deploy\`), ` +

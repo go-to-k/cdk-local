@@ -583,25 +583,37 @@ export function awsEndpointOverrideClientConfig(o: AwsEndpointOverride): AwsProx
   return endpointOverrideClientConfig(o);
 }
 
-/** Whether {@link deployArtifactClientConfig} answers with the emulator (`--aws-emulator` is on). */
-export function deployArtifactsReadEmulator(): boolean {
-  return endpointOverride !== undefined || serviceRouting !== undefined;
+/**
+ * Whether {@link deployArtifactClientConfig} answers with the emulator for
+ * `service`: under `--aws-emulator` unless a `"real-aws"` exception names
+ * that service (for `workload` when given), never without the flag. A caller
+ * that adds its own identity (an assumed role, `--profile`) does so only
+ * when this is `false`.
+ */
+export function deployArtifactsReadEmulator(
+  service: string,
+  workload?: AwsEmulatorWorkload
+): boolean {
+  return isAwsServiceRoutedToEmulator(service, workload);
 }
 
 /**
  * The client config for a DEPLOY ARTIFACT read (the ECR image token, a fromS3
- * code bundle, a literal layer ARN): under `--aws-emulator` these always read
- * the emulator, where the stack was deployed, whatever `"real-aws"`
- * exceptions the `--env-vars` file holds (exceptions route data the workload
- * reads and writes, not the code it runs). Otherwise {@link
- * buildProxyClientConfig}. When the fragment carries `endpoint`, add no
- * credentials of your own.
+ * code bundle, a literal layer ARN) from `service` (`ECR`, `S3`, `LAMBDA`):
+ * under `--aws-emulator` the emulator, where the stack was deployed, unless a
+ * `"real-aws"` exception names `service` (for `workload` when given) — then
+ * real AWS with the real identity, so an image that only exists in real ECR
+ * is pulled from there. Otherwise {@link buildProxyClientConfig}. When the
+ * fragment carries `endpoint`, add no credentials of your own.
+ *
+ * Host-side use case: a host reading a deploy artifact itself routes it the
+ * way cdk-local's ECR pull / bundle / layer reads do.
  */
-export function deployArtifactClientConfig(
-  opts: { profile?: string | undefined } = {}
-): AwsProxyClientConfig {
-  if (!endpointOverride && serviceRouting)
-    return endpointOverrideClientConfig(serviceRouting.override);
+export function deployArtifactClientConfig(opts: {
+  service: string;
+  profile?: string | undefined;
+  workload?: AwsEmulatorWorkload | undefined;
+}): AwsProxyClientConfig {
   return buildProxyClientConfig(opts);
 }
 
@@ -686,8 +698,7 @@ export function buildProxyRequestHandler(): NodeHttpHandler {
  * the emulator's fragment unless a `"real-aws"` exception names it, judged for
  * `workload` when given. Omit it only for a client that must stay on real AWS
  * in mixed mode (the STS hops that establish the workload's real identity;
- * `--from-cfn-stack`'s real side); deploy artifacts use
- * {@link deployArtifactClientConfig}.
+ * `--from-cfn-stack`'s real side).
  * `tests/unit/utils/own-aws-client-routing.test.ts` enumerates every client.
  *
  * Host-side use case: a host CLI (e.g. cdkd) constructing its own AWS SDK

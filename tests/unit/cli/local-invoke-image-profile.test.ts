@@ -27,6 +27,7 @@ function ecrLambda() {
     imageUri: '111122223333.dkr.ecr.ap-northeast-1.amazonaws.com/repo:latest',
     imageConfig: {},
     stack: { stackName: 'S', assetManifestPath: undefined },
+    resource: { Type: 'AWS::Lambda::Function', Metadata: { 'aws:cdk:path': 'S/ImgFn/Resource' } },
   } as unknown as Parameters<typeof resolveContainerImagePlan>[0];
 }
 
@@ -56,6 +57,7 @@ describe('resolveContainerImagePlan — ECR-pull --profile forwarding', () => {
     expect(pullMock).toHaveBeenCalledWith(lambda.imageUri, {
       skipPull: false,
       profile: 'mates_dev',
+      workload: { logicalId: 'ImgFn', cdkPath: 'S/ImgFn/Resource' },
     });
   });
 
@@ -65,7 +67,10 @@ describe('resolveContainerImagePlan — ECR-pull --profile forwarding', () => {
       pull: true,
     } as unknown as Parameters<typeof resolveContainerImagePlan>[1]);
 
-    expect(pullMock).toHaveBeenCalledWith(lambda.imageUri, { skipPull: false });
+    expect(pullMock).toHaveBeenCalledWith(lambda.imageUri, {
+      skipPull: false,
+      workload: { logicalId: 'ImgFn', cdkPath: 'S/ImgFn/Resource' },
+    });
   });
 });
 

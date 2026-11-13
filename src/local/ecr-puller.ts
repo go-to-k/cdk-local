@@ -8,7 +8,12 @@ import {
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
-import { deployArtifactClientConfig, deployArtifactsReadEmulator } from '../utils/aws-proxy.js';
+import {
+  awsEmulatorRealServices,
+  deployArtifactClientConfig,
+  deployArtifactsReadEmulator,
+  type AwsEmulatorWorkload,
+} from '../utils/aws-proxy.js';
 import { workloadStsClientConfig } from '../utils/workload-identity.js';
 import { buildStsClientConfig } from '../utils/profile-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -121,7 +126,18 @@ export interface EcrPullOptions {
    * `ecrRoleArn` path, where the assumed-role credentials take over.
    */
   profile?: string;
+  /**
+   * The workload the image is pulled for. Under `--aws-emulator` the token
+   * comes from AWS Emulator unless a `"real-aws"` exception names ECR
+   * (`AWS_ENDPOINT_URL_ECR`) for this workload (`Parameters` plus its own
+   * section); then from real ECR with the real identity. Without it, the
+   * `Parameters` exceptions alone decide.
+   */
+  workload?: AwsEmulatorWorkload;
 }
+
+/** The `AWS_ENDPOINT_URL_<ID>` suffix of the ECR client (its SDK `serviceId`, `ECR`). */
+const ECR_SERVICE_ID = 'ECR';
 
 /** STS-issued temporary credentials shape used to authenticate the ECR client. */
 interface TempCredentials {
@@ -286,9 +302,18 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // for all N (sessions are valid 3600s, far longer than any practical
   // image-pull loop).
   let assumed: TempCredentials | undefined;
-  // Under --aws-emulator the token comes from the emulator with its own keys:
-  // a real AssumeRole would only be discarded.
-  if (options.ecrRoleArn && deployArtifactsReadEmulator()) {
+  // Under --aws-emulator (ECR not excepted to real AWS) the token comes from
+  // the emulator with its own keys: a real AssumeRole would only be discarded.
+  const tokenFromEmulator = deployArtifactsReadEmulator(ECR_SERVICE_ID, options.workload);
+  if (tokenFromEmulator) {
+    logger.debug(`ECR token for ${canonicalUri} comes from AWS Emulator (--aws-emulator).`);
+  } else if (awsEmulatorRealServices(options.workload) !== undefined) {
+    logger.info(
+      `ECR is excepted to real AWS ("real-aws" on AWS_ENDPOINT_URL_ECR): pulling ${canonicalUri} from real ECR ` +
+        'with your real credentials.'
+    );
+  }
+  if (options.ecrRoleArn && tokenFromEmulator) {
     logger.debug(
       '--ecr-role-arn is not assumed under --aws-emulator: the emulator issues the token.'
     );
@@ -323,14 +348,18 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // When `assumed` is set, the ECR client uses those temporary
   // credentials; otherwise the default credential chain.
   // Under --aws-emulator the token comes from the emulator, where the stack
-  // was deployed, whatever the "real-aws" exceptions; its keys are then the
-  // only identity.
+  // was deployed, and its keys are then the only identity — unless a
+  // "real-aws" exception names ECR: then real ECR, as the real identity.
   const ecr = new ECRClient({
-    ...deployArtifactClientConfig({ profile: options.profile }),
+    ...deployArtifactClientConfig({
+      service: 'ECR',
+      profile: options.profile,
+      workload: options.workload,
+    }),
     region: parsed.region,
     // Assumed-role creds (the `ecrRoleArn` path) take precedence; otherwise
     // authenticate as the supplied `--profile` rather than the default chain.
-    ...(deployArtifactsReadEmulator()
+    ...(tokenFromEmulator
       ? {}
       : assumed
         ? { credentials: assumed }

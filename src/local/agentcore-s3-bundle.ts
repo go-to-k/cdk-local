@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, sep } from 'node:path';
 import { unzipSync } from 'fflate';
-import { deployArtifactClientConfig, deployArtifactsReadEmulator } from '../utils/aws-proxy.js';
+import {
+  deployArtifactClientConfig,
+  deployArtifactsReadEmulator,
+  type AwsEmulatorWorkload,
+} from '../utils/aws-proxy.js';
 import { CdkLocalError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -43,6 +47,12 @@ export interface DownloadS3BundleOptions {
   credentials?: S3BundleCredentials;
   /** Injected object fetcher for tests — bypasses the AWS SDK entirely. */
   fetchObject?: (location: S3BundleLocation) => Promise<Uint8Array>;
+  /**
+   * The workload the bundle is the code of. Under `--aws-emulator` the bundle
+   * is read from AWS Emulator unless a `"real-aws"` exception names S3
+   * (`AWS_ENDPOINT_URL_S3`) for it; then from real S3.
+   */
+  workload?: AwsEmulatorWorkload;
 }
 
 export interface ExtractedS3Bundle {
@@ -141,15 +151,19 @@ function defaultFetchObject(
   return async (location) => {
     const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
     // Under --aws-emulator the bundle is read from the emulator, where the
-    // stack was deployed; its keys are then the only identity.
+    // stack was deployed, and its keys are then the only identity — unless a
+    // "real-aws" exception names S3: then real S3, as the real identity.
+    const fromEmulator = deployArtifactsReadEmulator('S3', options.workload);
     const client = new S3Client({
-      ...deployArtifactClientConfig({ profile: options.profile }),
+      ...deployArtifactClientConfig({
+        service: 'S3',
+        profile: options.profile,
+        workload: options.workload,
+      }),
       ...(options.region && { region: options.region }),
-      ...(options.profile &&
-        !options.credentials &&
-        !deployArtifactsReadEmulator() && { profile: options.profile }),
+      ...(options.profile && !options.credentials && !fromEmulator && { profile: options.profile }),
       ...(options.credentials &&
-        !deployArtifactsReadEmulator() && {
+        !fromEmulator && {
           credentials: {
             accessKeyId: options.credentials.accessKeyId,
             secretAccessKey: options.credentials.secretAccessKey,

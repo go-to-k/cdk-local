@@ -554,7 +554,11 @@ async function resolveZipImagePlan(
 
   await pullImage(image, options.pull === false, platform);
 
-  const layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options);
+  const layerPlan = await materializeLambdaLayersIncludingArns(
+    lambda.layers,
+    options,
+    lambdaWorkload(lambda)
+  );
 
   // provided.al2 / provided.al2023 require the deployment package at
   // /var/runtime; every other runtime expects /var/task.
@@ -617,7 +621,8 @@ export function assumeRoleDetail(err: unknown, op: string): string {
 
 export async function materializeLambdaLayersIncludingArns(
   layers: ResolvedLambdaLayer[],
-  options: LocalInvokeOptions
+  options: LocalInvokeOptions,
+  workload?: AwsEmulatorWorkload
 ): Promise<{
   mount?: { hostPath: string; containerPath: string; readOnly: boolean };
   tmpDir?: string;
@@ -632,6 +637,7 @@ export async function materializeLambdaLayersIncludingArns(
     }
     const dir = await materializeLayerFromArn(layer, {
       ...(options.layerRoleArn !== undefined && { roleArn: options.layerRoleArn }),
+      ...(workload !== undefined && { workload }),
     });
     extraTmpDirs.push(dir);
     flat.push({ logicalId: layer.arn, assetPath: dir });
@@ -722,6 +728,7 @@ export async function resolveContainerImagePlan(
       ...(options.region !== undefined && { region: options.region }),
       ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
       ...(options.profile !== undefined && { profile: options.profile }),
+      workload: lambdaWorkload(lambda),
     });
   }
 

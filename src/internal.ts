@@ -1376,8 +1376,10 @@ export {
  * workload (a secret or parameter it receives), use
  * `workloadClientConfig({ profile, service, workload })`, which also honors
  * `workloadIdentity: 'caller'`. Deploy-artifact reads (an image token, a code
- * bundle, a layer) use `deployArtifactClientConfig`: the emulator under
- * `--aws-emulator`, whatever the exceptions.
+ * bundle) use `deployArtifactClientConfig({ service, profile, workload })`,
+ * which routes the same way: the emulator under `--aws-emulator` unless a
+ * `"real-aws"` exception names that service (`ECR`, `S3`), so an image that
+ * only exists in real ECR is pulled from there.
  *
  * `workload` ({@link AwsEmulatorWorkload}: a function's `logicalId` +
  * `cdkPath`, or an ECS `containerName`) routes by THAT workload's own

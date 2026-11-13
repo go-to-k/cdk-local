@@ -25,6 +25,7 @@ import {
 import { assetPathDirs, materializeAssetCodeDir } from './lambda-resolver.js';
 import type { ResolvedImageLambda, ResolvedLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { readCdkPathOrUndefined } from '../cli/cdk-path.js';
 import { displayIdent } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import {
@@ -224,6 +225,7 @@ async function resolveContainerImagePlan(
     );
     imageRef = await pullEcrImage(lambda.imageUri, {
       skipPull: opts.skipPull === true,
+      workload: { logicalId: lambda.logicalId, cdkPath: readCdkPathOrUndefined(lambda.resource) },
       ...(opts.region !== undefined && { region: opts.region }),
       ...(opts.ecrRoleArn !== undefined && { ecrRoleArn: opts.ecrRoleArn }),
     });

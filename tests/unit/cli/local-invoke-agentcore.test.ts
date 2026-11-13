@@ -226,7 +226,12 @@ describe('resolveAgentCoreImage — acquisition fallback order', () => {
 
     const image = await resolveAgentCoreImage(resolved, imageOpts({ profile: 'dev' }));
     expect(image).toBe(uri);
-    expect(pullEcrImageMock).toHaveBeenCalledWith(uri, { skipPull: false, profile: 'dev' });
+    expect(pullEcrImageMock).toHaveBeenCalledWith(uri, {
+      skipPull: false,
+      profile: 'dev',
+      // The runtime's own --env-vars section routes the ECR token (#914).
+      workload: { logicalId: 'ChatAgent', cdkPath: undefined },
+    });
     expect(buildContainerImageMock).not.toHaveBeenCalled();
     expect(pullImageMock).not.toHaveBeenCalled();
   });
