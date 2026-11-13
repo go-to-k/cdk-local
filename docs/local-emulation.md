@@ -533,8 +533,11 @@ The rules:
   Unless ECR is excepted for the workload, every `docker pull` and
   `docker build` cdk-local runs under `--aws-emulator` also uses a per-run
   Docker client config with no credential for any ECR host (the host's
-  `auths`, `credHelpers` and `credsStore` entries for ECR hosts are left out;
-  every other registry keeps its login, and the context, CLI plugins and
+  `auths`, `credHelpers` and `credsStore` entries for ECR hosts, and those in
+  `DOCKER_AUTH_CONFIG`, are left out;
+  every other registry keeps its login (except one held only in the
+  credential store with no `auths` entry, such as a Docker Desktop sign-in,
+  which then pulls anonymously), and the context, CLI plugins and
   buildx builder are linked from yours). So a Dockerfile `FROM` in real ECR is
   not answered by a credential helper such as `docker-credential-ecr-login`
   with your real identity: except ECR for that workload to build it. A

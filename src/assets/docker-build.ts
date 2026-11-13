@@ -265,7 +265,7 @@ export async function buildDockerImage(
 
     let result;
     try {
-      result = await spawnStreaming(cmd, args, { cwd });
+      result = await spawnStreaming(cmd, args, { cwd, env: dockerRegistryEnv(options.workload) });
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       throw options.wrapError(displayToolOutput(e.stderr || e.message || String(err)));

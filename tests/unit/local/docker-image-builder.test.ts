@@ -195,6 +195,17 @@ describe('buildContainerImage', () => {
       expect(envOf(1)['DOCKER_CONFIG']).toBeDefined();
       expect(envOf(1)['DOCKER_CONFIG']).not.toBe(process.env['DOCKER_CONFIG']);
       expect(envOf(1)['BUILDX_NO_DEFAULT_ATTESTATIONS']).toBe('1');
+      // The `executable` arm (a script that runs `docker build` itself) gets
+      // the same docker config.
+      await buildContainerImage(
+        { source: { executable: ['./build.sh'] } },
+        '/cdk.out',
+        { architecture: 'x86_64', workload: { logicalId: 'Unmarked' } }
+      );
+      const execOpts = mockSpawnStreaming.mock.calls[0]![2] as {
+        env: Record<string, string | undefined>;
+      };
+      expect(execOpts.env['DOCKER_CONFIG']).toBe(envOf(1)['DOCKER_CONFIG']);
     } finally {
       setAwsEmulatorServiceRouting(undefined);
       resetDockerRegistryConfigForTest();

@@ -205,6 +205,54 @@ describe('dockerRegistryEnv / runDocker* under --aws-emulator', () => {
     await expect(runDockerForeground(['pull', `${ECR}/r:t`])).resolves.toBeUndefined();
   });
 
+  it('strips ECR credentials from DOCKER_AUTH_CONFIG too, and drops a malformed one', () => {
+    const saved = process.env['DOCKER_AUTH_CONFIG'];
+    try {
+      setAwsEndpointOverride(EMU);
+      process.env['DOCKER_AUTH_CONFIG'] = JSON.stringify({
+        auths: { [ECR]: { auth: 'ZWNyOnRvaw==' }, 'ghcr.io': { auth: 'Z2g6dG9r' } },
+      });
+      expect(JSON.parse(dockerRegistryEnv()['DOCKER_AUTH_CONFIG']!)).toEqual({
+        auths: { 'ghcr.io': { auth: 'Z2g6dG9r' } },
+      });
+      process.env['DOCKER_AUTH_CONFIG'] = 'not json';
+      const env = dockerRegistryEnv();
+      expect('DOCKER_AUTH_CONFIG' in env && env['DOCKER_AUTH_CONFIG'] === undefined).toBe(true);
+      delete process.env['DOCKER_AUTH_CONFIG'];
+      expect('DOCKER_AUTH_CONFIG' in dockerRegistryEnv()).toBe(false);
+      // Outside the flag it is left alone.
+      setAwsEndpointOverride(undefined);
+      process.env['DOCKER_AUTH_CONFIG'] = '{"auths":{}}';
+      expect('DOCKER_AUTH_CONFIG' in dockerRegistryEnv()).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env['DOCKER_AUTH_CONFIG'];
+      else process.env['DOCKER_AUTH_CONFIG'] = saved;
+    }
+  });
+
+  it('re-creates the per-run directory when it was removed mid-run', () => {
+    setAwsEndpointOverride(EMU);
+    const first = dockerRegistryEnv()['DOCKER_CONFIG']!;
+    rmSync(first, { recursive: true, force: true });
+    const second = dockerRegistryEnv()['DOCKER_CONFIG']!;
+    expect(second).not.toBe(first);
+    expect(existsSync(join(second, 'config.json'))).toBe(true);
+  });
+
+  it('leaves DOCKER_CONFIG unset for an excepted workload when the host has none', async () => {
+    delete process.env['DOCKER_CONFIG'];
+    setAwsEmulatorServiceRouting({
+      realServices: [],
+      override: EMU,
+      envOverrides: { Parameters: {}, web: { AWS_ENDPOINT_URL_ECR: 'real-aws' } },
+    });
+    const env = dockerRegistryEnv({ containerName: 'web' });
+    expect('DOCKER_CONFIG' in env && env['DOCKER_CONFIG'] === undefined).toBe(true);
+    // The explicit undefined removes the stripped default from the spawn env.
+    const { stdout } = await runDockerStreaming(['pull', `${ECR}/r:t`], { env });
+    expect(stdout.trim()).toBe('');
+  });
+
   it('writes an empty config when the host has none', () => {
     rmSync(join(hostDir, 'config.json'));
     setAwsEndpointOverride(EMU);

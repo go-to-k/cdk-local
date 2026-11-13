@@ -692,7 +692,7 @@ describe('buildDockerImage — the shared container-build sink', () => {
       outdir,
       { wrapError }
     );
-    expect(mockSpawnStreaming.mock.calls[0]![2]).toEqual({ cwd: join(outdir, 'asset.abc') });
+    expect(mockSpawnStreaming.mock.calls[0]![2]).toMatchObject({ cwd: join(outdir, 'asset.abc') });
   });
 });
 

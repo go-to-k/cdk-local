@@ -116,7 +116,9 @@ let exitHookInstalled = false;
 /**
  * Write (once per process) the per-run docker config directory: the host's
  * `config.json` through {@link stripEcrCredentials} (mode 0600 in a 0700
- * directory), plus links to the host's {@link LINKED_ENTRIES}. Removed on exit.
+ * directory), plus links to the host's {@link LINKED_ENTRIES}. Removed on
+ * normal exit; a process killed outright (SIGKILL) leaves it under the OS temp
+ * directory, readable by this user only.
  * A host config that is missing or not JSON yields an empty one: docker then
  * runs with no credential at all, which is the safe side.
  */
@@ -132,21 +134,23 @@ function ensureStrippedConfigDir(): string {
   const dir = mkdtempSync(
     path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-docker-config-`)
   );
-  writeFileSync(
-    path.join(dir, 'config.json'),
-    `${JSON.stringify(stripEcrCredentials(hostConfig), null, 2)}\n`,
-    { mode: 0o600 }
-  );
+  const stripped = stripEcrCredentials(hostConfig);
   for (const entry of LINKED_ENTRIES) {
     const target = path.join(hostDir, entry);
     if (!existsSync(target)) continue;
     try {
-      symlinkSync(target, path.join(dir, entry));
+      // A junction on Windows needs no symlink privilege.
+      symlinkSync(target, path.join(dir, entry), process.platform === 'win32' ? 'junction' : 'dir');
     } catch {
-      // A link that cannot be made (e.g. Windows without symlink rights) only
-      // loses that entry: docker then uses its built-in default for it.
+      // A plugin or builder link that cannot be made only loses that entry.
+      // Without `contexts`, a `currentContext` naming a context docker cannot
+      // find makes EVERY docker call fail, so the default context is used.
+      if (entry === 'contexts') delete stripped['currentContext'];
     }
   }
+  writeFileSync(path.join(dir, 'config.json'), `${JSON.stringify(stripped, null, 2)}\n`, {
+    mode: 0o600,
+  });
   strippedDir = dir;
   if (!exitHookInstalled) {
     exitHookInstalled = true;
@@ -174,7 +178,30 @@ export function dockerRegistryEnv(
   if (!isAwsServiceRoutedToEmulator(ECR_SERVICE_ID, workload)) {
     return { DOCKER_CONFIG: process.env['DOCKER_CONFIG'] };
   }
-  return { DOCKER_CONFIG: ensureStrippedConfigDir() };
+  return {
+    DOCKER_CONFIG: ensureStrippedConfigDir(),
+    ...strippedAuthConfigEnv(process.env['DOCKER_AUTH_CONFIG']),
+  };
+}
+
+/**
+ * `DOCKER_AUTH_CONFIG` (credentials as config JSON in the environment, read on
+ * top of the config file) through {@link stripEcrCredentials}. Unset stays
+ * unset; a value that is not JSON is dropped (unset), never passed on.
+ */
+function strippedAuthConfigEnv(value: string | undefined): Record<string, string | undefined> {
+  if (value === undefined) return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { DOCKER_AUTH_CONFIG: undefined };
+    }
+    return {
+      DOCKER_AUTH_CONFIG: JSON.stringify(stripEcrCredentials(parsed as Record<string, unknown>)),
+    };
+  } catch {
+    return { DOCKER_AUTH_CONFIG: undefined };
+  }
 }
 
 /** Test hook: remove the per-run directory and forget it. */
