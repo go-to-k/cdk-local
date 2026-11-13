@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
@@ -18,9 +18,16 @@ function installedClientServiceIds(): Array<{ pkg: string; id: string }> {
   const out: Array<{ pkg: string; id: string }> = [];
   for (const name of readdirSync(scopeDir).filter((n) => n.startsWith('client-'))) {
     const pkg = `@aws-sdk/${name}`;
-    const shared = path.join(path.dirname(require.resolve(`${pkg}/package.json`)), 'dist-cjs', 'runtimeConfig.shared.js');
-    const m = /serviceId: config\?\.serviceId \?\? "([^"]+)"/.exec(readFileSync(shared, 'utf8'));
-    expect(m, `${pkg} declares its serviceId in runtimeConfig.shared.js`).not.toBeNull();
+    // Older clients ship `runtimeConfig.shared.js`; newer ones (3.11xx+) bundle
+    // the whole client into `dist-cjs/index.js`, the declaration unchanged.
+    const distDir = path.join(path.dirname(require.resolve(`${pkg}/package.json`)), 'dist-cjs');
+    const source = ['runtimeConfig.shared.js', 'index.js']
+      .map((file) => path.join(distDir, file))
+      .filter((file) => existsSync(file))
+      .map((file) => readFileSync(file, 'utf8'))
+      .join('\n');
+    const m = /serviceId: config\?\.serviceId \?\? "([^"]+)"/.exec(source);
+    expect(m, `${pkg} declares its serviceId in dist-cjs`).not.toBeNull();
     out.push({ pkg, id: normalizeAwsEndpointServiceId(m![1]!) });
   }
   return out;
