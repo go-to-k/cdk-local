@@ -130,9 +130,10 @@ permission the role lacks fails locally the way it would in AWS.
 - **Any other credentials** (IAM Identity Center, a role session): pass
   `--emulate-role-via <arn>` naming a role you **can** assume; cdk-local
   assumes it with the execution role's policies as session policies.
-- Reading the role needs `iam:ListRolePolicies`, `iam:GetRolePolicy` and
-  `iam:ListAttachedRolePolicies`, and the role must be in your credentials'
-  account.
+- Reading the role needs `iam:GetRole`, `iam:ListRolePolicies`,
+  `iam:GetRolePolicy` and `iam:ListAttachedRolePolicies`, and the role must
+  be in your credentials' account. A role with a permissions boundary is not
+  emulated: session policies cannot reproduce a boundary.
 - Only `AccessDenied` triggers it: an expired or invalid token
   (`ExpiredToken`, `InvalidClientTokenId`) keeps its error.
 - A role with no policy gets a deny-all session policy. STS limits session
@@ -145,8 +146,8 @@ permission the role lacks fails locally the way it would in AWS.
   credentials.
 - It is an **approximation**, and says so once per role: resource-based
   policies, KMS key policies and `aws:PrincipalArn` conditions that name the
-  role see a different principal; the role's permissions boundary and
-  session tags are not reproduced; policy variables such as `aws:username`
+  role see a different principal; the role's session tags are not
+  reproduced; policy variables such as `aws:username`
   take the session's values.
 - The IAM and STS calls go where the refused `AssumeRole` went: to the
   endpoint under `--aws-emulator`, to real AWS in mixed mode.

@@ -105,12 +105,6 @@ export interface LocalStartMicrovmOptions extends LambdaContainerEnvOptions {
   autoResume?: boolean;
   /** `--assume-role <arn>`: the MicroVM execution role. */
   assumeRole?: string;
-  /**
-   * `--emulate-role-via <arn>`: when the role flag's AssumeRole is refused with
-   * AccessDenied, emulate the role's permissions by assuming THIS role with the
-   * execution role's policies as session policies (go-to-k/cdk-local#929).
-   */
-  emulateRoleVia?: string;
   /** Default hook / readiness deadline in ms (`--timeout`). */
   timeout: number;
 }

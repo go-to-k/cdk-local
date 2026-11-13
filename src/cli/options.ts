@@ -203,7 +203,7 @@ export function emulateRoleViaOption(roleFlag: string): Option {
       'policies, so only what both allow is allowed. For callers that are not an IAM user ' +
       '(IAM Identity Center, a role session); an IAM user gets the same through ' +
       'sts:GetFederationToken without this flag. An approximation: resource-based policies, ' +
-      'key policies and conditions naming the role, and its permissions boundary, are not reproduced.'
+      'key policies and conditions naming the role are not reproduced, and a role with a permissions boundary is not emulated.'
   ).argParser(parseEmulateRoleVia);
 }
 

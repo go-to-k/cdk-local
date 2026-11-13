@@ -1967,7 +1967,8 @@ async function resolveServiceAndRunnerOpts(
       resolvedRoleArn,
       options.region,
       options.profile,
-      options.emulateRoleVia
+      options.emulateRoleVia,
+      options.assumeRole !== undefined ? '--assume-role' : '--assume-task-role'
     );
   } else if (typeof effectiveAssumeRole === 'string') {
     resolvedRoleArn = effectiveAssumeRole;
@@ -1975,7 +1976,8 @@ async function resolveServiceAndRunnerOpts(
       resolvedRoleArn,
       options.region,
       options.profile,
-      options.emulateRoleVia
+      options.emulateRoleVia,
+      options.assumeRole !== undefined ? '--assume-role' : '--assume-task-role'
     );
   }
   // The shared sidecar is what containers read their task-role credentials
@@ -2675,7 +2677,8 @@ async function assumeTaskRole(
   roleArn: string,
   region: string | undefined,
   profile: string | undefined,
-  emulateRoleVia: string | undefined
+  emulateRoleVia: string | undefined,
+  roleFlag = '--assume-role'
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   return assumeRoleCredentials({
     roleArn,
@@ -2684,6 +2687,7 @@ async function assumeTaskRole(
     sessionNameSuffix: 'start-service',
     makeError: (message) => new LocalStartServiceError(message),
     emulateRoleVia,
+    roleFlag,
   });
 }
 /** @internal — test-only: the task-role assume a refused AssumeRole falls back from. */

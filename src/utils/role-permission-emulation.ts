@@ -55,6 +55,12 @@ export interface RolePolicies {
   inline: unknown[];
   /** The attached managed policies' ARNs. */
   managedArns: string[];
+  /**
+   * The role's permissions boundary ARN, if any. Session policies are a UNION
+   * among themselves, so a boundary cannot be added as one: emulating such a
+   * role would allow what its boundary denies, and is refused instead.
+   */
+  permissionsBoundaryArn?: string | undefined;
 }
 
 export type SessionPolicyPlan =
@@ -199,8 +205,9 @@ export async function emulateRoleAfterDeniedAssume(
   try {
     return await emulate(args);
   } catch (unexpected) {
-    if (failedRoles.has(args.roleArn)) return undefined;
-    failedRoles.add(args.roleArn);
+    const key = `${args.roleArn}\0unexpected`;
+    if (failedRoles.has(key)) return undefined;
+    failedRoles.add(key);
     getLogger().warn(
       `${args.flag}: emulating the role's permissions failed: ${describeAwsFailureForWarn(unexpected, 'role permission emulation')}.`
     );
@@ -214,8 +221,11 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
   // here; flattened anyway, as every role-ARN log site in this repo is.
   const shownRole = flattenToOneLine(args.roleArn);
   const cannot = (reason: string): undefined => {
-    if (failedRoles.has(args.roleArn)) return undefined;
-    failedRoles.add(args.roleArn);
+    // Once per role AND reason: a later attempt that fails differently
+    // (`--watch`, AgentCore's three hops) still says why.
+    const key = `${args.roleArn}\0${reason}`;
+    if (failedRoles.has(key)) return undefined;
+    failedRoles.add(key);
     logger.warn(
       `${args.flag}: AssumeRole(${shownRole}) was refused, and the role's permissions cannot be emulated instead: ${reason}.`
     );
@@ -262,7 +272,12 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
       policies = await readRolePolicies(args);
     } catch (readErr) {
       return cannot(
-        `reading the role's policies failed (it needs iam:ListRolePolicies, iam:GetRolePolicy and iam:ListAttachedRolePolicies): ${describeAwsFailureForWarn(readErr, 'IAM role policy read')}`
+        `reading the role's policies failed (it needs iam:GetRole, iam:ListRolePolicies, iam:GetRolePolicy and iam:ListAttachedRolePolicies): ${describeAwsFailureForWarn(readErr, 'IAM role policy read')}`
+      );
+    }
+    if (policies.permissionsBoundaryArn !== undefined) {
+      return cannot(
+        `the role has a permissions boundary (${flattenToOneLine(policies.permissionsBoundaryArn)}), which session policies cannot reproduce, so the emulation could allow what the role cannot`
       );
     }
     const plan = buildSessionPolicy(policies);
@@ -331,7 +346,7 @@ async function emulate(args: EmulateRoleArgs): Promise<EmulatedRoleCredentials |
           ? ' A GetFederationToken session cannot call IAM, nor STS except GetCallerIdentity.'
           : '';
       logger.warn(
-        `${args.flag}: AssumeRole(${shownRole}) was refused (the role's trust policy does not allow you), so its permissions are EMULATED: credentials from ${via} with the role's ${policies.inline.length} inline and ${policies.managedArns.length} managed ${count === 1 ? 'policy' : 'policies'} as session policies, which allow only what both ${who} and the role allow. This is an APPROXIMATION: resource-based policies, KMS key policies and aws:PrincipalArn conditions that name the role see a different principal, and the role's permissions boundary and session tags are not reproduced. Policy variables such as aws:username and aws:userid take this session's values, not the role's (a role session has no aws:username).${federationNote}`
+        `${args.flag}: AssumeRole(${shownRole}) was refused (the role's trust policy does not allow you), so its permissions are EMULATED: credentials from ${via} with the role's ${policies.inline.length} inline and ${policies.managedArns.length} managed ${count === 1 ? 'policy' : 'policies'} as session policies, which allow only what both ${who} and the role allow. This is an APPROXIMATION: resource-based policies, KMS key policies and aws:PrincipalArn conditions that name the role see a different principal, and the role's session tags are not reproduced. Policy variables such as aws:username and aws:userid take this session's values, not the role's (a role session has no aws:username).${federationNote}`
       );
     }
     return {
@@ -359,6 +374,7 @@ export async function readRolePolicies(args: {
     ListRolePoliciesCommand,
     GetRolePolicyCommand,
     ListAttachedRolePoliciesCommand,
+    GetRoleCommand,
   } = await import('@aws-sdk/client-iam');
   const iam = new IAMClient({
     ...workloadClientConfig({ profile: args.profile }),
@@ -367,6 +383,8 @@ export async function readRolePolicies(args: {
   });
   const RoleName = roleNameOf(args.roleArn);
   try {
+    const role = await iam.send(new GetRoleCommand({ RoleName }));
+    const permissionsBoundaryArn = role.Role?.PermissionsBoundary?.PermissionsBoundaryArn;
     const names: string[] = [];
     let marker: string | undefined;
     do {
@@ -396,7 +414,7 @@ export async function readRolePolicies(args: {
       }
       attachedMarker = page.IsTruncated ? page.Marker : undefined;
     } while (attachedMarker);
-    return { inline, managedArns };
+    return { inline, managedArns, ...(permissionsBoundaryArn && { permissionsBoundaryArn }) };
   } finally {
     iam.destroy();
   }

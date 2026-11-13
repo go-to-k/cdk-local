@@ -39,6 +39,7 @@ const aws = vi.hoisted(() => ({
   iamError: undefined as unknown,
   inline: {} as Record<string, unknown>,
   managed: [] as string[],
+  boundary: undefined as string | undefined,
   /** Split the List* answers into pages of this size (0: one page). */
   pageSize: 0,
 }));
@@ -112,6 +113,13 @@ vi.mock('@aws-sdk/client-iam', () => ({
       send: vi.fn(async (cmd: { __name: string; input: Record<string, unknown> }) => {
         aws.sent.push({ name: cmd.__name, input: cmd.input });
         if (aws.iamError !== undefined) throw aws.iamError;
+        if (cmd.__name === 'GetRole') {
+          return {
+            Role: aws.boundary
+              ? { PermissionsBoundary: { PermissionsBoundaryArn: aws.boundary } }
+              : {},
+          };
+        }
         if (cmd.__name === 'ListRolePolicies') {
           const p = page(Object.keys(aws.inline), cmd.input['Marker']);
           return { PolicyNames: p.items, IsTruncated: p.IsTruncated, Marker: p.Marker };
@@ -136,6 +144,7 @@ vi.mock('@aws-sdk/client-iam', () => ({
   ListRolePoliciesCommand: command('ListRolePolicies'),
   GetRolePolicyCommand: command('GetRolePolicy'),
   ListAttachedRolePoliciesCommand: command('ListAttachedRolePolicies'),
+  GetRoleCommand: command('GetRole'),
 }));
 
 const {
@@ -214,6 +223,7 @@ beforeEach(() => {
   aws.iamError = undefined;
   aws.inline = { A: S3_LIST, B: LOGS };
   aws.managed = [BASIC];
+  aws.boundary = undefined;
   aws.pageSize = 0;
   warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
 });
@@ -342,7 +352,6 @@ describe('emulateRoleAfterDeniedAssume', () => {
     expect(text).toContain('EMULATED');
     expect(text).toContain('APPROXIMATION');
     expect(text).toContain('resource-based policies');
-    expect(text).toContain('permissions boundary');
     expect(text).toContain('session tags');
     expect(text).toContain('aws:username');
     expect(text).toContain('cannot call IAM, nor STS except GetCallerIdentity');
@@ -441,6 +450,23 @@ describe('emulateRoleAfterDeniedAssume', () => {
     ).toBeUndefined();
     expect(sentNames()).toEqual(['GetCallerIdentity']);
     expect(warnings()).toContain("not in your credentials' account");
+  });
+
+  it('refuses a role with a permissions boundary (session policies are a union, so it would widen)', async () => {
+    aws.boundary = 'arn:aws:iam::123456789012:policy/Boundary';
+    expect(await emulateRoleAfterDeniedAssume(accessDenied(), args)).toBeUndefined();
+    expect(sentNames()).not.toContain('GetFederationToken');
+    expect(warnings()).toContain('permissions boundary');
+  });
+
+  it('warns again when a later attempt fails for a different reason', async () => {
+    aws.callerArn = ASSUMED_ARN;
+    await emulateRoleAfterDeniedAssume(accessDenied(), args);
+    aws.callerArn = USER_ARN;
+    aws.boundary = 'arn:aws:iam::123456789012:policy/Boundary';
+    await emulateRoleAfterDeniedAssume(accessDenied(), args);
+    await emulateRoleAfterDeniedAssume(accessDenied(), args);
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 
   it('over the limits: warns and asks STS for nothing', async () => {
@@ -680,6 +706,13 @@ describe('--emulate-role-via reaches each execution-role assume (assumed-role ca
     const creds = await assumeServiceTaskRole(ROLE, 'us-east-1', undefined, VIA);
     expect(viaAssumed()).toBe(true);
     expect(creds.accessKeyId).toBe('ASIA-AssumeRole');
+  });
+
+  it('start-service: the warnings name the flag the user typed', async () => {
+    await expect(
+      assumeServiceTaskRole(ROLE, 'us-east-1', undefined, undefined, '--assume-task-role')
+    ).rejects.toThrow(LocalStartServiceError);
+    expect(warnings()).toContain('--assume-task-role: AssumeRole(');
   });
 
   it('start-service / start-alb: emulation impossible keeps the LocalStartServiceError', async () => {
