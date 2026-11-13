@@ -654,7 +654,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op for the image itself (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). **Either kind of container Lambda** — also skip pulling the image the Runtime Interface Emulator is copied out of (see [Images without the Runtime Interface Emulator](#images-without-the-runtime-interface-emulator)). |
 | `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkl-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkl invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the CLI's resolved credentials (honoring `--profile`) and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. Same-account / same-region pulls do not need this flag; cross-account without the flag falls back to the caller's credentials (succeeds when an IAM resource policy on the ECR repo grants the caller directly, else AWS surfaces `AccessDenied`). No-op when `--no-pull` is set. |
-| `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
+| `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. The handler waits until a debugger attaches: while this flag is set the function `Timeout` is lifted to 36000 seconds (in the container and on the host-side invoke deadline, as SAM CLI does), so a 3 s function is not reset before you attach. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
 | `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from the bound CloudFormation stack (requires `--from-cfn-stack`); (3) `--no-assume-role` explicitly opts out (forces dev creds even with `--from-cfn-stack`). Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` are passed through unchanged (SAM-compatible default; the region follows the container `AWS_REGION` order below), and with none in the environment the host's default credential chain fills them. STS failures degrade to a warn + dev-creds fallback. |
 | `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time. Pass `-a cdk.out` to skip synthesis when iterating. |
@@ -899,8 +899,11 @@ stack's asset manifest (`cdk.out/<stack>.assets.json`,
 `dockerImages[<hash>]`). When the lookup hits, `cdkl invoke` calls
 `docker build` against the recorded build context. When the lookup
 misses AND the manifest contains exactly one Docker asset, that single
-asset is used (single-asset fallback — covers digest-pinned URIs). When
-both miss, cdk-local falls back to **ECR pull** with cross-account /
+asset is used only when the URI points at that asset's own destination
+repository (single-asset fallback — covers digest-pinned URIs and custom
+tags on the asset repository). A URI in any other repository (a literal
+`ImageUri`, `DockerImageCode.fromEcr`) never takes the fallback, so it
+never runs another function's asset image. When both miss, cdk-local falls back to **ECR pull** with cross-account /
 cross-region support: cdk-local builds the ECR client for the URI's
 region and (when `--ecr-role-arn <arn>` is passed) issues
 `sts:AssumeRole` to gain credentials in the target account before
@@ -1286,7 +1289,7 @@ the same tier; cdk-local uses literal-segment count as a heuristic).
 | `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
 | `--no-pull` | off | Skip `docker pull`. |
 | `--container-host <host>` | `127.0.0.1` | IP the host uses to bind/probe the RIE port. Must be a numeric IP — `docker run -p <ip>:<port>:8080` rejects hostnames like `host.docker.internal`. |
-| `--debug-port-base <port>` | unset | Allocate a contiguous `--inspect-brk` port range across Lambdas (one per Lambda). |
+| `--debug-port-base <port>` | unset | Allocate a contiguous `--inspect-brk` port range across Lambdas (one per Lambda). A request hangs until you attach a debugger: while this flag is set every function's `Timeout` is lifted to 36000 seconds (as SAM CLI does). |
 | `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkl invoke`. |
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
 | `--watch` | off | Hot reload: re-synth + re-discover routes when the CDK app's source tree (the directory holding `cdk.json`) changes. Honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out/`, `cdk.context.json`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |

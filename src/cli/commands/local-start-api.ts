@@ -81,6 +81,11 @@ import {
 import { derivePartitionAndUrlSuffix } from '../../local/ecs-task-resolver.js';
 import { resolveRuntimeFileExtension, resolveRuntimeImage } from '../../local/runtime-image.js';
 import { ensureDockerAvailable, pullImage } from '../../local/docker-runner.js';
+import {
+  applyDebuggerEnv,
+  debugTimeoutNotice,
+  rieInvokeTimeoutMs,
+} from '../../local/debug-timeout.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
 import { parseEcrUri, pullEcrImage } from '../../local/ecr-puller.js';
 import {
@@ -971,12 +976,14 @@ async function localStartApiCommand(
   sigV4CredentialsLoader = defaultCredentialsLoader();
   warnIamRoutes(initialMaterial.routes);
 
-  // RIE invoke timeout: 2x the slowest Lambda's Timeout, floor 30s.
+  // RIE invoke timeout: 2x the slowest Lambda's Timeout, floor 30s — or 2x
+  // the lifted debug timeout under --debug-port-base (go-to-k/cdk-local#948).
   let maxTimeoutSec = 0;
   for (const spec of initialMaterial.specs.values()) {
     if (spec.lambda.timeoutSec > maxTimeoutSec) maxTimeoutSec = spec.lambda.timeoutSec;
   }
-  const rieTimeoutMs = Math.max(30_000, maxTimeoutSec * 2 * 1000);
+  const rieTimeoutMs = rieInvokeTimeoutMs(maxTimeoutSec, debugPortBase !== undefined);
+  if (debugPortBase !== undefined) logger.info(debugTimeoutNotice('--debug-port-base'));
 
   const basePort = parseInt(options.port, 10);
   if (!Number.isFinite(basePort) || basePort < 0 || basePort > 65535) {
@@ -2693,7 +2700,9 @@ export async function buildContainerSpec(args: {
   setContainerRegion(dockerEnv, containerRegion);
 
   if (debugPort !== undefined) {
-    dockerEnv['NODE_OPTIONS'] = `--inspect-brk=0.0.0.0:${debugPort}`;
+    // `--inspect-brk` + the lifted function timeout, so the RIE does not
+    // reset the runtime before a debugger attaches (go-to-k/cdk-local#948).
+    applyDebuggerEnv(dockerEnv, debugPort);
   }
 
   // Issue #440 — Lambda EphemeralStorage.Size: when the function's
