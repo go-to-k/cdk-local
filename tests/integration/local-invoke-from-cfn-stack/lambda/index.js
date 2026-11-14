@@ -20,6 +20,10 @@ exports.handler = async (event) => {
     dynrefSecretStage: process.env.DYNREF_SECRET_STAGE ?? 'unset',
     dynrefSsm: process.env.DYNREF_SSM ?? 'unset',
     noechoPw: process.env.NOECHO_PW ?? 'unset',
+    // issue #976: list-typed and AWS::EC2::Image::Id-typed SSM parameters.
+    listSecond: process.env.LIST_SECOND ?? 'unset',
+    listJoined: process.env.LIST_JOINED ?? 'unset',
+    amiId: process.env.AMI_ID ?? 'unset',
     event,
   };
 };

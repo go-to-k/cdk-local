@@ -72,6 +72,16 @@ DYNREF_SECRET_PASSWORD="dynref-pw-7c1e94"
 # Ref is filled from the deployed env and must stay off the argv.
 NOECHO_PW_VALUE="noecho-pw-51d2a7"
 SSM_GONE_PARAM="$(integ_scoped_name /cdkl-integ/invoke-from-cfn-stack/dynref-gone)"
+# issue #976: a StringList behind an AWS::SSM::Parameter::Value<List<String>>
+# template parameter. Put before deploy, OVERWRITTEN after it, so the deployed
+# function's env holds the deploy-time value and only a fresh, split SSM read
+# yields the asserted one. Kept in sync with the stack's SSM_LIST_PARAM.
+SSM_LIST_PARAM="$(integ_scoped_name /cdkl-integ/invoke-from-cfn-stack/list)"
+SSM_LIST_DEPLOY_VALUE="alpha,beta,gamma"
+SSM_LIST_VALUE="one,two,three"
+# issue #976: AWS's public AMI parameter behind a
+# Value<AWS::EC2::Image::Id> template parameter (kept in sync with the stack).
+SSM_AMI_PARAM="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 SECRET_ARN=""
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -113,6 +123,7 @@ cleanup() {
     aws ssm delete-parameter --name "${SSM_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
     aws ssm delete-parameter --name "${SSM_API_KEY_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
     aws ssm delete-parameter --name "${SSM_GONE_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
+    aws ssm delete-parameter --name "${SSM_LIST_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   # issue #784: a stack-deleted secret may linger in its recovery window;
   # purge it so no secret outlives the run. Best-effort, idempotent.
@@ -161,6 +172,14 @@ aws ssm put-parameter \
   --overwrite \
   --region "${REGION}" >/dev/null
 echo "[verify]   put ${SSM_GONE_PARAM} (deploy-time only)"
+# issue #976: the list parameter, at its deploy-time value.
+aws ssm put-parameter \
+  --name "${SSM_LIST_PARAM}" \
+  --value "${SSM_LIST_DEPLOY_VALUE}" \
+  --type StringList \
+  --overwrite \
+  --region "${REGION}" >/dev/null
+echo "[verify]   put ${SSM_LIST_PARAM}=${SSM_LIST_DEPLOY_VALUE} (StringList, pre-deploy)"
 
 echo "[verify] step 3: cdk deploy (upstream CDK CLI)"
 # The fixture deliberately uses upstream `cdk deploy` so the resulting
@@ -211,6 +230,21 @@ echo "[verify]   swapped ${SSM_API_KEY_PARAM} -> SecureString"
 
 echo "[verify] step 3c: delete the deploy-time-only parameter (issue #784)"
 aws ssm delete-parameter --name "${SSM_GONE_PARAM}" --region "${REGION}" >/dev/null
+
+echo "[verify] step 3d: overwrite the list parameter after deploy (issue #976)"
+aws ssm put-parameter \
+  --name "${SSM_LIST_PARAM}" \
+  --value "${SSM_LIST_VALUE}" \
+  --type StringList \
+  --overwrite \
+  --region "${REGION}" >/dev/null
+echo "[verify]   overwrote ${SSM_LIST_PARAM}=${SSM_LIST_VALUE}"
+AMI_VALUE=$(aws ssm get-parameter --name "${SSM_AMI_PARAM}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text)
+case "${AMI_VALUE}" in
+  ami-*) echo "[verify]   ${SSM_AMI_PARAM} = ${AMI_VALUE}" ;;
+  *) echo "[verify] FAIL: could not read ${SSM_AMI_PARAM} (got: ${AMI_VALUE})"; exit 1 ;;
+esac
 
 echo "[verify] step 4: read the deployed DynamoDB table name from CloudFormation"
 DEPLOYED_TABLE=$(aws cloudformation describe-stack-resources \
@@ -309,6 +343,12 @@ echo "${RESULT_BASELINE}" | grep -q "\"dynrefSsm\":\"${SSM_PARAM_VALUE}\"" || {
   echo "[verify] FAIL: expected DYNREF_SSM={{resolve:ssm:...}} resolved to ${SSM_PARAM_VALUE} without a state flag (issue #784), got: ${RESULT_BASELINE}"
   exit 1
 }
+for field in listSecond listJoined amiId; do
+  echo "${RESULT_BASELINE}" | grep -q "\"${field}\":\"unset\"" || {
+    echo "[verify] FAIL: expected ${field} dropped without a state flag (issue #976), got: ${RESULT_BASELINE}"
+    exit 1
+  }
+done
 echo "${RESULT_BASELINE}" | grep -q '"dynrefSecret":"unset"' || {
   echo "[verify] FAIL: expected DYNREF_SECRET (Fn::Join over a Ref) dropped without a state flag, got: ${RESULT_BASELINE}"
   exit 1
@@ -330,6 +370,21 @@ echo "${RESULT_FROM_CFN}" | grep -q "\"siblingArn\":\"${DEPLOYED_SIBLING_ARN}\""
 }
 echo "${RESULT_FROM_CFN}" | grep -q "\"dbHost\":\"${SSM_PARAM_VALUE}\"" || {
   echo "[verify] FAIL: expected DB_HOST=${SSM_PARAM_VALUE} (AWS::SSM::Parameter::Value resolved from SSM, issue #94), got: ${RESULT_FROM_CFN}"
+  exit 1
+}
+# issue #976: the list parameter is split on "," (Fn::Select / Fn::Join over
+# its Ref) from the FRESH SSM value -- the deployed env holds the deploy-time
+# one -- and the Value<AWS::EC2::Image::Id> parameter is resolved.
+echo "${RESULT_FROM_CFN}" | grep -q '"listSecond":"two"' || {
+  echo "[verify] FAIL: expected LIST_SECOND=two (Fn::Select over a Value<List<String>> Ref, issue #976), got: ${RESULT_FROM_CFN}"
+  exit 1
+}
+echo "${RESULT_FROM_CFN}" | grep -q '"listJoined":"one;two;three"' || {
+  echo "[verify] FAIL: expected LIST_JOINED=one;two;three (Fn::Join over a Value<List<String>> Ref, issue #976), got: ${RESULT_FROM_CFN}"
+  exit 1
+}
+echo "${RESULT_FROM_CFN}" | grep -q "\"amiId\":\"${AMI_VALUE}\"" || {
+  echo "[verify] FAIL: expected AMI_ID=${AMI_VALUE} (Value<AWS::EC2::Image::Id>, issue #976), got: ${RESULT_FROM_CFN}"
   exit 1
 }
 echo "${RESULT_FROM_CFN}" | grep -q '"staticValue":"always-the-same"' || {
@@ -380,6 +435,17 @@ DEBUG_OUT=$(${CLI} invoke "${STACK}/EchoTableHandler" --from-cfn-stack --no-pull
 # Isolate the `docker run` command line (it carries the `-e` flags). The
 # Lambda's JSON response (which DOES echo apiKey) is a different line, so
 # grepping the docker-run line avoids a false positive on the value.
+# issue #976: AMI_ID must come from the SSM resolver, not the deployed-env
+# fill (which would hand back the same AMI id and so hide a regression).
+echo "${DEBUG_OUT}" | grep -q 'substituted env var AMI_ID' || {
+  echo "[verify] FAIL: AMI_ID was not substituted from SSM (issue #976); --verbose tail:"
+  echo "${DEBUG_OUT}" | grep -E 'AMI_ID' | head -5
+  exit 1
+}
+if echo "${DEBUG_OUT}" | grep -q 'filled env var AMI_ID'; then
+  echo "[verify] FAIL: AMI_ID came from the deployed-env fill, not SSM (issue #976)"
+  exit 1
+fi
 DOCKER_RUN_LINE=$(echo "${DEBUG_OUT}" | grep -E '(^| )run .* -e ' | grep -- '-e API_KEY' | head -1)
 if [ -z "${DOCKER_RUN_LINE}" ]; then
   echo "[verify] FAIL: could not find the 'docker run' debug line carrying -e API_KEY in --verbose output"
@@ -502,4 +568,5 @@ echo "[verify]   - GetAtt fallback: SIBLING_ARN (Fn::GetAtt .Arn) recovered from
 echo "[verify]   - issue #94: DB_HOST (Ref to AWS::SSM::Parameter::Value<String>) resolved from SSM under --from-cfn-stack, dropped without it."
 echo "[verify]   - issue #99: API_KEY (SecureString SSM param) decrypted + injected under --from-cfn-stack, and kept OFF the docker run argv (value-less -e API_KEY); String DB_HOST stayed inline as the control."
 echo "[verify]   - issue #772: the same SecureString under the docker-client name DOCKER_CONFIG was dropped with a by-name warning."
+echo "[verify]   - issue #976: a Value<List<String>> parameter split for Fn::Select / Fn::Join (fresh SSM value), and a Value<AWS::EC2::Image::Id> parameter resolved from SSM."
 echo "[verify]   - issue #784: {{resolve:secretsmanager:...}} (json-key, version-stage) and {{resolve:ssm:...}} resolved locally, off the argv, out of the logs; a missing parameter failed loudly."

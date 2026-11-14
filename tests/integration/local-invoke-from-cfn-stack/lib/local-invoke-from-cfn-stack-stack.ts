@@ -41,6 +41,24 @@ const SSM_API_KEY_PARAM = integScopedName('/cdkl-integ/invoke-from-cfn-stack/api
 const SSM_GONE_PARAM = integScopedName('/cdkl-integ/invoke-from-cfn-stack/dynref-gone');
 
 /**
+ * Issue #976: a StringList SSM parameter behind an
+ * `AWS::SSM::Parameter::Value<List<String>>` template parameter. A `Ref` to it
+ * is a LIST, so the env vars below reach it through `Fn::Select` / `Fn::Join`.
+ * `verify.sh` puts it before deploy and OVERWRITES it after, so a value from
+ * the deployed function's env (the fallback) cannot pass the assertion. Kept
+ * in sync with `verify.sh`'s `SSM_LIST_PARAM`.
+ */
+const SSM_LIST_PARAM = integScopedName('/cdkl-integ/invoke-from-cfn-stack/list');
+
+/**
+ * Issue #976: AWS's public Amazon Linux 2023 AMI parameter, read through an
+ * `AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>` template parameter (what
+ * `valueForTypedStringParameterV2(..., AWS_EC2_IMAGE_ID)` synthesizes). Public,
+ * so nothing is created or cleaned up. Kept in sync with `verify.sh`.
+ */
+const SSM_AMI_PARAM = '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64';
+
+/**
  * Issue #784: the json-key value of the fixture's same-stack secret. A fixed
  * test value so `verify.sh` can assert the container received exactly it.
  * Kept in sync with `verify.sh`'s `DYNREF_SECRET_PASSWORD`.
@@ -127,6 +145,8 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
+    const ssmList = ssm.StringListParameter.valueForTypedListParameter(this, SSM_LIST_PARAM);
+
     new lambda.Function(this, 'EchoTableHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: HOST_ARCHITECTURE,
@@ -177,6 +197,16 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
         DYNREF_SSM: `{{resolve:ssm:${SSM_DB_HOST_PARAM}}}`,
         // A Ref to a NoEcho parameter, recovered by the deployed-env fill.
         NOECHO_PW: noEchoPw.valueAsString,
+        // issue #976: a `Value<List<String>>` parameter is a list, consumed
+        // through Fn::Select and through Fn::Join over the bare Ref.
+        LIST_SECOND: cdk.Fn.select(1, ssmList),
+        LIST_JOINED: cdk.Fn.join(';', ssmList),
+        // issue #976: a `Value<AWS::EC2::Image::Id>` parameter.
+        AMI_ID: ssm.StringParameter.valueForTypedStringParameterV2(
+          this,
+          SSM_AMI_PARAM,
+          ssm.ParameterValueType.AWS_EC2_IMAGE_ID
+        ),
       },
       timeout: cdk.Duration.seconds(10),
     });

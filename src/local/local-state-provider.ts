@@ -212,12 +212,13 @@ export interface LocalStateProvider {
   resolveAgentCoreRuntimeRoleArn?(runtimePhysicalId: string): Promise<string | undefined>;
   /**
    * Optional: resolve a synthesized stack template's SSM-backed
-   * `Parameters` (`AWS::SSM::Parameter::Value<String>` /
-   * `AWS::SSM::Parameter::Value<List<String>>`, what CDK synthesizes for
-   * `ssm.StringParameter.valueForStringParameter(...)`) into a
+   * `Parameters` (`AWS::SSM::Parameter::Value<String>`, what CDK
+   * synthesizes for `ssm.StringParameter.valueForStringParameter(...)`,
+   * plus the list and `Value<AWS-specific type>` forms) into a
    * `parameterLogicalId -> value` map by reading each parameter's SSM
    * name (from the template entry's `Default`) out of SSM Parameter
-   * Store. `List<String>` values are surfaced comma-joined.
+   * Store. A list-typed parameter's value is a `string[]` (the SSM value
+   * split on `,`).
    *
    * The returned `values` map is fed into the substitution context's
    * `parameters` field so a `Ref` to such a parameter resolves to the value
