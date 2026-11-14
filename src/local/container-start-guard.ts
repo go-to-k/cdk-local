@@ -10,10 +10,16 @@ import { removeContainer } from './docker-runner.js';
  * - a `docker run` still in flight when the shutdown starts: the cleanup has
  *   no id yet, and if the process exits now the daemon still creates (and
  *   starts) the container. {@link ContainerStartGuard.stop} waits for that run
- *   and returns its id so the cleanup removes it. When the run fails — a ^C
- *   from a terminal reaches the `docker` child too, and can kill it after the
- *   daemon created the container but before the id was printed — it removes
- *   the container by the run's `name` instead.
+ *   and returns its id so the cleanup removes it.
+ * - a `docker run` that FAILS: a ^C from a terminal reaches the `docker` child
+ *   too, and can kill it after the daemon created the container but before
+ *   the id was printed. {@link ContainerStartGuard.run} then removes the
+ *   container by the run's `name` before it rejects, and `stop()` waits for
+ *   that removal. This is not tied to the shutdown having begun: the child can
+ *   die before the cleanup of an owner that reaches its guard only after other
+ *   awaits (a `start-api` pool, an ALB Lambda target, go-to-k/cdk-local#973)
+ *   looked, and a `docker run -d` that fails after the create leaves a
+ *   `Created` container behind anyway.
  * - a run that would START after the shutdown began: the cleanup has already
  *   looked for containers, so {@link ContainerStartGuard.run} refuses it.
  *
@@ -25,15 +31,22 @@ export interface ContainerStartGuard {
    * Start a container via `start` unless the shutdown has begun. `name` is
    * the `--name` the run passes to docker, if any. Rejects when the shutdown
    * began before the run or while it was in flight (the cleanup then owns
-   * the container).
+   * the container). A failed run's container is removed by `name` before
+   * this rejects, except on a name-conflict refusal.
    */
   run(start: () => Promise<string>, name?: string): Promise<string>;
   /**
    * Mark the shutdown begun, then wait for a run in flight. Resolves its
    * container id, or `undefined` when nothing was in flight or the run failed.
-   * Never rejects.
+   * Never rejects. For a command with at most one run in flight.
    */
   stop(): Promise<string | undefined>;
+  /**
+   * {@link stop} for an owner with several runs in flight at once (a
+   * `start-api` container pool, go-to-k/cdk-local#973): waits for EVERY run
+   * in flight and resolves the ids of those that succeeded. Never rejects.
+   */
+  stopAll(): Promise<string[]>;
 }
 
 export interface ContainerStartGuardOptions {
@@ -54,42 +67,53 @@ export function createContainerStartGuard(
 ): ContainerStartGuard {
   const remove = options.remove ?? removeContainer;
   let stopping = false;
-  let inFlight: { promise: Promise<string>; name: string | undefined } | undefined;
+  // Each run in flight, as the promise of its outcome: the id, or `undefined`
+  // once a failed run's by-name removal has finished.
+  const inFlight = new Set<Promise<string | undefined>>();
   const cancelled = (): CdkLocalError =>
     new CdkLocalError('Shutting down: the container is not used.', options.cancelledCode);
+  const stopAll = async (): Promise<string[]> => {
+    stopping = true;
+    const ids = await Promise.all([...inFlight]);
+    return ids.filter((id): id is string => id !== undefined);
+  };
   return {
     async run(start, name) {
       if (stopping) throw cancelled();
-      const entry = { promise: start(), name };
-      inFlight = entry;
+      const started = start();
+      const outcome = started.then(
+        (id) => id,
+        async (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          // A name-conflict refusal: the name belongs to someone else.
+          if (name !== undefined && !NAME_CONFLICT.test(message)) {
+            try {
+              await remove(name);
+            } catch {
+              // Best effort: no container by that name is the usual outcome.
+            }
+          }
+          return undefined;
+        }
+      );
+      inFlight.add(outcome);
       try {
-        const id = await entry.promise;
+        const id = await started;
         // The shutdown began while `docker run` was in flight: `stop()` hands
         // this id to the cleanup; the caller must not go on to use the
         // container (an invoke would run the handler after the ^C).
         if (stopping) throw cancelled();
         return id;
+      } catch (err) {
+        await outcome;
+        throw err;
       } finally {
-        if (inFlight === entry) inFlight = undefined;
+        inFlight.delete(outcome);
       }
     },
     async stop() {
-      stopping = true;
-      const entry = inFlight;
-      if (!entry) return undefined;
-      try {
-        return await entry.promise;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (entry.name !== undefined && !NAME_CONFLICT.test(message)) {
-          try {
-            await remove(entry.name);
-          } catch {
-            // Best effort: no container by that name is the usual outcome.
-          }
-        }
-        return undefined;
-      }
+      return (await stopAll())[0];
     },
+    stopAll,
   };
 }

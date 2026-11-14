@@ -470,6 +470,12 @@ export async function bootLambdaUrlOrigins(
     profileCredentials?: ResolvedProfileCredentials;
     /** The host's extra state providers, so a host flag (e.g. `--from-state`) reaches the env (#699). */
     extraStateProviders?: ExtraStateProviders;
+    /**
+     * Receives each runner as soon as it is created, before its `start()`
+     * (go-to-k/cdk-local#973), so a start-up signal stops a runner whose boot
+     * is still in flight.
+     */
+    runnerSink?: FrontDoorLambdaRunner[];
   }
 ): Promise<{ invokers: LambdaUrlInvokerMap; runners: FrontDoorLambdaRunner[] }> {
   const logger = getLogger();
@@ -504,6 +510,7 @@ export async function bootLambdaUrlOrigins(
           sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
         }),
       });
+      opts.runnerSink?.push(runner);
       logger.info(
         `Booting Lambda Function URL origin container for ${functionLogicalId} (the backing Lambda runs locally via RIE)...`
       );
@@ -535,6 +542,20 @@ export async function drainWebFunctionServes(serves: WebFunctionServe[]): Promis
     const batch = serves.slice(done);
     done = serves.length;
     await Promise.all(batch.map((s) => s.teardown().catch(() => undefined)));
+  }
+}
+
+/**
+ * {@link drainWebFunctionServes} for the Function URL / Lambda@Edge runners:
+ * stops every runner in `runners`, including any appended while the stops run
+ * (go-to-k/cdk-local#973). `stop()` waits for a `docker run` in flight.
+ */
+export async function drainLambdaRunners(runners: FrontDoorLambdaRunner[]): Promise<void> {
+  let done = 0;
+  while (done < runners.length) {
+    const batch = runners.slice(done);
+    done = runners.length;
+    await Promise.all(batch.map((r) => r.stop().catch(() => undefined)));
   }
 }
 
@@ -653,6 +674,12 @@ export async function bootLambdaEdgeFunctions(
     profileCredentials?: ResolvedProfileCredentials;
     /** The host's extra state providers, so a host flag (e.g. `--from-state`) reaches the env (#699). */
     extraStateProviders?: ExtraStateProviders;
+    /**
+     * Receives each runner as soon as it is created, before its `start()`
+     * (go-to-k/cdk-local#973), so a start-up signal stops a runner whose boot
+     * is still in flight.
+     */
+    runnerSink?: FrontDoorLambdaRunner[];
   }
 ): Promise<{ invokers: LambdaUrlInvokerMap; runners: FrontDoorLambdaRunner[] }> {
   const logger = getLogger();
@@ -691,6 +718,7 @@ export async function bootLambdaEdgeFunctions(
           sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
         }),
       });
+      opts.runnerSink?.push(runner);
       logger.info(
         `Booting Lambda@Edge container for ${functionLogicalId} (the function runs locally via RIE)...`
       );
@@ -1092,17 +1120,23 @@ async function localStartCloudFrontCommand(
   const bootOpts = buildLambdaBootOptions(options, profileCredentials, extraStateProviders);
 
   // A Web Function origin's server container is not `--rm` and its env holds
-  // the forwarded credentials, so a signal during start-up must remove the
-  // ones booted so far (and any `docker run` in flight) before exiting. Armed
-  // only when the distribution has such an origin; replaced by the serving
-  // shutdown handler below.
+  // the forwarded credentials, and a Function URL / Lambda@Edge RIE container
+  // holds them too while it runs, so a signal during start-up must remove the
+  // ones booted so far (and any `docker run` in flight) before exiting
+  // (go-to-k/cdk-local#973). Replaced by the serving shutdown handler below.
   const webFunctionServes: WebFunctionServe[] = [];
+  const bootRunners: FrontDoorLambdaRunner[] = [];
   let bootAborted = false;
   const onBootSignal = (signal: StopSignal): void => {
     if (bootAborted) return;
     bootAborted = true;
-    logger.info(`Received ${signal} during start-up; removing the web function containers...`);
-    void drainWebFunctionServes(webFunctionServes).then(() => process.exit(signalExitCode(signal)));
+    logger.info(
+      `Received ${signal} during start-up; removing the web function containers and the Lambda containers started so far...`
+    );
+    void Promise.all([
+      drainWebFunctionServes(webFunctionServes),
+      drainLambdaRunners(bootRunners),
+    ]).then(() => process.exit(signalExitCode(signal)));
   };
   const bootSigint = (): void => onBootSignal('SIGINT');
   const bootSigterm = (): void => onBootSignal('SIGTERM');
@@ -1110,30 +1144,27 @@ async function localStartCloudFrontCommand(
     process.off('SIGINT', bootSigint);
     process.off('SIGTERM', bootSigterm);
   };
-  if ([...initial.distribution.origins.values()].some((o) => o.kind === 'web-function')) {
-    process.on('SIGINT', bootSigint);
-    process.on('SIGTERM', bootSigterm);
-  }
+  process.on('SIGINT', bootSigint);
+  process.on('SIGTERM', bootSigterm);
 
-  const { invokers: lambdaInvokers, runners: lambdaRunners } = await bootLambdaUrlOrigins(
-    initial.distribution,
-    initial.stacks,
-    bootOpts
-  );
-  // Boot a warm RIE container per Lambda@Edge function (issue #400). No
-  // associations -> empty map -> no Docker for an all-S3 distribution.
-  const { invokers: edgeInvokers, runners: edgeRunners } = await bootLambdaEdgeFunctions(
-    initial.distribution,
-    initial.stacks,
-    bootOpts
-  );
-
-  // From here, the booted RIE containers are live but the shutdown handler is
-  // not yet wired — a Web Function origin, TLS-material or port-bind failure
-  // would otherwise strand every booted Lambda container. Stop them all before
-  // rethrowing.
+  // A Lambda boot failure, or one a start-up signal caused (its `stop()`
+  // refuses the run), lands in the catch below too, so it never races the
+  // signal's exit with this error's.
   let server: StartedCloudFrontServer;
   try {
+    const { invokers: lambdaInvokers } = await bootLambdaUrlOrigins(
+      initial.distribution,
+      initial.stacks,
+      { ...bootOpts, runnerSink: bootRunners }
+    );
+    // Boot a warm RIE container per Lambda@Edge function (issue #400). No
+    // associations -> empty map -> no Docker for an all-S3 distribution.
+    const { invokers: edgeInvokers } = await bootLambdaEdgeFunctions(
+      initial.distribution,
+      initial.stacks,
+      { ...bootOpts, runnerSink: bootRunners }
+    );
+
     // Boot a server container per Lambda Web Function endpoint origin
     // (go-to-k/cdkd#5516), run as `start-web-function` runs it.
     const webFunctions = await bootWebFunctionOrigins(initial.distribution, initial.stacks, {
@@ -1162,7 +1193,7 @@ async function localStartCloudFrontCommand(
     });
   } catch (err) {
     await Promise.all([
-      ...[...lambdaRunners, ...edgeRunners].map((r) => r.stop().catch(() => undefined)),
+      ...bootRunners.map((r) => r.stop().catch(() => undefined)),
       ...webFunctionServes.map((s) => s.teardown().catch(() => undefined)),
     ]);
     // A start-up signal: its handler owns the teardown and the exit code.
@@ -1255,7 +1286,7 @@ async function localStartCloudFrontCommand(
     // Tear down any Lambda Function URL origin + Lambda@Edge containers, and
     // any Web Function endpoint origin server (container + extracted bundle).
     await Promise.all([
-      ...[...lambdaRunners, ...edgeRunners].map((r) =>
+      ...bootRunners.map((r) =>
         r.stop().catch((err) => {
           logger.debug(
             `Lambda runner stop failed: ${err instanceof Error ? err.message : String(err)}`
