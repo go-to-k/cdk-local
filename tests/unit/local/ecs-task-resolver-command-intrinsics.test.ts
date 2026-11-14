@@ -453,6 +453,55 @@ describe('ECS container argv intrinsics (issue #961)', () => {
     expect(container.command).toEqual(['imported/own-bucket']);
   });
 
+  it('post-pass: refuses a computed attribute read in HealthCheck.Command against the own state (mixed mode)', async () => {
+    const { task, container } = resolve(
+      {
+        HealthCheck: {
+          Command: [
+            'CMD',
+            {
+              'Fn::GetAtt': [
+                { 'Fn::GetStackOutput': { StackName: 'P', OutputName: 'Id' } },
+                'SecretAccessKey',
+              ],
+            },
+          ],
+        },
+      },
+      stateContext()
+    );
+    await applyCrossStackResolverToTask(
+      task,
+      {
+        resources: {},
+        consumerRegion: 'us-east-1',
+        crossStackResolver: {
+          resolveImport: async () => undefined,
+          resolveGetStackOutput: async () => 'Key',
+        },
+      },
+      (name) =>
+        name === 'app'
+          ? {
+              resources: {
+                Key: record('AWS::IAM::AccessKey', 'AKIAOWN', { SecretAccessKey: 'own-plaintext' }),
+              },
+              parameters: undefined,
+              sensitiveParameters: undefined,
+            }
+          : undefined
+    );
+    expect(container.healthCheck?.command).toEqual(['CMD', '']);
+    expect(container.unresolvedCommandElements).toEqual([
+      {
+        field: 'HealthCheck.Command',
+        index: 1,
+        reason:
+          'a Fn::GetAtt whose logical ID or attribute name is a cross-stack reference, which CloudFormation does not accept',
+      },
+    ]);
+  });
+
   it('the runner refuses a task with an unresolved element before touching docker', async () => {
     const { task } = resolve({ Command: ['--bucket', { Ref: 'Bucket' }] });
     await expect(runEcsTask(task, {}, createEcsRunState())).rejects.toThrow(
