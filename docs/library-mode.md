@@ -357,6 +357,27 @@ role's triple and no record. The host must also mirror its `--profile` flag
 into `AWS_PROFILE`, because several workload sites read the profile
 selection from the environment rather than from an argument.
 
+### A default region the host writes into `AWS_REGION`
+
+cdk-local ranks the host's `AWS_REGION` above a stack's `env.region` and the
+state record's region, because a user who sets it means it. A host that
+writes a DEFAULT into `AWS_REGION` (cdkd's `--aws-emulator` copies the
+emulator run's configured region when the shell names none) records it beside
+the write, so the stack's own region keeps winning:
+
+```typescript
+import { setAmbientDefaultRegion } from 'cdk-local/internal';
+
+process.env.AWS_REGION = defaultRegion;
+setAmbientDefaultRegion(defaultRegion);
+```
+
+The region chains then skip that value where they read `AWS_REGION` and use
+it only after the stack and state region (`namedEnvAwsRegion()` /
+`ambientDefaultRegion()` expose the two halves to a host chain). The record
+counts only while `AWS_REGION` still holds it, so a later write of another
+region wins; `setAmbientDefaultRegion(undefined)` forgets it.
+
 ### Shim hosts that don't use the factories
 
 A host that re-exports cdk-local's leaf modules as shims

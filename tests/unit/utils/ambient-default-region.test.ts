@@ -55,8 +55,11 @@ describe('ambient default region', () => {
     setAmbientDefaultRegion('eu-south-1');
     setAmbientDefaultRegion(undefined);
     expect(namedEnvAwsRegion()).toBe('eu-south-1');
+    // An empty AWS_REGION is not a recorded default: '' records nothing.
+    process.env['AWS_REGION'] = '';
     setAmbientDefaultRegion('');
     expect(ambientDefaultRegion()).toBeUndefined();
+    expect(namedEnvAwsRegion()).toBe('');
   });
 
   it('is exported from cdk-local/internal for a host to call (one shared record)', () => {

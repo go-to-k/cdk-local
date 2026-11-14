@@ -207,7 +207,9 @@ export function hostStateSourceFields(
  * Resolve the region used for the CFn client. The CFn provider is
  * region-bound at construction time; we apply the precedence chain
  * `--stack-region` > `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION`
- * > the synth-derived stack region. Throws `LocalStateSourceError`
+ * > the synth-derived stack region > a host's ambient default region
+ * (`ambient-default-region.ts`, go-to-k/cdk-local#963; that default is
+ * skipped in the `AWS_REGION` slot). Throws `LocalStateSourceError`
  * when none of these signals is set — the CFn API call needs a
  * concrete region and silently picking `us-east-1` would query the
  * wrong stack environment.
