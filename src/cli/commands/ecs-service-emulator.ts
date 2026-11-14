@@ -1946,7 +1946,7 @@ async function resolveServiceAndRunnerOpts(
     }
   } else if (!stateProvider && taskNeeds.needsCrossStackResolver) {
     logger.warn(
-      'Container Environment / Secrets entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
+      'Container Environment / Secrets / Command entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
         'Pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to substitute them against deployed state.'
     );
   }
@@ -2933,8 +2933,9 @@ export async function buildEcsImageResolutionContext(
   } else if (!stateProvider && needs.needsEnvOrSecretSubstitution) {
     if (!opts.suppressStateWarning) {
       logger.warn(
-        'Container Environment / Secrets entries contain CloudFormation intrinsics. ' +
-          'Pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to substitute them against the deployed state.'
+        'Container Environment / Secrets / Command entries contain CloudFormation intrinsics. ' +
+          'Pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to substitute them against the deployed state; ' +
+          'without one an intrinsic Command / EntryPoint / HealthCheck.Command element refuses the run.'
       );
     }
   }

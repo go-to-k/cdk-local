@@ -1209,8 +1209,9 @@ const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map
 /**
  * Why an argv element must not be resolved because it reads a SECRET from
  * state, or `undefined` when it reads none. State records some secrets in
- * plaintext (`AWS::IAM::AccessKey`'s `SecretAccessKey`, an AppSync API key)
- * and a `NoEcho` custom resource's attribute as the mask; an argv element
+ * plaintext (`AWS::IAM::AccessKey`'s `SecretAccessKey`, an AppSync API key,
+ * whatever a custom resource returned) and a `NoEcho` custom resource's
+ * attribute as the mask; an argv element
  * lands on the `docker run` command line, positional and unredacted, so
  * either one is refused rather than served (issue #961).
  */
@@ -1222,14 +1223,22 @@ function secretAttributeRead(
     const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
     const recorded = record?.attributes;
     const stored = recorded && Object.hasOwn(recorded, attribute) ? recorded[attribute] : undefined;
-    const typed = record ? SECRET_VALUED_ATTRIBUTES.get(record.resourceType) : undefined;
+    const type = typeof record?.resourceType === 'string' ? record.resourceType : '';
+    const typed = SECRET_VALUED_ATTRIBUTES.get(type);
     if (
       (SECRET_ATTRIBUTE_NAME.test(attribute) && !NON_SECRET_ATTRIBUTE_SUFFIX.test(attribute)) ||
       typed?.includes(attribute) === true ||
+      // A custom resource can return anything (an `AwsCustomResource` reading a
+      // SecureString records the plaintext), and a nested stack's output can
+      // pass a secret through: the same classes `deployedFillMayBeSecret`
+      // keeps off the argv for Lambda env.
+      type.startsWith('Custom::') ||
+      type === 'AWS::CloudFormation::CustomResource' ||
+      (type === 'AWS::CloudFormation::Stack' && attribute.startsWith('Outputs.')) ||
       stored === STATE_SECRET_MASK
     ) {
       return (
-        `reads the secret attribute ${displayIdent(logicalId)}.${displayIdent(attribute)}, which ` +
+        `reads ${displayIdent(logicalId)}.${displayIdent(attribute)}, an attribute that is or may be a secret, which ` +
         `${getEmbedConfig().binaryName} will not put on the docker run command line; ` +
         'pass the value through Environment or Secrets instead'
       );
@@ -1299,6 +1308,11 @@ function argvValue(
   }
   const value = sub.value;
   if (typeof value === 'number' || typeof value === 'boolean') return { value: String(value) };
+  if (value === STATE_SECRET_MASK) {
+    // A masked value handed across (an exports index persisting a NoEcho
+    // output) would run the command with `***` as an argument.
+    return { reason: 'resolved to the secret mask (***), not the deployed value' };
+  }
   if (containsDynamicReference(value)) {
     return {
       reason:

@@ -62,7 +62,10 @@ function stateContext(extra: Partial<EcsImageResolutionContext> = {}): EcsImageR
       Bucket: record('AWS::S3::Bucket', BUCKET_NAME, { Arn: BUCKET_ARN }),
       Key: record('AWS::IAM::AccessKey', 'AKIAEXAMPLE', { SecretAccessKey: 'plaintext-secret' }),
       ApiKey: record('AWS::AppSync::ApiKey', 'apikey-id', { ApiKey: 'da2-plaintext' }),
-      Custom: record('Custom::Thing', 'custom-id', { Token: '***', SecretArn: 'arn:secret' }),
+      Custom: record('Custom::Thing', 'custom-id', { Token: '***', Value: 'custom-plaintext' }),
+      Cr: record('AWS::CloudFormation::CustomResource', 'cr-id', { 'Parameter.Value': 'ssm-plaintext' }),
+      Db: record('AWS::RDS::DBInstance', 'db-id', { 'MasterUserSecret.SecretArn': 'arn:secret' }),
+      Nested: record('AWS::CloudFormation::Stack', 'nested-id', { 'Outputs.Pw': 'nested-plaintext' }),
     },
     pseudoParameters: { accountId: '123456789012', region: 'us-east-1', partition: 'aws' },
     ...extra,
@@ -129,17 +132,20 @@ describe('ECS container argv intrinsics (issue #961)', () => {
     ['a sensitive name inside Fn::Sub', { 'Fn::Sub': 'k=${Key.SecretAccessKey}' }, 'plaintext-secret'],
     ['a secret-valued attribute by type', { 'Fn::GetAtt': 'ApiKey.ApiKey' }, 'da2-plaintext'],
     ['a masked NoEcho attribute', { 'Fn::GetAtt': ['Custom', 'Token'] }, '***'],
+    ['any custom resource attribute', { 'Fn::GetAtt': ['Cr', 'Parameter.Value'] }, 'ssm-plaintext'],
+    ['a Custom:: resource attribute', { 'Fn::GetAtt': ['Custom', 'Value'] }, 'custom-plaintext'],
+    ['a nested stack output', { 'Fn::GetAtt': ['Nested', 'Outputs.Pw'] }, 'nested-plaintext'],
   ])('refuses %s instead of putting it on the docker run argv', (_label, element, plaintext) => {
     const { task, container } = resolve({ Command: ['run', element] }, stateContext());
     expect(container.command).toEqual(['run', '']);
     expect(container.command).not.toContain(plaintext);
-    expect(container.unresolvedCommandElements?.[0]?.reason).toContain('secret attribute');
+    expect(container.unresolvedCommandElements?.[0]?.reason).toContain('may be a secret');
     expect(() => assertEcsTaskCommandsResolved(task)).toThrow(EcsTaskResolutionError);
   });
 
   it('serves an attribute that names a secret rather than holding one (SecretArn)', () => {
     const { container } = resolve(
-      { Command: ['--secret-arn', { 'Fn::GetAtt': ['Custom', 'SecretArn'] }] },
+      { Command: ['--secret-arn', { 'Fn::GetAtt': ['Db', 'MasterUserSecret.SecretArn'] }] },
       stateContext()
     );
     expect(container.command).toEqual(['--secret-arn', 'arn:secret']);
@@ -227,6 +233,114 @@ describe('ECS container argv intrinsics (issue #961)', () => {
     expect(crossStack.needsCrossStackResolver).toBe(true);
   });
 
+  it('refuses a non-string, non-intrinsic element and stringifies a boolean', () => {
+    const { container } = resolve({ Command: ['a', null, ['nested'], true] }, stateContext());
+    expect(container.command).toEqual(['a', '', '', 'true']);
+    expect(container.unresolvedCommandElements).toEqual([
+      { field: 'Command', index: 1, reason: 'not a string or an intrinsic' },
+      { field: 'Command', index: 2, reason: 'not a string or an intrinsic' },
+    ]);
+  });
+
+  it('post-pass: refuses a cross-stack element that also reads a secret attribute', async () => {
+    const { task, container } = resolve(
+      {
+        Command: [
+          'run',
+          { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['Key', 'SecretAccessKey'] }, { 'Fn::ImportValue': 'X' }]] },
+        ],
+      },
+      stateContext()
+    );
+    await applyCrossStackResolverToTask(task, {
+      resources: stateContext().stateResources!,
+      crossStackResolver: {
+        resolveImport: async () => '-suffix',
+        resolveGetStackOutput: async () => undefined,
+      },
+    });
+    expect(container.command).toEqual(['run', '']);
+    expect(container.command!.join(' ')).not.toContain('plaintext-secret');
+    expect(container.unresolvedCommandElements?.[0]?.reason).toContain('may be a secret');
+  });
+
+  it('post-pass: refuses a cross-stack value that is a dynamic reference, resolved or not', async () => {
+    const dynamic = '{{resolve:secretsmanager:S}}';
+    const resolver = {
+      resolveImport: async () => dynamic,
+      resolveGetStackOutput: async () => undefined,
+    };
+    const first = resolve({ Command: [{ 'Fn::ImportValue': 'X' }] }, stateContext());
+    await applyCrossStackResolverToTask(first.task, { resources: {}, crossStackResolver: resolver });
+    expect(first.container.command).toEqual(['']);
+    expect(first.container.unresolvedCommandElements?.[0]?.reason).toContain('dynamic reference');
+
+    // With the env-only resolve hook on the context, the argv pass still must
+    // not resolve the token to plaintext.
+    const second = resolve({ Command: [{ 'Fn::ImportValue': 'X' }] }, stateContext());
+    await applyCrossStackResolverToTask(second.task, {
+      resources: {},
+      crossStackResolver: resolver,
+      consumerRegion: 'us-east-1',
+      resolveDynamicReferences: async () => 'plaintext-from-hook',
+    });
+    expect(second.container.command).toEqual(['']);
+    expect(second.container.unresolvedCommandElements).toHaveLength(1);
+  });
+
+  it('post-pass: refuses a cross-stack value that arrives as the secret mask', async () => {
+    const { task, container } = resolve({ Command: ['--pw', { 'Fn::ImportValue': 'X' }] }, stateContext());
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: { resolveImport: async () => '***', resolveGetStackOutput: async () => undefined },
+    });
+    expect(container.command).toEqual(['--pw', '']);
+    expect(container.unresolvedCommandElements?.[0]?.reason).toContain('secret mask');
+  });
+
+  it('post-pass: writes a resolved EntryPoint element to entryPoint, not command', async () => {
+    const { task, container } = resolve(
+      { Command: ['serve'], EntryPoint: ['/bin/app', { 'Fn::ImportValue': 'X' }] },
+      stateContext()
+    );
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: {
+        resolveImport: async () => 'imported',
+        resolveGetStackOutput: async () => undefined,
+      },
+    });
+    expect(container.entryPoint).toEqual(['/bin/app', 'imported']);
+    expect(container.command).toEqual(['serve']);
+    expect(container.unresolvedCommandElements).toBeUndefined();
+  });
+
+  it("post-pass: resolves a same-stack name against the container's own state (mixed mode)", async () => {
+    const { task, container } = resolve(
+      { Command: [{ 'Fn::Join': ['/', [{ 'Fn::ImportValue': 'X' }, { Ref: 'Bucket' }]] }] },
+      stateContext()
+    );
+    await applyCrossStackResolverToTask(
+      task,
+      {
+        resources: {},
+        crossStackResolver: {
+          resolveImport: async () => 'imported',
+          resolveGetStackOutput: async () => undefined,
+        },
+      },
+      (name) =>
+        name === 'app'
+          ? {
+              resources: { Bucket: record('AWS::S3::Bucket', 'own-bucket') },
+              parameters: undefined,
+              sensitiveParameters: undefined,
+            }
+          : undefined
+    );
+    expect(container.command).toEqual(['imported/own-bucket']);
+  });
+
   it('the runner refuses a task with an unresolved element before touching docker', async () => {
     const { task } = resolve({ Command: ['--bucket', { Ref: 'Bucket' }] });
     await expect(runEcsTask(task, {}, createEcsRunState())).rejects.toThrow(
@@ -254,5 +368,13 @@ describe('argv refusal wiring in run-task / start-service (issue #961)', () => {
     expect(postPassIdx).toBeGreaterThan(-1);
     expect(assertIdx).toBeGreaterThan(postPassIdx);
     expect(assumeIdx).toBeGreaterThan(assertIdx);
+    // Unconditional: at the same depth as the post-pass's own `if`, so the
+    // no-state-source run (the common refusal) reaches it too.
+    const indentOf = (needle: string): number => {
+      const line = source.split('\n').find((l) => l.includes(needle));
+      expect(line).toBeDefined();
+      return line!.length - line!.trimStart().length;
+    };
+    expect(indentOf(call)).toBe(indentOf('if (stateProvider && taskNeeds.needsCrossStackResolver)'));
   });
 });

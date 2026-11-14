@@ -1453,7 +1453,7 @@ Path matching is prefix-based: an L2 path like
 | `--assume-task-role [<arn>]` | unset | **Deprecated alias of `--assume-role`** (both forms accepted; `--assume-role` wins when both are passed and emits a one-time deprecation warn when only the legacy form is set). Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, the deployed role read from the state source (`--from-cfn-stack` or a host-provided extension: the role's recorded ARN, or its name plus the template's literal `Path`); without a state source, cdk-local substitutes the partition and account of the identity the CLI resolved (via STS `GetCallerIdentity`: the `--profile` account when one is selected, otherwise the `--role-arn` role's account when one is given) into `arn:<partition>:iam::<account>:role/<RoleLogicalId>` and warns, since a role CDK names for you is deployed as `<Stack>-<LogicalId>-<suffix>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds (valid for one hour) are served by the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`. |
 | `--assume-role [<arn>]` | unset | Cross-command alias for `--assume-task-role` matching the same flag on `invoke` / `invoke-agentcore` / `start-api`. Same three-form grammar and the same `sts:AssumeRole`-via-metadata-sidecar semantic. Issue #249 / C6 — non-breaking superset of the legacy name. |
 | `--emulate-role-via <arn>` | — | When the `--assume-role` / `--assume-task-role` AssumeRole is refused with `AccessDenied`, emulate the role's permissions through this role (see [role permission emulation](#a-refused---assume-role-role-permission-emulation)). Not needed for IAM user credentials. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1. See [Env / Secrets substitution](#env--secrets-substitution---from-cfn-stack) below. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs / `Command` / `EntryPoint` / `HealthCheck.Command` elements with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1. See [Env / Secrets substitution](#env--secrets-substitution---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
 | `--no-build` | off | Skip `docker build` on every CDK-asset container (use the previously-built deterministic tag). Requires the tag to already be in the local registry; errors with an actionable message when missing. No-op for ECR-pull / public-registry containers. Same semantics as `cdkl invoke --no-build`. Compatible with `--no-pull`. |
@@ -1585,8 +1585,9 @@ entry against the deployed CFn stack plus AWS pseudo parameters:
 Per-key best-effort: when a substitution can't be produced (state
 missing for a referenced logical ID, attribute not captured, unsupported
 intrinsic), the env / secret entry is dropped and a per-key warning
-surfaces on the task's warnings line — the run-task invocation never
-aborts. State-load failures (no record, ambiguity, region resolution
+surfaces on the task's warnings line — a dropped env / secret entry never
+aborts the run-task invocation (a container command element is the
+exception, below). State-load failures (no record, ambiguity, region resolution
 error) also degrade to warn-and-fall-back rather than hard-fail.
 
 A cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` resolves at any
@@ -1603,7 +1604,8 @@ container starts, naming the container, the field and the element's
 index, because running without it runs a different command than the
 deployed task. An element that reads a secret (a `Fn::GetAtt` on a
 credential-bearing attribute such as `AWS::IAM::AccessKey.SecretAccessKey`
-or `AWS::AppSync::ApiKey.ApiKey`, an attribute state records masked, a
+or `AWS::AppSync::ApiKey.ApiKey`, any custom-resource attribute, a nested
+stack's `Outputs.*`, an attribute state records masked, a
 `SecureString` parameter, or a value that resolves to a `{{resolve:...}}`
 reference) is refused too, since it would land on the `docker run`
 command line: pass it through `Environment` or `Secrets` instead.
@@ -1783,7 +1785,7 @@ error.
 | `--platform <platform>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
 | `--no-build` | off | Skip `docker build` on every CDK-asset container (use the previously-built deterministic tag). Requires the tag to already be in the local registry; errors when missing. No-op for ECR-pull / public-registry containers. Same semantics as `cdkl run-task --no-build`. Compatible with `--no-pull`. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs / `Command` / `EntryPoint` / `HealthCheck.Command` elements with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
 | `--watch` | off | Hot reload: re-synth + per-replica rolling deploy when the CDK app's source changes (mirrors `cdkl start-api --watch` semantics; honors `cdk.json` `watch.include` / `watch.exclude`). Each replica is rolled one at a time — boot a shadow replica with the new image under a bumped generation suffix, wait for a TCP-ready probe on the container port, atomically swap Service-Connect / Cloud Map registrations, then retire the old container — so peer services see zero connection refusals across the reload even on multi-replica services. Synth failures keep the previous replica(s) serving (warn-and-continue). Off by default. |
 | `--no-logs` | off | Disable foreground streaming of each replica container stdout/stderr. By default every booted replica streams its docker logs to the host terminal with a `[svc=<service> r=<replica-index> c=<container>]` prefix, matching `cdkl run-task`'s log surface (so application `console.log` calls are visible without a side `docker logs -f`). Pass `--no-logs` for multi-replica / multi-service runs whose interleaved log volume is unreadable; `docker logs -f <id>` in a separate terminal stays available. |
