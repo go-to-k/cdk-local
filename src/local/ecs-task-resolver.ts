@@ -1283,6 +1283,69 @@ function getAttReads(node: unknown, out: [string, string][] = []): [string, stri
   return out;
 }
 
+/**
+ * Why an argv element must not go through the cross-stack post-pass because a
+ * `Fn::GetAtt` logical ID / attribute name or a `Fn::Sub` template is itself
+ * built from an `Fn::ImportValue` / `Fn::GetStackOutput`, or `undefined`.
+ * {@link substituteAgainstStateAsync} substitutes a nested cross-stack value
+ * BEFORE the sync pass, so such an element would read whichever same-stack
+ * attribute the export names, past {@link secretAttributeRead}, which sees
+ * only literal reads. CloudFormation refuses both shapes (issue #967).
+ */
+function computedAttributeRead(node: unknown): string | undefined {
+  if (node === null || typeof node !== 'object') return undefined;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const r = computedAttributeRead(item);
+      if (r !== undefined) return r;
+    }
+    return undefined;
+  }
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'Fn::GetAtt' && isCrossStackIntrinsic(value)) {
+      return (
+        'a Fn::GetAtt whose logical ID or attribute name is a cross-stack reference, ' +
+        'which CloudFormation does not accept'
+      );
+    }
+    if (key === 'Fn::Sub') {
+      const template = Array.isArray(value) ? value[0] : value;
+      if (isCrossStackIntrinsic(template)) {
+        return 'a Fn::Sub whose template is a cross-stack reference, which CloudFormation does not accept';
+      }
+    }
+    const r = computedAttributeRead(value);
+    if (r !== undefined) return r;
+  }
+  return undefined;
+}
+
+/**
+ * `context` with its cross-stack resolver noting, on `masked`, any value it
+ * answers that is the secret mask. A producer value recorded as the mask can
+ * be joined into a longer string (`--token=***`), which {@link argvValue}'s
+ * whole-value check cannot see (issue #967).
+ */
+function withMaskWatch(
+  context: SubstitutionContext,
+  masked: { hit: boolean }
+): SubstitutionContext {
+  const inner = context.crossStackResolver;
+  if (!inner) return context;
+  const watch = (v: string | undefined): string | undefined => {
+    if (v === STATE_SECRET_MASK) masked.hit = true;
+    return v;
+  };
+  return {
+    ...context,
+    crossStackResolver: {
+      resolveImport: async (exportName) => watch(await inner.resolveImport(exportName)),
+      resolveGetStackOutput: async (stack, region, output) =>
+        watch(await inner.resolveGetStackOutput(stack, region, output)),
+    },
+  };
+}
+
 const CROSS_STACK_ARGV_REASON =
   'a cross-stack reference (Fn::ImportValue / Fn::GetStackOutput): it resolves only from a state source ' +
   'with the producer stack deployed';
@@ -2282,16 +2345,23 @@ export async function applyCrossStackResolverToTask(
           remaining.push(u);
           continue;
         }
-        const secret = secretAttributeRead(rawElement, argvContext.resources);
-        if (secret !== undefined) {
-          remaining.push({ ...u, reason: secret });
+        const refusal =
+          secretAttributeRead(rawElement, argvContext.resources) ??
+          computedAttributeRead(rawElement);
+        if (refusal !== undefined) {
+          remaining.push({ ...u, reason: refusal });
           continue;
         }
+        const masked = { hit: false };
         const { result: sub, consumedSensitive } = await resolveWithSensitivityAsync(
           rawElement,
-          argvContext
+          withMaskWatch(argvContext, masked)
         );
-        const arg = argvValue(sub, consumedSensitive);
+        const arg = masked.hit
+          ? {
+              reason: `resolved a cross-stack value recorded as the secret mask (${STATE_SECRET_MASK}), not the deployed value`,
+            }
+          : argvValue(sub, consumedSensitive);
         if ('value' in arg) {
           target[u.index] = arg.value;
           continue;

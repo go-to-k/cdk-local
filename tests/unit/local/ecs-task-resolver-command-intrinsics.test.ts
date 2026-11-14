@@ -298,6 +298,118 @@ describe('ECS container argv intrinsics (issue #961)', () => {
     expect(container.unresolvedCommandElements?.[0]?.reason).toContain('secret mask');
   });
 
+  // Issue #967: a cross-stack value recorded as the mask joined into a longer
+  // element used to run `--token=***`, since only a whole-element mask was seen.
+  it.each([
+    [
+      'Fn::Join of an Fn::ImportValue',
+      { 'Fn::Join': ['', ['--token=', { 'Fn::ImportValue': 'P-Tok' }]] },
+    ],
+    [
+      'Fn::Sub over an Fn::GetStackOutput',
+      {
+        'Fn::Sub': [
+          '--token=${T}',
+          { T: { 'Fn::GetStackOutput': { StackName: 'P', OutputName: 'Tok' } } },
+        ],
+      },
+    ],
+  ])('post-pass: refuses a mask embedded mid-element (%s)', async (_label, element) => {
+    const { task, container } = resolve({ Command: ['run', element] }, stateContext());
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: {
+        resolveImport: async () => '***',
+        resolveGetStackOutput: async () => '***',
+      },
+    });
+    expect(container.command).toEqual(['run', '']);
+    expect(container.unresolvedCommandElements).toEqual([
+      {
+        field: 'Command',
+        index: 1,
+        reason: 'resolved a cross-stack value recorded as the secret mask (***), not the deployed value',
+      },
+    ]);
+    expect(() => assertEcsTaskCommandsResolved(task)).toThrow(
+      /Container app Command\[1\]: resolved a cross-stack value recorded as the secret mask/
+    );
+  });
+
+  it('post-pass: still resolves a joined cross-stack value that is not the mask', async () => {
+    const { task, container } = resolve(
+      {
+        Command: [
+          { 'Fn::Join': ['', ['--token=', { 'Fn::ImportValue': 'P-Tok' }]] },
+          { 'Fn::Sub': ['--url=${U}', { U: { 'Fn::ImportValue': 'P-Url' } }] },
+        ],
+      },
+      stateContext()
+    );
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      crossStackResolver: {
+        resolveImport: async (name) => (name === 'P-Tok' ? 'a***b' : 'http://p'),
+        resolveGetStackOutput: async () => undefined,
+      },
+    });
+    expect(container.command).toEqual(['--token=a***b', '--url=http://p']);
+    expect(container.unresolvedCommandElements).toBeUndefined();
+  });
+
+  // Issue #967: a GetAtt target or Sub template named by a cross-stack value
+  // is substituted before the sync pass, so it read the same-stack secret past
+  // the literal-only secret check. CloudFormation refuses all of these shapes.
+  it.each([
+    [
+      'Fn::GetAtt logical ID',
+      { 'Fn::GetAtt': [{ 'Fn::ImportValue': 'X' }, 'SecretAccessKey'] },
+      'Key',
+      'Fn::GetAtt',
+    ],
+    [
+      'Fn::GetAtt attribute name',
+      { 'Fn::GetAtt': ['Key', { 'Fn::ImportValue': 'X' }] },
+      'SecretAccessKey',
+      'Fn::GetAtt',
+    ],
+    ['dotted Fn::GetAtt', { 'Fn::GetAtt': { 'Fn::ImportValue': 'X' } }, 'Key.SecretAccessKey', 'Fn::GetAtt'],
+    ['Fn::Sub template', { 'Fn::Sub': { 'Fn::ImportValue': 'X' } }, '${Key.SecretAccessKey}', 'Fn::Sub'],
+    [
+      'Fn::Sub template with a variable map',
+      { 'Fn::Sub': [{ 'Fn::ImportValue': 'X' }, {}] },
+      '${Key.SecretAccessKey}',
+      'Fn::Sub',
+    ],
+    [
+      'Fn::GetAtt nested in Fn::Join',
+      { 'Fn::Join': ['', ['--k=', { 'Fn::GetAtt': [{ 'Fn::ImportValue': 'X' }, 'SecretAccessKey'] }]] },
+      'Key',
+      'Fn::GetAtt',
+    ],
+  ])(
+    'post-pass: refuses an attribute read built from a cross-stack value (%s)',
+    async (_label, element, exported, intrinsic) => {
+      const { task, container } = resolve({ Command: ['run', element] }, stateContext());
+      await applyCrossStackResolverToTask(task, {
+        resources: stateContext().stateResources!,
+        crossStackResolver: {
+          resolveImport: async () => exported,
+          resolveGetStackOutput: async () => undefined,
+        },
+      });
+      expect(container.command).toEqual(['run', '']);
+      expect(container.command!.join(' ')).not.toContain('plaintext-secret');
+      const reason =
+        intrinsic === 'Fn::GetAtt'
+          ? 'a Fn::GetAtt whose logical ID or attribute name is a cross-stack reference, which CloudFormation does not accept'
+          : 'a Fn::Sub whose template is a cross-stack reference, which CloudFormation does not accept';
+      expect(container.unresolvedCommandElements).toEqual([{ field: 'Command', index: 1, reason }]);
+      expect(() => assertEcsTaskCommandsResolved(task)).toThrow(/Container app Command\[1\]: a Fn::/);
+    }
+  );
+
   it('post-pass: writes a resolved EntryPoint element to entryPoint, not command', async () => {
     const { task, container } = resolve(
       { Command: ['serve'], EntryPoint: ['/bin/app', { 'Fn::ImportValue': 'X' }] },
