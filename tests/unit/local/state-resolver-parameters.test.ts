@@ -134,6 +134,24 @@ describe('state-resolver: list-typed parameters (issue #976)', () => {
     expect(audit.unresolved.map((u) => u.key)).toEqual(['RAW']);
   });
 
+  it('flags a sensitive list parameter consumed through Fn::Select, not a refused bare Ref', () => {
+    const consumed: string[] = [];
+    const ctx: SubstitutionContext = {
+      resources,
+      parameters,
+      sensitiveParameters: new Set(['SsmSubnets']),
+      onSensitiveParameterConsumed: (id) => consumed.push(id),
+    };
+    expect(substituteAgainstState({ 'Fn::Select': [0, { Ref: 'SsmSubnets' }] }, ctx)).toEqual({
+      kind: 'literal',
+      value: 'subnet-a',
+    });
+    expect(consumed).toEqual(['SsmSubnets']);
+    consumed.length = 0;
+    expect(substituteAgainstState({ Ref: 'SsmSubnets' }, ctx).kind).toBe('unresolved');
+    expect(consumed).toEqual([]);
+  });
+
   it('a resource wins over a same-id list parameter inside Fn::Select', () => {
     const r = substituteAgainstState(
       { 'Fn::Select': [0, { Ref: 'SsmSubnets' }] },

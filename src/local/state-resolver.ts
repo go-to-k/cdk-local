@@ -380,10 +380,6 @@ function resolveRef(arg: unknown, context: SubstitutionContext): StateSubstituti
   // values via SSM and feeds them in on `context.parameters`.
   const parameterValue = context.parameters?.[arg];
   if (parameterValue !== undefined) {
-    // Flag sensitive (SecureString) parameter consumption so the caller
-    // keeps the consuming env key off the `docker run` argv (issue #99).
-    // Fires for refs nested in Fn::Join / Fn::Sub too — the combinators
-    // recurse through this same resolveRef with the same context.
     if (Array.isArray(parameterValue)) {
       // A list parameter where a string is required (an env-var value, a
       // `Fn::Sub` placeholder, a `Fn::Join` element). CloudFormation
@@ -396,6 +392,10 @@ function resolveRef(arg: unknown, context: SubstitutionContext): StateSubstituti
           `(use Fn::Select to pick one element or Fn::Join to join it)`,
       };
     }
+    // Flag sensitive (SecureString) parameter consumption so the caller
+    // keeps the consuming env key off the `docker run` argv (issue #99).
+    // Fires for refs nested in Fn::Join / Fn::Sub too — the combinators
+    // recurse through this same resolveRef with the same context.
     if (context.sensitiveParameters?.has(arg)) {
       context.onSensitiveParameterConsumed?.(arg);
     }
@@ -792,10 +792,11 @@ function resolveSplitAsArray(
 }
 
 /**
- * Array-tolerant resolver used by `Fn::Select`'s `list` argument.
- * Returns either the scalar `StateSubstitutionResult` shape (delegating
- * to `substituteAgainstState`) OR a `{kind: 'literal', value: string[]}`
- * when the node is `Fn::Split` / a literal array of intrinsics.
+ * Array-tolerant resolver used by `Fn::Select`'s `list` argument and by a
+ * non-literal `Fn::Join` list argument. Returns either the scalar
+ * `StateSubstitutionResult` shape (delegating to `substituteAgainstState`)
+ * OR a `{kind: 'literal', value: string[]}` when the node is `Fn::Split`,
+ * a literal array of intrinsics, or a `Ref` to a list-typed parameter.
  *
  * Top-level `substituteAgainstState` deliberately doesn't go through
  * this helper — env-var values can't be arrays, and the asymmetry
