@@ -30,6 +30,7 @@ import {
 } from '../../utils/workload-identity.js';
 import { resolveContainerRegion, setContainerRegion } from '../../utils/profile-region.js';
 import { getLogger } from '../../utils/logger.js';
+import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import {
   applyRoleArnIfSet,
@@ -235,6 +236,7 @@ async function localInvokeCommand(
   let containerId: string | undefined;
   let stopLogs: (() => void) | undefined;
   let sigintHandler: (() => void) | undefined;
+  let sigtermHandler: (() => void) | undefined;
   // Synthesized AWS shared credentials file (one INI section) bind-mounted
   // into the container so handlers using `fromIni({ profile })` explicitly
   // resolve to the same creds. Disposed in the shared `cleanup` single-flight.
@@ -242,7 +244,7 @@ async function localInvokeCommand(
 
   /**
    * Unified cleanup for both the success / failure unwind path AND the
-   * SIGINT handler.
+   * SIGINT / SIGTERM handler.
    */
   const cleanup = singleFlight(
     async (): Promise<void> => {
@@ -505,12 +507,20 @@ async function localInvokeCommand(
 
     stopLogs = streamLogs(containerId);
 
-    sigintHandler = (): void => {
-      void cleanup().then(() => {
-        process.exit(130);
-      });
-    };
+    // #970: SIGTERM (`kill`, `timeout`, an IDE stop, a CI cancel) ran no
+    // cleanup, so the container and tmpdirs outlived cdkl. Both signals share
+    // one handler: a second signal waits for the cleanup, a third force-exits.
+    const onSignal = createShutdownSignalHandler({
+      cleanup,
+      stoppingMessage: (signal) => `Received ${signal}, removing the Lambda container...`,
+      forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+      info: (m) => logger.info(m),
+      warn: (m) => logger.warn(m),
+    });
+    sigintHandler = (): void => onSignal('SIGINT');
+    sigtermHandler = (): void => onSignal('SIGTERM');
     process.on('SIGINT', sigintHandler);
+    process.on('SIGTERM', sigtermHandler);
 
     await waitForRieReady(containerHost, hostPort, 5000);
 
@@ -528,8 +538,12 @@ async function localInvokeCommand(
       writeFileSync(options.responseFile, result.raw);
     }
   } finally {
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    // Keep the handlers installed until the cleanup has finished, so a signal
+    // during a non-signal exit's cleanup joins it instead of hitting the
+    // default handler mid-teardown.
     await cleanup();
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
   }
 }
 

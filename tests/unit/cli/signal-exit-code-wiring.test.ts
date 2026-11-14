@@ -20,6 +20,7 @@ const LONG_RUNNING = [
   'local-start-microvm.ts',
   'local-start-web-function.ts',
   'local-invoke-agentcore.ts',
+  'local-invoke.ts',
   'local-run-task.ts',
   'local-studio.ts',
 ];
@@ -46,6 +47,33 @@ describe('signal exit codes (#893)', () => {
       expect(read(f), f).toContain("shutdown('SIGTERM')");
       expect(read(f), f).toContain("shutdown('SIGINT')");
     }
+  });
+
+  // #970: `cdkl invoke` registered SIGINT only, so SIGTERM skipped the cleanup.
+  // The handler's per-signal behavior (cleanup runs, 130 / 143) is pinned in
+  // shutdown-signal.test.ts; these pin that invoke routes EACH signal to it.
+  it('invoke routes SIGINT to the shared shutdown handler', () => {
+    const src = read('local-invoke.ts');
+    expect(src).toContain('createShutdownSignalHandler({\n      cleanup,');
+    expect(src).toContain("sigintHandler = (): void => onSignal('SIGINT')");
+    expect(src).toContain("process.on('SIGINT', sigintHandler)");
+  });
+
+  it('invoke routes SIGTERM to the shared shutdown handler', () => {
+    const src = read('local-invoke.ts');
+    expect(src).toContain("sigtermHandler = (): void => onSignal('SIGTERM')");
+    expect(src).toContain("process.on('SIGTERM', sigtermHandler)");
+  });
+
+  it('invoke removes its signal listeners only after the finally cleanup', () => {
+    const src = read('local-invoke.ts');
+    const fin = src.indexOf('  } finally {\n    // Keep the handlers installed');
+    expect(fin).toBeGreaterThanOrEqual(0);
+    const tail = src.slice(fin);
+    const c = tail.indexOf('await cleanup()');
+    expect(c).toBeGreaterThanOrEqual(0);
+    expect(tail.indexOf("process.off('SIGINT'")).toBeGreaterThan(c);
+    expect(tail.indexOf("process.off('SIGTERM'")).toBeGreaterThan(c);
   });
 
   it('studio ends with the signal exit code without calling process.exit', () => {
