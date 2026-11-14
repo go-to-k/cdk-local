@@ -190,10 +190,13 @@ export interface SubstitutionContext {
    * CloudFormation PARAMETERS, not resources, so they never appear in
    * `resources` (built from `ListStackResources`). The CLI layer resolves
    * these values out-of-band via SSM Parameter Store (see
-   * `ssm-parameter-resolver.ts`) and threads the map in here. Optional;
-   * absent when no SSM-backed parameter was resolved.
+   * `ssm-parameter-resolver.ts`) and threads the map in here. A list-typed
+   * parameter (`Value<List<String>>` and peers) maps to a `string[]`: a
+   * `Ref` to it is a list, consumable by `Fn::Select` / `Fn::Join` but
+   * not where a string is required (issue #976). Optional; absent when no
+   * SSM-backed parameter was resolved.
    */
-  parameters?: Record<string, string>;
+  parameters?: Record<string, string | string[]>;
   /**
    * Logical IDs of `parameters` entries whose value is sensitive — today
    * the decrypted `SecureString` SSM parameters resolved under
@@ -377,6 +380,18 @@ function resolveRef(arg: unknown, context: SubstitutionContext): StateSubstituti
   // values via SSM and feeds them in on `context.parameters`.
   const parameterValue = context.parameters?.[arg];
   if (parameterValue !== undefined) {
+    if (Array.isArray(parameterValue)) {
+      // A list parameter where a string is required (an env-var value, a
+      // `Fn::Sub` placeholder, a `Fn::Join` element). CloudFormation
+      // rejects that shape too, so warn-and-drop rather than inventing a
+      // joined string the deployed function never received (issue #976).
+      return {
+        kind: 'unresolved',
+        reason:
+          `Ref ${displayIdent(arg)}: the parameter is a list, which is not a valid string value ` +
+          `(use Fn::Select to pick one element or Fn::Join to join it)`,
+      };
+    }
     // Flag sensitive (SecureString) parameter consumption so the caller
     // keeps the consuming env key off the `docker run` argv (issue #99).
     // Fires for refs nested in Fn::Join / Fn::Sub too — the combinators
@@ -602,7 +617,7 @@ function resolveSub(arg: unknown, context: SubstitutionContext): StateSubstituti
  * substitutions would silently produce wrong values.
  */
 function resolveJoin(arg: unknown, context: SubstitutionContext): StateSubstitutionResult {
-  if (!Array.isArray(arg) || arg.length !== 2 || !Array.isArray(arg[1])) {
+  if (!Array.isArray(arg) || arg.length !== 2) {
     return {
       kind: 'unresolved',
       reason: `Fn::Join expects [delimiter, [elements]], got ${
@@ -610,13 +625,32 @@ function resolveJoin(arg: unknown, context: SubstitutionContext): StateSubstitut
       }`,
     };
   }
-  const [delimiterRaw, elements] = arg as [unknown, unknown[]];
+  const [delimiterRaw, elementsArg] = arg as [unknown, unknown];
   if (typeof delimiterRaw !== 'string') {
     return {
       kind: 'unresolved',
       reason: `Fn::Join delimiter must be a string, got ${typeof delimiterRaw}`,
     };
   }
+
+  // The list may be a list-returning intrinsic instead of a literal array:
+  // `Fn::Join [";", {Ref: <list parameter>}]` (issue #976) or
+  // `Fn::Join [",", {Fn::Split: [...]}]`. Resolve it through the
+  // array-tolerant helper; a scalar there is not a list.
+  if (!Array.isArray(elementsArg)) {
+    const list = resolveAny(elementsArg, context);
+    if (list.kind === 'unresolved') {
+      return { kind: 'unresolved', reason: `Fn::Join list: ${list.reason}` };
+    }
+    if (!Array.isArray(list.value)) {
+      return {
+        kind: 'unresolved',
+        reason: `Fn::Join list must resolve to an array, got ${typeof list.value}`,
+      };
+    }
+    return { kind: 'literal', value: list.value.join(delimiterRaw) };
+  }
+  const elements = elementsArg;
 
   // Each element MUST resolve to a scalar — `Fn::Join` of arrays is not
   // a thing in CFn. We deliberately call `substituteAgainstState` (the
@@ -758,10 +792,11 @@ function resolveSplitAsArray(
 }
 
 /**
- * Array-tolerant resolver used by `Fn::Select`'s `list` argument.
- * Returns either the scalar `StateSubstitutionResult` shape (delegating
- * to `substituteAgainstState`) OR a `{kind: 'literal', value: string[]}`
- * when the node is `Fn::Split` / a literal array of intrinsics.
+ * Array-tolerant resolver used by `Fn::Select`'s `list` argument and by a
+ * non-literal `Fn::Join` list argument. Returns either the scalar
+ * `StateSubstitutionResult` shape (delegating to `substituteAgainstState`)
+ * OR a `{kind: 'literal', value: string[]}` when the node is `Fn::Split`,
+ * a literal array of intrinsics, or a `Ref` to a list-typed parameter.
  *
  * Top-level `substituteAgainstState` deliberately doesn't go through
  * this helper — env-var values can't be arrays, and the asymmetry
@@ -799,6 +834,26 @@ function resolveAny(
     Object.prototype.hasOwnProperty.call(value, 'Fn::Split')
   ) {
     return resolveSplitAsArray((value as Record<string, unknown>)['Fn::Split'], context);
+  }
+
+  // `Ref` to a list-typed CloudFormation parameter (`Value<List<String>>`
+  // and peers, issue #976) — the one `Ref` that yields an array.
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    Object.keys(value as Record<string, unknown>).length === 1 &&
+    Object.prototype.hasOwnProperty.call(value, 'Ref')
+  ) {
+    const target = (value as Record<string, unknown>)['Ref'];
+    if (typeof target === 'string' && !context.resources[target]) {
+      const parameterValue = context.parameters?.[target];
+      if (Array.isArray(parameterValue)) {
+        if (context.sensitiveParameters?.has(target)) {
+          context.onSensitiveParameterConsumed?.(target);
+        }
+        return { kind: 'literal', value: [...parameterValue] };
+      }
+    }
   }
 
   // Anything else: fall back to the scalar top-level dispatcher.

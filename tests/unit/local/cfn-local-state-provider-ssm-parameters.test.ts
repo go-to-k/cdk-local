@@ -97,7 +97,7 @@ describe('CfnLocalStateProvider.resolveTemplateSsmParameters', () => {
     provider.dispose();
   });
 
-  it('comma-joins the List<String> variant (passed through from SSM)', async () => {
+  it('splits the List<String> variant into a list (issue #976)', async () => {
     ssmSendMock.mockResolvedValueOnce({
       Parameters: [{ Name: '/app/subnets', Value: 'subnet-a,subnet-b' }],
       InvalidParameters: [],
@@ -112,7 +112,7 @@ describe('CfnLocalStateProvider.resolveTemplateSsmParameters', () => {
     } as Tmpl);
 
     expect(out).toEqual({
-      values: { SsmSubnets: 'subnet-a,subnet-b' },
+      values: { SsmSubnets: ['subnet-a', 'subnet-b'] },
       secureStringLogicalIds: [],
     });
     provider.dispose();

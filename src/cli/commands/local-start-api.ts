@@ -3908,7 +3908,7 @@ export interface StackStateBundle {
    * declares no SSM-backed parameters or no provider implements the SSM
    * resolution (e.g. `--from-state`).
    */
-  ssmParameters?: Record<string, string>;
+  ssmParameters?: Record<string, string | string[]>;
   /**
    * Logical IDs of the resolved SSM parameters whose `Type` is
    * `SecureString` (decrypted). Threaded into the substitution context's

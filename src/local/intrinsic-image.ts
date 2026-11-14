@@ -87,7 +87,7 @@ export interface ImageResolutionContext {
    * Store under `--from-cfn-stack`. Undefined when the stack declares no
    * SSM-backed parameters / no state source is in effect.
    */
-  stateParameters?: Record<string, string>;
+  stateParameters?: Record<string, string | string[]>;
   /**
    * Logical IDs of {@link stateParameters} entries whose SSM `Type` is
    * `SecureString` (decrypted). Threaded into

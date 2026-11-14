@@ -44,6 +44,46 @@ describe('collectSsmParameterRefs', () => {
     expect(refs).toEqual([{ logicalId: 'SsmList', ssmName: '/app/subnets', isList: true }]);
   });
 
+  it('collects Value<AWS-specific type> as scalar and every list form as a list (issue #976)', () => {
+    const scalarTypes = [
+      'AWS::EC2::AvailabilityZone::Name',
+      'AWS::EC2::Image::Id',
+      'AWS::EC2::Instance::Id',
+      'AWS::EC2::KeyPair::KeyName',
+      'AWS::EC2::SecurityGroup::GroupName',
+      'AWS::EC2::SecurityGroup::Id',
+      'AWS::EC2::Subnet::Id',
+      'AWS::EC2::Volume::Id',
+      'AWS::EC2::VPC::Id',
+      'AWS::Route53::HostedZone::Id',
+    ];
+    const Parameters: Record<string, { Type: string; Default: string }> = {};
+    const expected: Array<{ logicalId: string; ssmName: string; isList: boolean }> = [];
+    scalarTypes.forEach((t, i) => {
+      Parameters[`S${i}`] = { Type: `AWS::SSM::Parameter::Value<${t}>`, Default: `/s/${i}` };
+      expected.push({ logicalId: `S${i}`, ssmName: `/s/${i}`, isList: false });
+      Parameters[`L${i}`] = { Type: `AWS::SSM::Parameter::Value<List<${t}>>`, Default: `/l/${i}` };
+      expected.push({ logicalId: `L${i}`, ssmName: `/l/${i}`, isList: true });
+    });
+    Parameters['Csv'] = { Type: 'AWS::SSM::Parameter::Value<CommaDelimitedList>', Default: '/csv' };
+    expected.push({ logicalId: 'Csv', ssmName: '/csv', isList: true });
+    expect(collectSsmParameterRefs({ Parameters })).toEqual(expected);
+  });
+
+  it('skips SSM-shaped types CloudFormation does not resolve to a value', () => {
+    const refs = collectSsmParameterRefs({
+      Parameters: {
+        // `Ref` to a Name parameter is the parameter NAME, not its value.
+        Name: { Type: 'AWS::SSM::Parameter::Name', Default: '/n' },
+        Unknown: { Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Nope::Id>', Default: '/u' },
+        Nested: { Type: 'AWS::SSM::Parameter::Value<List<List<String>>>', Default: '/x' },
+        ListOfValues: { Type: 'List<AWS::SSM::Parameter::Value<String>>', Default: '/y' },
+        Unclosed: { Type: 'AWS::SSM::Parameter::Value<String', Default: '/z' },
+      },
+    });
+    expect(refs).toEqual([]);
+  });
+
   it('ignores non-SSM parameter types and SSM entries without a string Default', () => {
     const refs = collectSsmParameterRefs({
       Parameters: {
@@ -126,18 +166,24 @@ describe('resolveSsmParameters', () => {
     expect(out.secureStringLogicalIds).toEqual(['A', 'B']);
   });
 
-  it('passes the comma-joined List<String> value through verbatim', async () => {
+  it('splits a list parameter value on "," and leaves a scalar one whole (issue #976)', async () => {
     sendMock.mockResolvedValueOnce({
-      Parameters: [{ Name: '/app/subnets', Value: 'subnet-a,subnet-b' }],
+      Parameters: [
+        { Name: '/app/subnets', Value: 'subnet-a,subnet-b' },
+        { Name: '/app/csv', Value: 'x,y' },
+      ],
       InvalidParameters: [],
     });
     const client = new SSMClient({ region: 'us-east-1' });
     const out = await resolveSsmParameters(
       client,
-      [{ logicalId: 'SsmList', ssmName: '/app/subnets', isList: true }],
+      [
+        { logicalId: 'SsmList', ssmName: '/app/subnets', isList: true },
+        { logicalId: 'SsmScalar', ssmName: '/app/csv', isList: false },
+      ],
       '--from-cfn-stack'
     );
-    expect(out.values).toEqual({ SsmList: 'subnet-a,subnet-b' });
+    expect(out.values).toEqual({ SsmList: ['subnet-a', 'subnet-b'], SsmScalar: 'x,y' });
     expect(out.secureStringLogicalIds).toEqual([]);
   });
 

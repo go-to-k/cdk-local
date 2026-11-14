@@ -288,8 +288,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
 
   /**
    * Resolve the synthesized template's SSM-backed `Parameters`
-   * (`AWS::SSM::Parameter::Value<String>` /
-   * `AWS::SSM::Parameter::Value<List<String>>`) into a
+   * (`AWS::SSM::Parameter::Value<...>`, list forms included) into a
    * `parameterLogicalId -> value` map via SSM Parameter Store. See
    * {@link LocalStateProvider.resolveTemplateSsmParameters}.
    *

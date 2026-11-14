@@ -1,8 +1,11 @@
 /**
  * Resolve CloudFormation template `Parameters` of the SSM-backed types
- * `AWS::SSM::Parameter::Value<String>` / `AWS::SSM::Parameter::Value<List<String>>`
- * (what CDK synthesizes for `ssm.StringParameter.valueForStringParameter(...)`)
- * into their deployed values via SSM Parameter Store.
+ * `AWS::SSM::Parameter::Value<String>` (what CDK synthesizes for
+ * `ssm.StringParameter.valueForStringParameter(...)`), the list forms
+ * (`Value<List<String>>` / `Value<CommaDelimitedList>`), and the
+ * `Value<AWS-specific type>` / `Value<List<AWS-specific type>>` forms
+ * (e.g. `Value<AWS::EC2::Image::Id>`) into their deployed values via SSM
+ * Parameter Store.
  *
  * Motivation (issue #94): a container / Lambda env var that `Ref`s such a
  * parameter cannot be resolved from the `--from-cfn-stack` state source.
@@ -39,9 +42,51 @@ import { describeAwsFailureForWarn } from './credential-error.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { displayIdent } from '../utils/ident-display.js';
 
-/** SSM-backed CFn parameter types CDK synthesizes for SSM lookups. */
-const SSM_STRING_TYPE = 'AWS::SSM::Parameter::Value<String>';
-const SSM_LIST_TYPE = 'AWS::SSM::Parameter::Value<List<String>>';
+/**
+ * The AWS-specific parameter types CloudFormation accepts inside
+ * `AWS::SSM::Parameter::Value<...>` (and, wrapped in `List<...>`, inside
+ * `AWS::SSM::Parameter::Value<List<...>>`). Source: the CloudFormation
+ * User Guide, "Supported AWS-specific parameter types". CDK synthesizes
+ * `Value<AWS::EC2::Image::Id>` for `ec2.MachineImage.fromSsmParameter` and
+ * `ssm.StringParameter.valueForTypedStringParameterV2(..., AWS_EC2_IMAGE_ID)`.
+ */
+const AWS_SPECIFIC_PARAMETER_TYPES: ReadonlySet<string> = new Set([
+  'AWS::EC2::AvailabilityZone::Name',
+  'AWS::EC2::Image::Id',
+  'AWS::EC2::Instance::Id',
+  'AWS::EC2::KeyPair::KeyName',
+  'AWS::EC2::SecurityGroup::GroupName',
+  'AWS::EC2::SecurityGroup::Id',
+  'AWS::EC2::Subnet::Id',
+  'AWS::EC2::Volume::Id',
+  'AWS::EC2::VPC::Id',
+  'AWS::Route53::HostedZone::Id',
+]);
+
+const SSM_VALUE_PREFIX = 'AWS::SSM::Parameter::Value<';
+
+/**
+ * Classify a template parameter `Type` as an SSM-backed value type
+ * CloudFormation resolves from Parameter Store at deploy time:
+ * `'scalar'` for `Value<String>` / `Value<AWS-specific type>`, `'list'` for
+ * `Value<List<String>>` / `Value<CommaDelimitedList>` /
+ * `Value<List<AWS-specific type>>`, `undefined` for anything else
+ * (including `AWS::SSM::Parameter::Name`, whose `Ref` is the parameter
+ * NAME, not its value).
+ */
+function classifySsmParameterType(type: unknown): 'scalar' | 'list' | undefined {
+  if (typeof type !== 'string' || !type.startsWith(SSM_VALUE_PREFIX) || !type.endsWith('>')) {
+    return undefined;
+  }
+  const inner = type.slice(SSM_VALUE_PREFIX.length, -1);
+  if (inner === 'String' || AWS_SPECIFIC_PARAMETER_TYPES.has(inner)) return 'scalar';
+  if (inner === 'CommaDelimitedList') return 'list';
+  if (inner.startsWith('List<') && inner.endsWith('>')) {
+    const member = inner.slice('List<'.length, -1);
+    if (member === 'String' || AWS_SPECIFIC_PARAMETER_TYPES.has(member)) return 'list';
+  }
+  return undefined;
+}
 
 /**
  * A template `Parameters` entry that points at an SSM parameter and so
@@ -52,7 +97,11 @@ export interface SsmParameterRef {
   logicalId: string;
   /** SSM parameter name, read from the entry's `Default`. */
   ssmName: string;
-  /** `true` for the `List<String>` variant (the value is comma-joined). */
+  /**
+   * `true` for the list variants (`Value<List<String>>`,
+   * `Value<CommaDelimitedList>`, `Value<List<AWS-specific type>>`): the
+   * resolved value is the SSM value split on `,`.
+   */
   isList: boolean;
 }
 
@@ -66,8 +115,12 @@ export interface SsmParameterRef {
  * `sensitiveParameters` so the env-flag builder can pick the safe form.
  */
 export interface ResolvedSsmParameters {
-  /** `parameterLogicalId -> resolved value`. */
-  values: Record<string, string>;
+  /**
+   * `parameterLogicalId -> resolved value`. A list-typed parameter maps to
+   * a `string[]` (the SSM value split on `,`, what a CloudFormation `Ref`
+   * to it yields); every other parameter maps to its string value.
+   */
+  values: Record<string, string | string[]>;
   /** Logical IDs whose SSM `Type` is `SecureString` (decrypted values). */
   secureStringLogicalIds: string[];
 }
@@ -92,9 +145,9 @@ export function collectSsmParameterRefs(
   const out: SsmParameterRef[] = [];
   for (const [logicalId, entry] of Object.entries(params)) {
     if (!entry || typeof entry !== 'object') continue;
-    const type = entry.Type;
-    const isList = type === SSM_LIST_TYPE;
-    if (type !== SSM_STRING_TYPE && !isList) continue;
+    const kind = classifySsmParameterType(entry.Type);
+    if (kind === undefined) continue;
+    const isList = kind === 'list';
     const ssmName = entry.Default;
     if (typeof ssmName !== 'string' || ssmName.length === 0) continue;
     out.push({ logicalId, ssmName, isList });
@@ -104,9 +157,9 @@ export function collectSsmParameterRefs(
 
 /**
  * Batch-resolve a set of {@link SsmParameterRef}s via SSM `GetParameters`
- * and return a `logicalId -> resolved value` map. `List<String>`
- * parameters are comma-joined (CloudFormation surfaces the list type as a
- * comma-delimited string when the value is consumed as a `Ref`).
+ * and return a `logicalId -> resolved value` map. A list-typed parameter
+ * resolves to the SSM value split on `,` (a CloudFormation `Ref` to a list
+ * parameter yields a list, issue #976).
  *
  * `GetParameters` accepts up to 10 names per call, so the refs are
  * chunked. Names that SSM reports as invalid (`InvalidParameters`) are
@@ -205,12 +258,11 @@ export async function resolveSsmParameters(
       if (!requesters) continue;
       const isSecure = p.Type === 'SecureString';
       for (const ref of requesters) {
-        // CloudFormation surfaces a `List<String>` SSM value as a
-        // comma-delimited string when referenced; SSM returns the value
-        // already comma-joined for StringList parameters, so we pass it
-        // through verbatim — the `isList` flag is retained for clarity
-        // and future divergence but needs no transform here.
-        out.values[ref.logicalId] = p.Value;
+        // A `Ref` to a list-typed SSM parameter yields a LIST in
+        // CloudFormation (so `Fn::Select` / `Fn::Join` work over it). SSM
+        // returns a StringList value comma-joined, so split it on `,` --
+        // CloudFormation's own list delimiter (issue #976).
+        out.values[ref.logicalId] = ref.isList ? p.Value.split(',') : p.Value;
         // SecureString values are decrypted (WithDecryption) — flag the
         // logical ID so downstream the consuming env key is kept off the
         // `docker run` argv (issue #99).

@@ -77,6 +77,97 @@ describe('state-resolver: SubstitutionContext.parameters (SSM-backed Refs)', () 
   });
 });
 
+describe('state-resolver: list-typed parameters (issue #976)', () => {
+  const resources = {};
+  const parameters = { SsmSubnets: ['subnet-a', 'subnet-b', 'subnet-c'], SsmHost: 'db.internal' };
+
+  it('Fn::Select picks an element of a list parameter', () => {
+    expect(
+      substituteAgainstState({ 'Fn::Select': [1, { Ref: 'SsmSubnets' }] }, { resources, parameters })
+    ).toEqual({ kind: 'literal', value: 'subnet-b' });
+    expect(
+      substituteAgainstState({ 'Fn::Select': ['2', { Ref: 'SsmSubnets' }] }, { resources, parameters })
+    ).toEqual({ kind: 'literal', value: 'subnet-c' });
+  });
+
+  it('Fn::Select out of bounds over a list parameter is unresolved', () => {
+    const r = substituteAgainstState({ 'Fn::Select': [3, { Ref: 'SsmSubnets' }] }, { resources, parameters });
+    expect(r.kind).toBe('unresolved');
+  });
+
+  it('Fn::Join joins a list parameter given as its list argument', () => {
+    expect(
+      substituteAgainstState({ 'Fn::Join': [';', { Ref: 'SsmSubnets' }] }, { resources, parameters })
+    ).toEqual({ kind: 'literal', value: 'subnet-a;subnet-b;subnet-c' });
+  });
+
+  it('Fn::Join accepts an Fn::Split as its list argument', () => {
+    expect(
+      substituteAgainstState({ 'Fn::Join': ['-', { 'Fn::Split': [',', 'a,b'] }] }, { resources, parameters })
+    ).toEqual({ kind: 'literal', value: 'a-b' });
+  });
+
+  it('Fn::Join over a scalar list argument is unresolved', () => {
+    const r = substituteAgainstState({ 'Fn::Join': [';', { Ref: 'SsmHost' }] }, { resources, parameters });
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') expect(r.reason).toContain('must resolve to an array');
+  });
+
+  it('a list parameter where a string is required is unresolved, never a joined string', () => {
+    for (const value of [
+      { Ref: 'SsmSubnets' },
+      { 'Fn::Sub': 'x=${SsmSubnets}' },
+      { 'Fn::Join': [',', [{ Ref: 'SsmSubnets' }]] },
+    ]) {
+      const r = substituteAgainstState(value, { resources, parameters });
+      expect(r.kind).toBe('unresolved');
+      if (r.kind === 'unresolved') expect(r.reason).toContain('the parameter is a list');
+    }
+  });
+
+  it('drops an env var Ref to a list parameter and keeps a Select over it', () => {
+    const { env, audit } = substituteEnvVarsFromState(
+      { RAW: { Ref: 'SsmSubnets' }, FIRST: { 'Fn::Select': [0, { Ref: 'SsmSubnets' }] } },
+      { resources, parameters }
+    );
+    expect(env).toEqual({ FIRST: 'subnet-a' });
+    expect(audit.unresolved.map((u) => u.key)).toEqual(['RAW']);
+  });
+
+  it('flags a sensitive list parameter consumed through Fn::Select, not a refused bare Ref', () => {
+    const consumed: string[] = [];
+    const ctx: SubstitutionContext = {
+      resources,
+      parameters,
+      sensitiveParameters: new Set(['SsmSubnets']),
+      onSensitiveParameterConsumed: (id) => consumed.push(id),
+    };
+    expect(substituteAgainstState({ 'Fn::Select': [0, { Ref: 'SsmSubnets' }] }, ctx)).toEqual({
+      kind: 'literal',
+      value: 'subnet-a',
+    });
+    expect(consumed).toEqual(['SsmSubnets']);
+    consumed.length = 0;
+    expect(substituteAgainstState({ Ref: 'SsmSubnets' }, ctx).kind).toBe('unresolved');
+    expect(consumed).toEqual([]);
+  });
+
+  it('a resource wins over a same-id list parameter inside Fn::Select', () => {
+    const r = substituteAgainstState(
+      { 'Fn::Select': [0, { Ref: 'SsmSubnets' }] },
+      {
+        resources: {
+          SsmSubnets: { physicalId: 'res-1', resourceType: 'X', properties: {}, attributes: {}, dependencies: [] },
+        },
+        parameters,
+      }
+    );
+    expect(r.kind).toBe('unresolved');
+    if (r.kind === 'unresolved') expect(r.reason).toContain('must resolve to an array');
+  });
+
+});
+
 describe('state-resolver: SubstitutionContext.sensitiveParameters (issue #99)', () => {
   it('fires onSensitiveParameterConsumed when a Ref resolves to a sensitive param', () => {
     const consumed: string[] = [];
