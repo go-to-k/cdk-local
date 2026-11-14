@@ -849,15 +849,12 @@ export async function substituteAgainstStateAsync(
   const intrinsic = keys[0]!;
   const arg = obj[intrinsic];
 
-  // For every intrinsic the sync path supports, the sync helper is fully
-  // sufficient — recurse via the sync path so we don't pay the async
-  // overhead on every nested element. The sync helper recurses into
-  // bindings / Join elements through the same module, so any cross-stack
-  // intrinsic nested under (say) a `Fn::Join` is NOT resolvable today.
-  // That's an intentional v1 scope limit: cross-stack intrinsics
-  // typically appear at the env-var ROOT, not buried inside a join. We
-  // can lift the limit later by replacing the sync recursion below with
-  // async recursion when there's a real-world need.
+  // For every intrinsic the sync path supports, the sync helper does the
+  // work. A cross-stack intrinsic NESTED inside one (CDK synthesizes
+  // `Fn::Join` over an `Fn::ImportValue` whenever a cross-stack token is
+  // embedded in a longer string) is resolved first through this async path
+  // and replaced by its value, so the sync helper sees a literal there
+  // (issue #962).
   if (
     intrinsic === 'Ref' ||
     intrinsic === 'Fn::GetAtt' ||
@@ -866,7 +863,10 @@ export async function substituteAgainstStateAsync(
     intrinsic === 'Fn::Select' ||
     intrinsic === 'Fn::Split'
   ) {
-    return substituteAgainstState(value, context);
+    if (!containsCrossStackIntrinsic(value)) return substituteAgainstState(value, context);
+    const rewritten = await resolveNestedCrossStack(value, context);
+    if ('reason' in rewritten) return { kind: 'unresolved', reason: rewritten.reason };
+    return substituteAgainstState(rewritten.value, context);
   }
 
   if (intrinsic === 'Fn::ImportValue') {
@@ -880,6 +880,61 @@ export async function substituteAgainstStateAsync(
     kind: 'unresolved',
     reason: `unsupported intrinsic ${displayIdent(intrinsic)} (supported: Ref, Fn::GetAtt, Fn::Sub, Fn::Join, Fn::Select, Fn::Split, Fn::ImportValue, Fn::GetStackOutput)`,
   };
+}
+
+/** True when `value` is a top-level `Fn::ImportValue` / `Fn::GetStackOutput`. */
+function isCrossStackNode(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.hasOwn(value, 'Fn::ImportValue') || Object.hasOwn(value, 'Fn::GetStackOutput');
+}
+
+/**
+ * True when `value` is, or contains at any depth (inside `Fn::Join` /
+ * `Fn::Sub` / `Fn::Select` / ...), an `Fn::ImportValue` /
+ * `Fn::GetStackOutput` — the shapes only {@link substituteAgainstStateAsync}
+ * with a `crossStackResolver` can resolve (issue #962). Callers use it to
+ * decide whether to build a cross-stack resolver and route a value through
+ * the async path.
+ */
+export function containsCrossStackIntrinsic(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(containsCrossStackIntrinsic);
+  if (isCrossStackNode(value)) return true;
+  return Object.values(value as Record<string, unknown>).some(containsCrossStackIntrinsic);
+}
+
+/**
+ * `value` with every nested `Fn::ImportValue` / `Fn::GetStackOutput`
+ * replaced by its resolved string, or the first one's unresolved reason
+ * (issue #962). Resolved one at a time, in document order. A subtree with no
+ * cross-stack intrinsic is returned as-is.
+ */
+async function resolveNestedCrossStack(
+  value: unknown,
+  context: SubstitutionContext
+): Promise<{ value: unknown } | { reason: string }> {
+  if (!containsCrossStackIntrinsic(value)) return { value };
+  if (isCrossStackNode(value)) {
+    const sub = await substituteAgainstStateAsync(value, context);
+    return sub.kind === 'literal' ? { value: sub.value } : { reason: sub.reason };
+  }
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    for (const item of value) {
+      const r = await resolveNestedCrossStack(item, context);
+      if ('reason' in r) return r;
+      out.push(r.value);
+    }
+    return { value: out };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    const r = await resolveNestedCrossStack(item, context);
+    if ('reason' in r) return r;
+    // Own-key write: a `__proto__` binding name must stay a binding (#769).
+    defineOwnKey(out, key, r.value);
+  }
+  return { value: out };
 }
 
 /**

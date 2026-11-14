@@ -367,6 +367,25 @@ export { EcsTaskResolutionError } from './local/ecs-task-resolver.js';
 export { assertEcsTaskImagesResolvable } from './local/ecs-task-resolver.js';
 
 /**
+ * Issue #961 — refuse a resolved ECS task whose container `Command` /
+ * `EntryPoint` / `HealthCheck.Command` still carries an element that did not
+ * resolve against deployed state (`ResolvedEcsContainer.unresolvedCommandElements`).
+ * A host that resolves a task / service itself calls this after its
+ * cross-stack post-pass, before any credential or container work; the runner
+ * also refuses such a task before it touches docker.
+ */
+export { assertEcsTaskCommandsResolved } from './local/ecs-task-resolver.js';
+
+/**
+ * Issue #962 — true when a template value is, or nests at any depth (inside
+ * `Fn::Join` / `Fn::Sub` / ...), an `Fn::ImportValue` / `Fn::GetStackOutput`.
+ * `substituteAgainstStateAsync` resolves both shapes through a
+ * `crossStackResolver`, so a host deciding whether to build one gates on this
+ * rather than on a top-level check.
+ */
+export { containsCrossStackIntrinsic } from './local/state-resolver.js';
+
+/**
  * `invoke-agentcore` Bedrock AgentCore Runtime resolution + protocol clients.
  * `resolveAgentCoreTarget` maps a target argument to a runnable container
  * runtime; `waitForAgentCorePing` / `invokeAgentCore` speak the HTTP

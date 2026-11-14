@@ -39,6 +39,7 @@ import {
 } from './local-profile-credentials-file.js';
 import {
   applyCrossStackValuesToTask,
+  assertEcsTaskCommandsResolved,
   assertEcsTaskImagesResolvable,
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
@@ -363,10 +364,14 @@ async function localRunTaskCommand(
       }
     } else if (!stateProvider && taskNeeds.needsCrossStackResolver) {
       logger.warn(
-        'Container Environment / Secrets entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
+        'Container Environment / Secrets / Command entries contain Fn::ImportValue / Fn::GetStackOutput intrinsics. ' +
           'Pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to substitute them against deployed state.'
       );
     }
+    // Issue #961 — a Command / EntryPoint / HealthCheck.Command element that
+    // did not resolve would run a different command: refuse before any
+    // credential, network or container work.
+    assertEcsTaskCommandsResolved(task);
 
     // Tear the task containers + network down on SIGINT (Ctrl-C) AND SIGTERM
     // (issue #366 — studio's serve-manager SIGTERMs a task-def Run to stop it;
@@ -842,9 +847,10 @@ export async function buildEcsImageResolutionContext(
     }
   } else if (!stateProvider && needs.needsEnvOrSecretSubstitution) {
     logger.warn(
-      'Container Environment / Secrets entries contain CloudFormation intrinsics (Ref / Fn::GetAtt / Fn::Sub / Fn::Join). ' +
+      'Container Environment / Secrets / Command entries contain CloudFormation intrinsics (Ref / Fn::GetAtt / Fn::Sub / Fn::Join). ' +
         'Pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to substitute them against deployed state. ' +
-        'Without a state source these entries are dropped (per-key warnings will follow).'
+        'Without a state source the Environment / Secrets entries are dropped (per-key warnings will follow), ' +
+        'and an intrinsic Command / EntryPoint / HealthCheck.Command element refuses the run.'
     );
   }
 
