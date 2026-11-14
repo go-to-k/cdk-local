@@ -120,6 +120,7 @@ import {
 import { singleFlight } from '../../utils/single-flight.js';
 import { displayIdent, displayStackName } from '../../utils/ident-display.js';
 import { displayUntrustedValue } from '../../utils/assembly-path.js';
+import { namedEnvAwsRegion, regionOrAmbientDefault } from '../../utils/ambient-default-region.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -862,7 +863,10 @@ export async function resolvePseudoParametersForInvoke(
 > {
   const logger = getLogger();
   const region =
-    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stackRegion;
+    options.region ??
+    namedEnvAwsRegion() ??
+    process.env['AWS_DEFAULT_REGION'] ??
+    regionOrAmbientDefault(stackRegion);
   if (!region) {
     logger.warn(
       `Resolver references \${AWS::Region} but ${getEmbedConfig().binaryName} could not determine the target region. ` +

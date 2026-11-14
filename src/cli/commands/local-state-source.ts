@@ -37,6 +37,7 @@ import { getActiveWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
 import { awsEmulatorRealServices, type AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
 import { getEmbedConfig } from '../../local/embed-config.js';
 import { resolveProfileRegion } from '../../utils/profile-region.js';
+import { namedEnvAwsRegion, regionOrAmbientDefault } from '../../utils/ambient-default-region.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 
 /**
@@ -220,9 +221,9 @@ export function resolveCfnRegion(
   const region =
     options.stackRegion ??
     options.region ??
-    process.env['AWS_REGION'] ??
+    namedEnvAwsRegion() ??
     process.env['AWS_DEFAULT_REGION'] ??
-    synthRegion;
+    regionOrAmbientDefault(synthRegion);
   if (region === undefined) {
     throw new LocalStateSourceError(
       '--from-cfn-stack requires a region to query CloudFormation. ' +

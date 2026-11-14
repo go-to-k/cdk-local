@@ -92,6 +92,7 @@ import {
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import { deriveServiceDisplayName } from '../../local/ecs-service-resolver.js';
 import { displayIdent, displayStackName } from '../../utils/ident-display.js';
+import { namedEnvAwsRegion, regionOrAmbientDefault } from '../../utils/ambient-default-region.js';
 
 interface LocalRunTaskOptions {
   app?: string;
@@ -348,9 +349,9 @@ async function localRunTaskCommand(
     if (stateProvider && taskNeeds.needsCrossStackResolver) {
       const consumerRegion =
         options.region ??
-        process.env['AWS_REGION'] ??
+        namedEnvAwsRegion() ??
         process.env['AWS_DEFAULT_REGION'] ??
-        task.stack.region ??
+        regionOrAmbientDefault(task.stack.region) ??
         'us-east-1';
       const resolver = await stateProvider.buildCrossStackResolver(consumerRegion);
       if (resolver) {
@@ -755,9 +756,9 @@ export async function buildEcsImageResolutionContext(
   if (needs.needsPseudoParameters || wantsPseudoForEnvOrSecret) {
     const region =
       options.region ??
-      process.env['AWS_REGION'] ??
+      namedEnvAwsRegion() ??
       process.env['AWS_DEFAULT_REGION'] ??
-      candidate.region;
+      regionOrAmbientDefault(candidate.region);
     if (!region) {
       logger.warn(
         `Resolver references \${AWS::Region} but ${getEmbedConfig().binaryName} could not determine the target region. ` +
