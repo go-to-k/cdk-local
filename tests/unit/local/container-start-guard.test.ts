@@ -29,14 +29,15 @@ describe('createContainerStartGuard', () => {
     await expect(guard.stop()).resolves.toBeUndefined();
   });
 
-  it('stop() waits for a run in flight and returns its id', async () => {
+  it('stop() waits for a run in flight, returns its id, and the run itself is refused', async () => {
     const { guard, removed } = setup();
     let finish!: (id: string) => void;
     const run = guard.run(() => new Promise<string>((r) => (finish = r)), 'n');
     const stopped = guard.stop();
     finish('cid');
     await expect(stopped).resolves.toBe('cid');
-    await expect(run).resolves.toBe('cid');
+    // The cleanup owns the container now: the caller must not go on to use it.
+    await expect(run).rejects.toMatchObject({ code: 'TEST_CANCELLED' });
     expect(removed).toEqual([]);
   });
 

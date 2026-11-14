@@ -23,7 +23,9 @@ import { removeContainer } from './docker-runner.js';
 export interface ContainerStartGuard {
   /**
    * Start a container via `start` unless the shutdown has begun. `name` is
-   * the `--name` the run passes to docker, if any.
+   * the `--name` the run passes to docker, if any. Rejects when the shutdown
+   * began before the run or while it was in flight (the cleanup then owns
+   * the container).
    */
   run(start: () => Promise<string>, name?: string): Promise<string>;
   /**
@@ -53,18 +55,20 @@ export function createContainerStartGuard(
   const remove = options.remove ?? removeContainer;
   let stopping = false;
   let inFlight: { promise: Promise<string>; name: string | undefined } | undefined;
+  const cancelled = (): CdkLocalError =>
+    new CdkLocalError('Shutting down: the container is not used.', options.cancelledCode);
   return {
     async run(start, name) {
-      if (stopping) {
-        throw new CdkLocalError(
-          'Shutting down: the container was not started.',
-          options.cancelledCode
-        );
-      }
+      if (stopping) throw cancelled();
       const entry = { promise: start(), name };
       inFlight = entry;
       try {
-        return await entry.promise;
+        const id = await entry.promise;
+        // The shutdown began while `docker run` was in flight: `stop()` hands
+        // this id to the cleanup; the caller must not go on to use the
+        // container (an invoke would run the handler after the ^C).
+        if (stopping) throw cancelled();
+        return id;
       } finally {
         if (inFlight === entry) inFlight = undefined;
       }

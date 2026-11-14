@@ -105,6 +105,9 @@ vi.mock('../../../src/cli/commands/local-state-source.js', async (importActual) 
   resolveCfnFallbackRegion: vi.fn(async () => 'us-east-1'),
 }));
 
+const rieClient = await import('../../../src/local/rie-client.js');
+const agentCoreClient = await import('../../../src/local/agentcore-client.js');
+const agentCoreServer = await import('../../../src/local/agentcore-http-server.js');
 const { createLocalInvokeCommand } = await import('../../../src/cli/commands/local-invoke.js');
 const { createLocalInvokeAgentCoreCommand } = await import(
   '../../../src/cli/commands/local-invoke-agentcore.js'
@@ -131,6 +134,13 @@ function deferred<T>(): Deferred<T> {
 async function until(cond: () => boolean): Promise<void> {
   for (let i = 0; i < 400 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
 }
+
+/** The step that USES the container once `docker run` returned it. */
+const USES_CONTAINER = {
+  invoke: () => vi.mocked(rieClient.invokeRie),
+  'invoke-agentcore': () => vi.mocked(agentCoreClient.invokeAgentCore),
+  'start-agentcore': () => vi.mocked(agentCoreServer.startAgentCoreHttpServer),
+} as const;
 
 const COMMANDS = {
   invoke: () => createLocalInvokeCommand(),
@@ -164,6 +174,7 @@ describe('a stop signal before the container id is known (#972)', () => {
       vi.spyOn(console, m).mockImplementation(() => undefined);
     }
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    for (const use of Object.values(USES_CONTAINER)) use().mockClear();
   });
   afterEach(() => {
     for (const l of process.listeners('SIGINT')) if (!sigint.includes(l)) process.off('SIGINT', l);
@@ -221,7 +232,13 @@ describe('a stop signal before the container id is known (#972)', () => {
         run.resolve('cid-late');
         await until(() => exits.length > 0);
         expect(h.removed).toContain('cid-late');
-        expect(exits).toEqual([143]);
+        await new Promise((r) => setTimeout(r, 50));
+        // The run resolved after the ^C: the command must not go on to use
+        // the container (an invoke would run the handler after the ^C).
+        expect(USES_CONTAINER[name]()).not.toHaveBeenCalled();
+        // First: the refused run's own error exit (1) after it is only
+        // reachable because `process.exit` is mocked.
+        expect(exits[0]).toBe(143);
       });
 
       it('a `docker run` that fails after the signal is removed by its name', async () => {
@@ -242,7 +259,42 @@ describe('a stop signal before the container id is known (#972)', () => {
         // The signal's exit comes first; the failed run's own error exit (1)
         // after it is only reachable because `process.exit` is mocked.
         expect(exits[0]).toBe(130);
+        if (name === 'start-agentcore') {
+          // Its boot failure waits for the signal's exit instead of racing it.
+          await new Promise((r) => setTimeout(r, 50));
+          expect(exits).toEqual([130]);
+        }
       });
     });
   }
+});
+
+describe('start-agentcore boot failure with no signal (#972)', () => {
+  let sigint: NodeJS.SignalsListener[];
+  let sigterm: NodeJS.SignalsListener[];
+  beforeEach(() => {
+    sigint = process.listeners('SIGINT');
+    sigterm = process.listeners('SIGTERM');
+    for (const m of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+      vi.spyOn(console, m).mockImplementation(() => undefined);
+    }
+  });
+  afterEach(() => {
+    h.synth = undefined;
+    vi.restoreAllMocks();
+  });
+
+  it('removes its signal listeners, so an embedding host is left with none', async () => {
+    h.synth = () => Promise.reject(new Error('synth failed'));
+    const cmd = createLocalStartAgentCoreCommand({
+      synthesizer: { synthesize: () => h.synth!() } as never,
+    });
+    cmd.exitOverride();
+    const exits: number[] = [];
+    vi.spyOn(process, 'exit').mockImplementation(((c?: number) => void exits.push(c ?? 0)) as never);
+    await cmd.parseAsync(['Target', '--app', 'x'], { from: 'user' }).catch(() => undefined);
+    expect(exits).toEqual([1]);
+    expect(process.listeners('SIGINT')).toEqual(sigint);
+    expect(process.listeners('SIGTERM')).toEqual(sigterm);
+  });
 });

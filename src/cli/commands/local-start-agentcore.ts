@@ -209,13 +209,23 @@ async function localStartAgentCoreCommand(
   // fail while a signal's teardown is still running (a ^C reaches the synth /
   // build child too). Join that teardown before the error exits the process,
   // or the exit cuts it short; a boot failure with no signal tears down too.
-  let teardown: (() => Promise<void>) | undefined;
+  let boot:
+    | { teardown: () => Promise<void>; detachSignals: () => void; signalled: () => boolean }
+    | undefined;
   try {
-    await serveAgentCore(target, options, extraStateProviders, hostSynthesizer, (t) => {
-      teardown = t;
+    await serveAgentCore(target, options, extraStateProviders, hostSynthesizer, (b) => {
+      boot = b;
     });
   } catch (err) {
-    if (teardown) await teardown().catch(() => undefined);
+    if (boot) {
+      await boot.teardown().catch(() => undefined);
+      // A signal's shutdown owns the exit (130 / 143): never race it with
+      // this error's exit 1.
+      if (boot.signalled()) await new Promise<never>(() => undefined);
+      // An embedding host keeps running after a failed boot: leave no
+      // listener behind (the CLI exits anyway).
+      boot.detachSignals();
+    }
     throw err;
   }
 }
@@ -225,7 +235,11 @@ async function serveAgentCore(
   options: LocalStartAgentCoreOptions,
   extraStateProviders: ExtraStateProviders | undefined,
   hostSynthesizer: CdkAppSynthesizer | undefined,
-  registerTeardown: (teardown: () => Promise<void>) => void
+  registerBoot: (boot: {
+    teardown: () => Promise<void>;
+    detachSignals: () => void;
+    signalled: () => boolean;
+  }) => void
 ): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
@@ -308,7 +322,6 @@ async function serveAgentCore(
     }
   };
 
-  registerTeardown(teardown);
   // Wire the shutdown handlers NOW — before synth, the image build and the
   // `docker run` (#972) — so a SIGINT / SIGTERM arriving at any point of the
   // boot tears down whatever was already started instead of orphaning it (a
@@ -327,8 +340,18 @@ async function serveAgentCore(
     info: (m) => logger.info(m),
     warn: (m) => logger.warn(m),
   });
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  const onSigint = (): void => shutdown('SIGINT');
+  const onSigterm = (): void => shutdown('SIGTERM');
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
+  registerBoot({
+    teardown,
+    detachSignals: () => {
+      process.off('SIGINT', onSigint);
+      process.off('SIGTERM', onSigterm);
+    },
+    signalled: () => shuttingDown,
+  });
 
   await activateWorkloadAwsWiring(options);
   warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
