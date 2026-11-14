@@ -804,6 +804,11 @@ same sized `/tmp`.
 - `1` — cdk-local-side errors before/after the handler ran: Docker not
   installed, image pull failed, target not found, RIE port unreachable
   after the readiness window, container exited before responding.
+- `130` / `143` — stopped by `^C` (SIGINT) / SIGTERM. Both remove the Lambda
+  container (named `cdkl-invoke-<pid>-<random>`) and the temp dirs first,
+  whenever the signal lands: during synth or the image step nothing has
+  started, and a signal during `docker run` waits for it and removes what it
+  started. A second signal waits for that; a third exits at once and skips it.
 
 ## `cdkl invoke-agentcore` (run Bedrock AgentCore Runtime agents locally)
 
@@ -1157,8 +1162,10 @@ and non-integer values pre-container.
   build / pull failed, target not found, the agent never became ready within
   the readiness window, or the container exited before responding.
 - `130` / `143` — stopped by `^C` (SIGINT) / SIGTERM. Both remove the agent
-  container first (under `--watch`, after the running reload stops). A second
-  signal waits for that; a third exits at once (130 for SIGINT, 143 for SIGTERM) and skips it.
+  container first (under `--watch`, after the running reload stops), whenever
+  the signal lands: a signal during synth, the image build or `docker run`
+  removes whatever was already started. A second signal waits for that; a
+  third exits at once (130 for SIGINT, 143 for SIGTERM) and skips it.
 
 ## `cdkl start-agentcore` (serve an AgentCore Runtime's HTTP contract + `/ws` locally)
 

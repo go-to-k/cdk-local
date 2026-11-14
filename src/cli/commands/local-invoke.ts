@@ -105,6 +105,7 @@ import {
   runDetached,
   streamLogs,
 } from '../../local/docker-runner.js';
+import { createContainerStartGuard } from '../../local/container-start-guard.js';
 import {
   applyDebuggerEnv,
   debugTimeoutNotice,
@@ -246,8 +247,14 @@ async function localInvokeCommand(
    * Unified cleanup for both the success / failure unwind path AND the
    * SIGINT / SIGTERM handler.
    */
+  // #972: the `docker run` in flight when a signal lands (its id is not
+  // known yet) and a refusal of any run after the shutdown began.
+  const startGuard = createContainerStartGuard({ cancelledCode: 'LOCAL_INVOKE_CANCELLED' });
+
   const cleanup = singleFlight(
     async (): Promise<void> => {
+      // Before the first await: no run may start once this has looked.
+      const pendingContainer = startGuard.stop();
       if (stopLogs) {
         try {
           stopLogs();
@@ -257,6 +264,7 @@ async function localInvokeCommand(
           );
         }
       }
+      containerId ??= await pendingContainer;
       if (containerId) {
         try {
           await removeContainer(containerId);
@@ -328,6 +336,23 @@ async function localInvokeCommand(
       getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   );
+
+  // #972: armed BEFORE synth / build / `docker run`, so a signal anywhere
+  // removes whatever this run already started (a signal before any container
+  // exists still exits 130 / 143). #970: SIGTERM (`kill`, `timeout`, an IDE
+  // stop, a CI cancel) runs the same cleanup as SIGINT. A second signal waits
+  // for the cleanup, a third force-exits.
+  const onSignal = createShutdownSignalHandler({
+    cleanup,
+    stoppingMessage: (signal) => `Received ${signal}, removing the Lambda container...`,
+    forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+    info: (m) => logger.info(m),
+    warn: (m) => logger.warn(m),
+  });
+  sigintHandler = (): void => onSignal('SIGINT');
+  sigtermHandler = (): void => onSignal('SIGTERM');
+  process.on('SIGINT', sigintHandler);
+  process.on('SIGTERM', sigtermHandler);
 
   try {
     await activateWorkloadAwsWiring({ ...options, singleWorkload: true });
@@ -486,41 +511,36 @@ async function localInvokeCommand(
     // `AWS_ENDPOINT_URL_*` local endpoint / tunneled VPC resource) via
     // `host.docker.internal`.
     const hostGatewayExtraHosts = await resolveHostGatewayExtraHosts();
-    containerId = await runDetached({
-      image: imagePlan.image,
-      mounts: imagePlan.mounts,
-      extraMounts: extraMountsWithProfile,
-      env: dockerEnv,
-      ...(containerEnv.sensitiveEnvKeys.length > 0 && {
-        sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
-      }),
-      ...(hostGatewayExtraHosts.length > 0 && { extraHosts: hostGatewayExtraHosts }),
-      cmd: imagePlan.cmd,
-      hostPort,
-      host: containerHost,
-      ...(debugPort !== undefined && { debugPort }),
-      ...(imagePlan.platform !== undefined && { platform: imagePlan.platform }),
-      ...(imagePlan.entryPoint !== undefined && { entryPoint: imagePlan.entryPoint }),
-      ...(imagePlan.workingDir !== undefined && { workingDir: imagePlan.workingDir }),
-      ...(imagePlan.tmpfs !== undefined && { tmpfs: imagePlan.tmpfs }),
-    });
+    // `cdkl-`-prefixed so a container left by a force-exit is found by the
+    // `docker ps --filter name=cdkl-` the force-exit line names, and so a
+    // shutdown whose `docker run` child died can still remove it (#972).
+    const containerName = `${getEmbedConfig().resourceNamePrefix}-invoke-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+    const runPlan = imagePlan;
+    containerId = await startGuard.run(
+      () =>
+        runDetached({
+          name: containerName,
+          image: runPlan.image,
+          mounts: runPlan.mounts,
+          extraMounts: extraMountsWithProfile,
+          env: dockerEnv,
+          ...(containerEnv.sensitiveEnvKeys.length > 0 && {
+            sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
+          }),
+          ...(hostGatewayExtraHosts.length > 0 && { extraHosts: hostGatewayExtraHosts }),
+          cmd: runPlan.cmd,
+          hostPort,
+          host: containerHost,
+          ...(debugPort !== undefined && { debugPort }),
+          ...(runPlan.platform !== undefined && { platform: runPlan.platform }),
+          ...(runPlan.entryPoint !== undefined && { entryPoint: runPlan.entryPoint }),
+          ...(runPlan.workingDir !== undefined && { workingDir: runPlan.workingDir }),
+          ...(runPlan.tmpfs !== undefined && { tmpfs: runPlan.tmpfs }),
+        }),
+      containerName
+    );
 
     stopLogs = streamLogs(containerId);
-
-    // #970: SIGTERM (`kill`, `timeout`, an IDE stop, a CI cancel) ran no
-    // cleanup, so the container and tmpdirs outlived cdkl. Both signals share
-    // one handler: a second signal waits for the cleanup, a third force-exits.
-    const onSignal = createShutdownSignalHandler({
-      cleanup,
-      stoppingMessage: (signal) => `Received ${signal}, removing the Lambda container...`,
-      forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
-      info: (m) => logger.info(m),
-      warn: (m) => logger.warn(m),
-    });
-    sigintHandler = (): void => onSignal('SIGINT');
-    sigtermHandler = (): void => onSignal('SIGTERM');
-    process.on('SIGINT', sigintHandler);
-    process.on('SIGTERM', sigtermHandler);
 
     await waitForRieReady(containerHost, hostPort, 5000);
 

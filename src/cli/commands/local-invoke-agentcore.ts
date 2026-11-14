@@ -143,6 +143,7 @@ import {
 import type { FileAsset } from '../../types/assets.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
+import { createContainerStartGuard } from '../../local/container-start-guard.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import {
   workloadStsClientConfig,
@@ -322,8 +323,17 @@ async function localInvokeAgentCoreCommand(
   // removal so an in-flight rebuild cannot start a container after it.
   let stopWatch: (() => Promise<void>) | undefined;
 
+  // #972: the first `docker run` in flight when a signal lands (its id is not
+  // known yet) and a refusal of any first run after the shutdown began. A
+  // `--watch` rebuild's run is covered by `stopWatch`, which waits for it.
+  const startGuard = createContainerStartGuard({
+    cancelledCode: 'LOCAL_INVOKE_AGENTCORE_CANCELLED',
+  });
+
   const cleanup = singleFlight(
     async (): Promise<void> => {
+      // Before the first await: no first run may start once this has looked.
+      const pendingContainer = startGuard.stop();
       if (stopWatch) await stopWatch();
       if (stateProvider) {
         try {
@@ -343,6 +353,7 @@ async function localInvokeAgentCoreCommand(
           );
         }
       }
+      containerId ??= await pendingContainer;
       if (containerId) {
         try {
           await removeContainer(containerId);
@@ -368,6 +379,24 @@ async function localInvokeAgentCoreCommand(
       getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   );
+
+  // #972: armed BEFORE synth / build / `docker run`, so a signal anywhere
+  // removes whatever this run already started (a signal before any container
+  // exists still exits 130 / 143). #882: SIGTERM runs the same cleanup as
+  // SIGINT, so a terminated `--watch` session does not leave its container
+  // behind. A second signal waits for the cleanup (it waits for an in-flight
+  // reload); a third force-exits.
+  const onSignal = createShutdownSignalHandler({
+    cleanup,
+    stoppingMessage: (signal) => `Received ${signal}, removing the agent container...`,
+    forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+    info: (m) => logger.info(m),
+    warn: (m) => logger.warn(m),
+  });
+  sigintHandler = (): void => onSignal('SIGINT');
+  sigtermHandler = (): void => onSignal('SIGTERM');
+  process.on('SIGINT', sigintHandler);
+  process.on('SIGTERM', sigtermHandler);
 
   try {
     await activateWorkloadAwsWiring({ ...options, singleWorkload: true });
@@ -553,36 +582,25 @@ async function localInvokeAgentCoreCommand(
     logger.info(
       `Starting agent container (image=${image}, port=${hostPort} -> ${containerPortLabel})...`
     );
-    containerId = await runDetached({
-      image,
-      mounts: [],
-      env: dockerEnv,
-      cmd: [],
-      hostPort,
-      host: containerHost,
-      platform: options.platform,
-      name: containerName,
-      ...(containerPort !== undefined && { containerPort }),
-      // Keep decrypted SecureString SSM env values off the `docker run` argv.
-      ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
-    });
+    containerId = await startGuard.run(
+      () =>
+        runDetached({
+          image,
+          mounts: [],
+          env: dockerEnv,
+          cmd: [],
+          hostPort,
+          host: containerHost,
+          platform: options.platform,
+          name: containerName,
+          ...(containerPort !== undefined && { containerPort }),
+          // Keep decrypted SecureString SSM env values off the `docker run` argv.
+          ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
+        }),
+      containerName
+    );
 
     stopLogs = streamLogs(containerId);
-
-    // #882: SIGTERM ran no cleanup at all, so a terminated `--watch` session
-    // left its container behind. A second signal waits for the cleanup (it
-    // now waits for an in-flight reload); a third force-exits.
-    const onSignal = createShutdownSignalHandler({
-      cleanup,
-      stoppingMessage: (signal) => `Received ${signal}, removing the agent container...`,
-      forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
-      info: (m) => logger.info(m),
-      warn: (m) => logger.warn(m),
-    });
-    sigintHandler = (): void => onSignal('SIGINT');
-    sigtermHandler = (): void => onSignal('SIGTERM');
-    process.on('SIGINT', sigintHandler);
-    process.on('SIGTERM', sigtermHandler);
 
     if (isMcp && mcpRequest) {
       // MCP has no /ping: mcpInvokeOnce folds the boot-wait into a retried

@@ -54,7 +54,7 @@ describe('signal exit codes (#893)', () => {
   // shutdown-signal.test.ts; these pin that invoke routes EACH signal to it.
   it('invoke routes SIGINT to the shared shutdown handler', () => {
     const src = read('local-invoke.ts');
-    expect(src).toContain('createShutdownSignalHandler({\n      cleanup,');
+    expect(src).toContain('createShutdownSignalHandler({\n    cleanup,');
     expect(src).toContain("sigintHandler = (): void => onSignal('SIGINT')");
     expect(src).toContain("process.on('SIGINT', sigintHandler)");
   });
