@@ -317,6 +317,8 @@ export function createContainerPool(
    * request's cold start can both have a run in flight when the signal lands.
    */
   const startGuard = createContainerStartGuard({ cancelledCode: 'CONTAINER_POOL_DISPOSED' });
+  /** Containers whose `docker run` returned while their RIE wait is still running. */
+  const startedNotReady = new Set<string>();
 
   // Pre-create empty entries so `acquire()` never has to lazily build
   // the map under contention. Pool starts at size 0 per entry; growth
@@ -461,6 +463,9 @@ export function createContainerPool(
       );
     }
     const stopLogStream = streamingEnabled ? streamLogs(containerId) : (): void => undefined;
+    // #973: running but not yet a handle — `dispose()` removes it by id if
+    // the RIE wait outlasts the dispose's in-flight-start wait.
+    startedNotReady.add(containerId);
     try {
       await waitForRieReady(spec.containerHost, hostPort, 30_000);
     } catch (err) {
@@ -468,6 +473,8 @@ export function createContainerPool(
       stopLogStream();
       await removeContainer(containerId).catch(() => undefined);
       throw err;
+    } finally {
+      startedNotReady.delete(containerId);
     }
     return {
       logicalId: spec.lambda.logicalId,
@@ -737,11 +744,12 @@ export function createContainerPool(
       }
 
       // Wait for any cold-start `startOne` calls that were mid-flight at
-      // dispose time, with a short timeout so a hung docker-run can't
-      // block shutdown forever. Each settled start contributes its
-      // resulting handle to the teardown set so the container does not
-      // leak (the verify.sh `docker rm -f cdkl-*` sweep is a
-      // safety net for the timeout case).
+      // dispose time, with a short timeout. Each settled start contributes
+      // its resulting handle to the teardown set so the container does not
+      // leak. A start still pending after the timeout is either in its
+      // `docker run` — waited for without a bound below (`pendingRuns`; a
+      // third signal force-exits a hung daemon) — or in its RIE wait, with
+      // its container id in `startedNotReady`, removed below.
       const startPromises = [...inFlightStarts];
       if (startPromises.length > 0) {
         logger.debug(
@@ -773,8 +781,8 @@ export function createContainerPool(
           }
         }
         if (timedOut > 0) {
-          logger.warn(
-            `Container pool disposed with ${timedOut} in-flight start(s) still pending after ${drainTimeoutMs}ms; relying on docker --rm + the verify.sh sweep to clean up.`
+          logger.debug(
+            `${timedOut} in-flight start(s) still pending after ${drainTimeoutMs}ms; removing them by id once their docker run returns.`
           );
         }
         inFlightStarts.clear();
@@ -783,7 +791,8 @@ export function createContainerPool(
       // Tear down in parallel; `tearDown` swallows individual failures. A run
       // the dispose interrupted hands its id over here: its `startOne` was
       // refused, so no handle carries it.
-      const interruptedIds = await pendingRuns;
+      const interruptedIds = [...(await pendingRuns), ...startedNotReady];
+      startedNotReady.clear();
       await Promise.allSettled([
         ...allHandles.map((h) => tearDown(h)),
         ...interruptedIds.map((id) =>

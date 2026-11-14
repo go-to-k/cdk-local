@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   networks: [] as string[],
   destroyedNetworks: [] as string[],
   net: undefined as undefined | (() => Promise<unknown>),
+  startService: undefined as undefined | ((service: { serviceLogicalId: string }) => Promise<unknown>),
 }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', async (importActual) => ({
@@ -62,8 +63,16 @@ vi.mock('../../../src/local/ecs-network.js', async (importActual) => ({
   }),
 }));
 
+vi.mock('../../../src/local/ecs-service-runner.js', async (importActual) => ({
+  ...(await importActual<object>()),
+  startEcsService: vi.fn((service: { serviceLogicalId: string }) => h.startService!(service)),
+}));
+
 const { createLocalStartApiCommand } = await import('../../../src/cli/commands/local-start-api.js');
 const { createLocalStartAlbCommand } = await import('../../../src/cli/commands/local-start-alb.js');
+const { createLocalStartServiceCommand } = await import(
+  '../../../src/cli/commands/local-start-service.js'
+);
 const { createLocalStartCloudFrontCommand } = await import(
   '../../../src/cli/commands/local-start-cloudfront.js'
 );
@@ -166,6 +175,22 @@ const cloudFrontStack = (): unknown =>
       },
     },
   });
+
+/** Two ECS services: `start-service` boots them one after the other. */
+const twoServiceStack = (): unknown => {
+  const service = (td: string) => ({
+    Type: 'AWS::ECS::Service',
+    Properties: { TaskDefinition: { Ref: td }, DesiredCount: 1 },
+  });
+  const taskDef = {
+    Type: 'AWS::ECS::TaskDefinition',
+    Properties: {
+      NetworkMode: 'awsvpc',
+      ContainerDefinitions: [{ Name: 'web', Image: 'nginx:1', Essential: true }],
+    },
+  };
+  return stack({ SvcA: service('TdA'), TdA: taskDef, SvcB: service('TdB'), TdB: taskDef });
+};
 
 const synthesizer = {
   synthesize: () => (h.synth ? h.synth() : Promise.resolve({ stacks: h.stacks })),
@@ -276,6 +301,12 @@ describe('a stop signal while a serve command boots its containers (#973)', () =
         // refused run never races the signal's exit with an exit 1.
         expect(ran).toHaveLength(1);
         expect(exits).toEqual([143]);
+        if (name === 'start-api --warm') {
+          // The boot stops after the interrupted pre-warm: no "Pre-warm
+          // failed" noise and no server bound after the cleanup.
+          const logged = vi.mocked(console.warn).mock.calls.flat().join('\n');
+          expect(logged).not.toContain('Pre-warm failed');
+        }
       });
 
       it('a `docker run` that fails after the signal is removed by its name, exit 130', async () => {
@@ -316,6 +347,34 @@ describe('a stop signal while a serve command boots its containers (#973)', () =
     await new Promise((r) => setTimeout(r, 100));
     expect(ran).toEqual([]);
     expect(exits).toEqual([130]);
+  });
+
+  it('start-service: a signal while the first service boots does not boot the next one', async () => {
+    const first = deferred<unknown>();
+    const booted: string[] = [];
+    h.startService = (service) => {
+      booted.push(service.serviceLogicalId);
+      return first.promise;
+    };
+    h.stacks = [twoServiceStack()];
+    const cmd = createLocalStartServiceCommand({ synthesizer });
+    cmd.exitOverride();
+    void cmd
+      .parseAsync(['App:SvcA', 'App:SvcB', '--app', 'x', '--no-pull'], { from: 'user' })
+      .catch(() => undefined);
+    await until(() => booted.length > 0);
+    fire('SIGTERM');
+    // The first boot completes after the signal; the boot loop must not go on
+    // to the second service, which the cleanup has already looked past.
+    first.resolve({
+      service: { serviceName: 'SvcA' },
+      activeReplicaCount: () => 1,
+      shutdown: async () => undefined,
+    });
+    await until(() => exits.length > 0);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(booted).toEqual(['SvcA']);
+    expect(exits).toEqual([143]);
   });
 
   it('start-alb: a signal while the shared network is being created removes it, exit 130', async () => {

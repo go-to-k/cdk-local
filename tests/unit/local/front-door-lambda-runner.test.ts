@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync, strToU8 } from 'fflate';
@@ -412,6 +412,33 @@ describe('createFrontDoorLambdaRunner — stop() during start() (#973)', () => {
     await runner.stop();
     releasePort(54321);
     await expect(starting).rejects.toMatchObject({ code: 'FRONT_DOOR_LAMBDA_STOPPED' });
+    expect(runDetachedMock).not.toHaveBeenCalled();
+  });
+
+  it('stop() while the plan resolves removes the tmpdir the plan materialized', async () => {
+    // A `.zip` asset is extracted to a tmpdir BEFORE the base-image pull; stop()
+    // during that pull sees no plan yet, so start() must remove the tmpdir.
+    const zipPath = join(codeDir, 'asset.deadbeef.zip');
+    writeFileSync(zipPath, zipSync({ 'index.js': strToU8('exports.handler = () => {};') }));
+    let releasePull!: () => void;
+    pullImageMock.mockImplementationOnce(() => new Promise<void>((r) => (releasePull = r)));
+    const before = new Set(readdirSync(tmpdir()));
+    const runner = createFrontDoorLambdaRunner(zipLambda({ codePath: zipPath }), {
+      containerHost: '127.0.0.1',
+    });
+    const starting = runner.start();
+    for (let i = 0; i < 50 && pullImageMock.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // Only this run's extraction dir: parallel suites create tmpdirs too.
+    const created = readdirSync(tmpdir()).filter(
+      (d) => !before.has(d) && d.startsWith('cdkl-lambda-zip-')
+    );
+    expect(created.length).toBeGreaterThan(0);
+    await runner.stop();
+    releasePull();
+    await expect(starting).rejects.toThrow('stopped while starting');
+    for (const d of created) expect(existsSync(join(tmpdir(), d))).toBe(false);
     expect(runDetachedMock).not.toHaveBeenCalled();
   });
 });

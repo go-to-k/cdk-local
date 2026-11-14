@@ -93,4 +93,24 @@ describe('container pool dispose() with a `docker run` in flight (#973)', () => 
     await expect(pool.acquire('A')).rejects.toThrow('disposed');
     expect(runDetachedMock).not.toHaveBeenCalled();
   });
+
+  it('a container still in its RIE wait when the in-flight-start wait times out is removed by id', async () => {
+    runDetachedMock.mockResolvedValue('cid-booting');
+    waitForRieReadyMock.mockImplementation(() => new Promise<void>(() => undefined));
+    const pool = createContainerPool(new Map([['A', spec('A')]]), {
+      perLambdaConcurrency: 2,
+      streamLogs: false,
+    });
+    void pool.acquire('A').catch(() => undefined);
+    await until(() => waitForRieReadyMock.mock.calls.length === 1);
+    vi.useFakeTimers();
+    try {
+      const disposed = pool.dispose();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await disposed;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(removeContainerMock.mock.calls.map((c) => c[0])).toEqual(['cid-booting']);
+  });
 });

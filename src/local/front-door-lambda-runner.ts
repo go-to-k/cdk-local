@@ -428,7 +428,9 @@ export function createFrontDoorLambdaRunner(
           `stopLogStream(${displayIdent(lambda.logicalId)}) failed: ${err instanceof Error ? err.message : String(err)}`
         );
       }
-      containerId ??= await pendingContainer;
+      // Read `containerId` only after the await: `start()` may set it meanwhile.
+      const pendingId = await pendingContainer;
+      containerId ??= pendingId;
       if (containerId) {
         try {
           await removeContainer(containerId);

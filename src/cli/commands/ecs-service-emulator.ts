@@ -670,7 +670,9 @@ export async function runEcsServiceEmulator(
         )
       );
       frontDoorLambdaRunners = [];
-      sharedNetwork ??= await sharedNetworkPending;
+      // Read `sharedNetwork` only after the await: the boot may set it meanwhile.
+      const pendingNetwork = await sharedNetworkPending;
+      sharedNetwork ??= pendingNetwork;
       sharedNetworkPending = undefined;
       if (profileCredsFile) {
         try {
