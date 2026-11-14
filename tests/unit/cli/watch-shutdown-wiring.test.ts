@@ -56,7 +56,7 @@ describe('--watch shutdown wiring (#882)', () => {
   it('start-agentcore', () => {
     const src = read('local-start-agentcore.ts');
     expect(src).toContain('createReloadQueue(');
-    expectOrder(src, 'const teardown = async', 'await stopWatchReloads(', 'await server.close()');
+    expectOrder(src, 'const doTeardown = async', 'await stopWatchReloads(', 'await server.close()');
     expectOrder(src, 'const newImage = await resolveAgentCoreImage(', 'if (tornDown || shuttingDown) return;', 'runDetached(');
     expect(src).toContain('createShutdownSignalHandler(');
   });

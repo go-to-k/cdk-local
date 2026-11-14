@@ -5,6 +5,7 @@ import {
   warnIfEmulateRoleViaUnused,
 } from '../options.js';
 import { activateWorkloadAwsWiring } from '../../local/workload-aws-wiring.js';
+import { createContainerStartGuard } from '../../local/container-start-guard.js';
 import {
   appOptions,
   commonOptions,
@@ -204,6 +205,28 @@ async function localStartAgentCoreCommand(
   extraStateProviders: ExtraStateProviders | undefined,
   hostSynthesizer?: CdkAppSynthesizer
 ): Promise<void> {
+  // #972: the shutdown handlers are armed before synth, so a boot step can
+  // fail while a signal's teardown is still running (a ^C reaches the synth /
+  // build child too). Join that teardown before the error exits the process,
+  // or the exit cuts it short; a boot failure with no signal tears down too.
+  let teardown: (() => Promise<void>) | undefined;
+  try {
+    await serveAgentCore(target, options, extraStateProviders, hostSynthesizer, (t) => {
+      teardown = t;
+    });
+  } catch (err) {
+    if (teardown) await teardown().catch(() => undefined);
+    throw err;
+  }
+}
+
+async function serveAgentCore(
+  target: string | undefined,
+  options: LocalStartAgentCoreOptions,
+  extraStateProviders: ExtraStateProviders | undefined,
+  hostSynthesizer: CdkAppSynthesizer | undefined,
+  registerTeardown: (teardown: () => Promise<void>) => void
+): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
@@ -220,9 +243,21 @@ async function localStartAgentCoreCommand(
   let shuttingDown = false;
   let tornDown = false;
 
-  const teardown = async (): Promise<void> => {
-    if (tornDown) return;
+  // #972: the boot `docker run` in flight when a signal lands (its id is not
+  // known yet) and a refusal of a boot run after the teardown began. A
+  // `--watch` reload's run is covered by `stopWatchReloads`, which waits for it.
+  const startGuard = createContainerStartGuard({
+    cancelledCode: 'LOCAL_START_AGENTCORE_CANCELLED',
+  });
+
+  // Memoized: a boot failure racing a signal awaits the SAME teardown instead
+  // of returning early while the first one is still removing the container.
+  let teardownPromise: Promise<void> | undefined;
+  const teardown = (): Promise<void> => (teardownPromise ??= doTeardown());
+  const doTeardown = async (): Promise<void> => {
     tornDown = true;
+    // Before the first await: no boot run may start once this has looked.
+    const pendingContainer = startGuard.stop();
     // Close the watcher, drop the pending reload, and let the in-flight one
     // finish its current docker op (its internal tornDown checks stop it
     // proceeding to a fresh container), so `containerId` points at the live
@@ -247,6 +282,7 @@ async function localStartAgentCoreCommand(
         logger.debug(`streamLogs stop failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    containerId ??= await pendingContainer;
     if (containerId) {
       try {
         await removeContainer(containerId);
@@ -271,6 +307,28 @@ async function localStartAgentCoreCommand(
       }
     }
   };
+
+  registerTeardown(teardown);
+  // Wire the shutdown handlers NOW — before synth, the image build and the
+  // `docker run` (#972) — so a SIGINT / SIGTERM arriving at any point of the
+  // boot tears down whatever was already started instead of orphaning it (a
+  // signal before anything exists still exits 130 / 143). `teardown` is
+  // null-safe (the server may not exist yet) and memoized, so a boot-error
+  // path and a racing signal share one teardown.
+  // #882: a second signal waits for the teardown; a third force-exits (the
+  // teardown now waits for an in-flight reload, which can be a slow build).
+  const shutdown = createShutdownSignalHandler({
+    cleanup: async () => {
+      shuttingDown = true;
+      await teardown().catch(() => undefined);
+    },
+    stoppingMessage: (signal) => `Received ${signal}, shutting down...`,
+    forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+    info: (m) => logger.info(m),
+    warn: (m) => logger.warn(m),
+  });
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   await activateWorkloadAwsWiring(options);
   warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
@@ -403,41 +461,25 @@ async function localStartAgentCoreCommand(
   logger.info(
     `Starting agent container (image=${image}, port=${containerHostPort} -> ${plan.containerPortLabel})...`
   );
-  containerId = await runDetached({
-    image,
-    mounts: [],
-    env: dockerEnv,
-    cmd: [],
-    hostPort: containerHostPort,
-    host: containerHost,
-    platform: options.platform,
-    name: containerName,
-    // MCP / A2A publish the host port to 8000 / 9000 (HTTP / AGUI -> 8080).
-    ...(plan.containerPort !== undefined && { containerPort: plan.containerPort }),
-    ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
-  });
+  const bootPort = containerHostPort;
+  containerId = await startGuard.run(
+    () =>
+      runDetached({
+        image,
+        mounts: [],
+        env: dockerEnv,
+        cmd: [],
+        hostPort: bootPort,
+        host: containerHost,
+        platform: options.platform,
+        name: containerName,
+        // MCP / A2A publish the host port to 8000 / 9000 (HTTP / AGUI -> 8080).
+        ...(plan.containerPort !== undefined && { containerPort: plan.containerPort }),
+        ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
+      }),
+    containerName
+  );
   stopLogs = streamLogs(containerId);
-
-  // Wire the shutdown handlers NOW — immediately after the container is booted,
-  // BEFORE the (potentially slow) readiness wait + serve bind — so a SIGINT /
-  // SIGTERM arriving during boot still tears the container down instead of
-  // orphaning it. `teardown` is null-safe (the server may not exist yet) and
-  // idempotent, so the boot-error catch below and a racing signal cannot
-  // double-tear-down.
-  // #882: a second signal waits for the teardown; a third force-exits (the
-  // teardown now waits for an in-flight reload, which can be a slow build).
-  const shutdown = createShutdownSignalHandler({
-    cleanup: async () => {
-      shuttingDown = true;
-      await teardown().catch(() => undefined);
-    },
-    stoppingMessage: (signal) => `Received ${signal}, shutting down...`,
-    forceExitHint: `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
-    info: (m) => logger.info(m),
-    warn: (m) => logger.warn(m),
-  });
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   // A failure in the post-boot setup (readiness wait or server bind) must stop
   // the booted container before rethrowing.
