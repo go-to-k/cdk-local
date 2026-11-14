@@ -149,6 +149,7 @@ import { buildAuthCheck } from '../../local/front-door-auth.js';
 import { createJwksCache, type WarnedAt } from '../../local/cognito-jwt.js';
 import { isLocalCdkAssetImage, listPinnedTargets } from '../../local/image-pin-detector.js';
 import { formatAuthority } from '../../utils/url-authority.js';
+import { namedEnvAwsRegion, regionOrAmbientDefault } from '../../utils/ambient-default-region.js';
 import {
   enforceImageOverrideOrphans,
   parseImageOverrideFlags,
@@ -1931,9 +1932,9 @@ async function resolveServiceAndRunnerOpts(
   if (stateProvider && taskNeeds.needsCrossStackResolver) {
     const consumerRegion =
       options.region ??
-      process.env['AWS_REGION'] ??
+      namedEnvAwsRegion() ??
       process.env['AWS_DEFAULT_REGION'] ??
-      service.stack.region ??
+      regionOrAmbientDefault(service.stack.region) ??
       'us-east-1';
     const resolver = await stateProvider.buildCrossStackResolver(consumerRegion);
     if (resolver) {
@@ -2848,9 +2849,9 @@ export async function buildEcsImageResolutionContext(
   if (needs.needsPseudoParameters || wantsPseudoForEnvOrSecret) {
     const region =
       options.region ??
-      process.env['AWS_REGION'] ??
+      namedEnvAwsRegion() ??
       process.env['AWS_DEFAULT_REGION'] ??
-      candidate.region;
+      regionOrAmbientDefault(candidate.region);
     if (!region) {
       logger.warn(
         `Resolver references \${AWS::Region} but ${getEmbedConfig().binaryName} could not determine the target region. ` +

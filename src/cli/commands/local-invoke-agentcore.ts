@@ -161,6 +161,7 @@ import {
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
 import { resolveContainerRegion, setContainerRegion } from '../../utils/profile-region.js';
+import { namedEnvAwsRegion, regionOrAmbientDefault } from '../../utils/ambient-default-region.js';
 
 export interface LocalInvokeAgentCoreOptions {
   app?: string;
@@ -890,9 +891,9 @@ export async function resolveAgentCoreSigV4Context(
   const region =
     options.region ??
     options.stackRegion ??
-    process.env['AWS_REGION'] ??
+    namedEnvAwsRegion() ??
     process.env['AWS_DEFAULT_REGION'] ??
-    resolved.stack.region;
+    regionOrAmbientDefault(resolved.stack.region);
   if (!region) {
     throw new CdkLocalError(
       `--sigv4: no region resolved for the AgentCore signing scope. ` +
@@ -1249,9 +1250,9 @@ export async function resolveAgentCoreCodeImageFromS3(
   const region =
     options.region ??
     options.stackRegion ??
-    process.env['AWS_REGION'] ??
+    namedEnvAwsRegion() ??
     process.env['AWS_DEFAULT_REGION'] ??
-    resolved.stack.region;
+    regionOrAmbientDefault(resolved.stack.region);
 
   const assumeRoleArn = await resolveAssumeRoleArn(options, resolved, loaded, stateProvider);
   let credentials:
@@ -1565,9 +1566,9 @@ export async function buildAgentCoreImageContext(
   const logger = getLogger();
   const region =
     options.region ??
-    process.env['AWS_REGION'] ??
+    namedEnvAwsRegion() ??
     process.env['AWS_DEFAULT_REGION'] ??
-    candidate.region;
+    regionOrAmbientDefault(candidate.region);
 
   let accountId: string | undefined;
   try {

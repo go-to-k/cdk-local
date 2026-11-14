@@ -1,12 +1,14 @@
 import { STSClient } from '@aws-sdk/client-sts';
 import { firstUsableRegion } from '../local/dynamic-reference-resolver.js';
+import { ambientDefaultRegion, namedEnvAwsRegion } from './ambient-default-region.js';
 import { buildStsClientConfig } from './profile-resolver.js';
 
 /**
  * The region an ECS task container gets as `AWS_REGION`, in the order a
  * deployed task would see it (go-to-k/cdk-local#925): `--region`, the host's
  * `AWS_REGION`, `AWS_DEFAULT_REGION`, `--stack-region` or the stack's own
- * `env.region`, the loaded state record's region, then the region the SDK
+ * `env.region`, the loaded state record's region, a host's ambient default
+ * (`ambient-default-region.ts`, go-to-k/cdk-local#963), then the region the SDK
  * resolves for the profile (`--profile`, else `AWS_PROFILE` / `default` in
  * `~/.aws/config`). An env-agnostic stack's `unknown-region` placeholder is
  * skipped, and the result is folded to lower case, AWS's only spelling of a
@@ -21,10 +23,11 @@ export async function resolveContainerRegion(sources: {
 }): Promise<string | undefined> {
   const named = firstUsableRegion(
     sources.region,
-    process.env['AWS_REGION'],
+    namedEnvAwsRegion(),
     process.env['AWS_DEFAULT_REGION'],
     sources.stackRegion,
-    sources.stateRegion
+    sources.stateRegion,
+    ambientDefaultRegion()
   );
   if (named) return named.toLowerCase();
   const fromProfile = firstUsableRegion(await resolveSdkDefaultRegion(sources.profile));

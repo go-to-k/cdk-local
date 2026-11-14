@@ -1078,6 +1078,24 @@ export {
 export { resolveProfileCredentials, buildStsClientConfig } from './utils/profile-resolver.js';
 
 /**
+ * A host's ambient default region (go-to-k/cdk-local#963). A host that copies
+ * a DEFAULT region into `process.env.AWS_REGION` (cdkd's `--aws-emulator`
+ * copies the emulator run's configured region when the shell names none)
+ * calls `setAmbientDefaultRegion(region)` beside the copy. cdk-local's region
+ * chains then read `AWS_REGION` through `namedEnvAwsRegion()`, which skips
+ * the copy, and fall back to `ambientDefaultRegion()` only after the stack's
+ * `env.region` and the state record's region, so a region-pinned stack keeps
+ * its own region. The default counts only while `AWS_REGION` still holds it;
+ * `setAmbientDefaultRegion(undefined)` forgets it. Standalone `cdkl` never
+ * calls the setter, so its chains are unchanged.
+ */
+export {
+  setAmbientDefaultRegion,
+  namedEnvAwsRegion,
+  ambientDefaultRegion,
+} from './utils/ambient-default-region.js';
+
+/**
  * Proxy-aware AWS SDK client plumbing (issue #634). The AWS SDK v3 does not
  * read `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` on its own, so every SDK
  * client construction in cdk-local spreads `buildProxyClientConfig()`

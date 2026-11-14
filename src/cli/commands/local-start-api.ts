@@ -179,6 +179,7 @@ import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/si
 import { singleFlight } from '../../utils/single-flight.js';
 import { formatAuthority } from '../../utils/url-authority.js';
 import { resolveContainerRegion, setContainerRegion } from '../../utils/profile-region.js';
+import { namedEnvAwsRegion, regionOrAmbientDefault } from '../../utils/ambient-default-region.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -4099,7 +4100,10 @@ export async function resolvePseudoParametersForStartApi(
 ): Promise<PseudoParameters | undefined> {
   const logger = getLogger();
   const region =
-    options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stateRegion;
+    options.region ??
+    namedEnvAwsRegion() ??
+    process.env['AWS_DEFAULT_REGION'] ??
+    regionOrAmbientDefault(stateRegion);
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
