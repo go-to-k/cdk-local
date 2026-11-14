@@ -244,7 +244,7 @@ async function localInvokeCommand(
 
   /**
    * Unified cleanup for both the success / failure unwind path AND the
-   * SIGINT handler.
+   * SIGINT / SIGTERM handler.
    */
   const cleanup = singleFlight(
     async (): Promise<void> => {
