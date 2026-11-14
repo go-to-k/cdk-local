@@ -18,10 +18,12 @@ import {
   resolveWithSensitivity,
   resolveWithSensitivityAsync,
   type CrossStackResolver,
+  type StateSubstitutionResult,
   type SubstitutionContext,
 } from './state-resolver.js';
 import {
   DynamicReferenceResolver,
+  containsDynamicReference,
   crossStackDynamicReferenceHook,
 } from './dynamic-reference-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -163,6 +165,22 @@ export interface ResolvedEcsContainer {
   warnings: string[];
   /** An intrinsic-valued env var was dropped because no state source was given. */
   droppedEnvWithoutState?: boolean;
+  /**
+   * `Command` / `EntryPoint` / `HealthCheck.Command` elements that did not
+   * resolve to a string (issue #961). Each keeps its POSITION in the resolved
+   * array as an empty placeholder; {@link assertEcsTaskCommandsResolved}
+   * refuses the run before any container starts, because running without the
+   * element runs a different command than the deployed task. Absent when
+   * every element resolved.
+   */
+  unresolvedCommandElements?: UnresolvedCommandElement[];
+}
+
+/** One container argv element that did not resolve (issue #961). */
+export interface UnresolvedCommandElement {
+  field: 'Command' | 'EntryPoint' | 'HealthCheck.Command';
+  index: number;
+  reason: string;
 }
 
 export type ResolvedEcsImage =
@@ -361,6 +379,15 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
       if (need.pseudo) needsPseudoParameters = true;
       if (need.state) needsStateResources = true;
       if (containerHasIntrinsicEnvOrSecret(co)) needsEnvOrSecretSubstitution = true;
+      // An intrinsic argv element resolves against state too (issue #961).
+      const argv = containerArgvElements(co);
+      if (argv.some((v) => v !== null && typeof v === 'object')) {
+        needsEnvOrSecretSubstitution = true;
+      }
+      if (argv.some(isCrossStackIntrinsic)) {
+        needsEnvOrSecretSubstitution = true;
+        needsCrossStackResolver = true;
+      }
       if (containerHasCrossStackEnvOrSecret(co)) {
         needsEnvOrSecretSubstitution = true;
         needsCrossStackResolver = true;
@@ -424,6 +451,22 @@ function containerHasCrossStackEnvOrSecret(c: Record<string, unknown>): boolean 
     }
   }
   return false;
+}
+
+/**
+ * Every element of a container's `Command` / `EntryPoint` /
+ * `HealthCheck.Command` (issue #961).
+ */
+function containerArgvElements(c: Record<string, unknown>): unknown[] {
+  const health = c['HealthCheck'];
+  const lists = [
+    c['Command'],
+    c['EntryPoint'],
+    health && typeof health === 'object'
+      ? (health as Record<string, unknown>)['Command']
+      : undefined,
+  ];
+  return lists.flatMap((l) => (Array.isArray(l) ? (l as unknown[]) : []));
 }
 
 function isCrossStackIntrinsic(value: unknown): boolean {
@@ -865,12 +908,21 @@ function parseContainerDefinition(
 
   const image = parseContainerImage(c['Image'], name, taskLogicalId, resources, stack, context);
 
-  const command = pickStringArray(c['Command']);
-  const entryPoint = pickStringArray(c['EntryPoint']);
+  // Mixed mode: this container's own exceptions pick its names (#905).
+  const containerContext = contextForContainer(context, name);
+  const subContext = buildSubstitutionContextFromImageContext(containerContext);
+
+  // An argv element that does not resolve is RECORDED, not dropped: dropping
+  // it ran a different command (`--bucket` with no value, issue #961). The
+  // CLI refuses the run via `assertEcsTaskCommandsResolved` once the
+  // cross-stack post-pass has had its chance at the element.
+  const unresolvedCommandElements: UnresolvedCommandElement[] = [];
+  const argv = (raw: unknown, field: UnresolvedCommandElement['field']): string[] | undefined =>
+    resolveArgvArray(raw, field, subContext, containerContext, unresolvedCommandElements);
+  const command = argv(c['Command'], 'Command');
+  const entryPoint = argv(c['EntryPoint'], 'EntryPoint');
   const workingDirectory = pickString(c['WorkingDirectory']);
 
-  // Mixed mode: this container's own exceptions pick its names (#905).
-  const subContext = buildSubstitutionContextFromImageContext(contextForContainer(context, name));
   const environment: Record<string, string> = {};
   const sensitiveEnvKeys: string[] = [];
   const droppedEnvKeys: { key: string; reason: string }[] = [];
@@ -1010,7 +1062,7 @@ function parseContainerDefinition(
   let healthCheck: ResolvedEcsContainer['healthCheck'] | undefined;
   if (c['HealthCheck'] && typeof c['HealthCheck'] === 'object') {
     const h = c['HealthCheck'] as Record<string, unknown>;
-    const command2 = pickStringArray(h['Command']);
+    const command2 = argv(h['Command'], 'HealthCheck.Command');
     if (command2 && command2.length > 0) {
       healthCheck = { command: command2 };
       if (typeof h['Interval'] === 'number') healthCheck.interval = h['Interval'];
@@ -1068,7 +1120,221 @@ function parseContainerDefinition(
   if (user !== undefined) out.user = user;
   if (privileged !== undefined) out.privileged = privileged;
   if (readonlyRootFilesystem !== undefined) out.readonlyRootFilesystem = readonlyRootFilesystem;
+  if (unresolvedCommandElements.length > 0) {
+    out.unresolvedCommandElements = unresolvedCommandElements;
+  }
   return out;
+}
+
+/**
+ * Resolve a container argv array (`Command` / `EntryPoint` /
+ * `HealthCheck.Command`). ECS resolves every element at deploy time, so an
+ * intrinsic element is substituted against state as `Environment` is
+ * (issue #961). One that cannot be resolved keeps its POSITION as an empty
+ * placeholder and is recorded in `unresolved`; the run is refused before any
+ * container starts, so the placeholder never reaches docker.
+ */
+function resolveArgvArray(
+  raw: unknown,
+  field: UnresolvedCommandElement['field'],
+  subContext: SubstitutionContext | undefined,
+  context: EcsImageResolutionContext | undefined,
+  unresolved: UnresolvedCommandElement[]
+): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.map((element: unknown, index) => {
+    if (typeof element === 'string') return element;
+    if (typeof element === 'number' || typeof element === 'boolean') return String(element);
+    if (!element || typeof element !== 'object' || Array.isArray(element)) {
+      unresolved.push({ field, index, reason: 'not a string or an intrinsic' });
+      return '';
+    }
+    if (isCrossStackIntrinsic(element)) {
+      // The sync substitution cannot answer a cross-stack reference; the
+      // async post-pass (`applyCrossStackResolverToTask`) resolves it, or
+      // replaces this reason with its own.
+      unresolved.push({ field, index, reason: CROSS_STACK_ARGV_REASON });
+      return '';
+    }
+    if (!subContext) {
+      unresolved.push({
+        field,
+        index,
+        reason: `intrinsic-valued and no deployed state was loaded: ${formatStateRemedy(context)}`,
+      });
+      return '';
+    }
+    const secret = secretAttributeRead(element, subContext.resources);
+    if (secret !== undefined) {
+      unresolved.push({ field, index, reason: secret });
+      return '';
+    }
+    const { result: sub, consumedSensitive } = resolveWithSensitivity(element, subContext);
+    const arg = argvValue(sub, consumedSensitive);
+    if ('value' in arg) return arg.value;
+    unresolved.push({ field, index, reason: arg.reason });
+    return '';
+  });
+}
+
+/**
+ * The value cdkd-shaped state records in place of a `NoEcho` custom
+ * resource's attribute. Serving it would run the command with `***` as an
+ * argument.
+ */
+const STATE_SECRET_MASK = '***';
+
+/**
+ * Attribute names that look credential-bearing, minus the ones that name an
+ * identifier of the secret rather than the secret (`SecretArn`, `SecretId`,
+ * `SecretName`, ...).
+ */
+const SECRET_ATTRIBUTE_NAME = /secret|password|credential/i;
+const NON_SECRET_ATTRIBUTE_SUFFIX = /(arn|id|name|url|alias|status)$/i;
+
+/**
+ * Attributes whose VALUE is a secret although their name does not look like
+ * one, keyed by resource type and read by own key.
+ */
+const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
+  ['AWS::AppSync::ApiKey', ['ApiKey']],
+  ['AWS::EC2::IpamExternalResourceVerificationToken', ['TokenValue']],
+  ['AWS::IVS::StreamKey', ['Value']],
+]);
+
+/**
+ * Why an argv element must not be resolved because it reads a SECRET from
+ * state, or `undefined` when it reads none. State records some secrets in
+ * plaintext (`AWS::IAM::AccessKey`'s `SecretAccessKey`, an AppSync API key)
+ * and a `NoEcho` custom resource's attribute as the mask; an argv element
+ * lands on the `docker run` command line, positional and unredacted, so
+ * either one is refused rather than served (issue #961).
+ */
+function secretAttributeRead(
+  element: unknown,
+  stateResources: SubstitutionContext['resources']
+): string | undefined {
+  for (const [logicalId, attribute] of getAttReads(element)) {
+    const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
+    const recorded = record?.attributes;
+    const stored = recorded && Object.hasOwn(recorded, attribute) ? recorded[attribute] : undefined;
+    const typed = record ? SECRET_VALUED_ATTRIBUTES.get(record.resourceType) : undefined;
+    if (
+      (SECRET_ATTRIBUTE_NAME.test(attribute) && !NON_SECRET_ATTRIBUTE_SUFFIX.test(attribute)) ||
+      typed?.includes(attribute) === true ||
+      stored === STATE_SECRET_MASK
+    ) {
+      return (
+        `reads the secret attribute ${displayIdent(logicalId)}.${displayIdent(attribute)}, which ` +
+        `${getEmbedConfig().binaryName} will not put on the docker run command line; ` +
+        'pass the value through Environment or Secrets instead'
+      );
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Every `[logicalId, attribute]` an intrinsic reads through `Fn::GetAtt`
+ * (array or dotted-string form) or a `${LogicalId.Attribute}` placeholder of
+ * `Fn::Sub`, at any depth.
+ */
+function getAttReads(node: unknown, out: [string, string][] = []): [string, string][] {
+  if (node === null || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const item of node) getAttReads(item, out);
+    return out;
+  }
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (key === 'Fn::GetAtt') {
+      if (Array.isArray(value) && typeof value[0] === 'string' && typeof value[1] === 'string') {
+        out.push([value[0], value[1]]);
+      } else if (typeof value === 'string' && value.includes('.')) {
+        const dot = value.indexOf('.');
+        out.push([value.slice(0, dot), value.slice(dot + 1)]);
+      }
+    } else if (key === 'Fn::Sub') {
+      const template = Array.isArray(value) ? value[0] : value;
+      if (typeof template === 'string') {
+        for (const m of template.matchAll(/\$\{([^}!][^}]*)\}/g)) {
+          const ref = m[1]!.trim();
+          const dot = ref.indexOf('.');
+          if (dot > 0 && !ref.startsWith('AWS::')) {
+            out.push([ref.slice(0, dot), ref.slice(dot + 1)]);
+          }
+        }
+      }
+    }
+    getAttReads(value, out);
+  }
+  return out;
+}
+
+const CROSS_STACK_ARGV_REASON =
+  'a cross-stack reference (Fn::ImportValue / Fn::GetStackOutput): it resolves only from a state source ' +
+  'with the producer stack deployed';
+
+/**
+ * The argv string for a substitution result, or why it cannot be one. A
+ * value built from a SecureString parameter, or one carrying a
+ * `{{resolve:...}}` dynamic reference, is refused: an argv element lands on
+ * the `docker run` command line, where any local process can read it, and
+ * passing the token instead would run a different command (issue #961).
+ */
+function argvValue(
+  sub: StateSubstitutionResult,
+  consumedSensitive: boolean
+): { value: string } | { reason: string } {
+  if (sub.kind !== 'literal') return { reason: sub.reason };
+  if (consumedSensitive) {
+    return {
+      reason:
+        'resolved from a SecureString parameter, which would put the secret on the docker run argv; ' +
+        'move the value into an Environment variable or a Secrets entry',
+    };
+  }
+  const value = sub.value;
+  if (typeof value === 'number' || typeof value === 'boolean') return { value: String(value) };
+  if (containsDynamicReference(value)) {
+    return {
+      reason:
+        'resolved to a CloudFormation dynamic reference ({{resolve:...}}), which is resolved only in Environment, ' +
+        'because resolving one here would put the secret on the docker run argv; ' +
+        'move the value into an Environment variable or a Secrets entry',
+    };
+  }
+  return { value };
+}
+
+/**
+ * Refuse the run when any container argv element (`Command` / `EntryPoint` /
+ * `HealthCheck.Command`) is still unresolved after the sync pass and the
+ * cross-stack post-pass: running without it runs a different command than
+ * the deployed task (issue #961). Every element of every container is named,
+ * so one run reports them all.
+ *
+ * Host-side use case: a host that resolves a task / service itself and runs
+ * it through `runEcsTask` calls this before any credential or container work;
+ * the runner also refuses such a task before it touches docker.
+ */
+export function assertEcsTaskCommandsResolved(
+  task: Pick<ResolvedEcsTask, 'containers' | 'taskDefinitionLogicalId'>
+): void {
+  const lines: string[] = [];
+  for (const container of task.containers) {
+    for (const u of container.unresolvedCommandElements ?? []) {
+      lines.push(
+        `  - Container ${displayIdent(container.name)} ${u.field}[${u.index}]: ${u.reason}`
+      );
+    }
+  }
+  if (lines.length === 0) return;
+  throw new EcsTaskResolutionError(
+    `Task ${displayIdent(task.taskDefinitionLogicalId)} has container command elements ` +
+      `${getEmbedConfig().binaryName} could not resolve:\n${lines.join('\n')}\n` +
+      'Refusing to run the task with these arguments missing, since that runs a different command ' +
+      'than the deployed task.'
+  );
 }
 
 /**
@@ -1817,6 +2083,31 @@ export async function applyCrossStackValuesToTask(
   }
 }
 
+/** The resolved argv array an unresolved element's placeholder lives in. */
+function argvTarget(
+  container: ResolvedEcsContainer,
+  field: UnresolvedCommandElement['field']
+): string[] | undefined {
+  if (field === 'Command') return container.command;
+  if (field === 'EntryPoint') return container.entryPoint;
+  return container.healthCheck?.command;
+}
+
+/** The template's raw argv array for `field`. */
+function rawArgv(
+  c: Record<string, unknown>,
+  field: UnresolvedCommandElement['field']
+): unknown[] | undefined {
+  let raw: unknown;
+  if (field === 'Command') raw = c['Command'];
+  else if (field === 'EntryPoint') raw = c['EntryPoint'];
+  else {
+    const h = c['HealthCheck'];
+    raw = h && typeof h === 'object' ? (h as Record<string, unknown>)['Command'] : undefined;
+  }
+  return Array.isArray(raw) ? (raw as unknown[]) : undefined;
+}
+
 /** The state fields one container resolves against in mixed mode (#905). */
 export interface ContainerSubstitutionState {
   resources: SubstitutionContext['resources'];
@@ -1957,6 +2248,40 @@ export async function applyCrossStackResolverToTask(
           resolvedSecretNames.add(sName);
         }
       }
+    }
+
+    // Command / EntryPoint / HealthCheck.Command elements the sync pass left
+    // unresolved (issue #961). No dynamic-reference hook, as for Secrets: a
+    // plaintext must not land on the `docker run` argv, so an element
+    // resolving to a `{{resolve:...}}` token stays unresolved.
+    if (container.unresolvedCommandElements?.length) {
+      const argvContext = ownState ? withContainerState(secretContext, ownState) : secretContext;
+      const remaining: UnresolvedCommandElement[] = [];
+      for (const u of container.unresolvedCommandElements) {
+        const target = argvTarget(container, u.field);
+        const rawElement = rawArgv(c, u.field)?.[u.index];
+        if (!target || !isCrossStackIntrinsic(rawElement)) {
+          remaining.push(u);
+          continue;
+        }
+        const secret = secretAttributeRead(rawElement, argvContext.resources);
+        if (secret !== undefined) {
+          remaining.push({ ...u, reason: secret });
+          continue;
+        }
+        const { result: sub, consumedSensitive } = await resolveWithSensitivityAsync(
+          rawElement,
+          argvContext
+        );
+        const arg = argvValue(sub, consumedSensitive);
+        if ('value' in arg) {
+          target[u.index] = arg.value;
+          continue;
+        }
+        remaining.push({ ...u, reason: arg.reason });
+      }
+      if (remaining.length > 0) container.unresolvedCommandElements = remaining;
+      else delete container.unresolvedCommandElements;
     }
 
     if (resolvedEnvKeys.size > 0 || resolvedSecretNames.size > 0) {

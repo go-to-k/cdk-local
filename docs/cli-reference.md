@@ -1589,6 +1589,20 @@ surfaces on the task's warnings line — the run-task invocation never
 aborts. State-load failures (no record, ambiguity, region resolution
 error) also degrade to warn-and-fall-back rather than hard-fail.
 
+Container `Command` / `EntryPoint` / `HealthCheck.Command` elements
+(`command: ['--bucket', bucket.bucketName]`) resolve the same way, in
+place. They are NOT best-effort: an element that cannot be resolved (no
+state source, a missing record, a cross-stack producer that is not
+deployed) stops `run-task` / `start-service` / `start-alb` before any
+container starts, naming the container, the field and the element's
+index, because running without it runs a different command than the
+deployed task. An element that reads a secret (a `Fn::GetAtt` on a
+credential-bearing attribute such as `AWS::IAM::AccessKey.SecretAccessKey`
+or `AWS::AppSync::ApiKey.ApiKey`, an attribute state records masked, a
+`SecureString` parameter, or a value that resolves to a `{{resolve:...}}`
+reference) is refused too, since it would land on the `docker run`
+command line: pass it through `Environment` or `Secrets` instead.
+
 Resolved `Secrets[].ValueFrom` strings then flow into the standard
 SecretsManager / SSM resolver below.
 

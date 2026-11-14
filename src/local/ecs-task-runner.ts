@@ -51,6 +51,7 @@ import {
   resolveDynamicReferencesInEnv,
 } from './dynamic-reference-resolver.js';
 import {
+  assertEcsTaskCommandsResolved,
   checkVolumeHostPath,
   type ResolvedEcsContainer,
   type ResolvedEcsImage,
@@ -562,6 +563,11 @@ export async function runEcsTask(
       `Task ${displayIdent(task.taskDefinitionLogicalId)} has no containers — nothing to run.`
     );
   }
+
+  // Issue #961 — an argv element that did not resolve sits in the array as an
+  // empty placeholder. The CLI paths refuse it right after resolution; this
+  // covers a host that calls the runner directly.
+  assertEcsTaskCommandsResolved(task);
 
   for (const w of task.warnings) logger.warn(w);
 

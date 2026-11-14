@@ -50,6 +50,7 @@ import {
 } from './local-profile-credentials-file.js';
 import {
   applyCrossStackValuesToTask,
+  assertEcsTaskCommandsResolved,
   assertEcsTaskImagesResolvable,
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
@@ -1949,6 +1950,10 @@ async function resolveServiceAndRunnerOpts(
         'Pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to substitute them against deployed state.'
     );
   }
+  // Issue #961 — a Command / EntryPoint / HealthCheck.Command element that did
+  // not resolve would run a different command: refuse before any credential,
+  // network or replica work.
+  assertEcsTaskCommandsResolved(service.task);
 
   // Per-service task-role credentials.
   // Issue #249 / C6 — collapse `--assume-task-role` (legacy) and

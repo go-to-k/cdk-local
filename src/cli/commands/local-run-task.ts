@@ -39,6 +39,7 @@ import {
 } from './local-profile-credentials-file.js';
 import {
   applyCrossStackValuesToTask,
+  assertEcsTaskCommandsResolved,
   assertEcsTaskImagesResolvable,
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
@@ -366,6 +367,10 @@ async function localRunTaskCommand(
           'Pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to substitute them against deployed state.'
       );
     }
+    // Issue #961 — a Command / EntryPoint / HealthCheck.Command element that
+    // did not resolve would run a different command: refuse before any
+    // credential, network or container work.
+    assertEcsTaskCommandsResolved(task);
 
     // Tear the task containers + network down on SIGINT (Ctrl-C) AND SIGTERM
     // (issue #366 — studio's serve-manager SIGTERMs a task-def Run to stop it;

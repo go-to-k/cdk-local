@@ -367,6 +367,16 @@ export { EcsTaskResolutionError } from './local/ecs-task-resolver.js';
 export { assertEcsTaskImagesResolvable } from './local/ecs-task-resolver.js';
 
 /**
+ * Issue #961 — refuse a resolved ECS task whose container `Command` /
+ * `EntryPoint` / `HealthCheck.Command` still carries an element that did not
+ * resolve against deployed state (`ResolvedEcsContainer.unresolvedCommandElements`).
+ * A host that resolves a task / service itself calls this after its
+ * cross-stack post-pass, before any credential or container work; the runner
+ * also refuses such a task before it touches docker.
+ */
+export { assertEcsTaskCommandsResolved } from './local/ecs-task-resolver.js';
+
+/**
  * `invoke-agentcore` Bedrock AgentCore Runtime resolution + protocol clients.
  * `resolveAgentCoreTarget` maps a target argument to a runnable container
  * runtime; `waitForAgentCorePing` / `invokeAgentCore` speak the HTTP
