@@ -1361,7 +1361,9 @@ function argvValue(
   sub: StateSubstitutionResult,
   consumedSensitive: boolean
 ): { value: string } | { reason: string } {
-  if (sub.kind !== 'literal') return { reason: sub.reason };
+  // Sensitivity first: an unresolved reason can quote a value built from a
+  // SecureString (an export name `x-${SecureParam}` that no stack exports),
+  // and the reason is printed when the run is refused.
   if (consumedSensitive) {
     return {
       reason:
@@ -1369,6 +1371,7 @@ function argvValue(
         'move the value into an Environment variable or a Secrets entry',
     };
   }
+  if (sub.kind !== 'literal') return { reason: sub.reason };
   const value = sub.value;
   if (typeof value === 'number' || typeof value === 'boolean') return { value: String(value) };
   if (value === STATE_SECRET_MASK) {

@@ -165,6 +165,41 @@ describe('ECS container argv intrinsics (issue #961)', () => {
     expect(container.unresolvedCommandElements?.[0]?.reason).toContain('SecureString');
   });
 
+  // The unresolved reason of a cross-stack name built from a SecureString
+  // quoted the name, so the refusal printed the plaintext.
+  it('post-pass: refuses an unresolved element built from a SecureString without quoting it', async () => {
+    const { task, container } = resolve(
+      {
+        Command: ['run', { 'Fn::ImportValue': { 'Fn::Sub': 'x-${SsmSecret}' } }],
+        Environment: [{ Name: 'E', Value: { 'Fn::ImportValue': { 'Fn::Sub': 'x-${SsmSecret}' } } }],
+      },
+      stateContext({
+        stateParameters: { SsmSecret: 's3cr3t' },
+        stateSensitiveParameters: ['SsmSecret'],
+      })
+    );
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      parameters: { SsmSecret: 's3cr3t' },
+      sensitiveParameters: new Set(['SsmSecret']),
+      crossStackResolver: {
+        resolveImport: async () => undefined,
+        resolveGetStackOutput: async () => undefined,
+      },
+    });
+    expect(container.command).toEqual(['run', '']);
+    expect(container.unresolvedCommandElements?.[0]?.reason).toContain('SecureString');
+    let refusal = '';
+    try {
+      assertEcsTaskCommandsResolved(task);
+    } catch (e) {
+      refusal = (e as Error).message;
+    }
+    expect(refusal).toContain('Command[1]');
+    expect(refusal).not.toContain('s3cr3t');
+    expect(JSON.stringify(task.warnings)).not.toContain('s3cr3t');
+  });
+
   it('refuses an element that resolves to a dynamic reference', () => {
     const { container } = resolve(
       { Command: ['--token', { Ref: 'Dyn' }] },
