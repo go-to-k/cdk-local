@@ -375,6 +375,8 @@ describe('argv refusal wiring in run-task / start-service (issue #961)', () => {
       expect(line).toBeDefined();
       return line!.length - line!.trimStart().length;
     };
+    // The call is a statement of its own, not guarded on the same line.
+    expect(source.split('\n').some((l) => l.trim() === call)).toBe(true);
     expect(indentOf(call)).toBe(indentOf('if (stateProvider && taskNeeds.needsCrossStackResolver)'));
   });
 });
