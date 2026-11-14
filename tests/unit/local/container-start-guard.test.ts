@@ -85,4 +85,37 @@ describe('createContainerStartGuard', () => {
     await expect(guard.run(start, 'n')).rejects.toMatchObject({ code: 'TEST_CANCELLED' });
     expect(start).not.toHaveBeenCalled();
   });
+
+  // go-to-k/cdk-local#973: a container pool has several runs in flight at once.
+  it('stopAll() waits for EVERY run in flight: ids of the ones that succeeded, the failed one removed by name', async () => {
+    const { guard, removed } = setup();
+    let finishA!: (id: string) => void;
+    let failB!: (e: Error) => void;
+    let finishC!: (id: string) => void;
+    const a = guard.run(() => new Promise<string>((r) => (finishA = r)), 'cdkl-a');
+    const b = guard.run(() => new Promise<string>((_r, j) => (failB = j)), 'cdkl-b');
+    const c = guard.run(() => new Promise<string>((r) => (finishC = r)), 'cdkl-c');
+    const stopped = guard.stopAll();
+    finishC('cid-c');
+    failB(new Error('docker run failed: killed'));
+    finishA('cid-a');
+    await expect(stopped).resolves.toEqual(['cid-a', 'cid-c']);
+    expect(removed).toEqual(['cdkl-b']);
+    for (const run of [a, c]) await expect(run).rejects.toMatchObject({ code: 'TEST_CANCELLED' });
+    await expect(b).rejects.toThrow('killed');
+    const late = vi.fn(async () => 'cid-d');
+    await expect(guard.run(late, 'cdkl-d')).rejects.toMatchObject({ code: 'TEST_CANCELLED' });
+    expect(late).not.toHaveBeenCalled();
+  });
+
+  // #973: the `docker` child can die from the terminal's ^C BEFORE an owner's
+  // cleanup reaches `stop()` (a pool is disposed only after its server closed).
+  it('a run that fails with no shutdown begun is removed by its name before it rejects', async () => {
+    const { guard, removed } = setup();
+    await expect(
+      guard.run(() => Promise.reject(new Error('docker run failed: killed')), 'cdkl-x-1-abc')
+    ).rejects.toThrow('killed');
+    expect(removed).toEqual(['cdkl-x-1-abc']);
+    await expect(guard.stopAll()).resolves.toEqual([]);
+  });
 });

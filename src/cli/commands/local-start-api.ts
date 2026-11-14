@@ -45,7 +45,7 @@ import {
   describeRejectedRoleArn,
   isIamRoleArn,
 } from '../../utils/role-arn.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { isInteractive, pickManyTargets } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
@@ -406,6 +406,42 @@ async function localStartApiCommand(
   options: LocalStartApiOptions,
   extraStateProviders: ExtraStateProviders | undefined
 ): Promise<void> {
+  // #973: the shutdown handlers are armed before synth, so a boot step can
+  // fail while a signal's cleanup is still running (a ^C reaches the synth /
+  // build child too, and a disposed pool refuses the `--warm` pre-warm). Join
+  // that cleanup before the error exits the process, or the exit cuts it
+  // short; a boot failure with no signal cleans up too.
+  let boot:
+    | { teardown: () => Promise<void>; detachSignals: () => void; signalled: () => boolean }
+    | undefined;
+  try {
+    await serveStartApi(targets, options, extraStateProviders, (b) => {
+      boot = b;
+    });
+  } catch (err) {
+    if (boot) {
+      await boot.teardown().catch(() => undefined);
+      // A signal's shutdown owns the exit (130 / 143): never race it with
+      // this error's exit 1.
+      if (boot.signalled()) await new Promise<never>(() => undefined);
+      // An embedding host keeps running after a failed boot: leave no
+      // listener behind (the CLI exits anyway).
+      boot.detachSignals();
+    }
+    throw err;
+  }
+}
+
+async function serveStartApi(
+  targets: string[],
+  options: LocalStartApiOptions,
+  extraStateProviders: ExtraStateProviders | undefined,
+  registerBoot: (boot: {
+    teardown: () => Promise<void>;
+    detachSignals: () => void;
+    signalled: () => boolean;
+  }) => void
+): Promise<void> {
   const logger = getLogger();
   if (options.verbose) {
     logger.setLevel('debug');
@@ -533,6 +569,191 @@ async function localStartApiCommand(
   // file mid-flight would race with running containers' SDK reads).
   // Disposed in the cleanup chain. Undefined when `--profile` is unset.
   let profileCredsFile: ProfileCredentialsFile | undefined;
+
+  // #973: everything the shutdown tears down is declared here, and the
+  // SIGINT / SIGTERM handler is armed below, BEFORE the first synth and the
+  // first container start (`--warm` pre-warms during boot), so a signal at any
+  // point of the boot removes what was already started instead of orphaning it.
+  // A signal before anything exists still exits 130 / 143.
+  const servers: BootedApiServer[] = [];
+  const wsServers: BootedWebSocketServer[] = [];
+  // Every pool the boot builds, from the moment it exists (`servers` /
+  // `wsServers` only learn a pool once its server is up).
+  const bootPools: ContainerPool[] = [];
+  let watcher: FileWatcher | undefined;
+  // Serializes + coalesces reloads; the shutdown cancels the pending one and
+  // waits for the in-flight one before disposing the pools (#882).
+  let reloadQueue: ReloadQueue | undefined;
+  let shuttingDown = false;
+  let signalled = false;
+
+  // Graceful shutdown: SIGINT / SIGTERM / uncaughtException /
+  // unhandledRejection all run the same dispose path. A second signal
+  // keeps the dispose running (#882 — it used to force-exit and leave
+  // containers behind); a third bypasses it so the user can escape a
+  // hung Docker daemon.
+  //
+  // Single-flight contract (closes the SIGINT-during-SIGTERM /
+  // double-signal race): the actual cleanup body is wrapped in
+  // `singleFlight(...)` so a second signal that lands while the first
+  // shutdown is still draining `pool.dispose()` awaits the same
+  // promise instead of starting a parallel run against the shared
+  // `servers` / `inlineTmpDirs` / `layerTmpDirs` cells (which would
+  // otherwise double-`server.close()` and corrupt the
+  // mid-iteration tmpdir set). The first signal's `signal` + `exitCode`
+  // win — subsequent signals' arguments are intentionally dropped.
+  // The force-exit escape is kept in `createShutdownSignalHandler`, which
+  // counts signals separately from the in-flight cleanup.
+  const runCleanup = singleFlight(async (): Promise<void> => {
+    // #973: no pool may be built once the shutdown began (`buildPool`).
+    shuttingDown = true;
+    // #882: close the watcher, cancel the pending reload, and wait for the
+    // in-flight one BEFORE disposing the pools — a reload that swapped in a
+    // fresh pool after the dispose would leave its containers behind.
+    await stopWatchReloads({
+      watcher,
+      queue: reloadQueue,
+      onWatcherCloseError: (err) =>
+        logger.warn(`watcher.close() failed: ${err instanceof Error ? err.message : String(err)}`),
+    });
+    // Close every server in parallel, then dispose every (possibly hot-
+    // reload-swapped) pool. Each pool's dispose() waits for in-flight
+    // requests to drain; running them in parallel is the right shape
+    // even for N servers because shutdown is signalled to all at once.
+    //
+    // WebSocket-server shutdown layers on top: each
+    // `AttachedWebSocketServer.close()` sends close-frame 1001 (going
+    // away) to every live socket BEFORE we kill the underlying http
+    // server, so the client sees a clean close instead of a
+    // mid-frame disconnect.
+    await Promise.allSettled(
+      wsServers.map(async (ws) => {
+        try {
+          await ws.attached.close();
+        } catch (err) {
+          logger.warn(
+            `WebSocket close() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
+    await Promise.allSettled(
+      servers.map(async ({ server, group }) => {
+        try {
+          await server.close();
+        } catch (err) {
+          logger.warn(
+            `server.close() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
+    await Promise.allSettled(
+      wsServers.map(async (ws) => {
+        try {
+          await ws.server.close();
+        } catch (err) {
+          logger.warn(
+            `WebSocket server.close() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
+    await Promise.allSettled(
+      servers.map(async ({ server, group }) => {
+        try {
+          await server.getServerState().pool.dispose();
+        } catch (err) {
+          logger.warn(
+            `pool.dispose() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
+    await Promise.allSettled(
+      wsServers.map(async (ws) => {
+        try {
+          await ws.server.getServerState().pool.dispose();
+        } catch (err) {
+          logger.warn(
+            `WebSocket pool.dispose() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      })
+    );
+    // #973: a pool the boot built but has not yet handed to a server — a
+    // `--warm` group still pre-warming, or a WebSocket pool before its server
+    // bound — is disposed here; one a server already holds was disposed above
+    // (`dispose()` is idempotent).
+    await Promise.allSettled(
+      bootPools.map(async (pool) => {
+        try {
+          await pool.dispose();
+        } catch (err) {
+          logger.warn(`pool.dispose() failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })
+    );
+    // Remove every tmpdir we materialized inline `Code.ZipFile` Lambdas
+    // into. Each is `mkdtempSync(...)` under the OS tmpdir, so the only
+    // owner of cleanup is this process. Best-effort: log + continue on
+    // any per-dir failure.
+    for (const dir of inlineTmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        logger.warn(
+          `Failed to remove inline-code tmpdir ${dir}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    for (const dir of layerTmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        logger.warn(
+          `Failed to remove merged-layers tmpdir ${dir}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    // Dispose the synthesized profile credentials file (one INI file under
+    // `/tmp/cdk-local-profile-creds-*/`). Leaving temp credential files on
+    // disk after process exit is a security smell; `dispose()` rm's the
+    // tempdir recursively + force, so re-entrant calls (signal-mid-finally
+    // race) are safe.
+    if (profileCredsFile) {
+      try {
+        await profileCredsFile.dispose();
+      } catch (err) {
+        logger.warn(
+          `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  });
+  const shutdown = createShutdownSignalHandler({
+    cleanup: async () => {
+      signalled = true;
+      await runCleanup();
+    },
+    stoppingMessage: (signal) => `Received ${signal}, shutting down...`,
+    forceExitHint: `Orphan containers may remain — run 'docker ps --filter name=${getEmbedConfig().resourceNamePrefix}-' and 'docker rm -f' to clean up.`,
+    info: (m) => logger.info(m),
+    warn: (m) => logger.warn(m),
+  });
+
+  const onSigint = (): void => shutdown('SIGINT');
+  const onSigterm = (): void => shutdown('SIGTERM');
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
+  registerBoot({
+    teardown: runCleanup,
+    detachSignals: () => {
+      process.off('SIGINT', onSigint);
+      process.off('SIGTERM', onSigterm);
+    },
+    signalled: () => signalled,
+  });
 
   // PR 8b: per-server-lifecycle caches. Constructed once at server
   // startup; persisted across hot reloads (PR 8c) so authorizer
@@ -933,6 +1154,14 @@ async function localStartApiCommand(
    * so the reload orchestrator can compute spec diffs.
    */
   const buildPool = (specs: Map<string, ContainerSpec>): ContainerPool => {
+    // #973: the shutdown has already looked for pools; one built now would
+    // never be disposed.
+    if (shuttingDown) {
+      throw new CdkLocalError(
+        'Shutting down: no container pool is built.',
+        'LOCAL_START_API_CANCELLED'
+      );
+    }
     const pool = createContainerPool(specs, {
       perLambdaConcurrency,
       skipPull: options.pull === false,
@@ -1017,11 +1246,11 @@ async function localStartApiCommand(
   // basePort+1, basePort+2, ... When basePort is 0 every server
   // auto-allocates. Auto-allocation is fine even across multiple
   // servers because the OS picks distinct ports.
-  const servers: BootedApiServer[] = [];
   let nextPort = basePort;
   for (const group of initialGroups) {
     const groupSpecs = filterSpecsForGroup(group, initialMaterial.specs);
     const groupPool = buildPool(groupSpecs);
+    bootPools.push(groupPool);
     const groupState: ServerState = {
       routes: group.routes,
       pool: groupPool,
@@ -1033,6 +1262,14 @@ async function localStartApiCommand(
       const handles = await Promise.allSettled(
         [...groupSpecs.keys()].map((id) => groupPool.acquire(id))
       );
+      // #973: a signal during the pre-warm disposed this pool; stop the boot
+      // here (no "Pre-warm failed" noise, no server bound after the cleanup).
+      if (shuttingDown) {
+        throw new CdkLocalError(
+          'Shutting down: the boot is not continued.',
+          'LOCAL_START_API_CANCELLED'
+        );
+      }
       for (const result of handles) {
         if (result.status === 'fulfilled') {
           groupPool.release(result.value);
@@ -1074,7 +1311,6 @@ async function localStartApiCommand(
   // pool are injected with `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI`
   // pointing at the same port so `apigatewaymanagementapi:PostToConnection`
   // from inside the handler lands on cdk-local's local endpoint.
-  const wsServers: BootedWebSocketServer[] = [];
   const initialWsApis = initialMaterial.webSocketApis ?? [];
   warnUnsupportedWebSocketApis(initialWsApis, logger);
 
@@ -1127,6 +1363,7 @@ async function localStartApiCommand(
       continue;
     }
     const wsPool = buildPool(wsSpecs);
+    bootPools.push(wsPool);
     const wsState: ServerState = {
       routes: [],
       pool: wsPool,
@@ -1284,10 +1521,6 @@ async function localStartApiCommand(
   // watcher event, then per-server filter the material + swap state.
   // Adding/removing an entire API across a reload is not supported —
   // the user is warned and the server set stays static until restart.
-  let watcher: FileWatcher | undefined;
-  // Serializes + coalesces reloads; the shutdown cancels the pending one and
-  // waits for the in-flight one before disposing the pools (#882).
-  let reloadQueue: ReloadQueue | undefined;
   if (options.watch) {
     // Watch the CDK app's source tree (the synth working directory, where
     // `cdk.json` lives) so editing handler / construct source re-synths
@@ -1326,149 +1559,6 @@ async function localStartApiCommand(
     );
   }
 
-  // Graceful shutdown: SIGINT / SIGTERM / uncaughtException /
-  // unhandledRejection all run the same dispose path. A second signal
-  // keeps the dispose running (#882 — it used to force-exit and leave
-  // containers behind); a third bypasses it so the user can escape a
-  // hung Docker daemon.
-  //
-  // Single-flight contract (closes the SIGINT-during-SIGTERM /
-  // double-signal race): the actual cleanup body is wrapped in
-  // `singleFlight(...)` so a second signal that lands while the first
-  // shutdown is still draining `pool.dispose()` awaits the same
-  // promise instead of starting a parallel run against the shared
-  // `servers` / `inlineTmpDirs` / `layerTmpDirs` cells (which would
-  // otherwise double-`server.close()` and corrupt the
-  // mid-iteration tmpdir set). The first signal's `signal` + `exitCode`
-  // win — subsequent signals' arguments are intentionally dropped.
-  // The force-exit escape is kept in `createShutdownSignalHandler`, which
-  // counts signals separately from the in-flight cleanup.
-  const runCleanup = singleFlight(async (): Promise<void> => {
-    // #882: close the watcher, cancel the pending reload, and wait for the
-    // in-flight one BEFORE disposing the pools — a reload that swapped in a
-    // fresh pool after the dispose would leave its containers behind.
-    await stopWatchReloads({
-      watcher,
-      queue: reloadQueue,
-      onWatcherCloseError: (err) =>
-        logger.warn(`watcher.close() failed: ${err instanceof Error ? err.message : String(err)}`),
-    });
-    // Close every server in parallel, then dispose every (possibly hot-
-    // reload-swapped) pool. Each pool's dispose() waits for in-flight
-    // requests to drain; running them in parallel is the right shape
-    // even for N servers because shutdown is signalled to all at once.
-    //
-    // WebSocket-server shutdown layers on top: each
-    // `AttachedWebSocketServer.close()` sends close-frame 1001 (going
-    // away) to every live socket BEFORE we kill the underlying http
-    // server, so the client sees a clean close instead of a
-    // mid-frame disconnect.
-    await Promise.allSettled(
-      wsServers.map(async (ws) => {
-        try {
-          await ws.attached.close();
-        } catch (err) {
-          logger.warn(
-            `WebSocket close() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      })
-    );
-    await Promise.allSettled(
-      servers.map(async ({ server, group }) => {
-        try {
-          await server.close();
-        } catch (err) {
-          logger.warn(
-            `server.close() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      })
-    );
-    await Promise.allSettled(
-      wsServers.map(async (ws) => {
-        try {
-          await ws.server.close();
-        } catch (err) {
-          logger.warn(
-            `WebSocket server.close() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      })
-    );
-    await Promise.allSettled(
-      servers.map(async ({ server, group }) => {
-        try {
-          await server.getServerState().pool.dispose();
-        } catch (err) {
-          logger.warn(
-            `pool.dispose() failed for ${group.displayName}: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      })
-    );
-    await Promise.allSettled(
-      wsServers.map(async (ws) => {
-        try {
-          await ws.server.getServerState().pool.dispose();
-        } catch (err) {
-          logger.warn(
-            `WebSocket pool.dispose() failed for ${ws.api.apiLogicalId}: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      })
-    );
-    // Remove every tmpdir we materialized inline `Code.ZipFile` Lambdas
-    // into. Each is `mkdtempSync(...)` under the OS tmpdir, so the only
-    // owner of cleanup is this process. Best-effort: log + continue on
-    // any per-dir failure.
-    for (const dir of inlineTmpDirs) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch (err) {
-        logger.warn(
-          `Failed to remove inline-code tmpdir ${dir}: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    }
-    for (const dir of layerTmpDirs) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch (err) {
-        logger.warn(
-          `Failed to remove merged-layers tmpdir ${dir}: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    }
-    // Dispose the synthesized profile credentials file (one INI file under
-    // `/tmp/cdk-local-profile-creds-*/`). Leaving temp credential files on
-    // disk after process exit is a security smell; `dispose()` rm's the
-    // tempdir recursively + force, so re-entrant calls (signal-mid-finally
-    // race) are safe.
-    if (profileCredsFile) {
-      try {
-        await profileCredsFile.dispose();
-      } catch (err) {
-        logger.warn(
-          `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    }
-  });
-  const shutdown = createShutdownSignalHandler({
-    cleanup: runCleanup,
-    stoppingMessage: (signal) => `Received ${signal}, shutting down...`,
-    forceExitHint: `Orphan containers may remain — run 'docker ps --filter name=${getEmbedConfig().resourceNamePrefix}-' and 'docker rm -f' to clean up.`,
-    info: (m) => logger.info(m),
-    warn: (m) => logger.warn(m),
-  });
-
-  process.on('SIGINT', () => {
-    shutdown('SIGINT');
-  });
-  process.on('SIGTERM', () => {
-    shutdown('SIGTERM');
-  });
   process.on('uncaughtException', (err) => {
     logger.error(
       `Uncaught exception: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`

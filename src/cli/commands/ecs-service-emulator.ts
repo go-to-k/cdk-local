@@ -592,9 +592,22 @@ export async function runEcsServiceEmulator(
   // races shutdown and a busy watched tree cannot keep the shutdown waiting.
   let watcher: FileWatcher | undefined;
   let reloadQueue: ReloadQueue | undefined;
+  // #973: the shared network (and its metadata sidecar) while
+  // `createSharedSvcNetwork` is in flight, so a signal then removes it too.
+  let sharedNetworkPending: Promise<TaskNetwork | undefined> | undefined;
+  // A signal's shutdown owns the exit (130 / 143); see the `finally` below.
+  let signalled = false;
+  // #973: set synchronously when the cleanup begins. The boot carries on
+  // beside a signal's cleanup, so it checks this before each step that would
+  // start something the cleanup may already have looked past.
+  let stopping = false;
+  const throwIfStopping = (): void => {
+    if (stopping) throw new LocalStartServiceError('Shutting down: the boot is not continued.');
+  };
 
   const cleanup = singleFlight(
     async (): Promise<void> => {
+      stopping = true;
       // Phase 1 of issue #214 / #882 — close the watcher so no new reload is
       // queued after shutdown started, cancel the pending reload (pre-#882 the
       // cleanup awaited every queued firing, so a busy watched tree kept the
@@ -657,6 +670,8 @@ export async function runEcsServiceEmulator(
         )
       );
       frontDoorLambdaRunners = [];
+      sharedNetwork ??= await sharedNetworkPending;
+      sharedNetworkPending = undefined;
       if (profileCredsFile) {
         try {
           await profileCredsFile.dispose();
@@ -685,6 +700,28 @@ export async function runEcsServiceEmulator(
   );
 
   try {
+    // #973: armed before synth and the first container (the shared network's
+    // sidecar, the ALB Lambda targets), so a signal at any point of the boot
+    // removes what was already started; one before anything exists still
+    // exits 130 / 143. #882: a second ^C no longer skips the cleanup (it used to force-exit and
+    // leave the replicas, the sidecar and the network behind); a third does.
+    const onSignal = createShutdownSignalHandler({
+      cleanup: async () => {
+        signalled = true;
+        await cleanup();
+      },
+      stoppingMessage: () => 'Stopping service(s)...',
+      forceExitHint:
+        `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' and ` +
+        `'docker network ls --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
+      info: (m) => logger.info(m),
+      warn: (m) => logger.warn(m),
+    });
+    sigintHandler = (): void => onSignal('SIGINT');
+    sigtermHandler = (): void => onSignal('SIGTERM');
+    process.on('SIGINT', sigintHandler);
+    process.on('SIGTERM', sigtermHandler);
+
     await activateWorkloadAwsWiring(options);
     warnIfEmulateRoleViaUnused(options.emulateRoleVia, {
       roleFlag: '--assume-role',
@@ -762,18 +799,22 @@ export async function runEcsServiceEmulator(
       ? undefined
       : await resolveSharedSidecarCredentials(options);
     try {
-      sharedNetwork = await createSharedSvcNetwork({
+      const creating = createSharedSvcNetwork({
         prefix: options.cluster,
         skipPull,
         cluster: options.cluster,
         ...(taskRoleMode && { taskRole: true }),
         ...(sidecarCredentials !== undefined && { credentials: sidecarCredentials }),
       });
+      sharedNetworkPending = creating.catch(() => undefined);
+      sharedNetwork = await creating;
+      sharedNetworkPending = undefined;
     } catch (err) {
       throw new LocalStartServiceError(
         `Failed to create shared service network: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+    throwIfStopping();
     if (options.profile && sidecarCredentials) {
       profileCredsFile = await writeProfileCredentialsFile(options.profile, sidecarCredentials);
     }
@@ -788,27 +829,17 @@ export async function runEcsServiceEmulator(
     // bind failure should surface before any docker budget is spent. No-op when
     // the strategy returned no plan (start-service / pure compute).
     if (frontDoor && frontDoor.listeners.length > 0) {
-      const built = await buildFrontDoor(frontDoor, options, logger, extraStateProviders);
+      // #973: each Lambda-target runner joins the cleanup as soon as it
+      // exists, so a signal while `buildFrontDoor` boots them stops them too.
+      const built = await buildFrontDoor(frontDoor, options, logger, extraStateProviders, (r) => {
+        frontDoorLambdaRunners.push(r);
+        // The cleanup may already be past its runner step: stopped now, the
+        // runner refuses its `start()`.
+        if (stopping) void r.stop().catch(() => undefined);
+      });
       frontDoorServers = built.servers;
       frontDoorByService = built.frontDoorByService;
-      frontDoorLambdaRunners = built.lambdaRunners;
     }
-
-    // #882: a second ^C no longer skips the cleanup (it used to force-exit and
-    // leave the replicas, the sidecar and the network behind); a third does.
-    const onSignal = createShutdownSignalHandler({
-      cleanup,
-      stoppingMessage: () => 'Stopping service(s)...',
-      forceExitHint:
-        `Run 'docker ps -a --filter name=${getEmbedConfig().resourceNamePrefix}-' and ` +
-        `'docker network ls --filter name=${getEmbedConfig().resourceNamePrefix}-' to find what is left.`,
-      info: (m) => logger.info(m),
-      warn: (m) => logger.warn(m),
-    });
-    sigintHandler = (): void => onSignal('SIGINT');
-    sigtermHandler = (): void => onSignal('SIGTERM');
-    process.on('SIGINT', sigintHandler);
-    process.on('SIGTERM', sigtermHandler);
 
     // Issue #238 — resolve `--image-override` (+ the boot prompt for
     // any still-uncovered pinned target in a TTY) BEFORE the boot loop
@@ -838,6 +869,7 @@ export async function runEcsServiceEmulator(
     // Boot every target SEQUENTIALLY so a first-target failure surfaces before
     // we burn docker budget on the rest.
     for (const pt of perTarget) {
+      throwIfStopping();
       pt.controller = await bootOneTarget(
         pt.boot,
         pt.runState,
@@ -1032,6 +1064,10 @@ export async function runEcsServiceEmulator(
     // so a ^C during a non-signal exit's cleanup joins it (single-flight)
     // instead of killing the process with the default handler mid-teardown.
     await cleanup();
+    // #973: a boot step failing because a signal stopped it (a ^C reaches the
+    // synth / build child too) must not race the signal's exit (130 / 143)
+    // with this error's exit 1, nor drop the second / third-signal policy.
+    if (signalled) await new Promise<never>(() => undefined);
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
   }
@@ -2193,7 +2229,11 @@ export async function buildFrontDoor(
   // emulator's providers; it defaults so ECS-routing unit tests (which carry
   // no Lambda targets) can omit it — with no Lambda targets the resolution is
   // never invoked, so the omission never masks a missing-state bug.
-  extraStateProviders?: ExtraStateProviders
+  extraStateProviders?: ExtraStateProviders,
+  // Called with each Lambda-target runner as soon as it is created, before
+  // its `start()` (#973): the caller's signal cleanup then stops a runner
+  // whose boot is still in flight.
+  onLambdaRunner?: (runner: FrontDoorLambdaRunner) => void
 ): Promise<{
   servers: StartedFrontDoorServer[];
   frontDoorByService: Map<string, FrontDoorServicePools>;
@@ -2238,6 +2278,7 @@ export async function buildFrontDoor(
             }),
         });
         lambdaRegistry.set(t.lambda.logicalId, runner);
+        onLambdaRunner?.(runner);
       }
       const boundRunner = runner;
       return {

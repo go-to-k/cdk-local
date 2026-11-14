@@ -5,6 +5,7 @@ import type { ResolvedImageLambda, ResolvedZipLambda } from './lambda-resolver.j
 import { waitForRieReady } from './rie-client.js';
 import { resolveRuntimeCodeMountPath, resolveRuntimeImage } from './runtime-image.js';
 import { getEmbedConfig } from './embed-config.js';
+import { createContainerStartGuard } from './container-start-guard.js';
 import { displayIdent } from '../utils/ident-display.js';
 
 /**
@@ -306,6 +307,17 @@ export function createContainerPool(
    */
   const inFlightStarts = new Set<Promise<ContainerHandle>>();
 
+  /**
+   * The `docker run`s in flight (go-to-k/cdk-local#973). `inFlightStarts`
+   * only learns a container once its `startOne` resolves, which a run the
+   * shutdown interrupted never does: a run still in flight when `dispose()`
+   * begins is waited for and its container removed, by id, or by its name
+   * when the run failed (a terminal ^C reaches the `docker` child too); a run
+   * that would begin after `dispose()` is refused. `start-api --warm` and a
+   * request's cold start can both have a run in flight when the signal lands.
+   */
+  const startGuard = createContainerStartGuard({ cancelledCode: 'CONTAINER_POOL_DISPOSED' });
+
   // Pre-create empty entries so `acquire()` never has to lazily build
   // the map under contention. Pool starts at size 0 per entry; growth
   // happens inside `acquire()` under the per-entry mutex.
@@ -381,24 +393,28 @@ export function createContainerPool(
       // /var/runtime/bootstrap); every other runtime expects /var/task.
       const containerCodePath = resolveRuntimeCodeMountPath(spec.lambda.runtime);
       const image = resolveRuntimeImage(spec.lambda.runtime);
-      containerId = await runDetached({
-        image,
-        // Run the base image at the Lambda's declared architecture (emulated
-        // when the host arch differs) so a `provided.*` `bootstrap` does not
-        // hit an "exec format error". Mirrors the IMAGE branch's `spec.platform`.
-        platform: architectureToPlatform(spec.lambda.architecture),
-        mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
-        extraMounts,
-        env: spec.env,
-        ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
-        cmd: [spec.lambda.handler],
-        hostPort,
-        host: spec.containerHost,
-        name,
-        ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
-        ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
-        ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
-      });
+      containerId = await startGuard.run(
+        () =>
+          runDetached({
+            image,
+            // Run the base image at the Lambda's declared architecture (emulated
+            // when the host arch differs) so a `provided.*` `bootstrap` does not
+            // hit an "exec format error". Mirrors the IMAGE branch's `spec.platform`.
+            platform: architectureToPlatform(spec.lambda.architecture),
+            mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
+            extraMounts,
+            env: spec.env,
+            ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
+            cmd: [spec.lambda.handler],
+            hostPort,
+            host: spec.containerHost,
+            name,
+            ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
+            ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
+            ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
+          }),
+        name
+      );
     } else {
       // IMAGE branch (closes #453). The pre-built local tag is on
       // `spec.image`; the architecture-derived `--platform` is on
@@ -411,34 +427,38 @@ export function createContainerPool(
       // so we never emit a `/opt` mount on this branch (matches the
       // AWS-side invoke behavior). `tmpfs` (#440) applies inside any
       // container image just like on the public base images.
-      containerId = await runDetached({
-        image: spec.image,
-        mounts: [],
-        extraMounts: [
-          ...(spec.rieMount ? [spec.rieMount] : []),
-          ...(spec.profileCredentialsFile
-            ? [
-                {
-                  hostPath: spec.profileCredentialsFile.hostPath,
-                  containerPath: spec.profileCredentialsFile.containerPath,
-                  readOnly: true,
-                },
-              ]
-            : []),
-        ],
-        env: spec.env,
-        ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
-        cmd: spec.command,
-        hostPort,
-        host: spec.containerHost,
-        name,
-        platform: spec.platform,
-        ...(spec.entryPoint !== undefined && { entryPoint: spec.entryPoint }),
-        ...(spec.workingDir !== undefined && { workingDir: spec.workingDir }),
-        ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
-        ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
-        ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
-      });
+      containerId = await startGuard.run(
+        () =>
+          runDetached({
+            image: spec.image,
+            mounts: [],
+            extraMounts: [
+              ...(spec.rieMount ? [spec.rieMount] : []),
+              ...(spec.profileCredentialsFile
+                ? [
+                    {
+                      hostPath: spec.profileCredentialsFile.hostPath,
+                      containerPath: spec.profileCredentialsFile.containerPath,
+                      readOnly: true,
+                    },
+                  ]
+                : []),
+            ],
+            env: spec.env,
+            ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
+            cmd: spec.command,
+            hostPort,
+            host: spec.containerHost,
+            name,
+            platform: spec.platform,
+            ...(spec.entryPoint !== undefined && { entryPoint: spec.entryPoint }),
+            ...(spec.workingDir !== undefined && { workingDir: spec.workingDir }),
+            ...(spec.debugPort !== undefined && { debugPort: spec.debugPort }),
+            ...(spec.tmpfs !== undefined && { tmpfs: spec.tmpfs }),
+            ...(spec.extraHosts !== undefined && { extraHosts: spec.extraHosts }),
+          }),
+        name
+      );
     }
     const stopLogStream = streamingEnabled ? streamLogs(containerId) : (): void => undefined;
     try {
@@ -530,6 +550,11 @@ export function createContainerPool(
 
   return {
     async acquire(logicalId: string): Promise<ContainerHandle> {
+      // #973: a `start-api --warm` pre-warm (or a late request) reaching a
+      // pool the shutdown already disposed must not start a container.
+      if (disposed) {
+        throw new Error(`Container pool disposed; not starting ${displayIdent(logicalId)}.`);
+      }
       const entry = entries.get(logicalId);
       if (!entry) {
         throw new Error(
@@ -638,6 +663,9 @@ export function createContainerPool(
         return;
       }
       disposed = true;
+      // Before the first await (#973): no `docker run` may begin once this
+      // has looked, and the ones in flight are waited for below.
+      const pendingRuns = startGuard.stopAll();
       logger.debug('Disposing container pool');
 
       // Cancel idle timers and reject pending acquire-waiters up front;
@@ -752,8 +780,20 @@ export function createContainerPool(
         inFlightStarts.clear();
       }
 
-      // Tear down in parallel; `tearDown` swallows individual failures.
-      await Promise.allSettled(allHandles.map((h) => tearDown(h)));
+      // Tear down in parallel; `tearDown` swallows individual failures. A run
+      // the dispose interrupted hands its id over here: its `startOne` was
+      // refused, so no handle carries it.
+      const interruptedIds = await pendingRuns;
+      await Promise.allSettled([
+        ...allHandles.map((h) => tearDown(h)),
+        ...interruptedIds.map((id) =>
+          removeContainer(id).catch((err: unknown) => {
+            logger.warn(
+              `Failed to remove container ${id}: ${err instanceof Error ? err.message : String(err)}. Continuing cleanup.`
+            );
+          })
+        ),
+      ]);
       entries.clear();
     },
   };
