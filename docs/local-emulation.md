@@ -2097,7 +2097,10 @@ index, because running without it runs a different command than the
 deployed task. An element that reads a secret (a `Fn::GetAtt` on a
 credential-bearing attribute such as `AWS::IAM::AccessKey.SecretAccessKey`
 or `AWS::AppSync::ApiKey.ApiKey`, any custom-resource attribute, a nested
-stack's `Outputs.*`, an attribute state records masked, a
+stack's `Outputs.*`, an attribute state records masked, a cross-stack
+value recorded masked even when joined into a longer string, a
+`Fn::GetAtt` target or `Fn::Sub` template built from a cross-stack
+reference (a shape CloudFormation does not accept), a
 `SecureString` parameter, or a value that resolves to a `{{resolve:...}}`
 reference) is refused too, since it would land on the `docker run`
 command line: pass it through `Environment` or `Secrets` instead.
