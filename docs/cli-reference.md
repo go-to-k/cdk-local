@@ -1589,6 +1589,11 @@ surfaces on the task's warnings line — the run-task invocation never
 aborts. State-load failures (no record, ambiguity, region resolution
 error) also degrade to warn-and-fall-back rather than hard-fail.
 
+A cross-stack `Fn::ImportValue` / `Fn::GetStackOutput` resolves at any
+depth, including nested inside `Fn::Join` / `Fn::Sub` — the shape CDK
+synthesizes for a cross-stack token embedded in a longer string
+(`` `s3://${otherStack.bucket.bucketName}` ``).
+
 Container `Command` / `EntryPoint` / `HealthCheck.Command` elements
 (`command: ['--bucket', bucket.bucketName]`) resolve the same way, in
 place. They are NOT best-effort: an element that cannot be resolved (no

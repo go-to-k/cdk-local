@@ -377,6 +377,15 @@ export { assertEcsTaskImagesResolvable } from './local/ecs-task-resolver.js';
 export { assertEcsTaskCommandsResolved } from './local/ecs-task-resolver.js';
 
 /**
+ * Issue #962 — true when a template value is, or nests at any depth (inside
+ * `Fn::Join` / `Fn::Sub` / ...), an `Fn::ImportValue` / `Fn::GetStackOutput`.
+ * `substituteAgainstStateAsync` resolves both shapes through a
+ * `crossStackResolver`, so a host deciding whether to build one gates on this
+ * rather than on a top-level check.
+ */
+export { containsCrossStackIntrinsic } from './local/state-resolver.js';
+
+/**
  * `invoke-agentcore` Bedrock AgentCore Runtime resolution + protocol clients.
  * `resolveAgentCoreTarget` maps a target argument to a runnable container
  * runtime; `waitForAgentCorePing` / `invokeAgentCore` speak the HTTP

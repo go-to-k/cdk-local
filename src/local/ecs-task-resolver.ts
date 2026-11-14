@@ -13,6 +13,7 @@ import {
   type ImageResolutionContext,
 } from './intrinsic-image.js';
 import {
+  containsCrossStackIntrinsic,
   substituteAgainstState,
   substituteAgainstStateAsync,
   resolveWithSensitivity,
@@ -429,7 +430,7 @@ export function detectEcsImageResolutionNeeds(stack: StackInfo): EcsImageResolut
 
 /**
  * Returns true when any `Environment[].Value` or `Secrets[].ValueFrom`
- * is a top-level `Fn::ImportValue` / `Fn::GetStackOutput` intrinsic.
+ * is, or nests, an `Fn::ImportValue` / `Fn::GetStackOutput` intrinsic.
  * Issue #454 — gates cross-stack resolver construction so literal +
  * same-stack-intrinsic env / secret maps don't pay the extra cost.
  */
@@ -469,10 +470,13 @@ function containerArgvElements(c: Record<string, unknown>): unknown[] {
   return lists.flatMap((l) => (Array.isArray(l) ? (l as unknown[]) : []));
 }
 
+/**
+ * A value only the async cross-stack path can resolve: an `Fn::ImportValue` /
+ * `Fn::GetStackOutput` at the top level or nested at any depth inside
+ * `Fn::Join` / `Fn::Sub` / ... (issue #962).
+ */
 function isCrossStackIntrinsic(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const obj = value as Record<string, unknown>;
-  return 'Fn::ImportValue' in obj || 'Fn::GetStackOutput' in obj;
+  return containsCrossStackIntrinsic(value);
 }
 
 /**

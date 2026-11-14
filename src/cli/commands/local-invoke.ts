@@ -76,6 +76,7 @@ import {
 } from '../../local/env-resolver.js';
 import {
   applyDeployedEnvFallback,
+  containsCrossStackIntrinsic,
   substituteEnvVarsFromStateAsync,
   type StateEnvSubstitutionAudit,
   type SubstitutionContext,
@@ -837,12 +838,9 @@ export function envHasCrossStackIntrinsic(
   templateEnv: Record<string, unknown> | undefined
 ): boolean {
   if (!templateEnv) return false;
-  for (const v of Object.values(templateEnv)) {
-    if (!v || typeof v !== 'object') continue;
-    const obj = v as Record<string, unknown>;
-    if ('Fn::ImportValue' in obj || 'Fn::GetStackOutput' in obj) return true;
-  }
-  return false;
+  // At any depth: a cross-stack token embedded in a longer string synthesizes
+  // as `Fn::Join` over an `Fn::ImportValue` (issue #962).
+  return Object.values(templateEnv).some(containsCrossStackIntrinsic);
 }
 
 /**
