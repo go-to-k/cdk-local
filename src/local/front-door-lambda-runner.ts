@@ -25,6 +25,7 @@ import {
 import { assetPathDirs, materializeAssetCodeDir } from './lambda-resolver.js';
 import type { ResolvedImageLambda, ResolvedLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { createContainerStartGuard } from './container-start-guard.js';
 import { readCdkPathOrUndefined } from '../cli/cdk-path.js';
 import { displayIdent } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -293,12 +294,46 @@ export function createFrontDoorLambdaRunner(
   let stopLogStream: (() => void) | undefined;
   let starting: Promise<void> | undefined;
   let stopped = false;
+  // go-to-k/cdk-local#973: `stop()` from a signal's cleanup can land while
+  // `start()` is still booting (start-alb / start-cloudfront boot their
+  // targets before serving). The guard hands `stop()` the id of a
+  // `docker run` in flight (or removes it by name when the run fails) and
+  // refuses a run that would begin after it.
+  const startGuard = createContainerStartGuard({ cancelledCode: 'FRONT_DOOR_LAMBDA_STOPPED' });
+
+  function removePlanTmpDirs(p: ImagePlan | undefined): void {
+    if (p?.inlineTmpDir) {
+      try {
+        rmSync(p.inlineTmpDir, { recursive: true, force: true });
+      } catch (err) {
+        logger.debug(
+          `Failed to remove inline-code tmpdir ${p.inlineTmpDir}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    if (p?.assetTmpDir) {
+      try {
+        rmSync(p.assetTmpDir, { recursive: true, force: true });
+      } catch (err) {
+        logger.debug(
+          `Failed to remove zip-asset tmpdir ${p.assetTmpDir}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  }
 
   async function doStart(): Promise<void> {
-    plan =
+    const resolved =
       lambda.kind === 'zip'
         ? await resolveZipImagePlan(lambda, opts)
         : await resolveContainerImagePlan(lambda, opts);
+    // `stop()` ran while the plan resolved: it saw no plan, so the tmpdirs
+    // this plan materialized are removed here.
+    if (stopped) {
+      removePlanTmpDirs(resolved);
+      throw new Error('FrontDoorLambdaRunner stopped while starting');
+    }
+    plan = resolved;
     const port = await pickFreePort();
     hostPort = port;
     const name = `${getEmbedConfig().resourceNamePrefix}-alblambda-${lambda.logicalId}-${process.pid}-${Math.floor(
@@ -322,22 +357,26 @@ export function createFrontDoorLambdaRunner(
           ...forwardAwsEnv(),
         };
     logger.info(
-      `Starting Lambda target container for ${lambda.logicalId} (image=${plan.image}, port=${port})...`
+      `Starting Lambda target container for ${lambda.logicalId} (image=${resolved.image}, port=${port})...`
     );
-    const id = await runDetached({
-      image: plan.image,
-      mounts: plan.mounts,
-      env,
-      ...(opts.sensitiveEnvKeys &&
-        opts.sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys: opts.sensitiveEnvKeys }),
-      cmd: plan.cmd,
-      hostPort: port,
-      host: opts.containerHost,
-      name,
-      ...(plan.platform !== undefined && { platform: plan.platform }),
-      ...(plan.entryPoint !== undefined && { entryPoint: plan.entryPoint }),
-      ...(plan.workingDir !== undefined && { workingDir: plan.workingDir }),
-    });
+    const id = await startGuard.run(
+      () =>
+        runDetached({
+          image: resolved.image,
+          mounts: resolved.mounts,
+          env,
+          ...(opts.sensitiveEnvKeys &&
+            opts.sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys: opts.sensitiveEnvKeys }),
+          cmd: resolved.cmd,
+          hostPort: port,
+          host: opts.containerHost,
+          name,
+          ...(resolved.platform !== undefined && { platform: resolved.platform }),
+          ...(resolved.entryPoint !== undefined && { entryPoint: resolved.entryPoint }),
+          ...(resolved.workingDir !== undefined && { workingDir: resolved.workingDir }),
+        }),
+      name
+    );
     containerId = id;
     stopLogStream = opts.streamLogs === false ? undefined : streamLogs(id);
     try {
@@ -380,6 +419,8 @@ export function createFrontDoorLambdaRunner(
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
+      // Before the first await: no `docker run` may begin once this has looked.
+      const pendingContainer = startGuard.stop();
       try {
         stopLogStream?.();
       } catch (err) {
@@ -387,6 +428,9 @@ export function createFrontDoorLambdaRunner(
           `stopLogStream(${displayIdent(lambda.logicalId)}) failed: ${err instanceof Error ? err.message : String(err)}`
         );
       }
+      // Read `containerId` only after the await: `start()` may set it meanwhile.
+      const pendingId = await pendingContainer;
+      containerId ??= pendingId;
       if (containerId) {
         try {
           await removeContainer(containerId);
@@ -397,24 +441,7 @@ export function createFrontDoorLambdaRunner(
         }
         containerId = undefined;
       }
-      if (plan?.inlineTmpDir) {
-        try {
-          rmSync(plan.inlineTmpDir, { recursive: true, force: true });
-        } catch (err) {
-          logger.debug(
-            `Failed to remove inline-code tmpdir ${plan.inlineTmpDir}: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      }
-      if (plan?.assetTmpDir) {
-        try {
-          rmSync(plan.assetTmpDir, { recursive: true, force: true });
-        } catch (err) {
-          logger.debug(
-            `Failed to remove zip-asset tmpdir ${plan.assetTmpDir}: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      }
+      removePlanTmpDirs(plan);
     },
   };
 }

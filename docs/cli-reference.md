@@ -1417,6 +1417,9 @@ none, and the handler's SDK reports "Region is missing".
 - `130` — stopped by SIGINT (`^C`).
 - `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
   number) and follow the same graceful shutdown; a clean stop is not `0`.
+  The shutdown is armed before synth, so a signal during start-up (a
+  `--warm` pre-warm included) removes the containers already started, and a
+  `docker run` still in flight is waited for and removed.
 
 Detailed coverage of route discovery, REST v1 non-AWS_PROXY
 integrations, CORS preflight, stage variables, container lifecycle,
@@ -1832,6 +1835,9 @@ and name the ALB.
 - `130` — stopped by SIGINT (`^C`).
 - `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
   number) and follow the same graceful shutdown; a clean stop is not `0`.
+  The shutdown is armed before synth, so a signal during start-up removes
+  what was already started (the shared network and its metadata sidecar
+  included).
 
 ## `cdkl start-alb` (run an ALB-fronted service locally)
 
@@ -2067,6 +2073,10 @@ remote, or use a permissive loopback CIDR for local smoke tests.
 - `130` — stopped by SIGINT (`^C`).
 - `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
   number) and follow the same graceful shutdown; a clean stop is not `0`.
+  The shutdown is armed before synth, so a signal during start-up removes
+  what was already started: the shared network and its metadata sidecar,
+  and each Lambda target container (a `docker run` still in flight is
+  waited for and removed).
 
 ## `cdkl start-cloudfront` (serve a CloudFront distribution locally)
 
@@ -2367,6 +2377,9 @@ cdkl start-cloudfront MyStack/SiteDist --from-cfn-stack
 - `130` — stopped by SIGINT (`^C`).
 - `143` — stopped by SIGTERM. Both are the shell convention (128 + the signal
   number) and follow the same graceful shutdown; a clean stop is not `0`.
+  A signal during start-up removes the Function URL / Lambda@Edge / Web
+  Function origin containers already started (a `docker run` still in flight
+  is waited for and removed).
 
 ## `cdkl start-web-function` (serve a Lambda Web Function locally)
 

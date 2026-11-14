@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync, strToU8 } from 'fflate';
@@ -360,5 +360,85 @@ describe('createFrontDoorLambdaRunner — container-image Lambda under the mount
     expect(runArgs.mounts).toEqual([]);
     expect(runArgs.entryPoint).toEqual(['/custom', '-x']);
     expect(runArgs.cmd).toEqual(['h']);
+  });
+});
+
+// go-to-k/cdk-local#973: start-alb / start-cloudfront boot their Lambda targets
+// before serving, so a signal's cleanup can call stop() while start() is still
+// in `docker run`.
+describe('createFrontDoorLambdaRunner — stop() during start() (#973)', () => {
+  it('waits for a `docker run` in flight and removes the container it returns', async () => {
+    let finish!: (id: string) => void;
+    runDetachedMock.mockImplementationOnce(() => new Promise<string>((r) => (finish = r)));
+    const runner = createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' });
+    const starting = runner.start();
+    for (let i = 0; i < 50 && runDetachedMock.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(runDetachedMock).toHaveBeenCalledTimes(1);
+    const stopping = runner.stop();
+    finish('cid-late');
+    await stopping;
+    expect(removeContainerMock).toHaveBeenCalledWith('cid-late');
+    await expect(starting).rejects.toMatchObject({ code: 'FRONT_DOOR_LAMBDA_STOPPED' });
+    expect(waitForRieReadyMock).not.toHaveBeenCalled();
+  });
+
+  it('a `docker run` that fails after stop() is removed by its cdkl- name', async () => {
+    let fail!: (e: Error) => void;
+    runDetachedMock.mockImplementationOnce(() => new Promise<string>((_r, j) => (fail = j)));
+    const runner = createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' });
+    const starting = runner.start();
+    for (let i = 0; i < 50 && runDetachedMock.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const name = runDetachedMock.mock.calls[0]![0].name as string;
+    const stopping = runner.stop();
+    fail(new Error('docker run failed: exit signal SIGINT'));
+    await stopping;
+    expect(name).toMatch(/^cdkl-alblambda-EchoFn-\d+-\d+$/);
+    expect(removeContainerMock).toHaveBeenCalledWith(name);
+    await expect(starting).rejects.toThrow('SIGINT');
+  });
+
+  it('stop() before the run begins refuses it: no container is started', async () => {
+    let releasePort!: (p: number) => void;
+    pickFreePortMock.mockImplementationOnce(() => new Promise<number>((r) => (releasePort = r)));
+    const runner = createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' });
+    const starting = runner.start();
+    for (let i = 0; i < 50 && pickFreePortMock.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await runner.stop();
+    releasePort(54321);
+    await expect(starting).rejects.toMatchObject({ code: 'FRONT_DOOR_LAMBDA_STOPPED' });
+    expect(runDetachedMock).not.toHaveBeenCalled();
+  });
+
+  it('stop() while the plan resolves removes the tmpdir the plan materialized', async () => {
+    // A `.zip` asset is extracted to a tmpdir BEFORE the base-image pull; stop()
+    // during that pull sees no plan yet, so start() must remove the tmpdir.
+    const zipPath = join(codeDir, 'asset.deadbeef.zip');
+    writeFileSync(zipPath, zipSync({ 'index.js': strToU8('exports.handler = () => {};') }));
+    let releasePull!: () => void;
+    pullImageMock.mockImplementationOnce(() => new Promise<void>((r) => (releasePull = r)));
+    const before = new Set(readdirSync(tmpdir()));
+    const runner = createFrontDoorLambdaRunner(zipLambda({ codePath: zipPath }), {
+      containerHost: '127.0.0.1',
+    });
+    const starting = runner.start();
+    for (let i = 0; i < 50 && pullImageMock.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // Only this run's extraction dir: parallel suites create tmpdirs too.
+    const created = readdirSync(tmpdir()).filter(
+      (d) => !before.has(d) && d.startsWith('cdkl-lambda-zip-')
+    );
+    expect(created.length).toBeGreaterThan(0);
+    await runner.stop();
+    releasePull();
+    await expect(starting).rejects.toThrow('stopped while starting');
+    for (const d of created) expect(existsSync(join(tmpdir(), d))).toBe(false);
+    expect(runDetachedMock).not.toHaveBeenCalled();
   });
 });
