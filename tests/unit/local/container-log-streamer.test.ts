@@ -601,11 +601,20 @@ describe('attachContainerLogStreamer drain (go-to-k/cdk-local#990)', () => {
     }
   });
 
-  it('resolves at once when the stream already ended or was stopped', async () => {
+  it('keeps waiting after exit until close, then resolves at once, as it does once stopped', async () => {
     const { proc } = makeFakeProc();
-    (proc as unknown as { exitCode: number }).exitCode = 0;
     spawnMock.mockReturnValue(proc);
     const stop = attachContainerLogStreamer('[app] ', 'cid');
+    // 'exit' has set exitCode, but the pipes have not delivered yet.
+    (proc as unknown as { exitCode: number }).exitCode = 0;
+    let drained = false;
+    const pending = stop.drain(60_000).then(() => {
+      drained = true;
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(drained).toBe(false);
+    proc.emit('close', 0, null);
+    await pending;
     await expect(stop.drain(60_000)).resolves.toBeUndefined();
     stop();
     await expect(stop.drain(60_000)).resolves.toBeUndefined();

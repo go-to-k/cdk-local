@@ -96,6 +96,9 @@ export function attachContainerLogStreamer(
   // exits anyway), but library hosts that re-enter the host event
   // loop after teardown saw the tail.
   let pendingRespawn: ReturnType<typeof setTimeout> | undefined;
+  // Follows whose pipes have delivered everything: 'close', which comes after
+  // 'exit' (exitCode is set at 'exit', before the last data arrives).
+  const closed = new WeakSet<ChildProcess>();
 
   const spawnOnce = (sinceArg: string | undefined): void => {
     const args = [
@@ -108,6 +111,7 @@ export function attachContainerLogStreamer(
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     current = proc;
+    proc.on('close', () => closed.add(proc));
     proc.stdout?.on('data', (chunk: Buffer) => {
       stdoutBuf = writePrefixedLines(prefix, stdoutBuf + chunk.toString('utf-8'), process.stdout);
     });
@@ -209,13 +213,7 @@ export function attachContainerLogStreamer(
   };
   const drain = (timeoutMs: number): Promise<void> => {
     const proc = current;
-    // `close` (not `exit`): it fires after the pipes have delivered their data.
-    if (
-      stopping ||
-      !proc ||
-      typeof proc.exitCode === 'number' ||
-      typeof proc.signalCode === 'string'
-    ) {
+    if (stopping || !proc || closed.has(proc)) {
       return Promise.resolve();
     }
     return new Promise((resolve) => {
