@@ -460,7 +460,7 @@ async function serveAgentCore(
   }
 
   // Resolve a fromS3 bundle's intrinsic bucket before the image step.
-  await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext);
+  await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext, options);
 
   const image = await resolveAgentCoreImage(resolved, options, loadedState, stateProvider);
   const { env: dockerEnv, sensitiveEnvKeys } = await buildContainerEnv(
@@ -670,7 +670,8 @@ async function serveAgentCore(
             freshResolved,
             stateProvider,
             freshLoaded,
-            freshImageContext
+            freshImageContext,
+            options
           );
           const assetCtx = await loadAgentCoreAssetContext({
             resolvedTarget,
