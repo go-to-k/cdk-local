@@ -24,6 +24,9 @@ exports.handler = async (event) => {
     listSecond: process.env.LIST_SECOND ?? 'unset',
     listJoined: process.env.LIST_JOINED ?? 'unset',
     amiId: process.env.AMI_ID ?? 'unset',
+    // issue #979: the AWS::StackName pseudo parameter (bare and in Fn::Sub).
+    stackNameRef: process.env.STACK_NAME_REF ?? 'unset',
+    stackNameSub: process.env.STACK_NAME_SUB ?? 'unset',
     event,
   };
 };

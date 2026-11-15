@@ -29,8 +29,8 @@
  *   - `Fn::Sub: '<template>'` (and the two-argument `[template, vars]`
  *     form) — `${LogicalId}` / `${LogicalId.attr}` placeholders are
  *     substituted in place; pseudo parameters (`${AWS::AccountId}` /
- *     `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) are
- *     substituted from the optional `pseudoParameters` bag; unrelated
+ *     `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}` /
+ *     `${AWS::StackName}`) are substituted from the optional `pseudoParameters` bag; unrelated
  *     placeholders (mapping references, parameters) are left untouched
  *     and the value is treated as unresolved.
  *   - `Fn::Join: [<delimiter>, [<elements>...]]` — every element is
@@ -53,7 +53,7 @@
  *     value, so the top-level dispatcher reports unresolved with a
  *     clear reason.
  *   - `Ref: AWS::AccountId` / `AWS::Region` / `AWS::Partition` /
- *     `AWS::URLSuffix` — substituted from the optional
+ *     `AWS::URLSuffix` / `AWS::StackName` — substituted from the optional
  *     `pseudoParameters` bag the caller supplies. When the bag is
  *     missing (or the specific key isn't set), the placeholder reports
  *     unresolved — same warn-and-drop policy as every other miss.
@@ -137,6 +137,14 @@ export interface PseudoParameters {
   region?: string;
   partition?: string;
   urlSuffix?: string;
+  /**
+   * `AWS::StackName`: the DEPLOYED name of the stack that owns the template
+   * value -- the name the state source read (an explicit
+   * `--from-cfn-stack <name>` when given, else the synthesized physical stack
+   * name), which is what CloudFormation substituted at deploy time.
+   * `AWS::StackId` has no field: not every state source records one.
+   */
+  stackName?: string;
 }
 
 /**
@@ -433,10 +441,13 @@ function resolvePseudoParameter(
     case 'AWS::URLSuffix':
       if (pseudo.urlSuffix !== undefined) return { kind: 'literal', value: pseudo.urlSuffix };
       break;
+    case 'AWS::StackName':
+      if (pseudo.stackName !== undefined) return { kind: 'literal', value: pseudo.stackName };
+      break;
     default:
       return {
         kind: 'unresolved',
-        reason: `Ref ${displayIdent(name)}: pseudo parameter not supported (supported: AWS::AccountId, AWS::Region, AWS::Partition, AWS::URLSuffix)`,
+        reason: `Ref ${displayIdent(name)}: pseudo parameter not supported (supported: AWS::AccountId, AWS::Region, AWS::Partition, AWS::URLSuffix, AWS::StackName)`,
       };
   }
   return {

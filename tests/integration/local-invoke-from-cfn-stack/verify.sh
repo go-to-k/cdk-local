@@ -343,9 +343,9 @@ echo "${RESULT_BASELINE}" | grep -q "\"dynrefSsm\":\"${SSM_PARAM_VALUE}\"" || {
   echo "[verify] FAIL: expected DYNREF_SSM={{resolve:ssm:...}} resolved to ${SSM_PARAM_VALUE} without a state flag (issue #784), got: ${RESULT_BASELINE}"
   exit 1
 }
-for field in listSecond listJoined amiId; do
+for field in listSecond listJoined amiId stackNameRef stackNameSub; do
   echo "${RESULT_BASELINE}" | grep -q "\"${field}\":\"unset\"" || {
-    echo "[verify] FAIL: expected ${field} dropped without a state flag (issue #976), got: ${RESULT_BASELINE}"
+    echo "[verify] FAIL: expected ${field} dropped without a state flag (issues #976 / #979), got: ${RESULT_BASELINE}"
     exit 1
   }
 done
@@ -389,6 +389,16 @@ echo "${RESULT_FROM_CFN}" | grep -q "\"amiId\":\"${AMI_VALUE}\"" || {
 }
 echo "${RESULT_FROM_CFN}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-cfn-stack, got: ${RESULT_FROM_CFN}"
+  exit 1
+}
+# issue #979: Ref AWS::StackName (bare and inside Fn::Sub) is the deployed
+# stack name.
+echo "${RESULT_FROM_CFN}" | grep -q "\"stackNameRef\":\"${STACK}\"" || {
+  echo "[verify] FAIL: expected STACK_NAME_REF=${STACK} (Ref AWS::StackName, issue #979), got: ${RESULT_FROM_CFN}"
+  exit 1
+}
+echo "${RESULT_FROM_CFN}" | grep -q "\"stackNameSub\":\"${STACK}-sub\"" || {
+  echo "[verify] FAIL: expected STACK_NAME_SUB=${STACK}-sub (\${AWS::StackName} in Fn::Sub, issue #979), got: ${RESULT_FROM_CFN}"
   exit 1
 }
 # issue #99: the decrypted SecureString value must reach the container (its
@@ -446,6 +456,20 @@ if echo "${DEBUG_OUT}" | grep -q 'filled env var AMI_ID'; then
   echo "[verify] FAIL: AMI_ID came from the deployed-env fill, not SSM (issue #976)"
   exit 1
 fi
+# issue #979: the AWS::StackName values must come from the pseudo-parameter
+# bag, not the deployed-env fill (which holds the same name and would hide a
+# regression).
+for key in STACK_NAME_REF STACK_NAME_SUB; do
+  echo "${DEBUG_OUT}" | grep -q "substituted env var ${key}" || {
+    echo "[verify] FAIL: ${key} was not substituted from the pseudo-parameter bag (issue #979); --verbose lines:"
+    echo "${DEBUG_OUT}" | grep -E "${key}" | head -5
+    exit 1
+  }
+  if echo "${DEBUG_OUT}" | grep -q "filled env var ${key} "; then
+    echo "[verify] FAIL: ${key} came from the deployed-env fill, not the pseudo-parameter bag (issue #979)"
+    exit 1
+  fi
+done
 DOCKER_RUN_LINE=$(echo "${DEBUG_OUT}" | grep -E '(^| )run .* -e ' | grep -- '-e API_KEY' | head -1)
 if [ -z "${DOCKER_RUN_LINE}" ]; then
   echo "[verify] FAIL: could not find the 'docker run' debug line carrying -e API_KEY in --verbose output"

@@ -97,6 +97,7 @@ import {
   UNNAMED_WORKLOAD,
   type ExtraStateProviders,
   isCfnFlagPresent,
+  deployedStackName,
 } from './local-state-source.js';
 import { isAwsServiceRoutedToEmulator, type AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
 import type { ContainerStateContext } from '../../local/intrinsic-image.js';
@@ -2927,6 +2928,8 @@ export async function buildEcsImageResolutionContext(
         partition: partitionAndSuffix.partition,
         urlSuffix: partitionAndSuffix.urlSuffix,
       }),
+      // The owning stack's deployed name (issue #979).
+      stackName: deployedStackName(options, candidate.stackName),
     };
   }
 

@@ -57,6 +57,7 @@ import {
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
   isCfnFlagPresent,
+  deployedStackName,
 } from './local-state-source.js';
 import type { LocalStateProvider, LocalStateRecord } from '../../local/local-state-provider.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -552,7 +553,7 @@ async function localInvokeAgentCoreCommand(
     // state BEFORE the image step (which needs a literal bucket for the S3
     // download). Reuses the same substitution machinery env vars use, so
     // every cross-stack intrinsic the env path supports is supported here too.
-    await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext);
+    await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext, options);
 
     const image = await resolveAgentCoreImage(resolved, options, loadedState, stateProvider);
 
@@ -689,7 +690,8 @@ async function localInvokeAgentCoreCommand(
               newResolved,
               stateProvider,
               newLoaded,
-              newImageContext
+              newImageContext,
+              options
             );
             const newImage = await resolveAgentCoreImage(
               newResolved,
@@ -1419,9 +1421,10 @@ async function buildContainerEnvWith(
           consumer: `AgentCore Runtime ${resolved.logicalId} cross-stack env value`,
         }),
     };
-    const pseudo =
-      imageContext?.pseudoParameters ?? derivePseudoParametersFromRegion(loaded.region);
-    if (pseudo) subContext.pseudoParameters = pseudo;
+    subContext.pseudoParameters = imageContext?.pseudoParameters ?? {
+      ...derivePseudoParametersFromRegion(loaded.region),
+      stackName: deployedStackName(options, resolved.stack.stackName),
+    };
     if (imageContext?.stateParameters) subContext.parameters = imageContext.stateParameters;
     if (imageContext?.stateSensitiveParameters?.length) {
       subContext.sensitiveParameters = new Set(imageContext.stateSensitiveParameters);
@@ -1512,7 +1515,9 @@ export async function resolveFromS3BucketIntrinsic(
   resolved: ResolvedAgentCoreRuntime,
   stateProvider: LocalStateProvider | undefined,
   loaded: LocalStateRecord | undefined,
-  imageContext: ImageResolutionContext | undefined
+  imageContext: ImageResolutionContext | undefined,
+  /** Names the deployed stack for `AWS::StackName` when `imageContext` has no bag. */
+  options: Pick<LocalInvokeAgentCoreOptions, 'fromCfnStack'> = {}
 ): Promise<void> {
   const s3Source = resolved.codeArtifact?.s3Source;
   if (!s3Source || s3Source.bucketIntrinsic === undefined) return;
@@ -1531,8 +1536,10 @@ export async function resolveFromS3BucketIntrinsic(
     resources: imageContext?.stateResources ?? loaded.resources,
     consumerRegion: loaded.region,
   };
-  const pseudo = imageContext?.pseudoParameters ?? derivePseudoParametersFromRegion(loaded.region);
-  if (pseudo) subContext.pseudoParameters = pseudo;
+  subContext.pseudoParameters = imageContext?.pseudoParameters ?? {
+    ...derivePseudoParametersFromRegion(loaded.region),
+    stackName: deployedStackName(options, resolved.stack.stackName),
+  };
   const crossStackResolver = await stateProvider.buildCrossStackResolver(loaded.region);
   if (crossStackResolver) subContext.crossStackResolver = crossStackResolver;
 
@@ -1603,8 +1610,11 @@ export async function buildAgentCoreImageContext(
   }
 
   const context: ImageResolutionContext = {};
-  const pseudo = derivePseudoParametersFromRegion(region, accountId);
-  if (pseudo) context.pseudoParameters = pseudo;
+  // `AWS::StackName` is the owning stack's deployed name (issue #979).
+  context.pseudoParameters = {
+    ...derivePseudoParametersFromRegion(region, accountId),
+    stackName: deployedStackName(options, candidate.stackName),
+  };
 
   const loaded = await stateProvider.load(candidate.stackName, candidate.region);
   if (loaded) {
