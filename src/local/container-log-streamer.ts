@@ -6,7 +6,9 @@ import { getDockerCmd } from '../utils/docker-cmd.js';
  * the host's `process.stdout` / `process.stderr`, prefixing every emitted
  * line with the caller-supplied `prefix`. Returns a stop function that
  * drains any unterminated tail line and SIGTERMs the streamer process —
- * idempotent + safe to call from a `finally` or shutdown handler.
+ * idempotent + safe to call from a `finally` or shutdown handler — and
+ * carries {@link ContainerLogStopper.drain} for a caller that has just seen
+ * the container exit.
  *
  * Used by `cdkl run-task` (per-container prefix `[<container-name>]`) and
  * by `cdkl start-service` / `cdkl start-alb` (per-replica prefix
@@ -52,6 +54,15 @@ import { getDockerCmd } from '../utils/docker-cmd.js';
  * failure with full context); the loud surface stays on the runner's exit
  * path.
  */
+/**
+ * A log stream's stop function, plus `drain`: wait (at most `timeoutMs`) for
+ * `docker logs -f` to end on its own, which it does once the container has
+ * exited and its log is written out (go-to-k/cdk-local#990). Stopping right
+ * at the exit kills the follow before a container that exited within
+ * milliseconds of starting has had its output relayed.
+ */
+export type ContainerLogStopper = (() => void) & { drain(timeoutMs: number): Promise<void> };
+
 export function attachContainerLogStreamer(
   prefix: string,
   containerId: string,
@@ -66,7 +77,7 @@ export function attachContainerLogStreamer(
      */
     expectRestart?: () => boolean;
   } = {}
-): () => void {
+): ContainerLogStopper {
   let stopping = false;
   let current: ChildProcess | undefined;
   let stdoutBuf = '';
@@ -177,7 +188,7 @@ export function attachContainerLogStreamer(
 
   spawnOnce(undefined);
 
-  return () => {
+  const stop = (): void => {
     stopping = true;
     // Issue #227 review fix (Code #3) — clear any pending respawn
     // timer so the event loop is not held open for up to 200ms
@@ -196,6 +207,28 @@ export function attachContainerLogStreamer(
     }
     if (current && !current.killed) current.kill('SIGTERM');
   };
+  const drain = (timeoutMs: number): Promise<void> => {
+    const proc = current;
+    // `close` (not `exit`): it fires after the pipes have delivered their data.
+    if (
+      stopping ||
+      !proc ||
+      typeof proc.exitCode === 'number' ||
+      typeof proc.signalCode === 'string'
+    ) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(done, timeoutMs);
+      function done(): void {
+        clearTimeout(timer);
+        proc!.off('close', done);
+        resolve();
+      }
+      proc.on('close', done);
+    });
+  };
+  return Object.assign(stop, { drain });
 }
 
 /**
