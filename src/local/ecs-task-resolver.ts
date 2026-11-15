@@ -28,7 +28,11 @@ import {
   crossStackSecretValueFromReason,
   watchResolved,
 } from './cross-stack-secret-check.js';
-import { isSecretAttributeName, isSecretValuedAttribute } from './secret-attributes.js';
+import {
+  isCustomResourceType,
+  isSecretAttributeName,
+  isSecretValuedAttribute,
+} from './secret-attributes.js';
 import {
   DynamicReferenceResolver,
   containsDynamicReference,
@@ -1220,8 +1224,7 @@ function secretAttributeRead(
       // SecureString records the plaintext), and a nested stack's output can
       // pass a secret through: the same classes `deployedFillMayBeSecret`
       // keeps off the argv for Lambda env.
-      type.startsWith('Custom::') ||
-      type === 'AWS::CloudFormation::CustomResource' ||
+      isCustomResourceType(type) ||
       (type === 'AWS::CloudFormation::Stack' && attribute.startsWith('Outputs.')) ||
       stored === STATE_SECRET_MASK
     ) {
@@ -1306,6 +1309,18 @@ function computedAttributeRead(node: unknown): string | undefined {
     if (r !== undefined) return r;
   }
   return undefined;
+}
+
+/**
+ * A well-formed Secrets Manager secret or SSM parameter ARN: what a `Secrets`
+ * `ValueFrom` names, a pointer the secrets resolver reads with the caller's
+ * credentials, never the secret itself.
+ */
+const SECRET_POINTER_ARN =
+  /^arn:aws(?:-[a-z]+)*:(?:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@!-]+(?::[^\s:]*:[^\s:]*:[^\s:]*)?|ssm:[a-z0-9-]+:\d{12}:parameter\/[A-Za-z0-9/_.-]+)$/;
+
+function isSecretPointerArn(value: string): boolean {
+  return SECRET_POINTER_ARN.test(value);
 }
 
 /**
@@ -2327,7 +2342,17 @@ export async function applyCrossStackResolverToTask(
         const sub = await substituteAgainstStateAsync(valueFromRaw, watched.context);
         // A producer's secret is no ARN, and the secrets resolver would name it
         // in its lookup line: it stays dropped, with this reason (go-to-k/cdkd#6339).
-        if (watched.seen.producerSecret !== undefined) {
+        // A value that could not be checked but IS a well-formed Secrets
+        // Manager / SSM ARN is kept: an ARN is a pointer, not a bearer value.
+        if (
+          watched.seen.producerSecret !== undefined &&
+          !(
+            watched.seen.producerSecret.verdict !== 'secret' &&
+            sub.kind === 'literal' &&
+            typeof sub.value === 'string' &&
+            isSecretPointerArn(sub.value)
+          )
+        ) {
           redropSecret(
             task,
             container,

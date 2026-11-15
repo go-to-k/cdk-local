@@ -113,6 +113,7 @@ import {
   substituteEnvVarsFromStateAsync,
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
+import { crossStackSecretCheckOf, watchResolved } from '../../local/cross-stack-secret-check.js';
 import {
   DynamicReferenceResolver,
   firstUsableRegion,
@@ -1306,6 +1307,7 @@ export async function resolveAgentCoreCodeImageFromS3(
     ...(options.profile !== undefined && { profile: options.profile }),
     ...(credentials !== undefined && { credentials }),
     workload: { logicalId: resolved.logicalId, cdkPath: readCdkPathOrUndefined(resolved.resource) },
+    ...(s3Source.bucketWithheld === true && { redactBucket: true }),
   });
   try {
     return await buildAgentCoreCodeImage({
@@ -1543,7 +1545,10 @@ export async function resolveFromS3BucketIntrinsic(
   const crossStackResolver = await stateProvider.buildCrossStackResolver(loaded.region);
   if (crossStackResolver) subContext.crossStackResolver = crossStackResolver;
 
-  const result = await substituteAgainstStateAsync(s3Source.bucketIntrinsic, subContext);
+  // go-to-k/cdkd#6339: a bucket name read across stacks is judged like any
+  // other cross-stack value; one with a verdict is used but not printed.
+  const watched = watchResolved(subContext, crossStackSecretCheckOf(subContext.crossStackResolver));
+  const result = await substituteAgainstStateAsync(s3Source.bucketIntrinsic, watched.context);
   if (result.kind !== 'literal') {
     throw new CdkLocalError(
       `Could not resolve AgentCore Runtime ${displayIdent(resolved.logicalId)} fromS3 Code.S3.Bucket intrinsic ` +
@@ -1561,8 +1566,12 @@ export async function resolveFromS3BucketIntrinsic(
     );
   }
   s3Source.bucket = result.value;
+  const withheld = watched.seen.producerSecret !== undefined || watched.seen.masked;
+  if (withheld) s3Source.bucketWithheld = true;
   getLogger().info(
-    `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} -> ${result.value}`
+    withheld
+      ? `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} (value not shown: a cross-stack value its producer stack says may be a secret)`
+      : `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} -> ${result.value}`
   );
 }
 

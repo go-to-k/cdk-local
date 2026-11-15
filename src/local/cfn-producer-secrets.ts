@@ -24,8 +24,9 @@
  * makes the verdict `unreadable`; an export the producer no longer declares
  * is `stale`. Not judged (CloudFormation records no value to read):
  * a secret the producer received as a plain (not `NoEcho`) parameter, a key
- * the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`), and
- * whatever a custom resource returns under a name that does not look secret.
+ * the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`), and a
+ * `NoEcho` parameter passed into a nested stack (its `Parameters` are not
+ * traced). Every `Fn::If` branch is traced: a conservative false positive.
  */
 import {
   DescribeStacksCommand,
@@ -35,7 +36,11 @@ import {
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
 import type { CrossStackJudgement } from './cross-stack-secret-check.js';
-import { isSecretAttributeName, isSecretValuedAttribute } from './secret-attributes.js';
+import {
+  isCustomResourceType,
+  isSecretAttributeName,
+  isSecretValuedAttribute,
+} from './secret-attributes.js';
 
 /** One `ListExports` entry. */
 export interface CfnExportEntry {
@@ -395,14 +400,27 @@ export class CfnProducerSecretJudge {
     const res =
       isRecord(resources) && Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
     const type = isRecord(res) ? res['Type'] : undefined;
-    if (isPlaintext(value)) {
-      if (isSecretValuedAttribute(type, attribute)) walk.summary.typed.add(value);
-      else if (isSecretAttributeName(attribute) && value.length >= NAMED_LEAF_EXACT_FLOOR) {
-        walk.summary.named.add(value);
-      }
+    // A nested stack's output is decided by tracing it, never by its name:
+    // CDK names a re-exported reference `Outputs.<Path>DbSecret<hash>Ref`, an
+    // ARN, which the name rule would call a secret (cdkd's #6333).
+    if (type === 'AWS::CloudFormation::Stack' && attribute.startsWith('Outputs.')) {
+      await this.traceNestedOutput(
+        stack,
+        logicalId,
+        attribute.slice('Outputs.'.length),
+        walk,
+        depth
+      );
+      return;
     }
-    if (type !== 'AWS::CloudFormation::Stack' || !attribute.startsWith('Outputs.')) return;
-    await this.traceNestedOutput(stack, logicalId, attribute.slice('Outputs.'.length), walk, depth);
+    if (!isPlaintext(value)) return;
+    // A custom resource can return anything (an `AwsCustomResource` reading a
+    // SecureString): the same class the same-stack argv rule refuses.
+    if (isSecretValuedAttribute(type, attribute) || isCustomResourceType(type)) {
+      walk.summary.typed.add(value);
+    } else if (isSecretAttributeName(attribute) && value.length >= NAMED_LEAF_EXACT_FLOOR) {
+      walk.summary.named.add(value);
+    }
   }
 
   /** Trace output `key` of the nested stack `logicalId` of `stack`. */

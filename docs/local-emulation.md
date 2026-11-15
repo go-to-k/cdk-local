@@ -2124,22 +2124,33 @@ A value holding one of these is a secret:
 - an output read from an attribute that is a secret by type
   (`AWS::AppSync::ApiKey.ApiKey`) or by name
   (`AWS::IAM::AccessKey.SecretAccessKey`), through the producer's nested
-  stacks and the exports it re-exports from.
+  stacks and the exports it re-exports from;
+- an output read from any custom-resource attribute (`Custom::*`,
+  `AWS::CloudFormation::CustomResource`), which may be a secret, as in the
+  same-stack check above.
+
+A nested stack's output is judged by what it reads, not by its name (CDK
+names a re-exported secret ARN `Outputs.<Path>DbSecret<hash>Ref`). Each
+branch of an `Fn::If` is read, so an output whose other branch reads a
+secret is judged one too.
 
 Such a value is refused in `Command`, `EntryPoint` or a health-check
 command, passed value-less (`-e KEY`) in `Environment`, and dropped as a
 `Secrets` `ValueFrom`, with a warning naming no value. A value cdk-local
 cannot check is handled the same way (fail closed). That covers a producer
 stack it cannot read (grant `cloudformation:ListStackResources`,
-`DescribeStacks` and `GetTemplate` on it), a template that is not JSON, a
+`DescribeStacks` and `GetTemplate` on it), a template that is not JSON
+(YAML: cdk-local ships no YAML parser), a
 re-export whose export name is computed, and an export the producer no
-longer declares. Passing the value through `Environment` keeps it
+longer declares. One exception: an unchecked `Secrets` `ValueFrom` that
+is a well-formed Secrets Manager or SSM parameter ARN is kept, since an
+ARN names the secret rather than holding it (it is still refused in an
+argv element). Passing the value through `Environment` keeps it
 resolving (under `CDK_DOCKER=finch` on macOS / Windows a value-less env var
 is refused like a `SecureString` one, see
 [finch on macOS and Windows](#finch-on-macos-and-windows)). The check does not cover a secret the producer received as a
-plain (not `NoEcho`) parameter, a key the producer transforms
-(`Fn::Base64`, `Fn::Select` of `Fn::Split`), or what a custom resource
-returns under a name that does not look secret. A host CLI's own
+plain (not `NoEcho`) parameter, a `NoEcho` parameter the producer passes
+into a nested stack that exports it, or a key the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`). A host CLI's own
 cross-stack resolver takes part by carrying the optional
 `resolveImportJudged` / `resolveGetStackOutputJudged` methods of
 `CrossStackResolver`.

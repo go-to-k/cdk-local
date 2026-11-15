@@ -251,6 +251,51 @@ describe('ECS post-pass: producer-secret verdicts (go-to-k/cdkd#6339)', () => {
     expectKeyOffArgv(task);
   });
 
+  it.each([
+    ['unreadable', 'kept', SECRET_ARN],
+    ['stale', 'kept', SECRET_ARN],
+    ['unreadable', 'kept', 'arn:aws-cn:ssm:cn-north-1:123456789012:parameter/app/db'],
+    ['secret', 'dropped', SECRET_ARN],
+    ['unreadable', 'dropped', 'arn:aws:appsync:us-east-1:123456789012:apis/a/apikeys/da2-x'],
+    ['unreadable', 'dropped', `${SECRET_ARN} trailing`],
+  ])('a ValueFrom judged %s is %s when it is %s', async (verdict, outcome, valueFrom) => {
+    const { task, container } = resolveTask();
+    const values = { ...VALUES, 'P-SecretArn': valueFrom };
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: {
+        resolveImport: async (name) => values[name],
+        resolveGetStackOutput: async () => undefined,
+        resolveImportJudged: async (name) => ({
+          value: values[name],
+          ...(name === 'P-SecretArn' ? { verdict: verdict as 'secret' } : {}),
+        }),
+        resolveGetStackOutputJudged: async () => ({ value: undefined }),
+      },
+    });
+    const kept = container.secrets.some((x) => x.name === 'FROM_ARN' && x.valueFrom === valueFrom);
+    expect(kept).toBe(outcome === 'kept');
+    // A dropped one keeps a warning naming why; a kept one's sync-pass warning is cleared.
+    expect(container.warnings.some((w) => w.startsWith('Secret FROM_ARN dropped:'))).toBe(
+      outcome === 'dropped'
+    );
+    expect(container.warnings.join('\n')).not.toContain(valueFrom);
+  });
+
+  it('still refuses an unchecked ARN-shaped value on the argv', async () => {
+    const { task, container } = resolveTask();
+    const t = task.resource.Properties!['ContainerDefinitions'] as Record<string, unknown>[];
+    t[0]!['Command'] = ['serve', { 'Fn::ImportValue': 'P-SecretArn' }];
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: judgedResolver({ 'P-SecretArn': { verdict: 'unreadable' } }),
+    });
+    expect(container.command).toEqual(['serve', '']);
+    expect(container.unresolvedCommandElements?.[0]?.reason).toMatch(/could not read to check it/);
+  });
+
   it('lets secret outrank a fail-closed verdict read earlier in the same element', async () => {
     const { task, container } = resolveTask();
     const t = task.resource.Properties!['ContainerDefinitions'] as Record<string, unknown>[];
@@ -474,7 +519,8 @@ describe('--from-cfn-stack resolver through the ECS post-pass (go-to-k/cdkd#6339
       /could not check for secrets \(GetTemplate of .*Producer\/p-1 failed: /
     );
     expect(container.sensitiveEnvKeys).toEqual(expect.arrayContaining(['API_KEY', 'URL']));
-    expect(container.secrets).toEqual([]);
+    // An unchecked value that is a Secrets Manager ARN is still a pointer: kept.
+    expect(container.secrets).toEqual([{ name: 'FROM_ARN', valueFrom: SECRET_ARN }]);
     const { args } = dockerArgv(task);
     expect(args.join('\u0000')).not.toContain(KEY);
     expect(args.join('\u0000')).not.toContain(PLAIN);

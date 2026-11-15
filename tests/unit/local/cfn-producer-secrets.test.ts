@@ -590,6 +590,55 @@ describe('--from-cfn-stack producer-secret check (go-to-k/cdkd#6339)', () => {
     provider.dispose();
   });
 
+  it("judges a CDK nested-stack re-export by its trace, not its secret-looking name", async () => {
+    // CDK's shape for a secret ARN passed out of a nested stack.
+    const secretArn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:Db-AbCdEf';
+    const pwd = 'nested-password-plaintext';
+    stacks[NESTED]!.resources.push(
+      { LogicalResourceId: 'DbSecret', PhysicalResourceId: secretArn, ResourceType: 'AWS::SecretsManager::Secret' },
+      { LogicalResourceId: 'Key2', PhysicalResourceId: 'AKIA2', ResourceType: 'AWS::IAM::AccessKey' }
+    );
+    stacks[NESTED]!.outputs.push(
+      { OutputKey: 'NestedDbSecret1A2B3C4DRef', OutputValue: secretArn },
+      { OutputKey: 'NestedKeySecretAccessKey', OutputValue: pwd }
+    );
+    const nt = stacks[NESTED]!.template as { Outputs: Record<string, unknown>; Resources: Record<string, unknown> };
+    nt.Resources['DbSecret'] = { Type: 'AWS::SecretsManager::Secret' };
+    nt.Resources['Key2'] = { Type: 'AWS::IAM::AccessKey' };
+    nt.Outputs['NestedDbSecret1A2B3C4DRef'] = { Value: { Ref: 'DbSecret' } };
+    nt.Outputs['NestedKeySecretAccessKey'] = { Value: { 'Fn::GetAtt': ['Key2', 'SecretAccessKey'] } };
+    const pt = stacks[PRODUCER]!.template as { Outputs: Record<string, unknown> };
+    pt.Outputs['ArnOut'] = { Value: { 'Fn::GetAtt': ['Nested', 'Outputs.NestedDbSecret1A2B3C4DRef'] } };
+    pt.Outputs['PwdOut'] = { Value: { 'Fn::GetAtt': ['Nested', 'Outputs.NestedKeySecretAccessKey'] } };
+    stacks[PRODUCER]!.outputs.push(
+      { OutputKey: 'ArnOut', OutputValue: secretArn, ExportName: 'P-SecretArn' },
+      { OutputKey: 'PwdOut', OutputValue: pwd, ExportName: 'P-NestedPwd' }
+    );
+    exportsList.push(
+      { Name: 'P-SecretArn', Value: secretArn, ExportingStackId: PRODUCER },
+      { Name: 'P-NestedPwd', Value: pwd, ExportingStackId: PRODUCER }
+    );
+    const { provider, r } = await resolver();
+    expect(await r.resolveImportJudged!('P-SecretArn')).toEqual({ value: secretArn });
+    expect((await r.resolveImportJudged!('P-NestedPwd')).verdict).toBe('secret');
+    provider.dispose();
+  });
+
+  it.each([['Custom::Thing'], ['AWS::CloudFormation::CustomResource']])(
+    'judges an exported %s attribute secret, as the same-stack rule does',
+    async (type) => {
+      stacks[PRODUCER]!.resources.push({ LogicalResourceId: 'Cr', PhysicalResourceId: 'cr-1', ResourceType: type });
+      const t = stacks[PRODUCER]!.template as { Outputs: Record<string, unknown>; Resources: Record<string, unknown> };
+      t.Resources['Cr'] = { Type: type };
+      t.Outputs['CrOut'] = { Value: { 'Fn::GetAtt': ['Cr', 'Url'] } };
+      stacks[PRODUCER]!.outputs.push({ OutputKey: 'CrOut', OutputValue: 'https://x', ExportName: 'P-Cr' });
+      exportsList.push({ Name: 'P-Cr', Value: 'https://x', ExportingStackId: PRODUCER });
+      const { provider, r } = await resolver();
+      expect((await r.resolveImportJudged!('P-Cr')).verdict).toBe('secret');
+      provider.dispose();
+    }
+  );
+
   it('reads each stack part once per resolver, across exports', async () => {
     const { provider, r } = await resolver();
     await r.resolveImportJudged!('P-Bucket');

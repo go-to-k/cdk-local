@@ -36,3 +36,14 @@ export function isSecretValuedAttribute(resourceType: unknown, attribute: string
   if (typeof resourceType !== 'string') return false;
   return SECRET_VALUED_ATTRIBUTES.get(resourceType)?.includes(attribute) === true;
 }
+
+/**
+ * Whether `resourceType` is a custom resource, whose attributes can hold
+ * anything a Lambda returned (an `AwsCustomResource` reading a SecureString).
+ */
+export function isCustomResourceType(resourceType: unknown): boolean {
+  return (
+    typeof resourceType === 'string' &&
+    (resourceType.startsWith('Custom::') || resourceType === 'AWS::CloudFormation::CustomResource')
+  );
+}
