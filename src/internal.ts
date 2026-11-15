@@ -303,7 +303,9 @@ export { defaultCredentialsLoader, type CredentialsLoader } from './local/sigv4-
  *   CALL, where a modeled service exception's message is the diagnosis and
  *   must survive: it keeps that message (flattened to one line and length-
  *   capped) and withholds everything else to a clamped class name plus a
- *   character count, emitting the full text at `debug` itself.
+ *   character count, emitting the full text at `debug` itself. An optional
+ *   third `scrub(text)` rewrites the raw message (and the clamped name / code)
+ *   before any of that, for a value the caller must keep off every line.
  * - `describeCredentialLoadFailure(err)` for a `catch` around credential
  *   RESOLUTION only, where nothing actionable is lost by withholding all of
  *   it; the caller emits its own `debug` line.
