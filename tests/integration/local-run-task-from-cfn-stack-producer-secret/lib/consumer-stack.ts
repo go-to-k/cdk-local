@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import type { ExportNames } from './producer-stack.ts';
 
 export interface ConsumerStackProps extends cdk.StackProps {
@@ -20,10 +21,17 @@ const PROBE_SCRIPT = [
 ].join('; ');
 
 /** One busybox task, its container's fields overridden at the L1. */
-function task(scope: Construct, id: string, container: Record<string, unknown>): void {
+function task(
+  scope: Construct,
+  id: string,
+  container: Record<string, unknown>,
+  executionRole?: iam.IRole
+): void {
   const taskDef = new ecs.TaskDefinition(scope, id, {
     compatibility: ecs.Compatibility.EC2,
     networkMode: ecs.NetworkMode.BRIDGE,
+    // CloudFormation requires an execution role on a task with Secrets.
+    ...(executionRole !== undefined && { executionRole }),
   });
   taskDef.addContainer('app', {
     image: ecs.ContainerImage.fromRegistry(BUSYBOX),
@@ -52,11 +60,23 @@ export class ConsumerStack extends cdk.Stack {
     super(scope, id, props);
     const importOf = (name: string) => ({ 'Fn::ImportValue': name });
 
+    // The role ECS would read the secret with; cdk-local reads it with the
+    // caller's own credentials, so it is never assumed here.
+    const executionRole = new iam.Role(this, 'ProbeExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+    });
+    executionRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [cdk.Fn.importValue(props.exportNames.secretArn)],
+      })
+    );
+
     task(this, 'ProbeTask', {
       Command: ['sh', '-c', PROBE_SCRIPT, 'probe', importOf(props.exportNames.plain)],
       Environment: [{ Name: 'API_KEY', Value: importOf(props.exportNames.apiKey) }],
       Secrets: [{ Name: 'DB_SECRET', ValueFrom: importOf(props.exportNames.secretArn) }],
-    });
+    }, executionRole);
 
     task(this, 'RefusedTask', {
       Command: [
