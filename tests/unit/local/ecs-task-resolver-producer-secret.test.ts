@@ -40,6 +40,7 @@ const {
   resolveEcsTaskTarget,
 } = await import('../../../src/local/ecs-task-resolver.js');
 const { buildDockerRunArgs } = await import('../../../src/local/ecs-task-runner.js');
+const { substituteEnvVarsFromStateAsync } = await import('../../../src/local/state-resolver.js');
 const { CfnLocalStateProvider } = await import('../../../src/local/cfn-local-state-provider.js');
 
 const KEY = 'da2-producerkeyproducerkey00';
@@ -269,6 +270,96 @@ describe('ECS post-pass: producer-secret verdicts (go-to-k/cdkd#6339)', () => {
   });
 });
 
+describe('producer-secret verdicts beyond Fn::ImportValue (go-to-k/cdkd#6339)', () => {
+  const GSO = { 'Fn::GetStackOutput': { StackName: 'Producer', OutputName: 'Key' } };
+
+  it('reads the judged Fn::GetStackOutput variant, with the same three effects', async () => {
+    const task = resolveEcsTaskTarget(
+      'Consumer:TaskDef',
+      [
+        stack({
+          Command: ['serve', GSO],
+          Environment: [{ Name: 'API_KEY', Value: GSO }],
+          Secrets: [{ Name: 'FROM_KEY', ValueFrom: GSO }],
+        }),
+      ],
+      { stateResources: {}, pseudoParameters: { accountId: '1', region: 'us-east-1', partition: 'aws' } }
+    );
+    const container = task.containers[0]!;
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: {
+        resolveImport: async () => undefined,
+        // The plain method would serve the key unjudged: only the judged one may be read.
+        resolveGetStackOutput: async () => KEY,
+        resolveImportJudged: async () => ({ value: undefined }),
+        resolveGetStackOutputJudged: async () => ({ value: KEY, verdict: 'secret' }),
+      },
+    });
+    expect(container.command).toEqual(['serve', '']);
+    expect(container.unresolvedCommandElements?.[0]?.reason).toMatch(/holding a secret of the producer stack/);
+    expect(container.sensitiveEnvKeys).toContain('API_KEY');
+    expect(container.secrets).toEqual([]);
+    expect(container.droppedSecretNames).toContain('FROM_KEY');
+    const { args, sensitiveEnv } = dockerArgv(task);
+    expect(args.join('\u0000')).not.toContain(KEY);
+    expect(args[args.indexOf('API_KEY') - 1]).toBe('-e');
+    expect(sensitiveEnv['API_KEY']).toBe(KEY);
+  });
+
+  it('fails closed on a verdict this version does not know', async () => {
+    const { task, container } = resolveTask();
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: judgedResolver({
+        'P-Key': { verdict: 'redacted' as unknown as 'secret' },
+      }),
+    });
+    expect(container.unresolvedCommandElements?.[0]?.reason).toMatch(
+      /whose producer stack cdkl could not read to check it for secrets/
+    );
+    expect(container.sensitiveEnvKeys).toContain('API_KEY');
+    expectKeyOffArgv(task);
+  });
+
+  it("keeps the verdict for a container resolving against its own state (mixed mode)", async () => {
+    const { task, container } = resolveTask();
+    await applyCrossStackResolverToTask(
+      task,
+      { resources: {}, consumerRegion: 'us-east-1', crossStackResolver: judgedResolver() },
+      () => ({ resources: {}, parameters: undefined, sensitiveParameters: undefined })
+    );
+    expect(container.command).toEqual(['serve', '']);
+    expect(container.sensitiveEnvKeys).toContain('API_KEY');
+    expect(container.droppedSecretNames).toContain('FROM_KEY');
+    expectKeyOffArgv(task);
+  });
+
+  it('passes a judged Lambda / AgentCore env value value-less, and an unjudged one inline', async () => {
+    const templateEnv = {
+      API_KEY: { 'Fn::ImportValue': 'P-Key' },
+      URL: { 'Fn::ImportValue': 'P-Url' },
+    };
+    const judged = await substituteEnvVarsFromStateAsync(templateEnv, {
+      resources: {},
+      crossStackResolver: judgedResolver(),
+    });
+    expect(judged.env).toEqual({ API_KEY: KEY, URL: PLAIN });
+    expect(judged.audit.sensitiveKeys).toEqual(['API_KEY']);
+    const plain = await substituteEnvVarsFromStateAsync(templateEnv, {
+      resources: {},
+      crossStackResolver: {
+        resolveImport: async (name) => VALUES[name],
+        resolveGetStackOutput: async () => undefined,
+      },
+    });
+    expect(plain.env).toEqual({ API_KEY: KEY, URL: PLAIN });
+    expect(plain.audit.sensitiveKeys).toEqual([]);
+  });
+});
+
 describe('--from-cfn-stack resolver through the ECS post-pass (go-to-k/cdkd#6339)', () => {
   const PRODUCER = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Producer/p-1';
   let getTemplateFails = false;
@@ -365,7 +456,7 @@ describe('--from-cfn-stack resolver through the ECS post-pass (go-to-k/cdkd#6339
     // The key is still told by its physical id; the plain value is withheld unjudged.
     expect(reasons['Command']).toMatch(/holding a secret of the producer stack/);
     expect(reasons['EntryPoint']).toMatch(
-      /could not check for secrets \(GetTemplate of .*Producer\/p-1 failed\)/
+      /could not check for secrets \(GetTemplate of .*Producer\/p-1 failed: /
     );
     expect(container.sensitiveEnvKeys).toEqual(expect.arrayContaining(['API_KEY', 'URL']));
     expect(container.secrets).toEqual([]);

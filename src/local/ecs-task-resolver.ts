@@ -19,7 +19,6 @@ import {
   resolveWithSensitivity,
   resolveWithSensitivityAsync,
   type CrossStackResolver,
-  type JudgedCrossStackValue,
   type StateSubstitutionResult,
   type SubstitutionContext,
 } from './state-resolver.js';
@@ -27,10 +26,7 @@ import {
   crossStackSecretArgvReason,
   crossStackSecretCheckOf,
   crossStackSecretValueFromReason,
-  judgementOf,
-  strongerJudgement,
-  type CrossStackJudgement,
-  type CrossStackSecretCheck,
+  watchResolved,
 } from './cross-stack-secret-check.js';
 import { isSecretAttributeName, isSecretValuedAttribute } from './secret-attributes.js';
 import {
@@ -1310,53 +1306,6 @@ function computedAttributeRead(node: unknown): string | undefined {
     if (r !== undefined) return r;
   }
   return undefined;
-}
-
-/** What {@link watchResolved} saw the cross-stack resolver return. */
-interface ResolvedSeen {
-  /** A value that is the secret mask. */
-  masked: boolean;
-  /** The producer-secret verdict on the values read, `secret` over the fail-closed ones. */
-  producerSecret: CrossStackJudgement | undefined;
-}
-
-/**
- * `context` with its cross-stack resolver noting each value it answers that
- * is the secret mask, or that `secrets` (the resolver's judged variants, when
- * it carries them) says holds a producer stack's secret or could not be
- * checked (go-to-k/cdkd#6339). A producer value recorded as the mask can be
- * joined into a longer string (`--token=***`), which {@link argvValue}'s
- * whole-value check cannot see (issue #967); so can a producer's secret.
- */
-function watchResolved(
-  context: SubstitutionContext,
-  secrets: CrossStackSecretCheck | undefined
-): { context: SubstitutionContext; seen: ResolvedSeen } {
-  const seen: ResolvedSeen = { masked: false, producerSecret: undefined };
-  const inner = context.crossStackResolver;
-  if (!inner) return { context, seen };
-  const watch = (judged: JudgedCrossStackValue): string | undefined => {
-    const { value } = judged;
-    if (value === undefined) return value;
-    if (value === STATE_SECRET_MASK) seen.masked = true;
-    seen.producerSecret = strongerJudgement(seen.producerSecret, judgementOf(judged));
-    return value;
-  };
-  // The judged variants when the resolver carries them: each call's verdict is
-  // its own producer's, never another call's for an equal value.
-  const resolver: CrossStackResolver = secrets
-    ? {
-        resolveImport: async (exportName) => watch(await secrets.resolveImportJudged(exportName)),
-        resolveGetStackOutput: async (stack, region, output) =>
-          watch(await secrets.resolveGetStackOutputJudged(stack, region, output)),
-      }
-    : {
-        resolveImport: async (exportName) =>
-          watch({ value: await inner.resolveImport(exportName) }),
-        resolveGetStackOutput: async (stack, region, output) =>
-          watch({ value: await inner.resolveGetStackOutput(stack, region, output) }),
-      };
-  return { context: { ...context, crossStackResolver: resolver }, seen };
 }
 
 /**

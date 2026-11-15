@@ -32,10 +32,8 @@ import {
   GetTemplateCommand,
   type CloudFormationClient,
 } from '@aws-sdk/client-cloudformation';
-import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
-import { fetchAllStackResources } from './cfn-local-state-provider.js';
 import type { CrossStackJudgement } from './cross-stack-secret-check.js';
 import { isSecretAttributeName, isSecretValuedAttribute } from './secret-attributes.js';
 
@@ -56,6 +54,12 @@ const NAMED_LEAF_EXACT_FLOOR = 8;
 const NAMED_LEAF_FLOOR = 16;
 /** A backstop on the nested and re-export walks, far past any real tree. cdkd's bound. */
 const MAX_DEPTH = 32;
+/**
+ * A backstop on how many stacks one judgement walks (nested and re-export
+ * sources together), so an endpoint listing thousands of nested stacks
+ * cannot drive thousands of reads.
+ */
+const MAX_STACKS = 256;
 
 /** An AppSync ARN, its resource path in group 1. */
 const APPSYNC_ARN = /^arn:[^:]+:appsync:[^:]*:[^:]*:(.+)$/;
@@ -111,9 +115,9 @@ interface Walk {
 type Read<T> = { ok: T } | { error: string };
 
 type StackResources = {
-  LogicalResourceId?: string;
-  PhysicalResourceId?: string;
-  ResourceType?: string;
+  LogicalResourceId?: string | undefined;
+  PhysicalResourceId?: string | undefined;
+  ResourceType?: string | undefined;
 }[];
 type StackOutputs = { OutputKey?: string; OutputValue?: string; ExportName?: string }[];
 type Template = Record<string, unknown>;
@@ -133,6 +137,10 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
  */
 export class CfnProducerSecretJudge {
   private readonly client: CloudFormationClient;
+  private readonly listResources: (
+    client: CloudFormationClient,
+    stackId: string
+  ) => Promise<StackResources>;
   private readonly exports: () => Promise<Map<string, CfnExportEntry> | undefined>;
   private readonly label: string;
   private readonly resourceReads = new Map<string, Promise<Read<StackResources>>>();
@@ -143,9 +151,12 @@ export class CfnProducerSecretJudge {
   public constructor(
     client: CloudFormationClient,
     exports: () => Promise<Map<string, CfnExportEntry> | undefined>,
-    label: string
+    label: string,
+    /** The paginated `ListStackResources` walk (`fetchAllStackResources`). */
+    listResources: (client: CloudFormationClient, stackId: string) => Promise<StackResources>
   ) {
     this.client = client;
+    this.listResources = listResources;
     this.exports = exports;
     this.label = label;
   }
@@ -245,6 +256,10 @@ export class CfnProducerSecretJudge {
   /** The physical-id needles of `stackId` and every nested stack under it. */
   private async addTree(stackId: string, walk: Walk, depth: number): Promise<void> {
     if (walk.stacks.has(stackId)) return;
+    if (walk.stacks.size >= MAX_STACKS) {
+      CfnProducerSecretJudge.opaque(walk, `the producer tree goes past ${MAX_STACKS} stacks`);
+      return;
+    }
     walk.stacks.add(stackId);
     const resources = await this.readResources(stackId);
     if ('error' in resources) {
@@ -459,13 +474,14 @@ export class CfnProducerSecretJudge {
         .then(
           (ok): Read<T> => ({ ok }),
           (err: unknown): Read<T> => {
-            const detail = describeAwsFailureForWarn(err, `CloudFormation ${operation}`);
-            getLogger().debug(
-              `${this.label}: ${operation}(${displayUntrustedValue(stackId)}) failed while checking a cross-stack value for secrets: ${detail}`
-            );
-            return {
-              error: `${operation} of ${displayUntrustedValue(stackId)} failed`,
-            };
+            // Rendered ONCE: a modeled service exception's message is kept
+            // (it names the missing permission or the throttle), anything
+            // else is withheld to `debug` by the helper itself.
+            const why =
+              err instanceof UnjudgeableStackError
+                ? err.message
+                : describeAwsFailureForWarn(err, `${this.label}: CloudFormation ${operation}`);
+            return { error: `${operation} of ${displayUntrustedValue(stackId)} failed: ${why}` };
           }
         );
       cache.set(stackId, got);
@@ -475,8 +491,7 @@ export class CfnProducerSecretJudge {
 
   private readResources(stackId: string): Promise<Read<StackResources>> {
     return this.memo(this.resourceReads, stackId, 'ListStackResources', async () => {
-      const all = await fetchAllStackResources(this.client, stackId);
-      return all as StackResources;
+      return this.listResources(this.client, stackId);
     });
   }
 
@@ -484,7 +499,7 @@ export class CfnProducerSecretJudge {
     return this.memo(this.outputReads, stackId, 'DescribeStacks', async () => {
       const resp = await this.client.send(new DescribeStacksCommand({ StackName: stackId }));
       const stack = resp.Stacks?.[0];
-      if (!stack) throw new Error('DescribeStacks returned no stack');
+      if (!stack) throw new UnjudgeableStackError('it returned no stack');
       return (stack.Outputs ?? []) as StackOutputs;
     });
   }
@@ -500,11 +515,14 @@ export class CfnProducerSecretJudge {
         parsed = undefined;
       }
       // A YAML template is not read: no YAML parser ships with the CLI.
-      if (!isRecord(parsed)) throw new Error('the template is not a JSON object');
+      if (!isRecord(parsed)) throw new UnjudgeableStackError('the template is not a JSON object');
       return parsed;
     });
   }
 }
+
+/** A stack read that succeeded with nothing to judge; its message is shown. */
+class UnjudgeableStackError extends Error {}
 
 /** `[logicalId, attribute]` of a literal `Fn::GetAtt`, either form. */
 function getAttOf(node: unknown): [string, string] | undefined {

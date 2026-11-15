@@ -102,6 +102,7 @@ The flag reads CloudFormation Outputs and resolves resource ARNs into env vars o
 
 - Confirm the stack name matches a deployed stack (`aws cloudformation describe-stacks --stack-name <name>`).
 - Confirm your IAM credentials have `cloudformation:ListStackResources`, `cloudformation:DescribeStacks`, and `cloudformation:ListExports`.
+- A value read through `Fn::ImportValue` is also checked for the exporting stack's secrets, which needs `cloudformation:ListStackResources`, `cloudformation:DescribeStacks` and `cloudformation:GetTemplate` on that stack. A value that cannot be checked is passed value-less in an env var, dropped as an ECS `Secrets` `ValueFrom` and refused in a container command (see [Env / Secrets substitution](local-emulation.md#env--secrets-substitution---from-cfn-stack)).
 - Confirm the stack has the Outputs / resources your CDK code expects (the local synth's expectations must match the deployed state).
 
 ### An STS warn says the message was withheld

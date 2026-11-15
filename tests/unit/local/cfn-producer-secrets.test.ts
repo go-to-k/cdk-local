@@ -457,6 +457,127 @@ describe('--from-cfn-stack producer-secret check (go-to-k/cdkd#6339)', () => {
     provider.dispose();
   });
 
+  it.each([
+    ['a Fn::Sub variable map value read from a NoEcho parameter', { 'Fn::Sub': ['pw=${X}', { X: { Ref: 'Pw' } }] }],
+    ['a dotted ${Res.Attr} of a typed attribute in Fn::Sub', { 'Fn::Sub': 'k=${ApiKey.ApiKey}' }],
+    ['a dotted ${Res.Attr} of a secret-named attribute in Fn::Sub', { 'Fn::Sub': 'k=${Key.SecretAccessKey}' }],
+    ["a NoEcho flag spelled as the string 'true'", { Ref: 'PwString' }],
+  ])('judges %s secret', async (_label, valueNode) => {
+    const t = stacks[PRODUCER]!.template as {
+      Outputs: Record<string, unknown>;
+      Parameters: Record<string, unknown>;
+    };
+    t.Parameters['PwString'] = { Type: 'String', NoEcho: 'true' };
+    t.Outputs['Extra'] = { Value: valueNode };
+    stacks[PRODUCER]!.outputs.push({ OutputKey: 'Extra', OutputValue: 'k=not-a-real-secret-value', ExportName: 'P-Extra' });
+    exportsList.push({ Name: 'P-Extra', Value: 'k=not-a-real-secret-value', ExportingStackId: PRODUCER });
+    const { provider, r } = await resolver();
+    expect((await r.resolveImportJudged!('P-Extra')).verdict).toBe('secret');
+    provider.dispose();
+  });
+
+  it.each([
+    ['DescribeStacks', /DescribeStacks of .*Producer-Nested\/n-1 failed/],
+    ['GetTemplate', /GetTemplate of .*Producer-Nested\/n-1 failed/],
+  ])('fails closed when %s of a traced nested stack fails', async (operation, detail) => {
+    failing.add(`${operation}Command:${NESTED}`);
+    const { provider, r } = await resolver();
+    expect(await r.resolveImportJudged!('P-Nested')).toMatchObject({
+      verdict: 'unreadable',
+      detail: expect.stringMatching(detail),
+    });
+    provider.dispose();
+  });
+
+  it('fails closed on a traced nested output the nested stack does not report', async () => {
+    stacks[NESTED]!.outputs = stacks[NESTED]!.outputs.filter((o) => o.OutputKey !== 'Stream');
+    const { provider, r } = await resolver();
+    expect(await r.resolveImportJudged!('P-Nested')).toMatchObject({
+      verdict: 'unreadable',
+      detail: expect.stringMatching(/Producer-Nested\/n-1 has no output Stream/),
+    });
+    provider.dispose();
+  });
+
+  it('fails closed on a traced nested stack the parent does not list', async () => {
+    stacks[PRODUCER]!.resources = stacks[PRODUCER]!.resources.filter((r) => r.LogicalResourceId !== 'Nested');
+    const { provider, r } = await resolver();
+    expect(await r.resolveImportJudged!('P-Nested')).toMatchObject({
+      verdict: 'unreadable',
+      detail: expect.stringMatching(/lists no nested stack Nested/),
+    });
+    provider.dispose();
+  });
+
+  it('fails closed on an export whose output the template does not declare', async () => {
+    delete (stacks[PRODUCER]!.template as { Outputs: Record<string, unknown> }).Outputs['BucketOut'];
+    const { provider, r } = await resolver();
+    expect(await r.resolveImportJudged!('P-Bucket')).toMatchObject({
+      verdict: 'unreadable',
+      detail: expect.stringMatching(/declares no output BucketOut/),
+    });
+    provider.dispose();
+  });
+
+  it('fails closed on a re-export of a name ListExports does not list', async () => {
+    (stacks[REEXPORTER]!.template as { Outputs: Record<string, unknown> }).Outputs['JoinedBucket'] = {
+      Value: { 'Fn::ImportValue': 'Missing' },
+    };
+    const { provider, r } = await resolver();
+    expect(await r.resolveImportJudged!('R-Bucket')).toMatchObject({
+      verdict: 'unreadable',
+      detail: expect.stringMatching(/re-exports Missing, which ListExports does not list/),
+    });
+    provider.dispose();
+  });
+
+  it('fails closed when DescribeStacks returns no stack, naming why', async () => {
+    const plain = sendMock.getMockImplementation()!;
+    sendMock.mockImplementation((cmd: { constructor: { name: string } }) =>
+      cmd.constructor.name === 'DescribeStacksCommand' ? Promise.resolve({ Stacks: [] }) : plain(cmd)
+    );
+    const { provider, r } = await resolver();
+    expect(await r.resolveImportJudged!('P-Bucket')).toMatchObject({
+      verdict: 'unreadable',
+      detail: expect.stringMatching(/DescribeStacks of .*Producer\/p-1 failed: it returned no stack/),
+    });
+    provider.dispose();
+  });
+
+  it("names a modeled service exception's own message in the detail", async () => {
+    const plain = sendMock.getMockImplementation()!;
+    sendMock.mockImplementation((cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name !== 'GetTemplateCommand') return plain(cmd);
+      const err = Object.assign(new Error('User is not authorized to perform: cloudformation:GetTemplate'), {
+        name: 'AccessDenied',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 403 },
+      });
+      return Promise.reject(err);
+    });
+    const { provider, r } = await resolver();
+    expect((await r.resolveImportJudged!('P-Bucket')).detail).toMatch(
+      /GetTemplate of .*Producer\/p-1 failed: AccessDenied: User is not authorized to perform: cloudformation:GetTemplate/
+    );
+    provider.dispose();
+  });
+
+  it('fails closed past 256 stacks in one producer tree', async () => {
+    const wide = Array.from({ length: 300 }, (_, i) => {
+      const id = `arn:aws:cloudformation:us-east-1:123456789012:stack/W${i}/w`;
+      stacks[id] = { resources: [], outputs: [], template: {} };
+      return { LogicalResourceId: `W${i}`, PhysicalResourceId: id, ResourceType: 'AWS::CloudFormation::Stack' };
+    });
+    stacks[NESTED]!.resources.push(...wide);
+    const { provider, r } = await resolver();
+    expect(await r.resolveImportJudged!('P-Bucket')).toMatchObject({
+      verdict: 'unreadable',
+      detail: 'the producer tree goes past 256 stacks',
+    });
+    expect(calls('ListStackResourcesCommand')).toBeLessThanOrEqual(256);
+    provider.dispose();
+  });
+
   it('reads each stack part once per resolver, across exports', async () => {
     const { provider, r } = await resolver();
     await r.resolveImportJudged!('P-Bucket');

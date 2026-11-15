@@ -2109,7 +2109,8 @@ command line: pass it through `Environment` or `Secrets` instead.
 
 A value another stack exports, read through `Fn::ImportValue`, is checked
 for the PRODUCER stack's secrets (`run-task`, `start-service` and
-`start-alb`). `ListExports` names the stack that exports it, and cdk-local
+`start-alb`; a Lambda or AgentCore env var too, where such a value is passed
+value-less). `ListExports` names the stack that exports it, and cdk-local
 reads that stack's resources (`ListStackResources`, its nested stacks'
 included), its outputs (`DescribeStacks`) and its template (`GetTemplate`).
 A value holding one of these is a secret:
@@ -2129,7 +2130,9 @@ stack it cannot read (grant `cloudformation:ListStackResources`,
 `DescribeStacks` and `GetTemplate` on it), a template that is not JSON, a
 re-export whose export name is computed, and an export the producer no
 longer declares. Passing the value through `Environment` keeps it
-resolving. The check does not cover a secret the producer received as a
+resolving (under `CDK_DOCKER=finch` on macOS / Windows a value-less env var
+is refused like a `SecureString` one, see
+[finch on macOS and Windows](#finch-on-macos-and-windows)). The check does not cover a secret the producer received as a
 plain (not `NoEcho`) parameter, a key the producer transforms
 (`Fn::Base64`, `Fn::Select` of `Fn::Split`), or what a custom resource
 returns under a name that does not look secret. A host CLI's own

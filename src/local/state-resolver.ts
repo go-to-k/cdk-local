@@ -109,6 +109,7 @@ import type { ResourceState } from '../types/state.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { containsDynamicReference } from './dynamic-reference-resolver.js';
 import type { AwsEmulatorWorkload } from '../utils/aws-proxy.js';
+import { crossStackSecretCheckOf, watchResolved } from './cross-stack-secret-check.js';
 
 /**
  * Result of substituting a single env-var value against state.
@@ -1303,7 +1304,8 @@ export interface StateEnvSubstitutionAudit {
   unresolved: Array<{ key: string; reason: string }>;
   /**
    * Keys whose resolved value consumed a sensitive (SecureString) parameter
-   * (see {@link SubstitutionContext.sensitiveParameters}). The CLI layer
+   * (see {@link SubstitutionContext.sensitiveParameters}), or (async only) a
+   * cross-stack value a judged resolver withheld (go-to-k/cdkd#6339). The CLI layer
    * routes these through docker's value-from-process-env form so the
    * decrypted secret never lands on the `docker run` argv (issue #99).
    */
@@ -1439,6 +1441,7 @@ export async function substituteEnvVarsFromStateAsync(
   const context: SubstitutionContext = isContext(contextOrResources)
     ? contextOrResources
     : { resources: contextOrResources };
+  const producerSecrets = crossStackSecretCheckOf(context.crossStackResolver);
 
   for (const [key, value] of Object.entries(templateEnv)) {
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -1446,11 +1449,16 @@ export async function substituteEnvVarsFromStateAsync(
       continue;
     }
 
-    const { result, consumedSensitive } = await resolveWithSensitivityAsync(value, context);
+    // A value its producer stack says holds a secret (or that could not be
+    // checked) is passed value-less too (go-to-k/cdkd#6339).
+    const watched = watchResolved(context, producerSecrets);
+    const { result, consumedSensitive } = await resolveWithSensitivityAsync(value, watched.context);
     if (result.kind === 'literal') {
       defineOwnKey(env, key, result.value);
       audit.resolvedKeys.push(key);
-      if (consumedSensitive) audit.sensitiveKeys.push(key);
+      if (consumedSensitive || watched.seen.producerSecret !== undefined) {
+        audit.sensitiveKeys.push(key);
+      }
     } else {
       audit.unresolved.push({ key, reason: result.reason });
     }
