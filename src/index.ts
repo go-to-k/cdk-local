@@ -112,6 +112,8 @@ export {
   substituteEnvVarsFromState,
   substituteEnvVarsFromStateAsync,
   type CrossStackResolver,
+  type CrossStackSecretVerdict,
+  type JudgedCrossStackValue,
   type SubstitutionContext,
   type StateEnvSubstitutionAudit,
   type PseudoParameters,

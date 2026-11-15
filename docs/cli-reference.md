@@ -1625,6 +1625,14 @@ reference (a shape CloudFormation does not accept), a
 reference) is refused too, since it would land on the `docker run`
 command line: pass it through `Environment` or `Secrets` instead.
 
+A value another stack exports (`Fn::ImportValue`) is checked for the
+producer stack's secrets, read from CloudFormation (`ListStackResources`,
+`DescribeStacks`, `GetTemplate` on the exporting stack): one holding a
+secret, or one that cannot be checked, is refused in an argv element,
+passed value-less in `Environment` and dropped as a `Secrets` `ValueFrom`.
+What it covers and what it does not:
+[local-emulation.md](local-emulation.md#env--secrets-substitution---from-cfn-stack).
+
 Resolved `Secrets[].ValueFrom` strings then flow into the standard
 SecretsManager / SSM resolver below.
 

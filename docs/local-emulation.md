@@ -2107,6 +2107,36 @@ reference (a shape CloudFormation does not accept), a
 reference) is refused too, since it would land on the `docker run`
 command line: pass it through `Environment` or `Secrets` instead.
 
+A value another stack exports, read through `Fn::ImportValue`, is checked
+for the PRODUCER stack's secrets (`run-task`, `start-service` and
+`start-alb`). `ListExports` names the stack that exports it, and cdk-local
+reads that stack's resources (`ListStackResources`, its nested stacks'
+included), its outputs (`DescribeStacks`) and its template (`GetTemplate`).
+A value holding one of these is a secret:
+
+- an `AWS::AppSync::ApiKey`'s key (its physical id is the key's ARN);
+- an output read from a `NoEcho` parameter;
+- an output read from an attribute that is a secret by type
+  (`AWS::AppSync::ApiKey.ApiKey`) or by name
+  (`AWS::IAM::AccessKey.SecretAccessKey`), through the producer's nested
+  stacks and the exports it re-exports from.
+
+Such a value is refused in `Command`, `EntryPoint` or a health-check
+command, passed value-less (`-e KEY`) in `Environment`, and dropped as a
+`Secrets` `ValueFrom`, with a warning naming no value. A value cdk-local
+cannot check is handled the same way (fail closed). That covers a producer
+stack it cannot read (grant `cloudformation:ListStackResources`,
+`DescribeStacks` and `GetTemplate` on it), a template that is not JSON, a
+re-export whose export name is computed, and an export the producer no
+longer declares. Passing the value through `Environment` keeps it
+resolving. The check does not cover a secret the producer received as a
+plain (not `NoEcho`) parameter, a key the producer transforms
+(`Fn::Base64`, `Fn::Select` of `Fn::Split`), or what a custom resource
+returns under a name that does not look secret. A host CLI's own
+cross-stack resolver takes part by carrying the optional
+`resolveImportJudged` / `resolveGetStackOutputJudged` methods of
+`CrossStackResolver`.
+
 Resolved `Secrets[].ValueFrom` strings then flow into the standard
 SecretsManager / SSM resolver below.
 
