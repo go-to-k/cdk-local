@@ -554,6 +554,13 @@ function discoverRestV1Method(
  * saying "cross-stack" there sent users after the wrong cause (#922).
  */
 function unresolvedLambdaArnHint(value: unknown, suggestFromState: boolean): string {
+  if (crossesNestedStack(value)) {
+    return (
+      'The function is in another stack of a CDK NestedStack chain (a nested stack output, or a ' +
+      `parameter its parent passes in), and ${getEmbedConfig().binaryName} resolves an integration ` +
+      'only within its own template; declare the function in the same stack as the API to serve it locally.'
+    );
+  }
   if (typeof value === 'string' || containsImportValue(value)) {
     return `Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally${
       suggestFromState
@@ -562,6 +569,26 @@ function unresolvedLambdaArnHint(value: unknown, suggestFromState: boolean): str
     }.`;
   }
   return `${getEmbedConfig().binaryName} does not recognise this Lambda Arn shape; please report it with the synthesized value at https://github.com/go-to-k/cdk-local/issues.`;
+}
+
+/**
+ * Whether the value reaches across a CDK nested-stack boundary: a
+ * `Fn::GetAtt` of a nested stack's `Outputs.*`, or a `Ref` to the parameter
+ * CDK names `referenceto...` when it hands a parent value to a nested stack.
+ */
+function crossesNestedStack(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(crossesNestedStack);
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  const getAtt = obj['Fn::GetAtt'];
+  const attribute = Array.isArray(getAtt)
+    ? getAtt[1]
+    : typeof getAtt === 'string'
+      ? getAtt.slice(getAtt.indexOf('.') + 1)
+      : undefined;
+  if (typeof attribute === 'string' && attribute.startsWith('Outputs.')) return true;
+  if (typeof obj['Ref'] === 'string' && obj['Ref'].startsWith('referenceto')) return true;
+  return Object.values(obj).some(crossesNestedStack);
 }
 
 function containsImportValue(value: unknown): boolean {

@@ -1,5 +1,5 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
-import { registeredStack } from '../synthesis/nested-stacks.js';
+import { parentStackOf, registeredStackForTemplate } from '../synthesis/nested-stacks.js';
 import type { TemplateResource } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
@@ -11,6 +11,10 @@ import {
 } from './secret-attributes.js';
 import type { ResolvedSsmParameters } from './ssm-parameter-resolver.js';
 import { substituteAgainstStateAsync, type SubstitutionContext } from './state-resolver.js';
+import { deployedFillMayBeSecret } from './dynamic-reference-resolver.js';
+
+/** How a state record spells a value it withheld (a NoEcho attribute). */
+const STATE_SECRET_MASK = '***';
 
 /**
  * State-source support for a CDK nested stack's `StackInfo`
@@ -53,7 +57,8 @@ export function nestedStackChain(
  * is only kept off the `docker run` argv, as such a value is everywhere else.
  */
 function carriesSecret(value: unknown, resources: Record<string, TemplateResource>): boolean {
-  if (typeof value === 'string') return value.includes('{{resolve:');
+  // A `{{resolve:...}}` string is `deployedFillMayBeSecret`'s to judge.
+  if (typeof value === 'string') return false;
   if (Array.isArray(value)) return value.some((v) => carriesSecret(v, resources));
   if (typeof value !== 'object' || value === null) return false;
   const obj = value as Record<string, unknown>;
@@ -119,52 +124,71 @@ export async function resolveNestedStackParameters(
       unresolved.push(name);
       continue;
     }
+    // A value the state records masked (a NoEcho custom-resource attribute)
+    // is not the value; drop it like an unresolved one rather than hand the
+    // mask down as if it were.
+    if (result.value === STATE_SECRET_MASK) {
+      unresolved.push(name);
+      continue;
+    }
     out.values[name] = String(result.value);
-    if (consumedSensitive || carriesSecret(value, parentResources)) {
+    if (
+      consumedSensitive ||
+      carriesSecret(value, parentResources) ||
+      deployedFillMayBeSecret(value, parent.template)
+    ) {
       out.secureStringLogicalIds.push(name);
     }
   }
   if (unresolved.length > 0) {
     getLogger().warn(
-      `${parentProvider.label}: nested stack ${displayStackName(stack.displayName)} gets ` +
+      `${parentProvider.label}: nested stack ${displayStackName(stack.stackName)} gets ` +
         `${unresolved.map((n) => displayIdent(n, { listMember: true })).join(', ')} from ` +
         `${displayStackName(parent.stackName)}, which ${unresolved.length === 1 ? 'does' : 'do'} not ` +
-        'resolve from its deployed state; an environment variable reading one is dropped.'
+        "resolve from the parent's deployed state; an environment variable reading one is filled " +
+        "from the deployed function's own environment when the state source can read it, else dropped."
     );
   }
   return out;
 }
 
 /**
- * Make `provider` (built for the nested `stack`) also answer the nested
- * stack's parameters from `resolveTemplateSsmParameters`. `parentProvider`
- * builds a provider for the parent stack; it is created on first use and
- * disposed with `provider`.
+ * Make `provider` (built for the nested stack `stackName`) also answer the
+ * nested stack's parameters from `resolveTemplateSsmParameters`. The stack is
+ * picked by the TEMPLATE the caller passes, so two clones sharing a physical
+ * name stay apart and a `--watch` reload's new template gets its own values.
+ * `parentProvider` builds a provider for a parent stack; one is created per
+ * parent name on first use and disposed with `provider`.
  */
 export function withNestedStackParameters(
   provider: LocalStateProvider,
-  stack: StackInfo,
-  parent: StackInfo,
-  parentProvider: () => LocalStateProvider | undefined
+  stackName: string,
+  parentProvider: (parent: StackInfo) => LocalStateProvider | undefined
 ): LocalStateProvider {
   const own = provider.resolveTemplateSsmParameters?.bind(provider);
   const dispose = provider.dispose.bind(provider);
-  let parentInstance: LocalStateProvider | undefined;
-  let nestedParams: Promise<ResolvedSsmParameters> | undefined;
+  const parentInstances = new Map<string, LocalStateProvider | undefined>();
+  const nestedParams = new WeakMap<object, Promise<ResolvedSsmParameters>>();
   provider.resolveTemplateSsmParameters = async (template) => {
     const ownResult = own
       ? await own(template)
       : { values: {}, secureStringLogicalIds: [] as string[] };
-    // The nested stack's own template (a `--watch` reload re-registers it).
-    if (template !== stack.template && template !== registeredStack(stack.stackName)?.template) {
-      return ownResult;
+    const stack = registeredStackForTemplate(stackName, template);
+    const parent = stack ? parentStackOf(stack) : undefined;
+    if (!stack?.nestedStack || !parent) return ownResult;
+    let pending = nestedParams.get(template);
+    if (!pending) {
+      pending = (async () => {
+        if (!parentInstances.has(parent.stackName)) {
+          parentInstances.set(parent.stackName, parentProvider(parent));
+        }
+        const instance = parentInstances.get(parent.stackName);
+        if (!instance) return { values: {}, secureStringLogicalIds: [] };
+        return resolveNestedStackParameters(stack, parent, instance);
+      })();
+      nestedParams.set(template, pending);
     }
-    nestedParams ??= (async () => {
-      parentInstance ??= parentProvider();
-      if (!parentInstance) return { values: {}, secureStringLogicalIds: [] };
-      return resolveNestedStackParameters(stack, parent, parentInstance);
-    })();
-    const nested = await nestedParams;
+    const nested = await pending;
     return {
       // A value the child resolved itself (an SSM-typed parameter of its own)
       // wins over one handed down; CDK never declares both for one name.
@@ -175,7 +199,7 @@ export function withNestedStackParameters(
     };
   };
   provider.dispose = () => {
-    parentInstance?.dispose();
+    for (const instance of parentInstances.values()) instance?.dispose();
     dispose();
   };
   return provider;

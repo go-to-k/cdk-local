@@ -12,6 +12,8 @@ import {
   withNestedDescendants,
   withNestedStacks,
 } from '../../../src/synthesis/nested-stacks.js';
+import { selectTargetStack } from '../../../src/cli/stack-matcher.js';
+import { parseTarget } from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CdkAppSynthesizer } from '../../../src/synthesis/synthesizer.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -64,14 +66,25 @@ describe('nested-stacks', () => {
   describe('expandNestedStacks', () => {
     it('expands both copies of a Stage deployed twice, each child under its own parent', () => {
       writeTemplate('AppInner.nested.template.json', { Resources: {} });
-      const beta = parent({ Resources: { InnerNS: innerResource() } }, { displayName: 'Beta/App' });
-      const prod = parent({ Resources: { InnerNS: innerResource() } }, { displayName: 'Prod/App' });
+      const stageResource = (stage: string) =>
+        nestedResource(
+          `${stage}/App/Inner.NestedStack/Inner.NestedStackResource`,
+          'AppInner.nested.template.json',
+          { P1: { Ref: 'Q' } }
+        );
+      const beta = parent({ Resources: { InnerNS: stageResource('Beta') } }, { displayName: 'Beta/App' });
+      const prod = parent({ Resources: { InnerNS: stageResource('Prod') } }, { displayName: 'Prod/App' });
       const out = expandNestedStacks([beta, prod]);
       expect(out).toHaveLength(4);
       // Same physical names on both sides; selection must still follow the object.
       expect(out[1]!.stackName).toBe(out[3]!.stackName);
+      expect(out[1]!.displayName).toBe('Beta/App/Inner');
+      expect(out[3]!.displayName).toBe('Prod/App/Inner');
       expect(withNestedDescendants([prod], out)).toEqual([prod, out[3]]);
       expect(withNestedDescendants([beta], out)).toEqual([beta, out[1]]);
+      // Path-form selection picks the clone under that Stage.
+      const sel = selectTargetStack(parseTarget('Prod/App/Inner/Fn'), 'Prod/App/Inner/Fn', out);
+      expect(sel).toEqual({ kind: 'found', stack: out[3] });
     });
 
     it('expands a nested stack next to the manifest and inherits host fields', () => {

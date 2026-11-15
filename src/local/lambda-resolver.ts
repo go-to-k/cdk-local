@@ -340,15 +340,9 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
   }
 
   const parsed = parseTarget(target);
-  let stack = pickStack(parsed, stacks, target);
-  // A logical ID (`Stack:LogicalId`, or bare in a single-stack app) names a
-  // resource of the stack OR of a CDK nested stack deployed under it.
-  if (!parsed.isPath && !stack.template.Resources?.[parsed.pathOrId]) {
-    const owners = withNestedDescendants([stack], stacks).filter(
-      (s) => s !== stack && s.template.Resources?.[parsed.pathOrId] !== undefined
-    );
-    if (owners.length === 1) stack = owners[0]!;
-  }
+  // A logical ID inside a CDK nested stack selects that nested stack
+  // (`selectTargetStack`).
+  const stack = pickStack(parsed, stacks, target);
 
   const template = stack.template;
   const resources = template.Resources ?? {};

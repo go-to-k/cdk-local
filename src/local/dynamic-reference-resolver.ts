@@ -6,6 +6,7 @@ import { getLogger } from '../utils/logger.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { defineOwnKey } from '../utils/own-keys.js';
+import { nestedParameterSource } from '../synthesis/nested-stacks.js';
 
 /**
  * CloudFormation dynamic references (`{{resolve:secretsmanager:...}}`,
@@ -150,9 +151,19 @@ export function withoutKeys<T>(
  */
 export function deployedFillMayBeSecret(
   templateValue: unknown,
-  template?: { Parameters?: Record<string, unknown>; Resources?: Record<string, unknown> }
+  template?: { Parameters?: Record<string, unknown>; Resources?: Record<string, unknown> },
+  depth = 0
 ): boolean {
   const resources = template?.Resources ?? {};
+  // A CDK nested stack's template reads a parent value through a parameter
+  // (go-to-k/cdk-local#986): judge what the PARENT put there, against the
+  // parent's template, so a parent secret is no safer to hand down than to
+  // read directly. CDK nests a handful of levels; the cap only stops a cycle.
+  const nested = depth < 32 ? nestedParameterSource(template) : undefined;
+  const parentValueMayBeSecret = (name: string): boolean =>
+    nested !== undefined &&
+    Object.hasOwn(nested.parameters, name) &&
+    deployedFillMayBeSecret(nested.parameters[name], nested.parentTemplate, depth + 1);
   const secretAttribute = (logicalId: string, attribute: string): boolean => {
     const res = Object.hasOwn(resources, logicalId) ? resources[logicalId] : undefined;
     const type =
@@ -188,7 +199,7 @@ export function deployedFillMayBeSecret(
     for (const m of body.matchAll(/\$\{([^}!][^}]*)\}/g)) {
       const name = m[1]!.trim();
       if (bound.has(name)) continue;
-      if (noEcho.has(name)) return true;
+      if (noEcho.has(name) || parentValueMayBeSecret(name)) return true;
       const dot = name.indexOf('.');
       if (dot > 0 && secretAttribute(name.slice(0, dot), name.slice(dot + 1))) return true;
     }
@@ -208,7 +219,9 @@ export function deployedFillMayBeSecret(
     }
     if (Object.hasOwn(obj, 'Ref')) {
       const target = obj['Ref'];
-      if (typeof target === 'string' && noEcho.has(target)) return true;
+      if (typeof target === 'string' && (noEcho.has(target) || parentValueMayBeSecret(target))) {
+        return true;
+      }
     }
     if (Object.hasOwn(obj, 'Fn::Sub')) {
       const sub = obj['Fn::Sub'];

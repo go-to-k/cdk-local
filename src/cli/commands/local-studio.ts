@@ -22,7 +22,7 @@ import { describeAwsFailureForWarn } from '../../local/credential-error.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
-import { withNestedStacks } from '../../synthesis/nested-stacks.js';
+import { rootStackName, withNestedStacks } from '../../synthesis/nested-stacks.js';
 import { resolveApp } from '../config-loader.js';
 import {
   getEmbedConfig,
@@ -651,7 +651,8 @@ export async function prepareEcsImageContexts(args: {
       owningStacks.push(stack);
     }
   }
-  rejectExplicitCfnStackWithMultipleStacks(options, owningStacks.length);
+  // A CDK nested stack counts with its top-level stack (go-to-k/cdk-local#986).
+  rejectExplicitCfnStackWithMultipleStacks(options, new Set(owningStacks.map(rootStackName)).size);
 
   for (const stack of owningStacks) {
     // The names a container no `--env-vars` section names reads, as the

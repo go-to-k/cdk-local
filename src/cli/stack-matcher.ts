@@ -31,6 +31,8 @@ export interface StackLike {
   displayName?: string;
   /** Set on a CDK nested stack (`expandNestedStacks`). */
   nestedStack?: NestedStackOrigin | undefined;
+  /** The stack's template, when the caller has one: lets a logical ID reach a nested stack. */
+  template?: { Resources?: Record<string, unknown> } | undefined;
 }
 
 export function matchStacks<T extends StackLike>(stacks: T[], patterns: string[]): T[] {
@@ -132,6 +134,25 @@ export type TargetStackSelection<T> =
  * {@link matchStacks}.
  */
 export function selectTargetStack<T extends StackLike>(
+  parsed: { stackPattern: string | null; pathOrId: string; isPath: boolean },
+  target: string,
+  stacks: readonly T[]
+): TargetStackSelection<T> {
+  const selection = selectNamedStack(parsed, target, stacks);
+  if (selection.kind !== 'found' || parsed.isPath) return selection;
+  // A logical ID (`Stack:LogicalId`, or bare in a single-stack app) names a
+  // resource of the stack OR of a CDK nested stack deployed under it
+  // (go-to-k/cdk-local#986): the nested stack, when exactly one has it.
+  const has = (s: T): boolean =>
+    s.template?.Resources !== undefined && Object.hasOwn(s.template.Resources, parsed.pathOrId);
+  if (selection.stack.template === undefined || has(selection.stack)) return selection;
+  const owners = withNestedDescendants([selection.stack], stacks).filter(
+    (s) => s !== selection.stack && has(s)
+  );
+  return owners.length === 1 ? { kind: 'found', stack: owners[0]! } : selection;
+}
+
+function selectNamedStack<T extends StackLike>(
   parsed: { stackPattern: string | null; pathOrId: string; isPath: boolean },
   target: string,
   stacks: readonly T[]

@@ -58,7 +58,7 @@ import {
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
   isCfnFlagPresent,
-  deployedStackName,
+  deployedStackNamePseudo,
 } from './local-state-source.js';
 import type { LocalStateProvider, LocalStateRecord } from '../../local/local-state-provider.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -1426,7 +1426,7 @@ async function buildContainerEnvWith(
     };
     subContext.pseudoParameters = imageContext?.pseudoParameters ?? {
       ...derivePseudoParametersFromRegion(loaded.region),
-      stackName: deployedStackName(options, resolved.stack.stackName),
+      ...deployedStackNamePseudo(options, resolved.stack.stackName),
     };
     if (imageContext?.stateParameters) subContext.parameters = imageContext.stateParameters;
     if (imageContext?.stateSensitiveParameters?.length) {
@@ -1541,7 +1541,7 @@ export async function resolveFromS3BucketIntrinsic(
   };
   subContext.pseudoParameters = imageContext?.pseudoParameters ?? {
     ...derivePseudoParametersFromRegion(loaded.region),
-    stackName: deployedStackName(options, resolved.stack.stackName),
+    ...deployedStackNamePseudo(options, resolved.stack.stackName),
   };
   const crossStackResolver = await stateProvider.buildCrossStackResolver(loaded.region);
   if (crossStackResolver) subContext.crossStackResolver = crossStackResolver;
@@ -1623,7 +1623,7 @@ export async function buildAgentCoreImageContext(
   // `AWS::StackName` is the owning stack's deployed name (issue #979).
   context.pseudoParameters = {
     ...derivePseudoParametersFromRegion(region, accountId),
-    stackName: deployedStackName(options, candidate.stackName),
+    ...deployedStackNamePseudo(options, candidate.stackName),
   };
 
   const loaded = await stateProvider.load(candidate.stackName, candidate.region);

@@ -49,7 +49,7 @@ import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import {
   createLocalStateProvider,
-  deployedStackName,
+  deployedStackNamePseudo,
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
   type LocalStateSourceOptions,
@@ -947,7 +947,7 @@ export async function resolvePseudoParametersForInvoke(
       partition: partitionAndSuffix.partition,
       urlSuffix: partitionAndSuffix.urlSuffix,
     }),
-    ...(stackName !== undefined && { stackName: deployedStackName(options, stackName) }),
+    ...(stackName !== undefined && deployedStackNamePseudo(options, stackName)),
   };
   return Object.keys(bag).length === 0 ? undefined : bag;
 }

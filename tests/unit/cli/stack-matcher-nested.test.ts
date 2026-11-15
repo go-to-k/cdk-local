@@ -65,3 +65,42 @@ describe('matchStacks with nested stacks', () => {
     expect(matchStacks(all, [])).toEqual([]);
   });
 });
+
+describe('selectTargetStack: a logical ID that lives only in a nested stack (#986)', () => {
+  const withTemplate = (s: StackInfo, ids: string[]): StackInfo =>
+    ({
+      ...s,
+      template: { Resources: Object.fromEntries(ids.map((i) => [i, { Type: 'AWS::SQS::Queue' }])) },
+    }) as unknown as StackInfo;
+
+  it("colon form 'App:<id only in nested>' selects the nested stack", () => {
+    const App = withTemplate(top('App'), ['Own']);
+    const Inner = withTemplate(child(App, 'InnerNS', 'App/Inner'), ['OnlyInner']);
+    const sel = selectTargetStack(parseTarget('App:OnlyInner'), 'App:OnlyInner', [App, Inner]);
+    expect(sel).toEqual({ kind: 'found', stack: Inner });
+  });
+
+  it('an id the stack itself has stays on the stack', () => {
+    const App = withTemplate(top('App'), ['Both']);
+    const Inner = withTemplate(child(App, 'InnerNS', 'App/Inner'), ['Both']);
+    const sel = selectTargetStack(parseTarget('App:Both'), 'App:Both', [App, Inner]);
+    expect(sel).toEqual({ kind: 'found', stack: App });
+  });
+
+  it('an id in TWO nested stacks stays on the parent (ambiguous: no pick)', () => {
+    const App = withTemplate(top('App'), ['Own']);
+    const I1 = withTemplate(child(App, 'I1', 'App/I1'), ['Dup']);
+    const I2 = withTemplate(child(App, 'I2', 'App/I2'), ['Dup']);
+    const sel = selectTargetStack(parseTarget('App:Dup'), 'App:Dup', [App, I1, I2]);
+    expect(sel).toEqual({ kind: 'found', stack: App });
+  });
+
+  it('a StackLike without a template behaves as before', () => {
+    const App = top('App');
+    const Inner = child(App, 'InnerNS', 'App/Inner');
+    delete (App as { template?: unknown }).template;
+    delete (Inner as { template?: unknown }).template;
+    const sel = selectTargetStack(parseTarget('App:OnlyInner'), 'App:OnlyInner', [App, Inner]);
+    expect(sel).toEqual({ kind: 'found', stack: App });
+  });
+});

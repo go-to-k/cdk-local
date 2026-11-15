@@ -3,10 +3,10 @@
 # verify.sh — local-nested-stack integ test (go-to-k/cdk-local#986)
 #
 # Fully local: no AWS resources are deployed. A CDK `NestedStack` (and a
-# NestedStack inside it) holds a Lambda, a REST API and a Fargate task; every
-# `local` command must address them by construct path (`Stack/Inner/Fn`) or
-# `Stack:LogicalId`, and a single-top-level-stack app must auto-pick the nested
-# API under `start-api` with no `--stack`.
+# NestedStack inside it) holds Lambdas, a REST API, a Fargate task and an ECS
+# service. `invoke`, `run-task` and `start-service` address them by construct
+# path (`Stack/Inner/Fn`) or `Stack:LogicalId`, and a single-top-level-stack
+# app auto-picks the nested API under `start-api` with no `--stack`.
 #
 # Run via `/run-integ local-nested-stack` (recommended) or directly:
 #
@@ -50,8 +50,10 @@ cleanup() {
     echo "[verify] cleaning up orphan containers"
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true
   fi
-  docker network ls --filter "name=cdkl-task-" --format '{{.ID}}' 2>/dev/null \
-    | xargs -r docker network rm >/dev/null 2>&1 || true
+  for prefix in cdkl-task- cdkl-svc-; do
+    docker network ls --filter "name=${prefix}" --format '{{.ID}}' 2>/dev/null \
+      | xargs -r docker network rm >/dev/null 2>&1 || true
+  done
   rm -f "${LOG_FILE}" "${CDKL_STDERR}"
   exit "${rc}"
 }
@@ -148,8 +150,9 @@ ${CLI} invoke "${STACK}/Inner/Nope" --no-pull >/dev/null 2>"${CDKL_STDERR}"
 NOPE_RC=$?
 set -e
 [ "${NOPE_RC}" -ne 0 ] || fail "invoke of a nonexistent nested target exited 0"
-grep -qF "${STACK}/Inner/Deeper/DeepFn" "${CDKL_STDERR}" \
-  || fail "the unknown-target error did not list ${STACK}/Inner/Deeper/DeepFn"
+for listed in "${STACK}/Inner/InnerFn" "${STACK}/Inner/Deeper/DeepFn" "${STACK}/OuterFn"; do
+  grep -qF "${listed}" "${CDKL_STDERR}" || fail "the unknown-target error did not list ${listed}"
+done
 echo "[verify]   OK: rc=${NOPE_RC}, stderr lists the nested functions"
 
 echo "[verify] step 7: start-api with no --stack serves the NESTED API"
@@ -189,6 +192,46 @@ TASK_OUT="$(${CLI} run-task "${STACK}/Inner/Task" --no-pull 2>"${CDKL_STDERR}")"
 echo "${TASK_OUT}" | grep -qF "NESTED_TASK_OK WHO=task" \
   || { echo "${TASK_OUT}" >&2; fail "run-task stdout lacks 'NESTED_TASK_OK WHO=task'"; }
 echo "[verify]   OK: run-task printed NESTED_TASK_OK WHO=task"
+
+echo "[verify] step 9: run-task by the parent's name and the nested task definition's logical id"
+TASK_LOGICAL_ID="$(node -e '
+  const fs = require("fs");
+  for (const f of fs.readdirSync("cdk.out").filter((n) => n.endsWith(".nested.template.json"))) {
+    const t = JSON.parse(fs.readFileSync("cdk.out/" + f, "utf8"));
+    for (const [id, r] of Object.entries(t.Resources || {})) {
+      if (r.Metadata?.["aws:cdk:path"] === process.argv[1]) { process.stdout.write(id); process.exit(0); }
+    }
+  }
+' "${STACK}/Inner/Task/Resource")"
+[ -n "${TASK_LOGICAL_ID}" ] || fail "could not read the nested task definition's logical id"
+TASK_OUT="$(${CLI} run-task "${STACK}:${TASK_LOGICAL_ID}" --no-pull 2>"${CDKL_STDERR}")" \
+  || { echo "${TASK_OUT}" >&2; fail "run-task ${STACK}:${TASK_LOGICAL_ID} exited non-zero"; }
+echo "${TASK_OUT}" | grep -qF "NESTED_TASK_OK WHO=task" \
+  || { echo "${TASK_OUT}" >&2; fail "colon-form run-task stdout lacks 'NESTED_TASK_OK WHO=task'"; }
+echo "[verify]   OK: run-task ${STACK}:${TASK_LOGICAL_ID}"
+
+echo "[verify] step 10: start-service on the nested ECS service"
+: >"${LOG_FILE}"
+${CLI} start-service "${STACK}/Inner/Service" --no-pull --container-host 127.0.0.1 >"${LOG_FILE}" 2>&1 &
+SERVER_PID=$!
+SERVED=0
+for _ in $(seq 1 120); do
+  if grep -q "NESTED_SERVICE_OK WHO=service" "${LOG_FILE}" 2>/dev/null; then
+    SERVED=1
+    break
+  fi
+  kill -0 "${SERVER_PID}" 2>/dev/null || break
+  sleep 0.5
+done
+if [[ "${SERVED}" -eq 0 ]]; then
+  cat "${LOG_FILE}" >&2
+  if kill -0 "${SERVER_PID}" 2>/dev/null; then
+    fail "start-service replica did not log NESTED_SERVICE_OK within 60s"
+  fi
+  fail "start-service exited before its replica logged"
+fi
+stop_server
+echo "[verify]   OK: start-service ran the nested service's replica"
 
 echo ""
 echo "[verify] All local-nested-stack checks passed."

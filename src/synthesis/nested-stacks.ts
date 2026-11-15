@@ -248,6 +248,26 @@ export function withNestedDescendants<
 const parentOf = new WeakMap<object, object>();
 
 /**
+ * `stack`'s resources followed by those of the CDK nested stacks deployed
+ * under it (first logical ID wins), for a not-found message's candidates.
+ */
+export function resourcesWithNestedStacks<
+  T extends {
+    stackName: string;
+    nestedStack?: NestedStackOrigin | undefined;
+    template: CloudFormationTemplate;
+  },
+>(stack: T, stacks: readonly T[]): CloudFormationTemplate['Resources'] {
+  const merged = Object.create(null) as CloudFormationTemplate['Resources'];
+  for (const s of withNestedDescendants([stack], stacks)) {
+    for (const [logicalId, resource] of Object.entries(s.template.Resources ?? {})) {
+      if (!Object.hasOwn(merged, logicalId)) merged[logicalId] = resource;
+    }
+  }
+  return merged;
+}
+
+/**
  * The top-level stack name a stack belongs to: itself, or its nested chain's
  * root. A host's `checkSelectedStacks` knows only top-level stacks.
  */
@@ -291,15 +311,60 @@ export function withNestedStacks(synthesizer: CdkAppSynthesizer): CdkAppSynthesi
  * chain to reach a nested stack's deployed state; every synthesis replaces
  * the registry's entries for the stacks it lists.
  */
-const registry = new Map<string, StackInfo>();
+const registry = new Map<string, StackInfo[]>();
 
 export function registerNestedStacks(stacks: readonly StackInfo[]): void {
-  for (const stack of stacks) registry.set(stack.stackName, stack);
+  const byName = new Map<string, StackInfo[]>();
+  for (const stack of stacks) {
+    const list = byName.get(stack.stackName);
+    if (list) list.push(stack);
+    else byName.set(stack.stackName, [stack]);
+  }
+  for (const [name, list] of byName) registry.set(name, list);
 }
 
-/** The registered stack for `stackName` (top-level or nested), if any. */
+/**
+ * The registered stack for `stackName` (top-level or nested), if any. Two
+ * clones sharing a physical name (one Stage deployed to two accounts) list
+ * the same templates, so the first serves a caller that needs only the
+ * stack's SHAPE; {@link registeredStackForTemplate} tells them apart.
+ */
 export function registeredStack(stackName: string): StackInfo | undefined {
-  return registry.get(stackName);
+  return registry.get(stackName)?.[0];
+}
+
+/** The registered `stackName` stack whose template IS `template`. */
+export function registeredStackForTemplate(
+  stackName: string,
+  template: unknown
+): StackInfo | undefined {
+  return registry.get(stackName)?.find((s) => s.template === template);
+}
+
+/** The stack `stack` is nested in: the one it was expanded from, else by name. */
+export function parentStackOf(stack: StackInfo): StackInfo | undefined {
+  const linked = parentOf.get(stack);
+  if (linked) return linked as StackInfo;
+  return stack.nestedStack ? registeredStack(stack.nestedStack.parentStackName) : undefined;
+}
+
+/**
+ * For a nested stack's TEMPLATE (as a resolver holds it): the values its
+ * parent passes in for the template's parameters, and the parent's template,
+ * so a check on a child value can follow a `Ref` to one of those parameters
+ * back to what the parent put there.
+ */
+export function nestedParameterSource(
+  template: unknown
+): { parameters: Record<string, unknown>; parentTemplate: CloudFormationTemplate } | undefined {
+  for (const list of registry.values()) {
+    const stack = list.find((s) => s.template === template && s.nestedStack !== undefined);
+    if (!stack?.nestedStack) continue;
+    const parent = parentStackOf(stack);
+    if (!parent) return undefined;
+    return { parameters: stack.nestedStack.parameters, parentTemplate: parent.template };
+  }
+  return undefined;
 }
 
 /** Test hook. */

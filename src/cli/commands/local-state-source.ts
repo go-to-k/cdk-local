@@ -131,8 +131,22 @@ export function resolveCfnStackName(fromCfnStack: string | boolean, stackName: s
 export function deployedStackName(
   opts: Pick<LocalStateSourceOptions, 'fromCfnStack'>,
   stackName: string
-): string {
+): string | undefined {
+  // A CDK nested stack's deployed name is CloudFormation-generated
+  // (`<parent>-<id>NestedStack...-<suffix>`), never the `<parent>~<id>` it is
+  // listed under nor the top-level name `--from-cfn-stack <name>` gives:
+  // leave `AWS::StackName` unresolved rather than hand over a wrong one.
+  if (registeredStack(stackName)?.nestedStack !== undefined) return undefined;
   return resolveCfnStackName(opts.fromCfnStack ?? false, stackName);
+}
+
+/** {@link deployedStackName} as a pseudo-parameter bag entry: empty when it is unknown. */
+export function deployedStackNamePseudo(
+  opts: Pick<LocalStateSourceOptions, 'fromCfnStack'>,
+  stackName: string
+): { stackName?: string } {
+  const name = deployedStackName(opts, stackName);
+  return name === undefined ? {} : { stackName: name };
 }
 
 /**
@@ -351,10 +365,7 @@ export function createLocalStateProvider(
   // physical nested stack through its top-level stack, and its parameters
   // resolve against the parent's state.
   const stack = registeredStack(stackName);
-  const parent = stack?.nestedStack
-    ? registeredStack(stack.nestedStack.parentStackName)
-    : undefined;
-  const nested = stack && parent ? nestedStackChain(stack, registeredStack) : undefined;
+  const nested = stack?.nestedStack ? nestedStackChain(stack, registeredStack) : undefined;
   const provider = createStackStateProvider(
     options,
     stackName,
@@ -363,8 +374,8 @@ export function createLocalStateProvider(
     behavior,
     nested
   );
-  if (!provider || !stack || !parent) return provider;
-  return withNestedStackParameters(provider, stack, parent, () =>
+  if (!provider || !nested) return provider;
+  return withNestedStackParameters(provider, stackName, (parent) =>
     createLocalStateProvider(options, parent.stackName, synthRegion, extraStateProviders, behavior)
   );
 }

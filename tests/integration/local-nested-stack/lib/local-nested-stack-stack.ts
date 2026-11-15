@@ -58,6 +58,29 @@ class InnerStack extends cdk.NestedStack {
       essential: true,
     });
 
+    // An ECS service for `start-service` (bridge mode: no VPC needed locally).
+    const cluster = new ecs.CfnCluster(this, 'Cluster');
+    const serviceTask = new ecs.CfnTaskDefinition(this, 'ServiceTask', {
+      networkMode: 'bridge',
+      containerDefinitions: [
+        {
+          name: 'svc',
+          image: 'public.ecr.aws/docker/library/busybox:1.36',
+          essential: true,
+          entryPoint: ['/bin/sh', '-c'],
+          command: ['while true; do echo "NESTED_SERVICE_OK WHO=$WHO"; sleep 2; done'],
+          environment: [{ name: 'WHO', value: 'service' }],
+          memoryReservation: 16,
+        },
+      ],
+    });
+    new ecs.CfnService(this, 'Service', {
+      cluster: cluster.ref,
+      taskDefinition: serviceTask.ref,
+      desiredCount: 1,
+      launchType: 'EC2',
+    });
+
     new DeeperStack(this, 'Deeper');
   }
 }

@@ -50,6 +50,8 @@ import { listTargets } from '../../local/target-lister.js';
 import { isInteractive, pickManyTargets } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import {
+  registeredStack,
+  rootStackName,
   topLevelStacks,
   withNestedDescendants,
   withNestedStacks,
@@ -62,7 +64,7 @@ import type { AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import {
   createLocalStateProvider,
-  deployedStackName,
+  deployedStackNamePseudo,
   groupWorkloadsRoutedApart,
   UNNAMED_WORKLOAD,
   isCfnFlagPresent,
@@ -4029,7 +4031,14 @@ export async function loadStateForRoutedStacks(
   // collide between siblings (see local-state-source.ts for the
   // rationale). Bare `--from-cfn-stack` is safe because each routed
   // stack uses its own host stack name.
-  rejectExplicitCfnStackWithMultipleStacks(options, reachableStackNames.size);
+  // A CDK nested stack is part of its top-level stack, which an explicit
+  // `--from-cfn-stack <name>` names (go-to-k/cdk-local#986).
+  rejectExplicitCfnStackWithMultipleStacks(
+    options,
+    new Set(
+      [...reachableStackNames].map((n) => rootStackName(registeredStack(n) ?? { stackName: n }))
+    ).size
+  );
   for (const stackName of reachableStackNames) {
     const stack = stacks.find((s) => s.stackName === stackName);
     if (!stack) continue;
@@ -4244,7 +4253,7 @@ export async function resolvePseudoParametersForStartApi(
       partition: partitionAndSuffix.partition,
       urlSuffix: partitionAndSuffix.urlSuffix,
     }),
-    ...(stackName !== undefined && { stackName: deployedStackName(options, stackName) }),
+    ...(stackName !== undefined && deployedStackNamePseudo(options, stackName)),
   };
   return Object.keys(bag).length === 0 ? undefined : bag;
 }
