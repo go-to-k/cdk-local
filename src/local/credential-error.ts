@@ -455,9 +455,17 @@ export function sanitizeServiceExceptionMessage(message: string): string {
  * exists for.
  */
 export function describeCredentialLoadFailure(err: unknown): string {
+  return describeWithheld(err, stringifyThrown(err).length, (text) => text);
+}
+
+function describeWithheld(
+  err: unknown,
+  messageLength: number,
+  scrub: (text: string) => string
+): string {
   const code = clampErrorCode(err);
   const kind = code === undefined ? clampErrorName(err) : `${clampErrorName(err)} ${code}`;
-  return `${kind}; ${stringifyThrown(err).length}-character message withheld, logged at debug level under --verbose`;
+  return `${scrub(kind)}; ${messageLength}-character message withheld, logged at debug level under --verbose`;
 }
 
 /**
@@ -489,6 +497,13 @@ export function describeCredentialLoadFailure(err: unknown): string {
  * see. Note that this puts the full text into that ring for a
  * `--verbose` studio run; see `docs/troubleshooting.md`.
  *
+ * `scrub`, when given, rewrites the RAW message before anything else sees it
+ * — before the length cap, the flattening, the `debug` line and the character
+ * count — and the clamped class name / code too (go-to-k/cdk-local#984). A
+ * caller that must keep one value it knows (a withheld bucket name) off every
+ * line passes it; applied after the cap instead, a value cut in two by the
+ * truncation would leave its prefix behind.
+ *
  * ORDERING: the `debug` line is emitted when THIS function runs, which is
  * before the `warn` at every site — inline in the `warn`'s template at eight of
  * them, and a couple of statements earlier at the one that hoists the result
@@ -496,12 +511,17 @@ export function describeCredentialLoadFailure(err: unknown): string {
  * refers to it under `--verbose`. Left as is: restructuring every call site to
  * log afterwards would buy an ordering nobody reads top-down anyway.
  */
-export function describeAwsFailureForWarn(err: unknown, operation: string): string {
+export function describeAwsFailureForWarn(
+  err: unknown,
+  operation: string,
+  scrub: (text: string) => string = (text) => text
+): string {
+  const message = scrub(stringifyThrown(err));
   if (isAwsServiceException(err)) {
-    return `${clampErrorName(err)}: ${sanitizeServiceExceptionMessage(stringifyThrown(err))}`;
+    return `${scrub(clampErrorName(err))}: ${sanitizeServiceExceptionMessage(message)}`;
   }
   getLogger().debug(
-    `${operation}: the AWS SDK's own failure message was: ${flattenToOneLine(stringifyThrown(err))}`
+    `${operation}: the AWS SDK's own failure message was: ${flattenToOneLine(message)}`
   );
-  return describeCredentialLoadFailure(err);
+  return describeWithheld(err, message.length, scrub);
 }
