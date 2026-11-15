@@ -53,6 +53,13 @@ export interface DownloadS3BundleOptions {
    * (`AWS_ENDPOINT_URL_S3`) for it; then from real S3.
    */
   workload?: AwsEmulatorWorkload;
+  /**
+   * Name the bucket as `<cross-stack value withheld>` in every log line and
+   * error (go-to-k/cdkd#6339): set when the bucket came from a cross-stack
+   * value its producer stack says may be a secret. The download still uses
+   * the real name. Unset, the output is unchanged.
+   */
+  redactBucket?: boolean;
 }
 
 export interface ExtractedS3Bundle {
@@ -71,7 +78,7 @@ export async function downloadAndExtractS3Bundle(
   location: S3BundleLocation,
   options: DownloadS3BundleOptions = {}
 ): Promise<ExtractedS3Bundle> {
-  const ref = formatRef(location);
+  const ref = formatRef(location, options.redactBucket);
   getLogger().info(`Downloading fromS3 code bundle ${ref}...`);
 
   const bytes = await (options.fetchObject ?? defaultFetchObject(options))(location);
@@ -123,9 +130,10 @@ export async function downloadAndExtractS3Bundle(
  * so they are wire-derived on that path, and this string now lands on a
  * default-level error line as well as the `info` progress line it always fed.
  */
-function formatRef(location: S3BundleLocation): string {
+function formatRef(location: S3BundleLocation, redactBucket = false): string {
   const version = location.versionId ? `?versionId=${flattenToOneLine(location.versionId)}` : '';
-  return `s3://${flattenToOneLine(location.bucket)}/${flattenToOneLine(location.key)}${version}`;
+  const bucket = redactBucket ? '<cross-stack value withheld>' : flattenToOneLine(location.bucket);
+  return `s3://${bucket}/${flattenToOneLine(location.key)}${version}`;
 }
 
 /**
@@ -183,7 +191,7 @@ function defaultFetchObject(
       );
       if (!res.Body) {
         throw new CdkLocalError(
-          `S3 GetObject for ${formatRef(location)} returned an empty body.`,
+          `S3 GetObject for ${formatRef(location, options.redactBucket)} returned an empty body.`,
           'LOCAL_INVOKE_AGENTCORE_S3_BUNDLE_EMPTY_BODY'
         );
       }
@@ -211,7 +219,7 @@ function defaultFetchObject(
       // this module's literal, not anything off the wire.
       if (err instanceof CdkLocalError) throw err;
       throw new CdkLocalError(
-        `S3 GetObject for ${formatRef(location)} failed: ${describeAwsFailureForWarn(
+        `S3 GetObject for ${formatRef(location, options.redactBucket)} failed: ${describeAwsFailureForWarn(
           err,
           'S3 GetObject (fromS3 bundle)'
         )}`,

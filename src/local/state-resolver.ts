@@ -109,6 +109,7 @@ import type { ResourceState } from '../types/state.js';
 import { defineOwnKey } from '../utils/own-keys.js';
 import { containsDynamicReference } from './dynamic-reference-resolver.js';
 import type { AwsEmulatorWorkload } from '../utils/aws-proxy.js';
+import { crossStackSecretCheckOf, watchResolved } from './cross-stack-secret-check.js';
 
 /**
  * Result of substituting a single env-var value against state.
@@ -184,6 +185,42 @@ export interface CrossStackResolver {
     producerRegion: string,
     outputName: string
   ): Promise<string | undefined>;
+  /**
+   * OPTIONAL judged variant of {@link resolveImport}: the same value, with
+   * what the PRODUCER stack says about it (go-to-k/cdkd#6339). The ECS
+   * cross-stack post-pass (`applyCrossStackResolverToTask`) reads it when the
+   * resolver carries BOTH judged variants, and keeps a judged value off the
+   * `docker run` argv; a resolver without them is served exactly as before.
+   */
+  resolveImportJudged?(exportName: string): Promise<JudgedCrossStackValue>;
+  /** OPTIONAL judged variant of {@link resolveGetStackOutput}; see {@link resolveImportJudged}. */
+  resolveGetStackOutputJudged?(
+    producerStack: string,
+    producerRegion: string,
+    outputName: string
+  ): Promise<JudgedCrossStackValue>;
+}
+
+/**
+ * What a resolver knows of a value one judged call returned: `secret` when it
+ * holds a secret of its producer stack; `unreadable` when what could tell
+ * (the producer stack, a nested child, a stack it re-exports from) could not
+ * be read; `stale` when the value was served from an entry the producer no
+ * longer exports. Each but `secret` fails closed: the value is handled as a
+ * secret.
+ */
+export type CrossStackSecretVerdict = 'secret' | 'unreadable' | 'stale';
+
+/** A value one judged {@link CrossStackResolver} call returned, with its verdict. */
+export interface JudgedCrossStackValue {
+  value: string | undefined;
+  /** Absent: the producer says the value holds none of its secrets. */
+  verdict?: CrossStackSecretVerdict | undefined;
+  /**
+   * Why the value could not be judged, for an `unreadable` / `stale` verdict:
+   * a clause naming stacks only, never a value, printed in the refusal.
+   */
+  detail?: string | undefined;
 }
 
 export interface SubstitutionContext {
@@ -1267,7 +1304,8 @@ export interface StateEnvSubstitutionAudit {
   unresolved: Array<{ key: string; reason: string }>;
   /**
    * Keys whose resolved value consumed a sensitive (SecureString) parameter
-   * (see {@link SubstitutionContext.sensitiveParameters}). The CLI layer
+   * (see {@link SubstitutionContext.sensitiveParameters}), or (async only) a
+   * cross-stack value a judged resolver withheld (go-to-k/cdkd#6339). The CLI layer
    * routes these through docker's value-from-process-env form so the
    * decrypted secret never lands on the `docker run` argv (issue #99).
    */
@@ -1403,6 +1441,7 @@ export async function substituteEnvVarsFromStateAsync(
   const context: SubstitutionContext = isContext(contextOrResources)
     ? contextOrResources
     : { resources: contextOrResources };
+  const producerSecrets = crossStackSecretCheckOf(context.crossStackResolver);
 
   for (const [key, value] of Object.entries(templateEnv)) {
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -1410,11 +1449,16 @@ export async function substituteEnvVarsFromStateAsync(
       continue;
     }
 
-    const { result, consumedSensitive } = await resolveWithSensitivityAsync(value, context);
+    // A value its producer stack says holds a secret (or that could not be
+    // checked) is passed value-less too (go-to-k/cdkd#6339).
+    const watched = watchResolved(context, producerSecrets);
+    const { result, consumedSensitive } = await resolveWithSensitivityAsync(value, watched.context);
     if (result.kind === 'literal') {
       defineOwnKey(env, key, result.value);
       audit.resolvedKeys.push(key);
-      if (consumedSensitive) audit.sensitiveKeys.push(key);
+      if (consumedSensitive || watched.seen.producerSecret !== undefined) {
+        audit.sensitiveKeys.push(key);
+      }
     } else {
       audit.unresolved.push({ key, reason: result.reason });
     }

@@ -1107,6 +1107,41 @@ describe('resolveFromS3BucketIntrinsic — fromS3 Code.S3.Bucket intrinsic resol
     expect(crossStackResolver.resolveImport).toHaveBeenCalledWith('SharedBundleBucket');
   });
 
+  it.each([
+    ['a judged secret', { verdict: 'secret' as const }, false],
+    ['a value that could not be checked', { verdict: 'unreadable' as const }, false],
+    ['no verdict', {}, true],
+  ])(
+    'uses a cross-stack bucket with %s, printing it only when unjudged (go-to-k/cdkd#6339)',
+    async (_label, judgement, printed) => {
+      const { getLogger } = await import('../../../src/utils/logger.js');
+      const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+      try {
+        const r = runtimeWithIntrinsic({ 'Fn::ImportValue': 'SharedBundleBucket' });
+        const crossStackResolver = {
+          resolveImport: vi.fn().mockResolvedValue('bucket-from-producer'),
+          resolveGetStackOutput: vi.fn(),
+          resolveImportJudged: vi.fn().mockResolvedValue({ value: 'bucket-from-producer', ...judgement }),
+          resolveGetStackOutputJudged: vi.fn(),
+        };
+        const stateProvider = {
+          buildCrossStackResolver: vi.fn().mockResolvedValue(crossStackResolver),
+        } as never;
+        const loaded = { stackName: 'App', region: 'us-east-1', resources: {} } as never;
+        await resolveFromS3BucketIntrinsic(r, stateProvider, loaded, undefined);
+        expect(r.codeArtifact?.s3Source?.bucket).toBe('bucket-from-producer');
+        expect(crossStackResolver.resolveImportJudged).toHaveBeenCalledWith('SharedBundleBucket');
+        const lines = info.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+        expect(lines).toContain('Resolved fromS3 Code.S3.Bucket from state');
+        expect(lines.includes('bucket-from-producer')).toBe(printed);
+        // The download is told to withhold the bucket too (`redactBucket`).
+        expect(r.codeArtifact?.s3Source?.bucketWithheld === true).toBe(!printed);
+      } finally {
+        info.mockRestore();
+      }
+    }
+  );
+
   it('resolves a Fn::GetStackOutput bucket via the cross-stack resolver', async () => {
     const r = runtimeWithIntrinsic({
       'Fn::GetStackOutput': { StackName: 'SharedStack', OutputName: 'BundleBucketName' },

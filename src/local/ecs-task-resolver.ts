@@ -23,6 +23,17 @@ import {
   type SubstitutionContext,
 } from './state-resolver.js';
 import {
+  crossStackSecretArgvReason,
+  crossStackSecretCheckOf,
+  crossStackSecretValueFromReason,
+  watchResolved,
+} from './cross-stack-secret-check.js';
+import {
+  isCustomResourceType,
+  isSecretAttributeName,
+  isSecretValuedAttribute,
+} from './secret-attributes.js';
+import {
   DynamicReferenceResolver,
   containsDynamicReference,
   crossStackDynamicReferenceHook,
@@ -1189,24 +1200,6 @@ function resolveArgvArray(
 const STATE_SECRET_MASK = '***';
 
 /**
- * Attribute names that look credential-bearing, minus the ones that name an
- * identifier of the secret rather than the secret (`SecretArn`, `SecretId`,
- * `SecretName`, ...).
- */
-const SECRET_ATTRIBUTE_NAME = /secret|password|credential/i;
-const NON_SECRET_ATTRIBUTE_SUFFIX = /(arn|id|name|url|alias|status)$/i;
-
-/**
- * Attributes whose VALUE is a secret although their name does not look like
- * one, keyed by resource type and read by own key.
- */
-const SECRET_VALUED_ATTRIBUTES: ReadonlyMap<string, readonly string[]> = new Map([
-  ['AWS::AppSync::ApiKey', ['ApiKey']],
-  ['AWS::EC2::IpamExternalResourceVerificationToken', ['TokenValue']],
-  ['AWS::IVS::StreamKey', ['Value']],
-]);
-
-/**
  * Why an argv element must not be resolved because it reads a SECRET from
  * state, or `undefined` when it reads none. State records some secrets in
  * plaintext (`AWS::IAM::AccessKey`'s `SecretAccessKey`, an AppSync API key,
@@ -1224,16 +1217,14 @@ function secretAttributeRead(
     const recorded = record?.attributes;
     const stored = recorded && Object.hasOwn(recorded, attribute) ? recorded[attribute] : undefined;
     const type = typeof record?.resourceType === 'string' ? record.resourceType : '';
-    const typed = SECRET_VALUED_ATTRIBUTES.get(type);
     if (
-      (SECRET_ATTRIBUTE_NAME.test(attribute) && !NON_SECRET_ATTRIBUTE_SUFFIX.test(attribute)) ||
-      typed?.includes(attribute) === true ||
+      isSecretAttributeName(attribute) ||
+      isSecretValuedAttribute(type, attribute) ||
       // A custom resource can return anything (an `AwsCustomResource` reading a
       // SecureString records the plaintext), and a nested stack's output can
       // pass a secret through: the same classes `deployedFillMayBeSecret`
       // keeps off the argv for Lambda env.
-      type.startsWith('Custom::') ||
-      type === 'AWS::CloudFormation::CustomResource' ||
+      isCustomResourceType(type) ||
       (type === 'AWS::CloudFormation::Stack' && attribute.startsWith('Outputs.')) ||
       stored === STATE_SECRET_MASK
     ) {
@@ -1321,29 +1312,41 @@ function computedAttributeRead(node: unknown): string | undefined {
 }
 
 /**
- * `context` with its cross-stack resolver noting, on `masked`, any value it
- * answers that is the secret mask. A producer value recorded as the mask can
- * be joined into a longer string (`--token=***`), which {@link argvValue}'s
- * whole-value check cannot see (issue #967).
+ * A well-formed Secrets Manager secret or SSM parameter ARN: what a `Secrets`
+ * `ValueFrom` names, a pointer the secrets resolver reads with the caller's
+ * credentials, never the secret itself.
  */
-function withMaskWatch(
-  context: SubstitutionContext,
-  masked: { hit: boolean }
-): SubstitutionContext {
-  const inner = context.crossStackResolver;
-  if (!inner) return context;
-  const watch = (v: string | undefined): string | undefined => {
-    if (v === STATE_SECRET_MASK) masked.hit = true;
-    return v;
-  };
-  return {
-    ...context,
-    crossStackResolver: {
-      resolveImport: async (exportName) => watch(await inner.resolveImport(exportName)),
-      resolveGetStackOutput: async (stack, region, output) =>
-        watch(await inner.resolveGetStackOutput(stack, region, output)),
-    },
-  };
+const SECRET_POINTER_ARN =
+  /^arn:aws(?:-[a-z]+)*:(?:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@!-]+(?::[A-Za-z0-9/_+=.@-]*:[A-Za-z0-9/_+=.@-]*:[A-Za-z0-9/_+=.@-]*)?|ssm:[a-z0-9-]+:\d{12}:parameter\/[A-Za-z0-9/_.-]+)$/;
+
+function isSecretPointerArn(value: string): boolean {
+  return SECRET_POINTER_ARN.test(value);
+}
+
+/**
+ * Re-word the sync pass's "dropped" warning for `Secrets` entry `name` (the
+ * container's line and the task's copy) with `reason`, and keep the name in
+ * `droppedSecretNames`: its ValueFrom resolved to a producer stack's secret,
+ * or to a value that could not be checked (go-to-k/cdkd#6339).
+ */
+function redropSecret(
+  task: ResolvedEcsTask,
+  container: ResolvedEcsContainer,
+  containerName: string,
+  name: string,
+  reason: string
+): void {
+  const own = `Secret ${displayIdent(name)} dropped:`;
+  const line = `${own} ${reason}`;
+  container.warnings = [...container.warnings.filter((w) => !w.startsWith(own)), line];
+  const taskOwn = `Container ${displayIdent(containerName)}: ${own}`;
+  task.warnings = [
+    ...task.warnings.filter((w) => !w.startsWith(taskOwn)),
+    `Container ${displayIdent(containerName)}: ${line}`,
+  ];
+  if (!container.droppedSecretNames?.includes(name)) {
+    container.droppedSecretNames = [...(container.droppedSecretNames ?? []), name];
+  }
 }
 
 const CROSS_STACK_ARGV_REASON =
@@ -2245,6 +2248,9 @@ export async function applyCrossStackResolverToTask(
 ): Promise<void> {
   if (!context.crossStackResolver) return;
   const { resolveDynamicReferences: _envOnly, ...secretContext } = context;
+  // go-to-k/cdkd#6339: what the producer stack says is a secret, from a
+  // resolver carrying the judged variants; read before any wrapper below hides it.
+  const producerSecrets = crossStackSecretCheckOf(context.crossStackResolver);
   const props = task.resource.Properties ?? {};
   const rawContainers = props['ContainerDefinitions'];
   if (!Array.isArray(rawContainers)) return;
@@ -2295,15 +2301,21 @@ export async function applyCrossStackResolverToTask(
           // produce a different outcome.
           continue;
         }
+        // A producer's secret is served value-less too, as CloudFormation
+        // accepts it in Environment (go-to-k/cdkd#6339).
+        const watched = watchResolved(containerContext, producerSecrets);
         const { result: sub, consumedSensitive } = await resolveWithSensitivityAsync(
           value,
-          containerContext
+          watched.context
         );
         if (sub.kind === 'literal') {
           defineOwnKey(container.environment, key, String(sub.value));
           resolvedEnvKeys.add(key);
           // SecureString-backed value — keep it off the `docker run` argv (#99).
-          if (consumedSensitive && !container.sensitiveEnvKeys.includes(key)) {
+          if (
+            (consumedSensitive || watched.seen.producerSecret !== undefined) &&
+            !container.sensitiveEnvKeys.includes(key)
+          ) {
             container.sensitiveEnvKeys.push(key);
           }
         }
@@ -2323,10 +2335,33 @@ export async function applyCrossStackResolverToTask(
         if (!isCrossStackIntrinsic(valueFromRaw)) continue;
         // A ValueFrom is an ARN, never a value: no dynamic-reference hook, so
         // nothing resolved to plaintext can land where an ARN is echoed (#784).
-        const sub = await substituteAgainstStateAsync(
-          valueFromRaw,
-          ownState ? withContainerState(secretContext, ownState) : secretContext
+        const watched = watchResolved(
+          ownState ? withContainerState(secretContext, ownState) : secretContext,
+          producerSecrets
         );
+        const sub = await substituteAgainstStateAsync(valueFromRaw, watched.context);
+        // A producer's secret is no ARN, and the secrets resolver would name it
+        // in its lookup line: it stays dropped, with this reason (go-to-k/cdkd#6339).
+        // A value that could not be checked but IS a well-formed Secrets
+        // Manager / SSM ARN is kept: an ARN is a pointer, not a bearer value.
+        if (
+          watched.seen.producerSecret !== undefined &&
+          !(
+            watched.seen.producerSecret.verdict !== 'secret' &&
+            sub.kind === 'literal' &&
+            typeof sub.value === 'string' &&
+            isSecretPointerArn(sub.value)
+          )
+        ) {
+          redropSecret(
+            task,
+            container,
+            containerName,
+            sName,
+            crossStackSecretValueFromReason(watched.seen.producerSecret)
+          );
+          continue;
+        }
         if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
           container.secrets.push({ name: sName, valueFrom: sub.value });
           resolvedSecretNames.add(sName);
@@ -2355,16 +2390,19 @@ export async function applyCrossStackResolverToTask(
           remaining.push({ ...u, reason: refusal });
           continue;
         }
-        const masked = { hit: false };
+        // A producer's secret is refused the same way (go-to-k/cdkd#6339).
+        const watched = watchResolved(argvContext, producerSecrets);
         const { result: sub, consumedSensitive } = await resolveWithSensitivityAsync(
           rawElement,
-          withMaskWatch(argvContext, masked)
+          watched.context
         );
-        const arg = masked.hit
+        const arg = watched.seen.masked
           ? {
               reason: `resolved a cross-stack value recorded as the secret mask (${STATE_SECRET_MASK}), not the deployed value`,
             }
-          : argvValue(sub, consumedSensitive);
+          : watched.seen.producerSecret !== undefined
+            ? { reason: crossStackSecretArgvReason(watched.seen.producerSecret) }
+            : argvValue(sub, consumedSensitive);
         if ('value' in arg) {
           target[u.index] = arg.value;
           continue;

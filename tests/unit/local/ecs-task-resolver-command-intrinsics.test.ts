@@ -61,7 +61,7 @@ function stateContext(extra: Partial<EcsImageResolutionContext> = {}): EcsImageR
     stateResources: {
       Bucket: record('AWS::S3::Bucket', BUCKET_NAME, { Arn: BUCKET_ARN }),
       Key: record('AWS::IAM::AccessKey', 'AKIAEXAMPLE', { SecretAccessKey: 'plaintext-secret' }),
-      ApiKey: record('AWS::AppSync::ApiKey', 'apikey-id', { ApiKey: 'da2-plaintext' }),
+      ApiKey: record('AWS::AppSync::ApiKey', 'apikey-id', { ApiKey: 'da2-plaintext', ApiKeyId: 'da2-plaintext' }),
       Custom: record('Custom::Thing', 'custom-id', { Token: '***', Value: 'custom-plaintext' }),
       Cr: record('AWS::CloudFormation::CustomResource', 'cr-id', { 'Parameter.Value': 'ssm-plaintext' }),
       Db: record('AWS::RDS::DBInstance', 'db-id', { 'MasterUserSecret.SecretArn': 'arn:secret' }),
@@ -131,6 +131,8 @@ describe('ECS container argv intrinsics (issue #961)', () => {
     ['a sensitive attribute name', { 'Fn::GetAtt': ['Key', 'SecretAccessKey'] }, 'plaintext-secret'],
     ['a sensitive name inside Fn::Sub', { 'Fn::Sub': 'k=${Key.SecretAccessKey}' }, 'plaintext-secret'],
     ['a secret-valued attribute by type', { 'Fn::GetAtt': 'ApiKey.ApiKey' }, 'da2-plaintext'],
+    // CloudFormation's other attribute for the same key (go-to-k/cdkd#6339).
+    ['the ApiKeyId attribute of an ApiKey', { 'Fn::GetAtt': ['ApiKey', 'ApiKeyId'] }, 'da2-plaintext'],
     ['a masked NoEcho attribute', { 'Fn::GetAtt': ['Custom', 'Token'] }, '***'],
     ['any custom resource attribute', { 'Fn::GetAtt': ['Cr', 'Parameter.Value'] }, 'ssm-plaintext'],
     ['a Custom:: resource attribute', { 'Fn::GetAtt': ['Custom', 'Value'] }, 'custom-plaintext'],

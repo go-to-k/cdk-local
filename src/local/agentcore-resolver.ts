@@ -171,6 +171,11 @@ export interface AgentCoreCodeArtifact {
   s3Source?: {
     bucket?: string;
     bucketIntrinsic?: unknown;
+    /**
+     * Set when `bucket` came from a cross-stack value its producer stack says
+     * may be a secret (go-to-k/cdkd#6339): it is used, never printed.
+     */
+    bucketWithheld?: boolean;
     key: string;
     versionId?: string;
   };

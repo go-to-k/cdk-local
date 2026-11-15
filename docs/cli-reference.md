@@ -629,7 +629,11 @@ cdkl invoke MyStack/MyApi/Handler --from-cfn-stack \
 more than 100 resources are fully mapped) and
 `Fn::ImportValue: <ExportName>` against
 `cloudformation:ListExports` (paginated, memoized for one substitution
-pass).
+pass). An imported value holding a secret of the exporting stack, or one
+that cannot be checked, is passed value-less (`-e KEY`), not inline; the
+check reads `ListStackResources`, `DescribeStacks` and `GetTemplate` on the
+exporting stack (see
+[Env / Secrets substitution](local-emulation.md#env--secrets-substitution---from-cfn-stack)).
 
 **Resolution priority** (highest priority wins):
 
@@ -1625,6 +1629,15 @@ reference (a shape CloudFormation does not accept), a
 reference) is refused too, since it would land on the `docker run`
 command line: pass it through `Environment` or `Secrets` instead.
 
+A value another stack exports (`Fn::ImportValue`) is checked for the
+producer stack's secrets, read from CloudFormation (`ListStackResources`,
+`DescribeStacks`, `GetTemplate` on the exporting stack): one holding a
+secret, or one that cannot be checked, is refused in an argv element,
+passed value-less in `Environment` (and in a Lambda or AgentCore env var)
+and dropped as a `Secrets` `ValueFrom`.
+What it covers and what it does not:
+[local-emulation.md](local-emulation.md#env--secrets-substitution---from-cfn-stack).
+
 Resolved `Secrets[].ValueFrom` strings then flow into the standard
 SecretsManager / SSM resolver below.
 
@@ -1800,7 +1813,7 @@ error.
 | `--platform <platform>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
 | `--no-build` | off | Skip `docker build` on every CDK-asset container (use the previously-built deterministic tag). Requires the tag to already be in the local registry; errors when missing. No-op for ECR-pull / public-registry containers. Same semantics as `cdkl run-task --no-build`. Compatible with `--no-pull`. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs / `Command` / `EntryPoint` / `HealthCheck.Command` elements with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs / `Command` / `EntryPoint` / `HealthCheck.Command` elements with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`, including the producer-secret check on an imported value. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
 | `--watch` | off | Hot reload: re-synth + per-replica rolling deploy when the CDK app's source changes (mirrors `cdkl start-api --watch` semantics; honors `cdk.json` `watch.include` / `watch.exclude`). Each replica is rolled one at a time — boot a shadow replica with the new image under a bumped generation suffix, wait for a TCP-ready probe on the container port, atomically swap Service-Connect / Cloud Map registrations, then retire the old container — so peer services see zero connection refusals across the reload even on multi-replica services. Synth failures keep the previous replica(s) serving (warn-and-continue). Off by default. |
 | `--no-logs` | off | Disable foreground streaming of each replica container stdout/stderr. By default every booted replica streams its docker logs to the host terminal with a `[svc=<service> r=<replica-index> c=<container>]` prefix, matching `cdkl run-task`'s log surface (so application `console.log` calls are visible without a side `docker logs -f`). Pass `--no-logs` for multi-replica / multi-service runs whose interleaved log volume is unreadable; `docker logs -f <id>` in a separate terminal stays available. |

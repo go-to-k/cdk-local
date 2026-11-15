@@ -86,8 +86,9 @@ import { collectSsmParameterRefs, resolveSsmParameters } from './ssm-parameter-r
 import type { ResolvedSsmParameters } from './ssm-parameter-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
-import type { CrossStackResolver } from './state-resolver.js';
+import type { CrossStackResolver, JudgedCrossStackValue } from './state-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
+import { CfnProducerSecretJudge, type CfnExportEntry } from './cfn-producer-secrets.js';
 
 export interface CfnLocalStateProviderOptions {
   /**
@@ -571,11 +572,11 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     // sequential callers. The parallel race is realistic: a single
     // env block with two `Fn::ImportValue`s drives the substitution
     // engine through `Promise.all`-shaped concurrent resolver calls.
-    let exportsPromise: Promise<Map<string, string> | undefined> | undefined;
+    let exportsPromise: Promise<Map<string, CfnExportEntry> | undefined> | undefined;
 
-    const ensureExports = (): Promise<Map<string, string> | undefined> => {
+    const ensureExports = (): Promise<Map<string, CfnExportEntry> | undefined> => {
       if (exportsPromise) return exportsPromise;
-      exportsPromise = fetchAllExports(client).catch((err: unknown) => {
+      exportsPromise = fetchAllExportEntries(client).catch((err: unknown) => {
         logger.warn(
           `${label}: ListExports (${region}) failed: ${formatAwsErrorForWarn(err, 'CloudFormation ListExports')}. ` +
             `Fn::ImportValue intrinsics will warn-and-drop.`
@@ -585,31 +586,49 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       return exportsPromise;
     };
 
+    // go-to-k/cdkd#6339: what each export's producer stack says is a secret,
+    // read only when a judged variant is called (the ECS post-pass and the
+    // async env helper), once per export; the plain methods read nothing more.
+    const judge = new CfnProducerSecretJudge(client, ensureExports, label, fetchAllStackResources);
+    const resolveImport = async (exportName: string): Promise<string | undefined> => {
+      const map = await ensureExports();
+      if (!map) return undefined;
+      return map.get(exportName)?.value;
+    };
+
+    const resolveGetStackOutput = async (
+      producerStack: string,
+      producerRegion: string,
+      outputName: string
+    ): Promise<string | undefined> => {
+      // `Fn::GetStackOutput` has no CFn-side equivalent (CFn templates
+      // use `Fn::ImportValue` + an explicit `Outputs.<name>.Export`);
+      // rather than silently returning undefined we surface a
+      // logger.warn naming the intrinsic and the producer so the user
+      // sees why the env var dropped. The `state-resolver.ts` async
+      // path turns the `undefined` into its own per-key warn with the
+      // standard "output not found in producer stack state" message,
+      // so skipping the warn here would mask the nature of the gap.
+      logger.warn(
+        `${label}: Fn::GetStackOutput ${displayUntrustedValue(producerStack)}.${displayUntrustedValue(outputName)} (${displayUntrustedValue(producerRegion)}) has no CloudFormation equivalent and cannot be resolved when reading state from a CloudFormation stack. ` +
+          `Use Fn::ImportValue against an exported output instead.`
+      );
+      return undefined;
+    };
+
     return {
-      async resolveImport(exportName: string): Promise<string | undefined> {
-        const map = await ensureExports();
-        if (!map) return undefined;
-        return map.get(exportName);
+      resolveImport,
+      resolveGetStackOutput,
+      async resolveImportJudged(exportName: string): Promise<JudgedCrossStackValue> {
+        const value = await resolveImport(exportName);
+        if (value === undefined) return { value };
+        const judgement = await judge.judgeExport(exportName, value);
+        return judgement === undefined ? { value } : { value, ...judgement };
       },
-      async resolveGetStackOutput(
-        producerStack: string,
-        producerRegion: string,
-        outputName: string
-      ): Promise<string | undefined> {
-        // `Fn::GetStackOutput` has no CFn-side equivalent (CFn templates
-        // use `Fn::ImportValue` + an explicit `Outputs.<name>.Export`);
-        // rather than silently returning undefined we surface a
-        // logger.warn naming the intrinsic and the producer so the user
-        // sees why the env var dropped. The `state-resolver.ts` async
-        // path turns the `undefined` into its own per-key warn with the
-        // standard "output not found in producer stack state" message,
-        // so skipping the warn here would mask the nature of the gap.
-        logger.warn(
-          `${label}: Fn::GetStackOutput ${displayUntrustedValue(producerStack)}.${displayUntrustedValue(outputName)} (${displayUntrustedValue(producerRegion)}) has no CloudFormation equivalent and cannot be resolved when reading state from a CloudFormation stack. ` +
-            `Use Fn::ImportValue against an exported output instead.`
-        );
-        return undefined;
-      },
+      // `Fn::GetStackOutput` never resolves here (above): nothing to judge.
+      resolveGetStackOutputJudged: async (producerStack, producerRegion, outputName) => ({
+        value: await resolveGetStackOutput(producerStack, producerRegion, outputName),
+      }),
     };
   }
 
@@ -768,6 +787,20 @@ export async function fetchAllStackResources(
  */
 export async function fetchAllExports(client: CloudFormationClient): Promise<Map<string, string>> {
   const out = new Map<string, string>();
+  for (const [name, entry] of await fetchAllExportEntries(client)) out.set(name, entry.value);
+  return out;
+}
+
+/**
+ * {@link fetchAllExports}, keeping each export's `ExportingStackId`, which
+ * the producer-secret check reads its producer from (go-to-k/cdkd#6339).
+ *
+ * Exported for unit testing.
+ */
+export async function fetchAllExportEntries(
+  client: CloudFormationClient
+): Promise<Map<string, CfnExportEntry>> {
+  const out = new Map<string, CfnExportEntry>();
   let nextToken: string | undefined;
   // Safety bound — CFn allows at most ~200 exports per account/region,
   // so 50 pages of 100 each is well above the realistic ceiling.
@@ -780,7 +813,7 @@ export async function fetchAllExports(client: CloudFormationClient): Promise<Map
     );
     for (const exp of resp.Exports ?? []) {
       if (exp.Name === undefined || exp.Value === undefined) continue;
-      out.set(exp.Name, exp.Value);
+      out.set(exp.Name, { value: exp.Value, exportingStackId: exp.ExportingStackId });
     }
     nextToken = resp.NextToken;
     pages += 1;

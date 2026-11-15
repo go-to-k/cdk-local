@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vite-plus/test';
+import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import { zipSync, strToU8 } from 'fflate';
 import { downloadAndExtractS3Bundle } from '../../../src/local/agentcore-s3-bundle.js';
 
@@ -89,5 +89,46 @@ describe('downloadAndExtractS3Bundle', () => {
     await expect(
       downloadAndExtractS3Bundle({ bucket: 'b', key: 'a.zip' }, { fetchObject: fetchReturning(notZip) })
     ).rejects.toThrow(/must be a ZIP archive/);
+  });
+});
+
+describe('downloadAndExtractS3Bundle redactBucket (go-to-k/cdkd#6339)', () => {
+  const BUCKET = 'bucket-from-a-producer-stack';
+
+  async function run(bytes: Uint8Array, redactBucket: boolean | undefined) {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    let error = '';
+    let logged = '';
+    try {
+      const bundle = await downloadAndExtractS3Bundle(
+        { bucket: BUCKET, key: 'agent.zip' },
+        { fetchObject: fetchReturning(bytes), ...(redactBucket !== undefined && { redactBucket }) }
+      );
+      cleanups.push(bundle.cleanup);
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      logged = info.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+      info.mockRestore();
+    }
+    return { logged, error };
+  }
+
+  it.each([
+    ['an unzip failure', strToU8('not a zip')],
+    ['an empty bundle', zip({})],
+  ])('names the bucket in neither the log nor the error on %s when set', async (_label, bytes) => {
+    const { logged, error } = await run(bytes, true);
+    expect(error).not.toBe('');
+    expect(logged).toContain('s3://<cross-stack value withheld>/agent.zip');
+    expect(error).toContain('s3://<cross-stack value withheld>/agent.zip');
+    expect(`${logged}\n${error}`).not.toContain(BUCKET);
+  });
+
+  it('prints the bucket as before when unset', async () => {
+    const { logged, error } = await run(strToU8('not a zip'), undefined);
+    expect(logged).toContain(`s3://${BUCKET}/agent.zip`);
+    expect(error).toContain(`s3://${BUCKET}/agent.zip`);
   });
 });
