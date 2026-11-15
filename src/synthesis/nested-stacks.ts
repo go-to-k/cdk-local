@@ -249,7 +249,8 @@ const parentOf = new WeakMap<object, object>();
 
 /**
  * `stack`'s resources followed by those of the CDK nested stacks deployed
- * under it (first logical ID wins), for a not-found message's candidates.
+ * under it, for a not-found message's candidates; a logical ID a second
+ * stack shares is listed as `<stackName>:<LogicalId>`.
  */
 export function resourcesWithNestedStacks<
   T extends {
@@ -261,7 +262,10 @@ export function resourcesWithNestedStacks<
   const merged = Object.create(null) as CloudFormationTemplate['Resources'];
   for (const s of withNestedDescendants([stack], stacks)) {
     for (const [logicalId, resource] of Object.entries(s.template.Resources ?? {})) {
-      if (!Object.hasOwn(merged, logicalId)) merged[logicalId] = resource;
+      // Two nested stacks built from one construct share logical IDs: list the
+      // later one in the `<nested stack>:<LogicalId>` form that selects it.
+      merged[Object.hasOwn(merged, logicalId) ? `${s.stackName}:${logicalId}` : logicalId] =
+        resource;
     }
   }
   return merged;
