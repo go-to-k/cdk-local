@@ -2026,8 +2026,8 @@ that, and its containers' `ECS_CONTAINER_METADATA_URI_V4` follows the sidecar
 there.
 
 `awsvpc` network mode is mapped to `bridge` locally with a warn line —
-docker cannot emulate ENI-per-task. AWS SDK calls from inside the
-container still reach public AWS endpoints via the developer network.
+docker cannot emulate ENI-per-task, so the task gets no VPC subnet or
+security group, and its traffic leaves through the host network.
 
 ### ECR image resolution
 
