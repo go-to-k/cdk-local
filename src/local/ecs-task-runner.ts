@@ -27,7 +27,7 @@ import {
   pickFreePort,
   SENSITIVE_ENV_KEYS,
 } from './docker-runner.js';
-import { attachContainerLogStreamer } from './container-log-streamer.js';
+import { attachContainerLogStreamer, type ContainerLogStopper } from './container-log-streamer.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { buildDockerImage } from '../assets/docker-build.js';
 import { assetPathDirs } from './lambda-resolver.js';
@@ -372,7 +372,7 @@ export interface EcsRunState {
   /** Container name → docker id, in start order. */
   startedContainers: { name: string; id: string }[];
   /** Active log streams (stop functions). Drained on teardown. */
-  logStoppers: (() => void)[];
+  logStoppers: ContainerLogStopper[];
   /**
    * Per-container host-port publishes recorded as the runner builds the
    * `docker run -p host:hostPort:containerPort/proto` args, in publish order.
@@ -446,6 +446,13 @@ export function createEcsRunState(): EcsRunState {
     forwarders: [],
   };
 }
+
+/**
+ * How long `runEcsTask` waits, after the essential container exits, for its
+ * log stream to end on its own. `docker logs -f` returns as soon as the log is
+ * written out, so this bounds only a stream that never closes.
+ */
+const LOG_DRAIN_TIMEOUT_MS = 2000;
 
 /**
  * Cleanup the resources tracked in `state`. Idempotent and safe to call
@@ -860,6 +867,7 @@ export async function runEcsTask(
   // remaining condition gating fires inside the per-container
   // `awaitDependencies` step.
   const startedByName = new Map<string, { id: string; container: ResolvedEcsContainer }>();
+  const logStopperByName = new Map<string, ContainerLogStopper>();
   for (const containerName of startOrder) {
     const container = task.containers.find((c) => c.name === containerName)!;
     await awaitDependencies(container, startedByName);
@@ -916,7 +924,9 @@ export async function runEcsTask(
     startedByName.set(container.name, { id, container });
 
     if (!options.detach) {
-      state.logStoppers.push(attachContainerLogStreamer(`[${displayIdent(container.name)}] `, id));
+      const stopper = attachContainerLogStreamer(`[${displayIdent(container.name)}] `, id);
+      state.logStoppers.push(stopper);
+      logStopperByName.set(container.name, stopper);
     }
   }
 
@@ -942,6 +952,10 @@ export async function runEcsTask(
     );
   }
   const exitCode = await waitForContainerExit(essentialId);
+  // Let the essential container's `docker logs -f` relay what it has left
+  // before teardown stops it: a container that exits right after starting
+  // otherwise loses its output (go-to-k/cdk-local#990).
+  await logStopperByName.get(essential.name)?.drain(LOG_DRAIN_TIMEOUT_MS);
   return { exitCode, essentialContainerName: essential.name, state };
 }
 

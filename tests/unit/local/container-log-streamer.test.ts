@@ -545,3 +545,78 @@ describe('writePrefixedLines (helper)', () => {
     expect(out.write).not.toHaveBeenCalled();
   });
 });
+
+describe('attachContainerLogStreamer drain (go-to-k/cdk-local#990)', () => {
+  beforeEach(() => {
+    spawnMock.mockReset();
+    execFileMock.mockReset();
+    execFileMock.mockImplementation(defaultExecFileImpl);
+  });
+
+  it('waits for docker logs -f to close, so output written at exit is relayed before stop', async () => {
+    const { proc } = makeFakeProc();
+    spawnMock.mockReturnValue(proc);
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      const stop = attachContainerLogStreamer('[app] ', 'cid');
+      let drained = false;
+      const pending = stop.drain(5000).then(() => {
+        drained = true;
+      });
+      await Promise.resolve();
+      expect(drained).toBe(false);
+      proc.stdout.write('LATE_LINE\n');
+      await new Promise((r) => setImmediate(r));
+      proc.emit('close', 0, null);
+      await pending;
+      stop();
+      expect(writes.join('')).toContain('[app] LATE_LINE');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('gives up after the timeout when the stream never closes', async () => {
+    vi.useFakeTimers();
+    try {
+      const { proc } = makeFakeProc();
+      spawnMock.mockReturnValue(proc);
+      const stop = attachContainerLogStreamer('[app] ', 'cid');
+      let drained = false;
+      const pending = stop.drain(2000).then(() => {
+        drained = true;
+      });
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(drained).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(drained).toBe(true);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps waiting after exit until close, then resolves at once, as it does once stopped', async () => {
+    const { proc } = makeFakeProc();
+    spawnMock.mockReturnValue(proc);
+    const stop = attachContainerLogStreamer('[app] ', 'cid');
+    // 'exit' has set exitCode, but the pipes have not delivered yet.
+    (proc as unknown as { exitCode: number }).exitCode = 0;
+    let drained = false;
+    const pending = stop.drain(60_000).then(() => {
+      drained = true;
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(drained).toBe(false);
+    proc.emit('close', 0, null);
+    await pending;
+    await expect(stop.drain(60_000)).resolves.toBeUndefined();
+    stop();
+    await expect(stop.drain(60_000)).resolves.toBeUndefined();
+  });
+});
