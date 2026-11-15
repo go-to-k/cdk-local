@@ -10,6 +10,7 @@ import {
   rootStackName,
   topLevelStacks,
   withNestedDescendants,
+  resourcesWithNestedStacks,
   withNestedStacks,
 } from '../../../src/synthesis/nested-stacks.js';
 import { selectTargetStack } from '../../../src/cli/stack-matcher.js';
@@ -209,6 +210,28 @@ describe('nested-stacks', () => {
   });
 
   describe('helpers', () => {
+    it('resourcesWithNestedStacks lists a logical ID two nested stacks share as <nested stack>:<LogicalId> for each copy', () => {
+      const fn = { Type: 'AWS::Lambda::Function' };
+      const app = { stackName: 'App', template: { Resources: { Own: fn } } } as unknown as StackInfo;
+      const a = {
+        stackName: 'App~A',
+        template: { Resources: { Handler: fn } },
+        nestedStack: { parentStackName: 'App', rootStackName: 'App', logicalId: 'A', parameters: {} },
+      } as unknown as StackInfo;
+      const b = { ...a, stackName: 'App~B', nestedStack: { ...a.nestedStack!, logicalId: 'B' } } as StackInfo;
+      expect(Object.keys(resourcesWithNestedStacks(app, [app, a, b]))).toEqual([
+        'Own',
+        'App~A:Handler',
+        'App~B:Handler',
+      ]);
+      // A parent's own ID stays bare; a nested copy of it is qualified.
+      const parentOwns = { ...app, template: { Resources: { Handler: fn } } } as unknown as StackInfo;
+      expect(Object.keys(resourcesWithNestedStacks(parentOwns, [parentOwns, a]))).toEqual([
+        'Handler',
+        'App~A:Handler',
+      ]);
+    });
+
     const top = { stackName: 'App' };
     const child = {
       stackName: 'App~I',

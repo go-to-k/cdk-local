@@ -249,7 +249,8 @@ const parentOf = new WeakMap<object, object>();
 
 /**
  * `stack`'s resources followed by those of the CDK nested stacks deployed
- * under it (first logical ID wins), for a not-found message's candidates.
+ * under it, for a not-found message's candidates. A logical ID only
+ * `<stackName>:<LogicalId>` selects is listed in that form.
  */
 export function resourcesWithNestedStacks<
   T extends {
@@ -258,10 +259,24 @@ export function resourcesWithNestedStacks<
     template: CloudFormationTemplate;
   },
 >(stack: T, stacks: readonly T[]): CloudFormationTemplate['Resources'] {
+  const owners = new Map<string, T[]>();
+  const descendants = withNestedDescendants([stack], stacks);
+  for (const s of descendants) {
+    for (const logicalId of Object.keys(s.template.Resources ?? {})) {
+      const list = owners.get(logicalId);
+      if (list) list.push(s);
+      else owners.set(logicalId, [s]);
+    }
+  }
   const merged = Object.create(null) as CloudFormationTemplate['Resources'];
-  for (const s of withNestedDescendants([stack], stacks)) {
+  for (const s of descendants) {
     for (const [logicalId, resource] of Object.entries(s.template.Resources ?? {})) {
-      if (!Object.hasOwn(merged, logicalId)) merged[logicalId] = resource;
+      // A bare ID selects `stack`'s own resource, or the one nested stack that
+      // has it; an ID two nested stacks share selects neither, so list each
+      // copy in the `<nested stack>:<LogicalId>` form that does.
+      const shared = owners.get(logicalId)!;
+      const bare = s === stack || (shared.length === 1 && !shared.includes(stack));
+      merged[bare ? logicalId : `${s.stackName}:${logicalId}`] = resource;
     }
   }
   return merged;
