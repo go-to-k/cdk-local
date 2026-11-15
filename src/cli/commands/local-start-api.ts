@@ -49,6 +49,11 @@ import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { isInteractive, pickManyTargets } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import {
+  topLevelStacks,
+  withNestedDescendants,
+  withNestedStacks,
+} from '../../synthesis/nested-stacks.js';
 import { resolveApp, resolveWatchConfig, type CdkWatchConfig } from '../config-loader.js';
 import { createGlobMatcher } from '../../utils/glob-match.js';
 import { readCdkPathOrUndefined, stackForConstructPath } from '../cdk-path.js';
@@ -803,7 +808,7 @@ async function serveStartApi(
    */
   const synthesizeAndBuild = async (): Promise<NextStateMaterial> => {
     logger.info('Synthesizing CDK app...');
-    const synthesizer = new Synthesizer();
+    const synthesizer = withNestedStacks(new Synthesizer());
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,
@@ -1689,18 +1694,21 @@ export function pickTargetStacks(
   // so any of the three values identifies the synth target unambiguously
   // without the user having to repeat themselves via `--stack`.
   const effective = pattern ?? cfnStackFallback ?? targetFallback;
-  if (effective !== undefined && typeof effective !== 'string') return [effective];
+  if (effective !== undefined && typeof effective !== 'string') {
+    return withNestedDescendants([effective], stacks);
+  }
   if (effective) {
     return matchStacks(stacks, [effective]);
   }
-  if (stacks.length === 1) return stacks;
+  // A stack with CDK nested stacks is one stack, served with them.
+  if (topLevelStacks(stacks).length === 1) return stacks;
   if (stacks.length === 0) return [];
   // Multi-stack apps are served as a union only on explicit opt-in
   // (`--all-stacks`); otherwise we require an explicit single-target
   // selection so users don't accidentally serve (and boot Docker
   // containers for) a side-stack's API.
   throw new Error(
-    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, a stack-qualified target like "<StackName>/<construct>", or --all-stacks to serve every stack. Available stacks: ${describeStacks(stacks)}.`
+    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, a stack-qualified target like "<StackName>/<construct>", or --all-stacks to serve every stack. Available stacks: ${describeStacks(topLevelStacks(stacks))}.`
   );
 }
 

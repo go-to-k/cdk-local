@@ -1542,3 +1542,18 @@ export {
 } from './local/emulator-resign-sidecar.js';
 export { awsEndpointOptions, addAwsEndpointOptions } from './cli/options.js';
 export { attachLoopbackForwarder, withWorkloadAwsWiring } from './local/docker-runner.js';
+
+/**
+ * CDK `NestedStack` support (go-to-k/cdk-local#986), for a host that
+ * synthesizes on its own (cdkd): call `expandNestedStacks` on the
+ * synthesized stacks before resolving a target, so a function, API or task
+ * in a nested stack resolves and its state source reads the nested stack.
+ */
+export {
+  expandNestedStacks,
+  rootStackName,
+  topLevelStacks,
+  withNestedDescendants,
+  withNestedStacks,
+  type NestedStackOrigin,
+} from './synthesis/nested-stacks.js';

@@ -22,6 +22,7 @@ import { describeAwsFailureForWarn } from '../../local/credential-error.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import { withNestedStacks } from '../../synthesis/nested-stacks.js';
 import { resolveApp } from '../config-loader.js';
 import {
   getEmbedConfig,
@@ -1141,7 +1142,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   }
 
   logger.info('Synthesizing CDK app...');
-  const synthesizer = new Synthesizer();
+  const synthesizer = withNestedStacks(new Synthesizer());
   const context = parseContextOptions(options.context);
   const synthOpts: SynthesisOptions = {
     app: appCmd,

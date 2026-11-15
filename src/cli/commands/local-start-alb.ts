@@ -19,6 +19,7 @@ import {
 } from '../../local/elb-front-door-resolver.js';
 import type { ExtraStateProviders } from './local-state-source.js';
 import type { CdkAppSynthesizer } from '../../synthesis/synthesizer.js';
+import { topLevelStacks } from '../../synthesis/nested-stacks.js';
 import {
   addCommonEcsServiceOptions,
   addImageOverrideOptions,
@@ -198,8 +199,8 @@ function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[], target: string)
       return selection.stack;
     case 'no-prefix':
       throw new LocalStartServiceError(
-        `Target '${target}' has no stack prefix, and the assembly contains ${stacks.length} stacks: ` +
-          `${describeStacks(stacks)}. Pass it as 'Stack/Path' or 'Stack:LogicalId'.`
+        `Target '${target}' has no stack prefix, and the assembly contains ${topLevelStacks(stacks).length} stacks: ` +
+          `${describeStacks(topLevelStacks(stacks))}. Pass it as 'Stack/Path' or 'Stack:LogicalId'.`
       );
     case 'not-found':
       throw new LocalStartServiceError(

@@ -1,6 +1,7 @@
 import type { AssetManifestArtifact } from '@aws-cdk/cloud-assembly-api';
 import type { Toolkit } from '@aws-cdk/toolkit-lib';
 import type { CloudFormationTemplate } from '../types/resource.js';
+import type { NestedStackOrigin } from './nested-stacks.js';
 
 /**
  * `@aws-cdk/toolkit-lib` (and the IoHost subclass built on it) is loaded on
@@ -89,17 +90,19 @@ export interface StackInfo {
 
   /**
    * Per-logical-id absolute file paths of nested templates one level
-   * below this stack — populated when the parent template contains
-   * `AWS::CloudFormation::Stack` resources whose
-   * `Metadata['aws:asset:path']` points at the child's
-   * `<file>.nested.template.json` sibling in the same `cdk.out`
-   * directory.
-   *
-   * TODO(phase-2d-2): populate from the synthesized assembly. Until the
-   * 4 CLI factories actually consume nested templates, leaving this
-   * `undefined` is non-fatal for cdk-local's smoke path.
+   * below this stack, for a host whose synthesizer resolves them itself
+   * (cdkd). When absent, `expandNestedStacks` resolves each
+   * `AWS::CloudFormation::Stack` resource's `Metadata['aws:asset:path']`
+   * against the directory of `assetManifestPath`.
    */
   nestedTemplates?: Record<string, string> | undefined;
+
+  /**
+   * Set on a `StackInfo` that `expandNestedStacks` built for a CDK
+   * `NestedStack`: the parent it is deployed under. Absent on a top-level
+   * stack.
+   */
+  nestedStack?: NestedStackOrigin | undefined;
 }
 
 /**

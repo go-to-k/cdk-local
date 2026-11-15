@@ -82,6 +82,7 @@ import {
   type CdkAppSynthesizer,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { topLevelStacks, withNestedStacks } from '../../synthesis/nested-stacks.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { CLOUDFRONT_DISTRIBUTION_TYPE } from '../../local/cloudfront-resolver.js';
@@ -414,8 +415,8 @@ function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[], target: string)
       return selection.stack;
     case 'no-prefix':
       throw new LocalStartCloudFrontError(
-        `Target '${target}' has no stack prefix, and the assembly contains ${stacks.length} stacks: ` +
-          `${describeStacks(stacks)}. Pass it as 'Stack/Path' or 'Stack:LogicalId'.`
+        `Target '${target}' has no stack prefix, and the assembly contains ${topLevelStacks(stacks).length} stacks: ` +
+          `${describeStacks(topLevelStacks(stacks))}. Pass it as 'Stack/Path' or 'Stack:LogicalId'.`
       );
     case 'not-found':
       throw new LocalStartCloudFrontError(
@@ -1040,7 +1041,7 @@ async function localStartCloudFrontCommand(
     stacks: StackInfo[];
   }> => {
     logger.info('Synthesizing CDK app...');
-    const synthesizer: CdkAppSynthesizer = hostSynthesizer ?? new Synthesizer();
+    const synthesizer: CdkAppSynthesizer = withNestedStacks(hostSynthesizer ?? new Synthesizer());
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,

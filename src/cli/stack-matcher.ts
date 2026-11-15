@@ -20,17 +20,43 @@
  */
 import { stackForPathFormTarget } from './cdk-path.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import {
+  topLevelStacks,
+  withNestedDescendants,
+  type NestedStackOrigin,
+} from '../synthesis/nested-stacks.js';
 
 export interface StackLike {
   stackName: string;
   displayName?: string;
+  /** Set on a CDK nested stack (`expandNestedStacks`). */
+  nestedStack?: NestedStackOrigin | undefined;
 }
 
 export function matchStacks<T extends StackLike>(stacks: T[], patterns: string[]): T[] {
   if (patterns.length === 0) return [];
+  // A pattern names top-level stacks; a CDK nested stack comes along with the
+  // stack it is deployed under. A pattern no top-level stack matches may still
+  // name a nested stack by its construct path (`MyStack/MyNested`).
+  return withNestedDescendants(matchStackPatterns(stacks, patterns), stacks);
+}
+
+/**
+ * The stacks the patterns NAME, without the nested stacks deployed under
+ * them: top-level stacks first; a pattern no top-level stack matches may name
+ * a nested stack by its construct path. What a single-stack target resolver
+ * needs ({@link selectTargetStack}), where a parent and its nested stacks
+ * would otherwise read as an ambiguous match.
+ */
+function matchStackPatterns<T extends StackLike>(stacks: readonly T[], patterns: string[]): T[] {
+  const top = topLevelStacks(stacks);
+  const nested = stacks.filter((s) => s.nestedStack !== undefined);
   const selected = new Set<T>();
   for (const pattern of patterns) {
-    for (const stack of stacksForPattern(stacks, pattern)) selected.add(stack);
+    const matched = stacksForPattern(top, pattern);
+    for (const stack of matched.length > 0 ? matched : stacksForPattern(nested, pattern)) {
+      selected.add(stack);
+    }
   }
   return stacks.filter((s) => selected.has(s));
 }
@@ -111,11 +137,13 @@ export function selectTargetStack<T extends StackLike>(
   stacks: readonly T[]
 ): TargetStackSelection<T> {
   if (parsed.stackPattern === null) {
-    return stacks.length === 1 ? { kind: 'found', stack: stacks[0]! } : { kind: 'no-prefix' };
+    // Count top-level stacks: a stack with nested stacks is one stack.
+    const top = topLevelStacks(stacks);
+    return top.length === 1 ? { kind: 'found', stack: top[0]! } : { kind: 'no-prefix' };
   }
   const byPrefix = stackForPathFormTarget(parsed, target, stacks);
   if (byPrefix) return { kind: 'found', stack: byPrefix };
-  const matched = matchStacks([...stacks], [parsed.stackPattern]);
+  const matched = matchStackPatterns(stacks, [parsed.stackPattern]);
   if (matched.length === 1) return { kind: 'found', stack: matched[0]! };
   if (matched.length === 0) return { kind: 'not-found', pattern: parsed.stackPattern };
   return { kind: 'ambiguous', pattern: parsed.stackPattern, matched };

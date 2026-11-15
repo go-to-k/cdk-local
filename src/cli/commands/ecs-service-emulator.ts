@@ -32,6 +32,7 @@ import {
   type CdkAppSynthesizer,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { withNestedStacks } from '../../synthesis/nested-stacks.js';
 import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
@@ -745,7 +746,7 @@ export async function runEcsServiceEmulator(
     }
 
     logger.info('Synthesizing CDK app...');
-    const synthesizer: CdkAppSynthesizer = hostSynthesizer ?? new Synthesizer();
+    const synthesizer: CdkAppSynthesizer = withNestedStacks(hostSynthesizer ?? new Synthesizer());
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,

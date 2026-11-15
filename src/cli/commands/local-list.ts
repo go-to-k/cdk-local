@@ -11,6 +11,7 @@ import { displayStackName } from '../../utils/ident-display.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import { withNestedStacks } from '../../synthesis/nested-stacks.js';
 import { resolveApp } from '../config-loader.js';
 import {
   getEmbedConfig,
@@ -65,7 +66,7 @@ async function localListCommand(options: LocalListOptions): Promise<void> {
   // (clean for `cdkl list | ...`). Synthesis progress from toolkit-lib is
   // routed to stderr too (see CdklIoHost).
   process.stderr.write('Synthesizing CDK app...\n');
-  const synthesizer = new Synthesizer();
+  const synthesizer = withNestedStacks(new Synthesizer());
   const context = parseContextOptions(options.context);
   const synthOpts: SynthesisOptions = {
     app: appCmd,

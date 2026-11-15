@@ -42,6 +42,7 @@ import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import { withNestedStacks } from '../../synthesis/nested-stacks.js';
 import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
@@ -428,7 +429,7 @@ async function localInvokeAgentCoreCommand(
     }
 
     logger.info('Synthesizing CDK app...');
-    const synthesizer = new Synthesizer();
+    const synthesizer = withNestedStacks(new Synthesizer());
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,

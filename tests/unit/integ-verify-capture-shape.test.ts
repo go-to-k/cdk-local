@@ -119,10 +119,12 @@ const CAPTURE_FIXTURES = [
   'local-invoke-dotnet',
   'local-invoke-java',
   'local-invoke-layers',
+  'local-invoke-nested-stack-from-cfn-stack',
   'local-invoke-provided',
   'local-invoke-python',
   'local-invoke-ruby',
   'local-invoke-stage',
+  'local-nested-stack',
 ].sort();
 
 interface FlaggedCapture {

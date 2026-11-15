@@ -64,6 +64,7 @@
 
 import {
   CloudFormationClient,
+  DescribeStackResourceCommand,
   DescribeStacksCommand,
   ListExportsCommand,
   ListStackResourcesCommand,
@@ -98,6 +99,14 @@ export interface CfnLocalStateProviderOptions {
    * provider.
    */
   cfnStackName: string;
+  /**
+   * For a CDK nested stack: the `AWS::CloudFormation::Stack` logical IDs
+   * from `cfnStackName` (the top-level stack) down to it. Each hop's
+   * physical ID (the nested stack's ARN) is read with
+   * `DescribeStackResource` on first use, and every call then targets the
+   * nested stack.
+   */
+  nestedPath?: readonly string[] | undefined;
   /**
    * AWS region the CFn stack lives in. Reused from `--stack-region`
    * per issue #606 recommendation (no separate `--cfn-stack-region` flag).
@@ -147,6 +156,8 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   // fields explicitly + assign in the body.
   public readonly label: string;
   private readonly cfnStackName: string;
+  private readonly nestedPath: readonly string[];
+  private nestedStackName: Promise<string> | undefined;
   private readonly region: string;
   // The CFn client is constructed lazily on the first `load` /
   // `buildCrossStackResolver` call so a CLI invocation that never
@@ -191,6 +202,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
 
   constructor(opts: CfnLocalStateProviderOptions) {
     this.cfnStackName = opts.cfnStackName;
+    this.nestedPath = opts.nestedPath ?? [];
     this.region = opts.region;
     this.clientOptions = { region: opts.region };
     this.endpointOverride = opts.endpointOverride;
@@ -444,6 +456,35 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   }
 
   /**
+   * The stack every call targets: `cfnStackName`, or for a nested stack the
+   * physical ID of the last hop of `nestedPath`. Resolved once.
+   */
+  private targetStackName(client: CloudFormationClient): Promise<string> {
+    if (this.nestedPath.length === 0) return Promise.resolve(this.cfnStackName);
+    this.nestedStackName ??= (async () => {
+      let current = this.cfnStackName;
+      for (const logicalId of this.nestedPath) {
+        const resp = await client.send(
+          new DescribeStackResourceCommand({ StackName: current, LogicalResourceId: logicalId })
+        );
+        const physical = resp.StackResourceDetail?.PhysicalResourceId;
+        if (typeof physical !== 'string' || physical.length === 0) {
+          throw new Error(
+            `nested stack ${displayIdent(logicalId)} of ${displayStackName(current)} has no physical ID (not deployed yet?)`
+          );
+        }
+        current = physical;
+      }
+      return current;
+    })();
+    // A failed lookup is retried on the next load.
+    this.nestedStackName.catch(() => {
+      this.nestedStackName = undefined;
+    });
+    return this.nestedStackName;
+  }
+
+  /**
    * Load the deployed CFn stack's resources + outputs and return them
    * as a synthetic `LocalStateRecord` (matching the shape the existing
    * S3-state-driven path produces). `synthRegion` is accepted for
@@ -468,9 +509,19 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     // `getLastLoadError()` only reflects this invocation's outcome.
     this.lastLoadError = undefined;
 
+    let stackName: string;
+    try {
+      stackName = await this.targetStackName(client);
+    } catch (err) {
+      const detail = formatAwsErrorForWarn(err, 'CloudFormation DescribeStackResource');
+      this.lastLoadError = `DescribeStackResource(${displayStackName(this.cfnStackName)}, nested stack ${this.nestedPath.map((id) => displayIdent(id)).join(' > ')}) failed: ${detail} (region=${displayIdent(this.region)})`;
+      logger.warn(`${this.label}: ${this.lastLoadError}. Falling back.`);
+      return undefined;
+    }
+
     let resourceMap: Record<string, ResourceState>;
     try {
-      const summaries = await fetchAllStackResources(client, this.cfnStackName);
+      const summaries = await fetchAllStackResources(client, stackName);
       resourceMap = buildResourceStateMap(summaries);
     } catch (err) {
       // Capture the same failure detail the warn emits so resolvers
@@ -481,9 +532,9 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       // EMITS the `debug` line carrying the withheld text, so calling it twice
       // for one failure prints that line twice.
       const detail = formatAwsErrorForWarn(err, 'CloudFormation ListStackResources');
-      this.lastLoadError = `ListStackResources(${displayStackName(this.cfnStackName)}) failed: ${detail} (region=${displayIdent(this.region)})`;
+      this.lastLoadError = `ListStackResources(${displayStackName(stackName)}) failed: ${detail} (region=${displayIdent(this.region)})`;
       logger.warn(
-        `${this.label}: ListStackResources(${displayStackName(this.cfnStackName)}) failed: ${detail}. ` +
+        `${this.label}: ListStackResources(${displayStackName(stackName)}) failed: ${detail}. ` +
           `Was the stack deployed in region ${displayIdent(this.region)}? Falling back.`
       );
       return undefined;
@@ -491,11 +542,11 @@ export class CfnLocalStateProvider implements LocalStateProvider {
 
     let outputs: Record<string, string>;
     try {
-      const resp = await client.send(new DescribeStacksCommand({ StackName: this.cfnStackName }));
+      const resp = await client.send(new DescribeStacksCommand({ StackName: stackName }));
       const stack = resp.Stacks?.[0];
       if (!stack) {
         logger.warn(
-          `${this.label}: DescribeStacks(${displayStackName(this.cfnStackName)}) returned no stack; outputs will be empty.`
+          `${this.label}: DescribeStacks(${displayStackName(stackName)}) returned no stack; outputs will be empty.`
         );
         outputs = {};
       } else {
@@ -503,7 +554,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       }
     } catch (err) {
       logger.warn(
-        `${this.label}: DescribeStacks(${displayStackName(this.cfnStackName)}) failed: ${formatAwsErrorForWarn(err, 'CloudFormation DescribeStacks')}. ` +
+        `${this.label}: DescribeStacks(${displayStackName(stackName)}) failed: ${formatAwsErrorForWarn(err, 'CloudFormation DescribeStacks')}. ` +
           `Outputs will be empty (Fn::GetStackOutput cannot resolve).`
       );
       outputs = {};

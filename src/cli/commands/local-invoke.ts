@@ -44,6 +44,7 @@ import { listTargets } from '../../local/target-lister.js';
 import { copyLayerTreeLastWins } from '../../local/layer-tree-copy.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import { withNestedStacks } from '../../synthesis/nested-stacks.js';
 import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import {
@@ -398,7 +399,7 @@ async function localInvokeCommand(
     }
 
     logger.info('Synthesizing CDK app...');
-    const synthesizer = new Synthesizer();
+    const synthesizer = withNestedStacks(new Synthesizer());
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,

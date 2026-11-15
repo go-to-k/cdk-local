@@ -13,6 +13,7 @@ import {
 import { getEmbedConfig } from './embed-config.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
+import { topLevelStacks } from '../synthesis/nested-stacks.js';
 
 /**
  * Phase 2 of #262 — synthesized `AWS::ECS::Service` resolved against the
@@ -671,8 +672,8 @@ function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[], target: string)
       return selection.stack;
     case 'no-prefix':
       throw new EcsTaskResolutionError(
-        `Target has no stack prefix, and the assembly contains ${stacks.length} stacks: ` +
-          `${describeStacks(stacks)}. Pass the target as 'Stack/Path' or 'Stack:LogicalId'.`
+        `Target has no stack prefix, and the assembly contains ${topLevelStacks(stacks).length} stacks: ` +
+          `${describeStacks(topLevelStacks(stacks))}. Pass the target as 'Stack/Path' or 'Stack:LogicalId'.`
       );
     case 'not-found':
       throw new EcsTaskResolutionError(
