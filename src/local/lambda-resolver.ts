@@ -30,6 +30,7 @@ import {
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
+import { withNestedDescendants } from '../synthesis/nested-stacks.js';
 
 /**
  * Result of resolving a `cdkl invoke <target>` argument back to a
@@ -339,6 +340,8 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
   }
 
   const parsed = parseTarget(target);
+  // A logical ID inside a CDK nested stack selects that nested stack
+  // (`selectTargetStack`).
   const stack = pickStack(parsed, stacks, target);
 
   const template = stack.template;
@@ -358,7 +361,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
     );
 
     if (lambdaMatches.length === 0) {
-      throw notFoundError(target, stack, resources);
+      throw notFoundError(target, stack, withNestedDescendants([stack], stacks));
     }
     if (lambdaMatches.length > 1) {
       throw new LocalInvokeResolutionError(
@@ -372,7 +375,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
   } else {
     const resource = resources[parsed.pathOrId];
     if (!resource) {
-      throw notFoundError(target, stack, resources);
+      throw notFoundError(target, stack, withNestedDescendants([stack], stacks));
     }
     match = { logicalId: parsed.pathOrId, resource };
   }
@@ -1660,14 +1663,17 @@ function describeLayerEntry(entry: unknown): string {
 function notFoundError(
   target: string,
   stack: StackInfo,
-  resources: Record<string, TemplateResource>
+  /** `stack` followed by the CDK nested stacks deployed under it. */
+  searched: readonly StackInfo[]
 ): LocalInvokeResolutionError {
   const lambdas: { displayPath: string; logicalId: string }[] = [];
-  for (const [logicalId, resource] of Object.entries(resources)) {
-    if (resource.Type !== 'AWS::Lambda::Function') continue;
-    const meta = resource.Metadata;
-    const cdkPath = typeof meta?.['aws:cdk:path'] === 'string' ? meta['aws:cdk:path'] : '';
-    lambdas.push({ displayPath: cdkPath || logicalId, logicalId });
+  for (const s of searched) {
+    for (const [logicalId, resource] of Object.entries(s.template.Resources ?? {})) {
+      if (resource.Type !== 'AWS::Lambda::Function') continue;
+      const meta = resource.Metadata;
+      const cdkPath = typeof meta?.['aws:cdk:path'] === 'string' ? meta['aws:cdk:path'] : '';
+      lambdas.push({ displayPath: cdkPath || logicalId, logicalId });
+    }
   }
 
   let msg = `target '${target}' did not match any Lambda function in ${displayStackName(stack.stackName)}.\n\n`;

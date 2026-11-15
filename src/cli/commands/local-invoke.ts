@@ -44,11 +44,12 @@ import { listTargets } from '../../local/target-lister.js';
 import { copyLayerTreeLastWins } from '../../local/layer-tree-copy.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import { withNestedStacks } from '../../synthesis/nested-stacks.js';
 import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import {
   createLocalStateProvider,
-  deployedStackName,
+  deployedStackNamePseudo,
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
   type LocalStateSourceOptions,
@@ -398,7 +399,7 @@ async function localInvokeCommand(
     }
 
     logger.info('Synthesizing CDK app...');
-    const synthesizer = new Synthesizer();
+    const synthesizer = withNestedStacks(new Synthesizer());
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,
@@ -946,7 +947,7 @@ export async function resolvePseudoParametersForInvoke(
       partition: partitionAndSuffix.partition,
       urlSuffix: partitionAndSuffix.urlSuffix,
     }),
-    ...(stackName !== undefined && { stackName: deployedStackName(options, stackName) }),
+    ...(stackName !== undefined && deployedStackNamePseudo(options, stackName)),
   };
   return Object.keys(bag).length === 0 ? undefined : bag;
 }

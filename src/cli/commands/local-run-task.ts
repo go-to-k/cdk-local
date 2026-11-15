@@ -22,6 +22,7 @@ import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import { withNestedStacks } from '../../synthesis/nested-stacks.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
@@ -84,7 +85,7 @@ import {
   UNNAMED_WORKLOAD,
   type ExtraStateProviders,
   isCfnFlagPresent,
-  deployedStackName,
+  deployedStackNamePseudo,
 } from './local-state-source.js';
 import {
   getEmbedConfig,
@@ -282,7 +283,7 @@ async function localRunTaskCommand(
     }
 
     logger.info('Synthesizing CDK app...');
-    const synthesizer = new Synthesizer();
+    const synthesizer = withNestedStacks(new Synthesizer());
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,
@@ -793,7 +794,7 @@ export async function buildEcsImageResolutionContext(
         urlSuffix: partitionAndSuffix.urlSuffix,
       }),
       // The owning stack's deployed name (issue #979).
-      stackName: deployedStackName(options, candidate.stackName),
+      ...deployedStackNamePseudo(options, candidate.stackName),
     };
   }
 

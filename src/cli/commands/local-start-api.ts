@@ -49,6 +49,13 @@ import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { isInteractive, pickManyTargets } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import {
+  registeredStack,
+  rootStackName,
+  topLevelStacks,
+  withNestedDescendants,
+  withNestedStacks,
+} from '../../synthesis/nested-stacks.js';
 import { resolveApp, resolveWatchConfig, type CdkWatchConfig } from '../config-loader.js';
 import { createGlobMatcher } from '../../utils/glob-match.js';
 import { readCdkPathOrUndefined, stackForConstructPath } from '../cdk-path.js';
@@ -57,7 +64,7 @@ import type { AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import {
   createLocalStateProvider,
-  deployedStackName,
+  deployedStackNamePseudo,
   groupWorkloadsRoutedApart,
   UNNAMED_WORKLOAD,
   isCfnFlagPresent,
@@ -803,7 +810,7 @@ async function serveStartApi(
    */
   const synthesizeAndBuild = async (): Promise<NextStateMaterial> => {
     logger.info('Synthesizing CDK app...');
-    const synthesizer = new Synthesizer();
+    const synthesizer = withNestedStacks(new Synthesizer());
     const context = parseContextOptions(options.context);
     const synthOpts: SynthesisOptions = {
       app: appCmd,
@@ -1689,18 +1696,21 @@ export function pickTargetStacks(
   // so any of the three values identifies the synth target unambiguously
   // without the user having to repeat themselves via `--stack`.
   const effective = pattern ?? cfnStackFallback ?? targetFallback;
-  if (effective !== undefined && typeof effective !== 'string') return [effective];
+  if (effective !== undefined && typeof effective !== 'string') {
+    return withNestedDescendants([effective], stacks);
+  }
   if (effective) {
     return matchStacks(stacks, [effective]);
   }
-  if (stacks.length === 1) return stacks;
+  // A stack with CDK nested stacks is one stack, served with them.
+  if (topLevelStacks(stacks).length === 1) return stacks;
   if (stacks.length === 0) return [];
   // Multi-stack apps are served as a union only on explicit opt-in
   // (`--all-stacks`); otherwise we require an explicit single-target
   // selection so users don't accidentally serve (and boot Docker
   // containers for) a side-stack's API.
   throw new Error(
-    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, a stack-qualified target like "<StackName>/<construct>", or --all-stacks to serve every stack. Available stacks: ${describeStacks(stacks)}.`
+    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, a stack-qualified target like "<StackName>/<construct>", or --all-stacks to serve every stack. Available stacks: ${describeStacks(topLevelStacks(stacks))}.`
   );
 }
 
@@ -4021,7 +4031,14 @@ export async function loadStateForRoutedStacks(
   // collide between siblings (see local-state-source.ts for the
   // rationale). Bare `--from-cfn-stack` is safe because each routed
   // stack uses its own host stack name.
-  rejectExplicitCfnStackWithMultipleStacks(options, reachableStackNames.size);
+  // A CDK nested stack is part of its top-level stack, which an explicit
+  // `--from-cfn-stack <name>` names (go-to-k/cdk-local#986).
+  rejectExplicitCfnStackWithMultipleStacks(
+    options,
+    new Set(
+      [...reachableStackNames].map((n) => rootStackName(registeredStack(n) ?? { stackName: n }))
+    ).size
+  );
   for (const stackName of reachableStackNames) {
     const stack = stacks.find((s) => s.stackName === stackName);
     if (!stack) continue;
@@ -4236,7 +4253,7 @@ export async function resolvePseudoParametersForStartApi(
       partition: partitionAndSuffix.partition,
       urlSuffix: partitionAndSuffix.urlSuffix,
     }),
-    ...(stackName !== undefined && { stackName: deployedStackName(options, stackName) }),
+    ...(stackName !== undefined && deployedStackNamePseudo(options, stackName)),
   };
   return Object.keys(bag).length === 0 ? undefined : bag;
 }

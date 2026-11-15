@@ -13,6 +13,7 @@ import {
 import { getEmbedConfig } from './embed-config.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
+import { topLevelStacks, resourcesWithNestedStacks } from '../synthesis/nested-stacks.js';
 
 /**
  * Phase 2 of #262 — synthesized `AWS::ECS::Service` resolved against the
@@ -226,7 +227,7 @@ export function resolveEcsServiceTarget(
       ({ logicalId: l }) => resources[l]?.Type === 'AWS::ECS::Service'
     );
     if (services.length === 0) {
-      throw notFoundError(target, stack, resources, parsed);
+      throw notFoundError(target, stack, resourcesWithNestedStacks(stack, stacks), parsed);
     }
     if (services.length > 1) {
       throw new EcsTaskResolutionError(
@@ -239,11 +240,13 @@ export function resolveEcsServiceTarget(
     serviceResource = resources[serviceLogicalId];
   } else {
     serviceResource = resources[parsed.pathOrId];
-    if (!serviceResource) throw notFoundError(target, stack, resources, parsed);
+    if (!serviceResource)
+      throw notFoundError(target, stack, resourcesWithNestedStacks(stack, stacks), parsed);
     serviceLogicalId = parsed.pathOrId;
   }
 
-  if (!serviceLogicalId || !serviceResource) throw notFoundError(target, stack, resources, parsed);
+  if (!serviceLogicalId || !serviceResource)
+    throw notFoundError(target, stack, resourcesWithNestedStacks(stack, stacks), parsed);
 
   if (serviceResource.Type === 'AWS::ECS::TaskDefinition') {
     throw new EcsTaskResolutionError(
@@ -671,8 +674,8 @@ function pickStack(parsed: ParsedEcsTarget, stacks: StackInfo[], target: string)
       return selection.stack;
     case 'no-prefix':
       throw new EcsTaskResolutionError(
-        `Target has no stack prefix, and the assembly contains ${stacks.length} stacks: ` +
-          `${describeStacks(stacks)}. Pass the target as 'Stack/Path' or 'Stack:LogicalId'.`
+        `Target has no stack prefix, and the assembly contains ${topLevelStacks(stacks).length} stacks: ` +
+          `${describeStacks(topLevelStacks(stacks))}. Pass the target as 'Stack/Path' or 'Stack:LogicalId'.`
       );
     case 'not-found':
       throw new EcsTaskResolutionError(

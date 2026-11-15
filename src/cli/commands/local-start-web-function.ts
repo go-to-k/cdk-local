@@ -26,6 +26,7 @@ import {
   type CdkAppSynthesizer,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { withNestedStacks } from '../../synthesis/nested-stacks.js';
 import { resolveApp } from '../config-loader.js';
 import type { ExtraStateProviders } from './local-state-source.js';
 import {
@@ -111,7 +112,7 @@ async function localStartWebFunctionCommand(
     );
   }
   logger.info('Synthesizing CDK app...');
-  const synthesizer: CdkAppSynthesizer = hostSynthesizer ?? new Synthesizer();
+  const synthesizer: CdkAppSynthesizer = withNestedStacks(hostSynthesizer ?? new Synthesizer());
   const context = parseContextOptions(options.context);
   const synthOpts: SynthesisOptions = {
     app: appCmd,

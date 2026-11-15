@@ -1582,6 +1582,25 @@ describe('discoverRoutes — REST v1 response streaming (#922)', () => {
     expect(routes[0]?.unsupported?.reason).toMatch(/cross-stack \/ imported references/);
   });
 
+  it.each([
+    ['a nested stack Outputs.* GetAtt', { 'Fn::GetAtt': ['InnerNS', 'Outputs.FnArn'] }],
+    ['a nested-stack reference parameter', { Ref: 'referencetoInnerFnArn' }],
+  ])('names the NestedStack chain, not cross-stack, when the Uri carries %s (#986)', (_label, arn) => {
+    const routes = discoverRoutes([
+      restMethod({
+        Type: 'AWS_PROXY',
+        Uri: {
+          'Fn::Join': [
+            '',
+            ['arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/', arn, '/invocations'],
+          ],
+        },
+      }),
+    ]);
+    expect(routes[0]?.unsupported?.reason).toMatch(/NestedStack/);
+    expect(routes[0]?.unsupported?.reason).not.toMatch(/cross-stack \/ imported references/);
+  });
+
   it('flags the streaming URI on an HTTP API v2 integration as REST-only', () => {
     const stack = buildStack('S', {
       Api: { Type: 'AWS::ApiGatewayV2::Api', Properties: { ProtocolType: 'HTTP' } },

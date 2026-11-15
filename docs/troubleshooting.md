@@ -63,7 +63,7 @@ cdk-local re-synths your app on every invoke / start-api / run-task / start-serv
 The target argument (`MyStack/MyFunction`) is a CDK construct display path. It must match exactly what `cdk synth` emits. Two common traps:
 
 - **Case-sensitive** — `MyStack/myFunction` and `MyStack/MyFunction` are different.
-- **Nested stacks** — for a function in a nested stack, the path is `MyStack/MyNestedStack/MyFunction`, not `MyStack/MyFunction`.
+- **Nested stacks** — for a function in a CDK `NestedStack`, the path is `MyStack/MyNestedStack/MyFunction`, not `MyStack/MyFunction`. The not-found error lists the nested stacks' functions too.
 
 List the visible targets:
 

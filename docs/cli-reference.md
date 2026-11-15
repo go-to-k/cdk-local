@@ -488,8 +488,22 @@ physical name (one Stage deployed to two accounts), that name is ambiguous and
 refused, and the display path picks one. This is the same rule cdkd applies, so
 `cdkd local` and `cdkl` resolve a target to the same stack.
 
+**Resources inside a CDK `NestedStack`** are reached like the parent's own,
+at any nesting depth: by construct path (`MyStack/MyNested/Handler`, or
+`MyStack/MyNested/Deeper/Handler`), or by the parent's name and the logical
+ID in the nested template (`MyStack:Handler1234ABCD`). A nested stack is not
+a separate stack for selection: a stack with nested stacks is still a
+single-stack app, and selecting the parent (`--stack MyStack`) also selects
+its nested stacks, so `start-api` serves an API declared in one. Messages
+name a nested stack `<parent>~<logical id>`. Under a state source, a value the
+parent passes in (a nested template parameter, which is how CDK hands a parent
+resource to a nested stack) resolves from the parent's deployed stack, and
+`--from-cfn-stack` reads the deployed nested stack through its parent;
+`--from-cfn-stack <name>` names the top-level stack.
+
 When the target does not match anything, the error lists every Lambda
-in the resolved stack so the user can copy/paste a valid one.
+in the resolved stack and its nested stacks so the user can copy/paste a
+valid one.
 
 ### Options
 

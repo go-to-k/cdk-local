@@ -39,6 +39,8 @@ import { getEmbedConfig } from '../../local/embed-config.js';
 import { resolveProfileRegion } from '../../utils/profile-region.js';
 import { namedEnvAwsRegion, regionOrAmbientDefault } from '../../utils/ambient-default-region.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
+import { registeredStack } from '../../synthesis/nested-stacks.js';
+import { nestedStackChain, withNestedStackParameters } from '../../local/nested-stack-state.js';
 
 /**
  * Options each `cdkl` command gathers from its flag set. The built-in
@@ -129,8 +131,22 @@ export function resolveCfnStackName(fromCfnStack: string | boolean, stackName: s
 export function deployedStackName(
   opts: Pick<LocalStateSourceOptions, 'fromCfnStack'>,
   stackName: string
-): string {
+): string | undefined {
+  // A CDK nested stack's deployed name is CloudFormation-generated
+  // (`<parent>-<id>NestedStack...-<suffix>`), never the `<parent>~<id>` it is
+  // listed under nor the top-level name `--from-cfn-stack <name>` gives:
+  // leave `AWS::StackName` unresolved rather than hand over a wrong one.
+  if (registeredStack(stackName)?.nestedStack !== undefined) return undefined;
   return resolveCfnStackName(opts.fromCfnStack ?? false, stackName);
+}
+
+/** {@link deployedStackName} as a pseudo-parameter bag entry: empty when it is unknown. */
+export function deployedStackNamePseudo(
+  opts: Pick<LocalStateSourceOptions, 'fromCfnStack'>,
+  stackName: string
+): { stackName?: string } {
+  const name = deployedStackName(opts, stackName);
+  return name === undefined ? {} : { stackName: name };
 }
 
 /**
@@ -345,6 +361,34 @@ export function createLocalStateProvider(
   /** {@link LocalStateProviderBehavior}; also handed to a host factory. */
   behavior: LocalStateProviderBehavior = {}
 ): LocalStateProvider | undefined {
+  // A CDK nested stack (go-to-k/cdk-local#986): `--from-cfn-stack` reads the
+  // physical nested stack through its top-level stack, and its parameters
+  // resolve against the parent's state.
+  const stack = registeredStack(stackName);
+  const nested = stack?.nestedStack ? nestedStackChain(stack, registeredStack) : undefined;
+  const provider = createStackStateProvider(
+    options,
+    stackName,
+    synthRegion,
+    extraStateProviders,
+    behavior,
+    nested
+  );
+  if (!provider || !nested) return provider;
+  return withNestedStackParameters(provider, stackName, (parent) =>
+    createLocalStateProvider(options, parent.stackName, synthRegion, extraStateProviders, behavior)
+  );
+}
+
+function createStackStateProvider(
+  options: LocalStateSourceOptions,
+  stackName: string,
+  synthRegion: string | undefined,
+  extraStateProviders: ExtraStateProviders | undefined,
+  behavior: LocalStateProviderBehavior,
+  /** Set for a CDK nested stack: its top-level stack and the logical-ID path down to it. */
+  nested: { root: string; path: string[] } | undefined
+): LocalStateProvider | undefined {
   const cfnStackOpt = options.fromCfnStack;
   const cfnFlagPresent = isCfnFlagPresent(options);
 
@@ -385,10 +429,17 @@ export function createLocalStateProvider(
   }
 
   if (cfnFlagPresent) {
-    const cfnStackName = resolveCfnStackName(cfnStackOpt as string | boolean, stackName);
+    // For a nested stack, an explicit `--from-cfn-stack <name>` names the
+    // top-level stack it is deployed under.
+    const cfnStackName = resolveCfnStackName(
+      cfnStackOpt as string | boolean,
+      nested?.root ?? stackName
+    );
+    const nestedPath = nested?.path;
     const region = resolveCfnRegion(options, synthRegion);
     const real = new CfnLocalStateProvider({
       cfnStackName,
+      ...(nestedPath !== undefined && { nestedPath }),
       region,
       ...(options.profile !== undefined && { profile: options.profile }),
       // An SSM-backed template parameter follows this workload's SSM route.
@@ -402,6 +453,7 @@ export function createLocalStateProvider(
     if (!mixed) return real;
     const emulator = new CfnLocalStateProvider({
       cfnStackName,
+      ...(nestedPath !== undefined && { nestedPath }),
       region,
       endpointOverride: mixed.emulatorClientOverride,
       label: '--from-cfn-stack (AWS Emulator)',

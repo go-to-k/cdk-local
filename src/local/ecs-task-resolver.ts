@@ -1,4 +1,5 @@
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { resourcesWithNestedStacks } from '../synthesis/nested-stacks.js';
 import { takeAwsEmulatorStateSourceHint } from './workload-aws-wiring.js';
 import { existsSync, statSync } from 'node:fs';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
@@ -705,7 +706,7 @@ export function resolveEcsTaskTarget(
       ({ logicalId: l }) => resources[l]?.Type === 'AWS::ECS::TaskDefinition'
     );
     if (taskDefs.length === 0) {
-      throw notFoundError(target, stack, resources);
+      throw notFoundError(target, stack, resourcesWithNestedStacks(stack, stacks));
     }
     if (taskDefs.length > 1) {
       throw new EcsTaskResolutionError(
@@ -718,11 +719,12 @@ export function resolveEcsTaskTarget(
     resource = resources[logicalId];
   } else {
     resource = resources[parsed.pathOrId];
-    if (!resource) throw notFoundError(target, stack, resources);
+    if (!resource) throw notFoundError(target, stack, resourcesWithNestedStacks(stack, stacks));
     logicalId = parsed.pathOrId;
   }
 
-  if (!logicalId || !resource) throw notFoundError(target, stack, resources);
+  if (!logicalId || !resource)
+    throw notFoundError(target, stack, resourcesWithNestedStacks(stack, stacks));
 
   if (resource.Type === 'AWS::Lambda::Function') {
     throw new EcsTaskResolutionError(
