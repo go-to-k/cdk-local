@@ -132,8 +132,38 @@ export async function downloadAndExtractS3Bundle(
  */
 function formatRef(location: S3BundleLocation, redactBucket = false): string {
   const version = location.versionId ? `?versionId=${flattenToOneLine(location.versionId)}` : '';
-  const bucket = redactBucket ? '<cross-stack value withheld>' : flattenToOneLine(location.bucket);
+  const bucket = redactBucket ? WITHHELD_BUCKET : flattenToOneLine(location.bucket);
   return `s3://${bucket}/${flattenToOneLine(location.key)}${version}`;
+}
+
+const WITHHELD_BUCKET = '<cross-stack value withheld>';
+
+/**
+ * Replace every occurrence of `bucket` in a relayed AWS SDK message with the
+ * withheld marker (go-to-k/cdk-local#984). `formatRef` withholds the bucket
+ * from cdk-local's own `s3://` text, but the SDK's text can name it too: an S3
+ * `AccessDenied` names `arn:aws:s3:::<bucket>/<key>`, and a DNS / network
+ * failure names the virtual-hosted host `<bucket>.s3.<region>.amazonaws.com`.
+ *
+ * Matched case-insensitively (a host name may come back case-folded), and in
+ * its percent-encoded form too, which differs from the bucket only for a name
+ * outside S3's own `[a-z0-9.-]` (a request path carries it encoded). `undefined`
+ * for an empty bucket, so nothing ever replaces `""`.
+ */
+function bucketScrubber(bucket: string): ((text: string) => string) | undefined {
+  const forms = new Set([bucket]);
+  try {
+    forms.add(encodeURIComponent(bucket));
+  } catch {
+    // A lone surrogate: no encoded form can have been emitted for it.
+  }
+  const alternatives = [...forms]
+    .filter((form) => form !== '')
+    .sort((a, b) => b.length - a.length)
+    .map((form) => form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (alternatives.length === 0) return undefined;
+  const pattern = new RegExp(alternatives.join('|'), 'giu');
+  return (text) => text.replace(pattern, WITHHELD_BUCKET);
 }
 
 /**
@@ -221,7 +251,8 @@ function defaultFetchObject(
       throw new CdkLocalError(
         `S3 GetObject for ${formatRef(location, options.redactBucket)} failed: ${describeAwsFailureForWarn(
           err,
-          'S3 GetObject (fromS3 bundle)'
+          'S3 GetObject (fromS3 bundle)',
+          options.redactBucket ? bucketScrubber(location.bucket) : undefined
         )}`,
         'LOCAL_INVOKE_AGENTCORE_S3_BUNDLE_FETCH_FAILED'
       );

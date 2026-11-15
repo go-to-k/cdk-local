@@ -3,6 +3,20 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import { zipSync, strToU8 } from 'fflate';
 import { downloadAndExtractS3Bundle } from '../../../src/local/agentcore-s3-bundle.js';
+import { getLogger } from '../../../src/utils/logger.js';
+
+// The DEFAULT fetcher's S3 client, for the relayed-failure tests below. The
+// other tests inject `fetchObject` and never construct it.
+const { s3Send } = vi.hoisted(() => ({ s3Send: vi.fn<() => Promise<unknown>>() }));
+vi.mock('@aws-sdk/client-s3', () => ({
+  S3Client: class {
+    send = s3Send;
+    destroy(): void {}
+  },
+  GetObjectCommand: class {
+    constructor(public input: unknown) {}
+  },
+}));
 
 /**
  * Drives the real extraction path against a real in-memory ZIP built with
@@ -130,5 +144,104 @@ describe('downloadAndExtractS3Bundle redactBucket (go-to-k/cdkd#6339)', () => {
     const { logged, error } = await run(strToU8('not a zip'), undefined);
     expect(logged).toContain(`s3://${BUCKET}/agent.zip`);
     expect(error).toContain(`s3://${BUCKET}/agent.zip`);
+  });
+});
+
+describe('downloadAndExtractS3Bundle redactBucket on a relayed S3 failure (#984)', () => {
+  const BUCKET = 'bucket-from-a-producer-stack';
+
+  /** A modeled S3 exception, shaped as the SDK's `ServiceException` is. */
+  function serviceException(name: string, message: string): Error {
+    return Object.assign(new Error(message), {
+      name,
+      $fault: 'client',
+      $metadata: { httpStatusCode: 403 },
+    });
+  }
+
+  function accessDenied(bucket: string): Error {
+    return serviceException(
+      'AccessDenied',
+      `User: arn:aws:iam::123456789012:user/dev is not authorized to perform: s3:GetObject on resource: ` +
+        `"arn:aws:s3:::${bucket}/agent.zip" because no identity-based policy allows the s3:GetObject action`
+    );
+  }
+
+  function dnsFailure(host: string): Error {
+    return Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: 'ENOTFOUND' });
+  }
+
+  async function run(failure: unknown, redactBucket: boolean | undefined, bucket = BUCKET) {
+    s3Send.mockReset();
+    s3Send.mockRejectedValue(failure);
+    const debug = vi.spyOn(getLogger(), 'debug').mockImplementation(() => {});
+    const info = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    let error = '';
+    try {
+      await downloadAndExtractS3Bundle(
+        { bucket, key: 'agent.zip' },
+        { region: 'us-east-1', ...(redactBucket !== undefined && { redactBucket }) }
+      );
+    } catch (err) {
+      error = (err as Error).message;
+    }
+    const debugged = debug.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+    debug.mockRestore();
+    info.mockRestore();
+    expect(s3Send).toHaveBeenCalledTimes(1);
+    expect(error).toMatch(/^S3 GetObject for s3:\/\/.*\/agent\.zip failed: /);
+    return { error, debugged };
+  }
+
+  it('withholds the bucket an AccessDenied names when set', async () => {
+    const { error } = await run(accessDenied(BUCKET), true);
+    expect(error).toContain('AccessDenied: User: arn:aws:iam::123456789012:user/dev');
+    expect(error).toContain('"arn:aws:s3:::<cross-stack value withheld>/agent.zip"');
+    expect(error).not.toContain(BUCKET);
+  });
+
+  it('relays the AccessDenied bucket as before when unset', async () => {
+    const { error } = await run(accessDenied(BUCKET), undefined);
+    expect(error).toContain(`"arn:aws:s3:::${BUCKET}/agent.zip"`);
+  });
+
+  it('withholds a bucket the 512-character cap would cut in two', async () => {
+    // The bucket straddles the cap, so a replacement made after the cut would
+    // find no whole occurrence and leave its prefix on the line.
+    const failure = serviceException('AccessDenied', `${'x'.repeat(500)}${BUCKET} and more`);
+    const { error } = await run(failure, true);
+    expect(error).toContain(`${'x'.repeat(500)}<cross-stack`);
+    expect(error).not.toContain(BUCKET.slice(0, 12));
+  });
+
+  it('withholds the bucket a DNS failure names on the debug line when set', async () => {
+    const { error, debugged } = await run(dnsFailure(`${BUCKET}.s3.us-east-1.amazonaws.com`), true);
+    expect(debugged).toContain(
+      'getaddrinfo ENOTFOUND <cross-stack value withheld>.s3.us-east-1.amazonaws.com'
+    );
+    expect(`${error}\n${debugged}`).not.toContain(BUCKET);
+  });
+
+  it('logs the DNS failure host as before when unset', async () => {
+    const { debugged } = await run(dnsFailure(`${BUCKET}.s3.us-east-1.amazonaws.com`), undefined);
+    expect(debugged).toContain(`getaddrinfo ENOTFOUND ${BUCKET}.s3.us-east-1.amazonaws.com`);
+  });
+
+  it('withholds a case-folded and a percent-encoded spelling of the bucket', async () => {
+    const bucket = 'My Bucket';
+    const failure = dnsFailure(`my bucket.s3.amazonaws.com and /My%20Bucket/agent.zip`);
+    const { debugged } = await run(failure, true, bucket);
+    expect(debugged).toContain(
+      '<cross-stack value withheld>.s3.amazonaws.com and /<cross-stack value withheld>/agent.zip'
+    );
+    expect(debugged.toLowerCase()).not.toContain('my bucket');
+    expect(debugged).not.toContain('My%20Bucket');
+  });
+
+  it('replaces nothing for an empty bucket', async () => {
+    const { error } = await run(accessDenied(''), true, '');
+    const relayed = error.slice(error.indexOf(' failed: '));
+    expect(relayed).toContain('"arn:aws:s3:::/agent.zip"');
+    expect(relayed).not.toContain('withheld');
   });
 });
