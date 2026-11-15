@@ -48,6 +48,7 @@ import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import {
   createLocalStateProvider,
+  deployedStackName,
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
   type LocalStateSourceOptions,
@@ -79,6 +80,7 @@ import {
   applyDeployedEnvFallback,
   containsCrossStackIntrinsic,
   substituteEnvVarsFromStateAsync,
+  type PseudoParameters,
   type StateEnvSubstitutionAudit,
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
@@ -889,10 +891,10 @@ export function envHasCrossStackIntrinsic(
  */
 export async function resolvePseudoParametersForInvoke(
   stackRegion: string | undefined,
-  options: { region?: string; profile?: string; fromCfnStack?: string | boolean }
-): Promise<
-  { accountId?: string; region?: string; partition?: string; urlSuffix?: string } | undefined
-> {
+  options: { region?: string; profile?: string; fromCfnStack?: string | boolean },
+  /** The owning stack's physical name; fills `AWS::StackName` (issue #979). */
+  stackName?: string
+): Promise<PseudoParameters | undefined> {
   const logger = getLogger();
   const region =
     options.region ??
@@ -937,18 +939,14 @@ export async function resolvePseudoParametersForInvoke(
     );
   }
   const partitionAndSuffix = region ? derivePartitionAndUrlSuffix(region) : undefined;
-  const bag: {
-    accountId?: string;
-    region?: string;
-    partition?: string;
-    urlSuffix?: string;
-  } = {
+  const bag: PseudoParameters = {
     ...(accountId !== undefined && { accountId }),
     ...(region !== undefined && { region }),
     ...(partitionAndSuffix && {
       partition: partitionAndSuffix.partition,
       urlSuffix: partitionAndSuffix.urlSuffix,
     }),
+    ...(stackName !== undefined && { stackName: deployedStackName(options, stackName) }),
   };
   return Object.keys(bag).length === 0 ? undefined : bag;
 }
@@ -1219,7 +1217,11 @@ async function resolveLambdaContainerEnvWith(
             }),
         };
         if (envHasIntrinsicValue(templateEnv)) {
-          const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
+          const pseudo = await resolvePseudoParametersForInvoke(
+            lambda.stack.region,
+            options,
+            lambda.stack.stackName
+          );
           if (pseudo) subContext.pseudoParameters = pseudo;
         }
         if (envHasIntrinsicValue(templateEnv) && stateProvider.resolveTemplateSsmParameters) {

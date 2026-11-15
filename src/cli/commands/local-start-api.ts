@@ -57,6 +57,7 @@ import type { AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import {
   createLocalStateProvider,
+  deployedStackName,
   groupWorkloadsRoutedApart,
   UNNAMED_WORKLOAD,
   isCfnFlagPresent,
@@ -4119,7 +4120,7 @@ async function loadStackStateBundle(
     if (args.intrinsicEnv) {
       const pseudo =
         args.pseudoParameters ??
-        (await resolvePseudoParametersForStartApi(loaded.region, args.options));
+        (await resolvePseudoParametersForStartApi(loaded.region, args.options, stack.stackName));
       if (pseudo) bundle.pseudoParameters = pseudo;
     }
     // Deployed-env fallback source: for each reachable Lambda in this
@@ -4186,7 +4187,9 @@ async function loadStackStateBundle(
  */
 export async function resolvePseudoParametersForStartApi(
   stateRegion: string,
-  options: LocalStartApiOptions
+  options: LocalStartApiOptions,
+  /** The owning stack's physical name; fills `AWS::StackName` (issue #979). */
+  stackName?: string
 ): Promise<PseudoParameters | undefined> {
   const logger = getLogger();
   const region =
@@ -4233,6 +4236,7 @@ export async function resolvePseudoParametersForStartApi(
       partition: partitionAndSuffix.partition,
       urlSuffix: partitionAndSuffix.urlSuffix,
     }),
+    ...(stackName !== undefined && { stackName: deployedStackName(options, stackName) }),
   };
   return Object.keys(bag).length === 0 ? undefined : bag;
 }

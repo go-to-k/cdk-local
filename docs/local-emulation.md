@@ -701,7 +701,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from the bound CloudFormation stack (requires `--from-cfn-stack`); (3) `--no-assume-role` explicitly opts out (forces dev creds even with `--from-cfn-stack`). Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` are passed through unchanged (SAM-compatible default; the region follows the container `AWS_REGION` order below), and with none in the environment the host's default credential chain fills them. STS failures degrade to a warn + dev-creds fallback. |
 | `-a, --app <cmd-or-dir>` | — | CDK app command or pre-synthesized `cdk.out` directory. Default: synth every time. Pass `-a cdk.out` to skip synthesis when iterating. |
 | `--output <dir>` | `cdk.out` | Output directory for synthesis. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in env vars with the deployed physical IDs / exports. Bare form uses the CDK stack name (typical case); pass an explicit value when the deployed CFn stack name differs (e.g. CDK's `stackName` prop was overridden). `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in the Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. See [CloudFormation-driven env recovery (`--from-cfn-stack`)](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}` / `${AWS::StackName}`) in env vars with the deployed physical IDs / exports. Bare form uses the CDK stack name (typical case); pass an explicit value when the deployed CFn stack name differs (e.g. CDK's `stackName` prop was overridden). `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in the Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. See [CloudFormation-driven env recovery (`--from-cfn-stack`)](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
 | `--stack-region <region>` | auto | Region used to construct the CloudFormation client for `--from-cfn-stack`. Defaults to `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION` > the synth-derived stack region > the `--profile`'s configured region (`~/.aws/config`). |
 | `--layer-role-arn <arn>` | — | Role ARN to assume before calling `lambda:GetLayerVersion` on literal-ARN layer entries. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for the GetLayerVersion call only — the assumed role is NOT propagated into the Lambda container at runtime (that's what `--assume-role` is for). Use this when the layer lives in a different account than the calling identity and direct cross-account access is not granted via the layer's resource policy. |
 
@@ -712,7 +712,8 @@ Template `Properties.Environment.Variables` entries:
 - **Literal values** (string / number / boolean) are passed through as-is.
 - **Intrinsic-valued entries** (`Ref` / `Fn::GetAtt` / `Fn::Sub` /
   `Fn::Join`, plus the `${AWS::AccountId}` / `${AWS::Region}` /
-  `${AWS::Partition}` / `${AWS::URLSuffix}` pseudo parameters) need a
+  `${AWS::Partition}` / `${AWS::URLSuffix}` / `${AWS::StackName}` pseudo
+  parameters) need a
   bound CloudFormation stack (and a single `sts:GetCallerIdentity` for
   `${AWS::AccountId}`) to resolve. Without `--from-cfn-stack` cdk-local
   emits a warning naming the variable and **drops** it (rather than
@@ -2064,6 +2065,7 @@ parameters:
 | `Fn::Sub: '...${X}...${AWS::Region}...'` | recursive substitution against CFn data + pseudo parameters |
 | `Fn::Join: [<delim>, [<elements>]]` | recursive substitution of every element, then `Array.join` |
 | `Ref: AWS::AccountId` / `AWS::Region` / `AWS::Partition` / `AWS::URLSuffix` | STS `GetCallerIdentity` (lazy, cached) + the resolved region + region-derived partition / URL suffix |
+| `Ref: AWS::StackName` | the deployed stack name: the explicit `--from-cfn-stack <name>`, else the stack's synthesized name. `AWS::StackId` is not resolved (dropped with a warning) |
 
 `Fn::GetAtt` in ECS container `Environment[].Value` is warn-and-dropped
 (CFn `ListStackResources` does not return per-attribute values, and

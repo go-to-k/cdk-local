@@ -11,6 +11,7 @@ vi.mock('../../../src/utils/profile-region.js', () => ({
 import {
   activeStateSourceFlag,
   createLocalStateProvider,
+  deployedStackName,
   hasExtraStateProviderActive,
   hostStateSourceFields,
   isCfnFlagPresent,
@@ -37,6 +38,17 @@ const fakeExtraProvider: LocalStateProvider = {
 const fakeExtraProviders: ExtraStateProviders = {
   fromFake: (() => fakeExtraProvider) as LocalStateProviderFactory,
 };
+
+describe('deployedStackName (AWS::StackName, #979)', () => {
+  it('is the explicit --from-cfn-stack <name> when one was passed', () => {
+    expect(deployedStackName({ fromCfnStack: 'Deployed' }, 'MyStack')).toBe('Deployed');
+  });
+
+  it('is the physical stack name under bare --from-cfn-stack or no CFn flag (a host --from-state)', () => {
+    expect(deployedStackName({ fromCfnStack: true }, 'MyStack')).toBe('MyStack');
+    expect(deployedStackName({}, 'MyStack')).toBe('MyStack');
+  });
+});
 
 describe('resolveCfnStackName', () => {
   it('returns the explicit string value when --from-cfn-stack <name> was passed', () => {

@@ -119,6 +119,21 @@ export function resolveCfnStackName(fromCfnStack: string | boolean, stackName: s
 }
 
 /**
+ * The deployed name of the stack whose physical (synthesized) name is
+ * `stackName`, as the active state source reads it: an explicit
+ * `--from-cfn-stack <name>`, else `stackName` itself (bare
+ * `--from-cfn-stack`, a host's `--from-state`, no state source). It is what
+ * CloudFormation substituted for `AWS::StackName` in that stack's template
+ * values, so it fills `PseudoParameters.stackName` (issue #979).
+ */
+export function deployedStackName(
+  opts: Pick<LocalStateSourceOptions, 'fromCfnStack'>,
+  stackName: string
+): string {
+  return resolveCfnStackName(opts.fromCfnStack ?? false, stackName);
+}
+
+/**
  * Single source of truth for "is the user asking for `--from-cfn-stack`?".
  * Commander maps the flag to one of `undefined` (absent) / `true` (bare) /
  * `'<name>'` (explicit). Everything except `undefined` / `false` means

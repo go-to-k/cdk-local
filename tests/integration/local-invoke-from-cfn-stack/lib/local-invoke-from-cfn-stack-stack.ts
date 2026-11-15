@@ -207,6 +207,10 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
           SSM_AMI_PARAM,
           ssm.ParameterValueType.AWS_EC2_IMAGE_ID
         ),
+        // issue #979: the AWS::StackName pseudo parameter, bare and inside
+        // Fn::Sub -- resolved to the deployed stack name, not dropped.
+        STACK_NAME_REF: cdk.Aws.STACK_NAME,
+        STACK_NAME_SUB: cdk.Fn.sub('${AWS::StackName}-sub'),
       },
       timeout: cdk.Duration.seconds(10),
     });

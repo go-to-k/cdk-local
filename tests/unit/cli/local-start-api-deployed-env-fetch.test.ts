@@ -22,6 +22,7 @@ vi.mock('../../../src/cli/commands/local-state-source.js', () => ({
   createLocalStateProvider: createProviderMock,
   rejectExplicitCfnStackWithMultipleStacks: rejectMock,
   isCfnFlagPresent: vi.fn(() => false),
+  deployedStackName: (_options: unknown, stackName: string) => stackName,
   resolveCfnFallbackRegion: fallbackRegionMock,
   UNNAMED_WORKLOAD: {},
   groupWorkloadsRoutedApart: vi.fn(() => []),

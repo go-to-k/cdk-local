@@ -519,7 +519,8 @@ Template `Properties.Environment.Variables` entries:
 - **Literal values** (string / number / boolean) are passed through as-is.
 - **Intrinsic-valued entries** (`Ref` / `Fn::GetAtt` / `Fn::Sub` /
   `Fn::Join`, plus the `${AWS::AccountId}` / `${AWS::Region}` /
-  `${AWS::Partition}` / `${AWS::URLSuffix}` pseudo parameters) need a
+  `${AWS::Partition}` / `${AWS::URLSuffix}` / `${AWS::StackName}` pseudo
+  parameters) need a
   state source (and a single `sts:GetCallerIdentity` for
   `${AWS::AccountId}`) to resolve. Without a state source, cdk-local
   emits a warning naming the variable and **drops** it (rather than
@@ -1590,6 +1591,7 @@ entry against the deployed CFn stack plus AWS pseudo parameters:
 | `Fn::Sub: '...${X}...${AWS::Region}...'` | recursive substitution against CFn lookups + pseudo parameters |
 | `Fn::Join: [<delim>, [<elements>]]` | recursive substitution of every element, then `Array.join` |
 | `Ref: AWS::AccountId` / `AWS::Region` / `AWS::Partition` / `AWS::URLSuffix` | STS `GetCallerIdentity` (lazy, cached) + the resolved region + region-derived partition / URL suffix |
+| `Ref: AWS::StackName` | the deployed stack name: the explicit `--from-cfn-stack <name>`, else the stack's synthesized name. `AWS::StackId` is not resolved (dropped with a warning) |
 | `Fn::GetAtt: [<LogicalId>, <Attr>]` | **warn-and-dropped** in v1 (CFn `ListStackResources` does not return per-attribute values) |
 
 Per-key best-effort: when a substitution can't be produced (state

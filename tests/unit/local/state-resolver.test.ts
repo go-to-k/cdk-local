@@ -277,6 +277,45 @@ describe('substituteAgainstState', () => {
     expect(r).toEqual({ kind: 'literal', value: 'aws/123456789012' });
   });
 
+  // Issue #979: AWS::StackName from the bag's `stackName`.
+  it('substitutes Ref AWS::StackName and ${AWS::StackName} from the bag', () => {
+    const ctx = { resources: {}, pseudoParameters: { stackName: 'Deployed-Stack', region: 'r' } };
+    expect(substituteAgainstState({ Ref: 'AWS::StackName' }, ctx)).toEqual({
+      kind: 'literal',
+      value: 'Deployed-Stack',
+    });
+    expect(substituteAgainstState({ 'Fn::Sub': 'x-${AWS::StackName}-y' }, ctx)).toEqual({
+      kind: 'literal',
+      value: 'x-Deployed-Stack-y',
+    });
+    expect(
+      substituteAgainstState({ 'Fn::Join': ['/', [{ Ref: 'AWS::StackName' }, 'z']] }, ctx)
+    ).toEqual({ kind: 'literal', value: 'Deployed-Stack/z' });
+  });
+
+  it('reports AWS::StackName unresolved when the bag has no stackName', () => {
+    const r = substituteAgainstState(
+      { Ref: 'AWS::StackName' },
+      { resources: {}, pseudoParameters: { region: 'eu-west-1' } }
+    );
+    expect(r).toEqual({
+      kind: 'unresolved',
+      reason: 'Ref AWS::StackName: pseudo parameter value not resolved',
+    });
+  });
+
+  it('keeps refusing AWS::StackId, naming AWS::StackName as supported', () => {
+    const r = substituteAgainstState(
+      { Ref: 'AWS::StackId' },
+      { resources: {}, pseudoParameters: { stackName: 'S' } }
+    );
+    expect(r).toEqual({
+      kind: 'unresolved',
+      reason:
+        'Ref AWS::StackId: pseudo parameter not supported (supported: AWS::AccountId, AWS::Region, AWS::Partition, AWS::URLSuffix, AWS::StackName)',
+    });
+  });
+
   it('drops a Ref to an AWS pseudo when pseudoParameters is not supplied', () => {
     const r = substituteAgainstState({ Ref: 'AWS::Region' }, {});
     expect(r.kind).toBe('unresolved');

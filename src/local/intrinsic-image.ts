@@ -1,5 +1,6 @@
 import type { ResourceState } from '../types/state.js';
 import type { TemplateResource } from '../types/resource.js';
+import type { PseudoParameters } from './state-resolver.js';
 
 /**
  * Shared resolver for CFn intrinsic-function shapes that show up in
@@ -42,13 +43,11 @@ export interface ImageResolutionContext {
    * substitution is treated as missing and the value passes through
    * verbatim. Caller is expected to populate every key when it populates
    * any (we derive partition / URL suffix from region in the CLI layer).
+   * `stackName` is read by the env / secret substitution this context feeds
+   * (`state-resolver.ts`), not by the image-URI resolver here: a CDK image
+   * URI never carries `AWS::StackName`.
    */
-  pseudoParameters?: {
-    accountId?: string;
-    region?: string;
-    partition?: string;
-    urlSuffix?: string;
-  };
+  pseudoParameters?: PseudoParameters;
   /**
    * `state.resources` from the host's S3 state record for the target stack,
    * loaded by the CLI command before resolution when `--from-state` is
