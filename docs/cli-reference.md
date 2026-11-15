@@ -1544,8 +1544,8 @@ uses `169.254.171.0/24`, or the next free `169.254.<N>.0/24` when another run
 holds that, so several can run side by side.
 
 `awsvpc` network mode is mapped to `bridge` locally with a warn line —
-docker cannot emulate ENI-per-task. AWS SDK calls from inside the
-container still reach public AWS endpoints via the developer network.
+docker cannot emulate ENI-per-task, so the task gets no VPC subnet or
+security group, and its traffic leaves through the host network.
 
 ### ECR image resolution
 
