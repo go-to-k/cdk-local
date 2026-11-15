@@ -480,7 +480,10 @@ export class CfnProducerSecretJudge {
             const why =
               err instanceof UnjudgeableStackError
                 ? err.message
-                : describeAwsFailureForWarn(err, `${this.label}: CloudFormation ${operation}`);
+                : describeAwsFailureForWarn(
+                    err,
+                    `${this.label}: CloudFormation ${operation}(${displayUntrustedValue(stackId)})`
+                  );
             return { error: `${operation} of ${displayUntrustedValue(stackId)} failed: ${why}` };
           }
         );

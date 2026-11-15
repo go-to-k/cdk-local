@@ -324,6 +324,21 @@ describe('producer-secret verdicts beyond Fn::ImportValue (go-to-k/cdkd#6339)', 
     expectKeyOffArgv(task);
   });
 
+  it('drops a non-string detail rather than printing it', async () => {
+    const { task, container } = resolveTask();
+    await applyCrossStackResolverToTask(task, {
+      resources: {},
+      consumerRegion: 'us-east-1',
+      crossStackResolver: judgedResolver({
+        'P-Key': { verdict: 'unreadable', detail: { value: KEY } as unknown as string },
+      }),
+    });
+    expect(container.unresolvedCommandElements?.[0]?.reason).toMatch(
+      /whose producer stack cdkl could not read to check it for secrets/
+    );
+    expect(JSON.stringify(container.unresolvedCommandElements)).not.toContain(KEY);
+  });
+
   it("keeps the verdict for a container resolving against its own state (mixed mode)", async () => {
     const { task, container } = resolveTask();
     await applyCrossStackResolverToTask(

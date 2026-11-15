@@ -629,7 +629,11 @@ cdkl invoke MyStack/MyApi/Handler --from-cfn-stack \
 more than 100 resources are fully mapped) and
 `Fn::ImportValue: <ExportName>` against
 `cloudformation:ListExports` (paginated, memoized for one substitution
-pass).
+pass). An imported value holding a secret of the exporting stack, or one
+that cannot be checked, is passed value-less (`-e KEY`), not inline; the
+check reads `ListStackResources`, `DescribeStacks` and `GetTemplate` on the
+exporting stack (see
+[Env / Secrets substitution](local-emulation.md#env--secrets-substitution---from-cfn-stack)).
 
 **Resolution priority** (highest priority wins):
 
@@ -1629,7 +1633,8 @@ A value another stack exports (`Fn::ImportValue`) is checked for the
 producer stack's secrets, read from CloudFormation (`ListStackResources`,
 `DescribeStacks`, `GetTemplate` on the exporting stack): one holding a
 secret, or one that cannot be checked, is refused in an argv element,
-passed value-less in `Environment` and dropped as a `Secrets` `ValueFrom`.
+passed value-less in `Environment` (and in a Lambda or AgentCore env var)
+and dropped as a `Secrets` `ValueFrom`.
 What it covers and what it does not:
 [local-emulation.md](local-emulation.md#env--secrets-substitution---from-cfn-stack).
 

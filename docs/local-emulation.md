@@ -776,7 +776,11 @@ cdkl invoke MyStack/MyApi/Handler --from-cfn-stack \
 more than 100 resources are fully mapped), `Fn::ImportValue:
 <ExportName>` against `cloudformation:ListExports` (paginated, memoized
 for one substitution pass), and supported `Fn::Sub` / `Fn::Join` /
-`${AWS::*}` shapes via the same substitution engine.
+`${AWS::*}` shapes via the same substitution engine. An imported value
+holding a secret of the exporting stack, or one that cannot be checked,
+is passed value-less (`-e KEY`), not inline; the check reads
+`ListStackResources`, `DescribeStacks` and `GetTemplate` on the exporting
+stack (see [Env / Secrets substitution](#env--secrets-substitution---from-cfn-stack)).
 
 **`Fn::GetAtt` recovery**: CFn's `ListStackResources` does NOT return
 per-attribute values — it only exposes `(LogicalResourceId,

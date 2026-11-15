@@ -562,6 +562,18 @@ describe('--from-cfn-stack producer-secret check (go-to-k/cdkd#6339)', () => {
     provider.dispose();
   });
 
+  it('judges a producer tree of exactly 256 stacks', async () => {
+    // The producer, its nested stack and 254 more.
+    for (let i = 0; i < 254; i += 1) {
+      const id = `arn:aws:cloudformation:us-east-1:123456789012:stack/E${i}/e`;
+      stacks[id] = { resources: [], outputs: [], template: {} };
+      stacks[NESTED]!.resources.push({ LogicalResourceId: `E${i}`, PhysicalResourceId: id, ResourceType: 'AWS::CloudFormation::Stack' });
+    }
+    const { provider, r } = await resolver();
+    expect(await r.resolveImportJudged!('P-Bucket')).toEqual({ value: 'my-bucket' });
+    provider.dispose();
+  });
+
   it('fails closed past 256 stacks in one producer tree', async () => {
     const wide = Array.from({ length: 300 }, (_, i) => {
       const id = `arn:aws:cloudformation:us-east-1:123456789012:stack/W${i}/w`;

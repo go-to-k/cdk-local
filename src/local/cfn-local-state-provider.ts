@@ -587,8 +587,8 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     };
 
     // go-to-k/cdkd#6339: what each export's producer stack says is a secret,
-    // read only when a judged variant is called (the ECS post-pass), so the
-    // other callers of this resolver pay no extra CloudFormation reads.
+    // read only when a judged variant is called (the ECS post-pass and the
+    // async env helper), once per export; the plain methods read nothing more.
     const judge = new CfnProducerSecretJudge(client, ensureExports, label, fetchAllStackResources);
     const resolveImport = async (exportName: string): Promise<string | undefined> => {
       const map = await ensureExports();
