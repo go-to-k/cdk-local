@@ -2149,8 +2149,7 @@ argv element). Passing the value through `Environment` keeps it
 resolving (under `CDK_DOCKER=finch` on macOS / Windows a value-less env var
 is refused like a `SecureString` one, see
 [finch on macOS and Windows](#finch-on-macos-and-windows)). The check does not cover a secret the producer received as a
-plain (not `NoEcho`) parameter, a `NoEcho` parameter the producer passes
-into a nested stack that exports it, or a key the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`). A host CLI's own
+plain (not `NoEcho`) parameter, or a key the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`). A host CLI's own
 cross-stack resolver takes part by carrying the optional
 `resolveImportJudged` / `resolveGetStackOutputJudged` methods of
 `CrossStackResolver`.

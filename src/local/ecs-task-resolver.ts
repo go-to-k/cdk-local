@@ -1317,7 +1317,7 @@ function computedAttributeRead(node: unknown): string | undefined {
  * credentials, never the secret itself.
  */
 const SECRET_POINTER_ARN =
-  /^arn:aws(?:-[a-z]+)*:(?:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@!-]+(?::[^\s:]*:[^\s:]*:[^\s:]*)?|ssm:[a-z0-9-]+:\d{12}:parameter\/[A-Za-z0-9/_.-]+)$/;
+  /^arn:aws(?:-[a-z]+)*:(?:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@!-]+(?::[A-Za-z0-9/_+=.@-]*:[A-Za-z0-9/_+=.@-]*:[A-Za-z0-9/_+=.@-]*)?|ssm:[a-z0-9-]+:\d{12}:parameter\/[A-Za-z0-9/_.-]+)$/;
 
 function isSecretPointerArn(value: string): boolean {
   return SECRET_POINTER_ARN.test(value);

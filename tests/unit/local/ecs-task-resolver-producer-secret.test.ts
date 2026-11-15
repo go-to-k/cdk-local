@@ -258,6 +258,8 @@ describe('ECS post-pass: producer-secret verdicts (go-to-k/cdkd#6339)', () => {
     ['secret', 'dropped', SECRET_ARN],
     ['unreadable', 'dropped', 'arn:aws:appsync:us-east-1:123456789012:apis/a/apikeys/da2-x'],
     ['unreadable', 'dropped', `${SECRET_ARN} trailing`],
+    ['unreadable', 'dropped', `${SECRET_ARN}:pass\u001b[2J::`],
+    ['unreadable', 'kept', `${SECRET_ARN}:password::`],
   ])('a ValueFrom judged %s is %s when it is %s', async (verdict, outcome, valueFrom) => {
     const { task, container } = resolveTask();
     const values = { ...VALUES, 'P-SecretArn': valueFrom };

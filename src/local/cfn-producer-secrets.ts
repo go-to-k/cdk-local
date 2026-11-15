@@ -24,9 +24,9 @@
  * makes the verdict `unreadable`; an export the producer no longer declares
  * is `stale`. Not judged (CloudFormation records no value to read):
  * a secret the producer received as a plain (not `NoEcho`) parameter, a key
- * the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`), and a
- * `NoEcho` parameter passed into a nested stack (its `Parameters` are not
- * traced). Every `Fn::If` branch is traced: a conservative false positive.
+ * the producer transforms (`Fn::Base64`, `Fn::Select` of `Fn::Split`). A
+ * nested stack's parameter is traced back to what its parent passes it.
+ * Every `Fn::If` branch is traced: a conservative false positive.
  */
 import {
   DescribeStacksCommand,
@@ -131,6 +131,13 @@ type Template = Record<string, unknown>;
 interface TraceStack {
   stackId: string;
   template: Template;
+  /**
+   * For a nested stack: what its parent passes each of its `Parameters`
+   * (the parent's `AWS::CloudFormation::Stack` `Properties.Parameters`), and
+   * the parent itself. CDK passes a parent's `NoEcho` parameter down as a
+   * plain `String` one, so a nested `Ref` is traced back through it.
+   */
+  parent?: { stack: TraceStack; bindings: Record<string, unknown> } | undefined;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -328,7 +335,7 @@ export class CfnProducerSecretJudge {
     if (!isRecord(node)) return;
     for (const [key, child] of Object.entries(node)) {
       if (key === 'Ref' && typeof child === 'string') {
-        this.readRef(child, stack, value, walk);
+        await this.readRef(child, stack, value, walk, depth);
       } else if (key === 'Fn::GetAtt') {
         const att = getAttOf(child);
         if (att === undefined) {
@@ -355,7 +362,7 @@ export class CfnProducerSecretJudge {
                 depth
               );
             } else {
-              this.readRef(ref, stack, value, walk);
+              await this.readRef(ref, stack, value, walk, depth);
             }
           }
         } else {
@@ -379,12 +386,26 @@ export class CfnProducerSecretJudge {
   }
 
   /** A `Ref` (or `${Name}`): a `NoEcho` parameter makes `value` a needle. */
-  private readRef(name: string, stack: TraceStack, value: string, walk: Walk): void {
+  private async readRef(
+    name: string,
+    stack: TraceStack,
+    value: string,
+    walk: Walk,
+    depth: number
+  ): Promise<void> {
     const params = stack.template['Parameters'];
     const param = isRecord(params) && Object.hasOwn(params, name) ? params[name] : undefined;
     if (!isRecord(param)) return;
     const noEcho = param['NoEcho'];
-    if ((noEcho === true || noEcho === 'true') && isPlaintext(value)) walk.summary.typed.add(value);
+    if ((noEcho === true || noEcho === 'true') && isPlaintext(value)) {
+      walk.summary.typed.add(value);
+      return;
+    }
+    // A nested stack's parameter: trace what the parent passes it.
+    const parent = stack.parent;
+    if (parent !== undefined && Object.hasOwn(parent.bindings, name)) {
+      await this.trace(parent.bindings[name], parent.stack, value, walk, depth, new Set());
+    }
   }
 
   /** A `Fn::GetAtt`: a secret attribute makes `value` a needle; a nested output is traced. */
@@ -469,8 +490,13 @@ export class CfnProducerSecretJudge {
       );
       return;
     }
+    const nestedRes = (stack.template['Resources'] as Record<string, unknown> | undefined)?.[
+      logicalId
+    ];
+    const props = isRecord(nestedRes) ? nestedRes['Properties'] : undefined;
+    const bindings = isRecord(props) && isRecord(props['Parameters']) ? props['Parameters'] : {};
     await this.traceOutput(
-      { stackId: nestedId, template: template.ok },
+      { stackId: nestedId, template: template.ok, parent: { stack, bindings } },
       key,
       output.OutputValue,
       walk,

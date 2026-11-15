@@ -56,6 +56,8 @@ destroy_stacks() {
 }
 cleanup() {
   rc=$?
+  # Once: an INT / TERM cleanup's own exit must not re-run it on EXIT.
+  trap - EXIT INT TERM
   docker ps -a --filter "name=cdkl-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkl-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
   if [ "${WE_CREATED_STACKS}" -eq 1 ]; then
@@ -106,9 +108,17 @@ docker pull "${BUSYBOX_IMAGE}"
 
 echo "[verify] step 2: pre-flight — refuse to deploy over an existing stack"
 for stack in "${PRODUCER_STACK}" "${CONSUMER_STACK}"; do
-  if aws cloudformation describe-stacks --stack-name "${stack}" --region "${REGION}" >/dev/null 2>&1; then
+  # Free means CloudFormation SAYS so: a credential error must not read as free.
+  pre_rc=0
+  pre_out=$(aws cloudformation describe-stacks --stack-name "${stack}" --region "${REGION}" 2>&1) \
+    || pre_rc=$?
+  if [ "${pre_rc}" -eq 0 ]; then
     echo "[verify] FAIL: ${stack} already exists — clean up first:"
     echo "          aws cloudformation delete-stack --stack-name ${stack} --region ${REGION}"
+    exit 1
+  fi
+  if ! printf '%s' "${pre_out}" | grep -q 'does not exist'; then
+    echo "[verify] FAIL: could not confirm ${stack} is free: ${pre_out}"
     exit 1
   fi
 done

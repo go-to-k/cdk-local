@@ -189,6 +189,9 @@ async function resolver() {
   return { provider, r };
 }
 
+const stack_template = (id: string) =>
+  stacks[id]!.template as { Outputs: Record<string, unknown>; Resources: Record<string, unknown> } & Record<string, unknown>;
+
 const calls = (name: string): number =>
   sendMock.mock.calls.filter(([c]) => (c as { constructor: { name: string } }).constructor.name === name)
     .length;
@@ -638,6 +641,27 @@ describe('--from-cfn-stack producer-secret check (go-to-k/cdkd#6339)', () => {
       provider.dispose();
     }
   );
+
+  it.each([
+    ['a NoEcho parameter', { Ref: 'Pw' }, 'secret'],
+    ['a plain parameter', { Ref: 'Plain' }, undefined],
+  ])('traces a nested parameter back to %s the parent passes it', async (_label, binding, verdict) => {
+    const pt = stack_template(PRODUCER);
+    (pt.Resources as Record<string, unknown>)['Nested'] = {
+      Type: 'AWS::CloudFormation::Stack',
+      Properties: { Parameters: { referencetoPw: binding } },
+    };
+    pt.Outputs['PassedOut'] = { Value: { 'Fn::GetAtt': ['Nested', 'Outputs.Passed'] } };
+    const nt = stack_template(NESTED);
+    nt['Parameters'] = { referencetoPw: { Type: 'String' } };
+    nt.Outputs['Passed'] = { Value: { Ref: 'referencetoPw' } };
+    stacks[NESTED]!.outputs.push({ OutputKey: 'Passed', OutputValue: 'passed-down-value' });
+    stacks[PRODUCER]!.outputs.push({ OutputKey: 'PassedOut', OutputValue: 'passed-down-value', ExportName: 'P-Passed' });
+    exportsList.push({ Name: 'P-Passed', Value: 'passed-down-value', ExportingStackId: PRODUCER });
+    const { provider, r } = await resolver();
+    expect((await r.resolveImportJudged!('P-Passed')).verdict).toBe(verdict);
+    provider.dispose();
+  });
 
   it('reads each stack part once per resolver, across exports', async () => {
     const { provider, r } = await resolver();
