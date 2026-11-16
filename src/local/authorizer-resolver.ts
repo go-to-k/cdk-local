@@ -637,12 +637,15 @@ function buildJwtAuthorizer(
  * - Issuer does not resolve (no state source, or no record): the placeholder
  *   stays, so JWKS pass-through admits every token (warned once per
  *   authorizer).
+ *
+ * `warned` dedups the warnings; a caller re-running this on every `--watch`
+ * reload passes one set that outlives the reloads.
  */
 export function resolveJwtAuthorizerIntrinsics(
   routes: readonly RouteWithAuth[],
-  contextFor: (stackName: string) => SubstitutionContext | undefined
+  contextFor: (stackName: string) => SubstitutionContext | undefined,
+  warned: Set<string> = new Set<string>()
 ): RouteWithAuth[] {
-  const warned = new Set<string>();
   const warnOnce = (key: string, message: string): void => {
     if (warned.has(key)) return;
     warned.add(key);
@@ -680,16 +683,23 @@ export function resolveJwtAuthorizerIntrinsics(
     }
     const resolvedAudience: string[] = [];
     const unresolvedAudience: number[] = [];
+    let firstReason: string | undefined;
     audience.forEach((value, idx) => {
+      // A non-string literal is dropped, as on the all-literal path.
+      if (typeof value !== 'string' && !isIntrinsicObject(value)) return;
       const r = resolveString(value);
-      if ('value' in r) resolvedAudience.push(r.value);
-      else unresolvedAudience.push(idx);
+      if ('value' in r) {
+        resolvedAudience.push(r.value);
+      } else {
+        unresolvedAudience.push(idx);
+        firstReason ??= r.reason;
+      }
     });
     if (unresolvedAudience.length > 0) {
       warnOnce(
         `${stackName}\0${auth.logicalId}`,
-        `${label}: JwtConfiguration.Audience ${unresolvedAudience.map((i) => `[${i}]`).join(', ')} could not be resolved, ` +
-          `so the token audience is not checked on its routes (signature, issuer and expiry still are).`
+        `${label}: JwtConfiguration.Audience ${unresolvedAudience.map((i) => `[${i}]`).join(', ')} could not be resolved ` +
+          `(${firstReason}), so the token audience is not checked on its routes (signature, issuer and expiry still are).`
       );
     }
     return {

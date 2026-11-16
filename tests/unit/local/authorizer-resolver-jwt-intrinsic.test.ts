@@ -135,7 +135,29 @@ describe('HTTP v2 JWT authorizer with an intrinsic Issuer / Audience (#1001)', (
     const jwt = jwtOf(resolveJwtAuthorizerIntrinsics(attached, () => STATE));
     expect(jwt.issuer).toBe('https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_AbC123');
     expect(jwt.audience).toEqual([]);
-    expect(String(warn.mock.calls[0]?.[0])).toMatch(/Audience \[1\] could not be resolved/);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(
+      /Audience \[1\] could not be resolved \(.*Missing.*\)/
+    );
+  });
+
+  it('drops a non-string literal audience entry as the all-literal path does', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const attached = attachAuthorizers(
+      [stack({ Issuer: COGNITO_ISSUER, Audience: [{ Ref: 'Client' }, 42] })],
+      [ROUTE]
+    );
+    expect(jwtOf(resolveJwtAuthorizerIntrinsics(attached, () => STATE)).audience).toEqual(['client123']);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns once across calls sharing a warned set (--watch reloads)', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const warned = new Set<string>();
+    for (let i = 0; i < 3; i++) {
+      const attached = attachAuthorizers([stack({ Issuer: COGNITO_ISSUER })], [ROUTE]);
+      resolveJwtAuthorizerIntrinsics(attached, () => undefined, warned);
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it('resolves a literal issuer with an intrinsic audience', () => {
