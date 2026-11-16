@@ -160,6 +160,18 @@ describe('HTTP v2 JWT authorizer with an intrinsic Issuer / Audience (#1001)', (
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it('still warns the audience after an earlier pass warned the issuer', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const warned = new Set<string>();
+    const tpl = { Issuer: COGNITO_ISSUER, Audience: [{ Ref: 'Missing' }] };
+    resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack(tpl)], [ROUTE]), () => undefined, warned);
+    resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack(tpl)], [ROUTE]), () => STATE, warned);
+    expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+      expect.stringContaining('JwtConfiguration.Issuer is an intrinsic'),
+      expect.stringContaining('JwtConfiguration.Audience [0] could not be resolved'),
+    ]);
+  });
+
   it('resolves a literal issuer with an intrinsic audience', () => {
     const attached = attachAuthorizers(
       [stack({ Issuer: 'https://issuer.example.com', Audience: [{ Ref: 'Client' }] })],

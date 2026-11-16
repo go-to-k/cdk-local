@@ -166,7 +166,10 @@ TOKEN_TAMPERED="${SIG_PREFIX}.${SIG:0:10}${FLIP}${SIG:11}"
 [ "${TOKEN_TAMPERED}" != "${TOKEN_A}" ] || { echo "[verify] FAIL: tamper was a no-op"; exit 1; }
 echo "[verify]   user sub=${USER_SUB}; tokens minted"
 
+# Called directly, never inside $( ): SERVER_PID must reach this shell so
+# stop_server can reap the server. The port lands in SERVER_PORT.
 start_server_and_get_port() {
+  SERVER_PORT=""
   : >"${LOG_FILE}"
   # shellcheck disable=SC2086
   ${CLI} start-api \
@@ -190,8 +193,9 @@ start_server_and_get_port() {
     cat "${LOG_FILE}" >&2
     return 1
   fi
-  grep -E 'Server listening on http://' "${LOG_FILE}" \
-    | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1
+  SERVER_PORT="$(grep -E 'Server listening on http://' "${LOG_FILE}" \
+    | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)"
+  [ -n "${SERVER_PORT}" ] || { echo "[verify] FAIL: no port in the start-api log" >&2; return 1; }
 }
 
 # GET /secure; sets HTTP_CODE and writes the body to BODY_FILE. $2 is the
@@ -208,14 +212,16 @@ request_secure() {
 }
 
 echo "[verify] step 5: no state source — boots with the intrinsic-issuer warning"
-PORT_NOSTATE="$(start_server_and_get_port)"
+start_server_and_get_port
+PORT_NOSTATE="${SERVER_PORT}"
 echo "[verify]   server on port ${PORT_NOSTATE}"
 grep -q 'JwtConfiguration.Issuer is an intrinsic' "${LOG_FILE}" || \
   fail "expected the 'JwtConfiguration.Issuer is an intrinsic' warning without a state source"
 stop_server
 
 echo "[verify] step 6: --from-cfn-stack — issuer + audience resolved from the stack"
-PORT_CFN="$(start_server_and_get_port --from-cfn-stack)"
+start_server_and_get_port --from-cfn-stack
+PORT_CFN="${SERVER_PORT}"
 echo "[verify]   server on port ${PORT_CFN}"
 grep -q 'Server listening' "${LOG_FILE}" || fail "sentinel: no 'Server listening' in the log"
 if grep -q 'JwtConfiguration.Issuer is an intrinsic' "${LOG_FILE}"; then

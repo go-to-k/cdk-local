@@ -674,7 +674,7 @@ export function resolveJwtAuthorizerIntrinsics(
     const issuerResult = resolveString(issuer);
     if (!('value' in issuerResult)) {
       warnOnce(
-        `${stackName}\0${auth.logicalId}`,
+        `${stackName}\0${auth.logicalId}\0issuer`,
         `${label}: JwtConfiguration.Issuer is an intrinsic ${getEmbedConfig().cliName} start-api could not resolve ` +
           `(${issuerResult.reason}), so JWKS pass-through admits every token on its routes. ` +
           `Deploy the stack and pass --from-state (or --from-cfn-stack) for real signature verification.`
@@ -697,7 +697,7 @@ export function resolveJwtAuthorizerIntrinsics(
     });
     if (unresolvedAudience.length > 0) {
       warnOnce(
-        `${stackName}\0${auth.logicalId}`,
+        `${stackName}\0${auth.logicalId}\0audience`,
         `${label}: JwtConfiguration.Audience ${unresolvedAudience.map((i) => `[${i}]`).join(', ')} could not be resolved ` +
           `(${firstReason}), so the token audience is not checked on its routes (signature, issuer and expiry still are).`
       );
