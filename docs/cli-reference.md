@@ -2054,29 +2054,30 @@ Bearer token still answers `401`, but a Bearer token is admitted without
 verification (the JWKS pass-through below), and so is a request carrying an
 `AWSELBAuthSessionCookie-*` cookie, exactly as on a resolved guard. An
 `http://` issuer is verified like an `https://` one: the deployed ALB rejects
-a plain-`http://` issuer, so it only ever names a local test IdP. An action
-whose `Type` is itself an intrinsic (for example an `Fn::If` choosing between
-an `authenticate-*` action and another one) fails closed, with a warning: on a
-listener rule, the rule stays at its priority with its conditions and answers
-`503` (no guard), so its requests never fall through to a lower-priority rule
-or the listener default; on the listener's default action, the default is not
-served (a request no rule matches is refused). The same `503` deny replaces a
-rule whose `authenticate-*` action has no locally servable terminal action
-(for example a `forward` to a target group outside the stack), and a rule
-carrying an `authenticate-*` action (or an intrinsic `Type`) with a condition
-cdk-local cannot evaluate: the unsupported condition field is dropped from the
-deny, which only widens what is denied locally (with no supported condition
-left, every request reaching that priority answers `503`). A whole `Actions`
-value that is not a literal array (for example an `Fn::If` choosing between two
-action lists) is treated the same way: it may carry an `authenticate-*` action,
-so the rule answers `503` at its priority over its conditions (or the listener
-default is not served, for `DefaultActions`). A whole `Conditions` value that is
-not a literal array makes a rule that carries (or may carry) an
-`authenticate-*` action answer `503` for every request reaching its priority;
-an unguarded rule with one is skipped, with a warning. A rule whose `Priority`
-is not a literal number sorts after every literal-priority rule when it carries
-no `authenticate-*` action, but before every other rule when it carries (or may
-carry) one, so it can only guard or deny more requests locally. When only the client id is
+a plain-`http://` issuer, so it only ever names a local test IdP. A listener rule
+that carries, or may carry, an `authenticate-*` action (one whose `Type` is an
+intrinsic, or a whole `Actions` value that is not a literal array, counts) is
+never skipped, so its requests never fall through to an unguarded
+lower-priority rule or the listener default. Each part of such a rule that the
+template does not determine widens to the largest set it could stand for, with
+a warning: a `ListenerArn` that is not a `Ref` to an in-stack listener (for
+example an `Fn::If`, `Fn::Sub` or `Fn::ImportValue`) puts the rule on every
+listener of the ALB; a `Priority` that is not a literal integer 1-50000 sorts
+it before every other rule; a condition cdk-local cannot evaluate (an
+unsupported field, a value that is not a literal string, a whole `Conditions`
+value that is not a literal array) is dropped and the rule answers `503` (no
+guard) over its remaining conditions, or over every request reaching its
+priority when none is left; a rule with no condition to route on (no
+`Conditions`, an empty list, entries that are not objects, empty `Values`) is a
+catch-all at its priority; and an action that cannot be served (an intrinsic
+`Type`, a non-array `Actions`, an `authenticate-*` action with no locally
+servable terminal action such as a `forward` to a target group outside the
+stack) makes the rule answer `503`. Dropping a part only widens what is guarded
+or denied locally. A rule with no `authenticate-*` action keeps the earlier
+behaviour: it is skipped, with a warning, when a condition or its action cannot
+be evaluated, and sorts after every literal-priority rule when its `Priority`
+is not a literal. On the listener's default action, the same cases mean the
+default is not served (a request no rule matches is refused). When only the client id is
 unresolved, the token's signature, `iss` and `exp` are verified and its
 audience is not. Pass `--from-cfn-stack` for real verification, or
 `--no-verify-auth` to serve the route without a guard (the guards are then

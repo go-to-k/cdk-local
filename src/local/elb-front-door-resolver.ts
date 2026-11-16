@@ -325,8 +325,24 @@ export function resolveAlbFrontDoor(
 
   // TG logical id -> backing ECS service (reverse of Service.LoadBalancers[]).
   const tgToService = indexTargetGroupToService(resources);
-  // Listener logical id -> its ListenerRules.
-  const rulesByListener = indexRulesByListener(resources);
+  // Listener logical id -> its ListenerRules, plus the guarded rules whose
+  // listener the template does not determine (served on every listener).
+  const { byListener: rulesByListener, anyListener } = indexRulesByListener(resources);
+  for (const { ruleLogicalId } of anyListener) {
+    warnings.push(
+      `Listener rule ${displayIdent(ruleLogicalId)} has a ListenerArn that is not a Ref to an ` +
+        'in-stack listener (for example an Fn::If, Fn::Sub or Fn::ImportValue) and carries (or may ' +
+        `carry) an authenticate-* action, so it is evaluated on every served listener of ` +
+        `${displayIdent(albLogicalId)} (fail closed): its requests cannot reach an unguarded rule ` +
+        'or listener default on whichever listener it belongs to.'
+    );
+  }
+  const rulesForListener = (
+    listenerLogicalId: string
+  ): Array<{ ruleLogicalId: string; ruleProps: Record<string, unknown> }> => [
+    ...(rulesByListener.get(listenerLogicalId) ?? []),
+    ...anyListener,
+  ];
 
   const listeners: ResolvedListenerFrontDoor[] = [];
 
@@ -384,16 +400,31 @@ export function resolveAlbFrontDoor(
       defaultResolved = defaultOutcome;
     }
 
+    // FAIL-CLOSED RULE (#1004) for every rule below. Once
+    // `actionsMayCarryGuard` is true for a rule, the rule is NEVER skipped:
+    // skipping it lets its requests fall through to an unguarded lower rule or
+    // the listener default. Each dimension the template does not determine
+    // collapses to its widest superset (with a warning; ids via displayIdent),
+    // decided in one place, `widenIfGuarded`:
+    //   - listener   -> every served listener of this ALB (rulesForListener)
+    //   - priority   -> UNPLACEABLE_GUARDED_PRIORITY (evaluated first)
+    //   - conditions -> the evaluable subset, down to a catch-all (zero
+    //                   evaluable conditions: none, `Conditions: []`,
+    //                   non-object entries, all-empty Values)
+    //   - action     -> a 503 deny (also forced when a condition was dropped,
+    //                   since serving the target on a widened set would route
+    //                   requests the deployed ALB sends elsewhere)
+    // An unguarded rule keeps its earlier fallback (usually a skip: there is
+    // no guard to lose). The only `continue` in this loop is on SKIP_RULE.
     const rules: ResolvedListenerRule[] = [];
-    for (const { ruleLogicalId, ruleProps } of rulesByListener.get(listenerLogicalId) ?? []) {
+    for (const { ruleLogicalId, ruleProps } of rulesForListener(listenerLogicalId)) {
       const literalPriority = parsePriority(ruleProps['Priority']);
       const guarded = actionsMayCarryGuard(ruleProps['Actions']);
-      // A non-literal Priority cannot be placed. An unguarded rule sorts last
-      // (an explicitly prioritized rule wins over it); a guarded rule (or one
-      // that may be guarded, or becomes a deny) sorts first so it can only
-      // guard / deny more requests, never let a lower rule serve them unguarded.
+      // An unguarded rule with no literal Priority sorts last (an explicitly
+      // prioritized rule wins over it).
       const priority =
-        literalPriority ?? (guarded ? UNPLACEABLE_GUARDED_PRIORITY : Number.MAX_SAFE_INTEGER);
+        literalPriority ??
+        widenIfGuarded(guarded, UNPLACEABLE_GUARDED_PRIORITY, Number.MAX_SAFE_INTEGER);
       const ruleLabel =
         literalPriority === undefined
           ? `Listener rule ${displayIdent(ruleLogicalId)} (Priority not a literal number)`
@@ -406,6 +437,8 @@ export function resolveAlbFrontDoor(
             'requests unguarded.'
         );
       }
+
+      // Conditions dimension.
       const parsed = parseRuleConditions(
         ruleProps['Conditions'],
         albLogicalId,
@@ -413,89 +446,84 @@ export function resolveAlbFrontDoor(
         warnings,
         guarded
       );
-      if (!parsed) {
-        // parseRuleConditions warned about an unsupported / malformed condition
-        // on a rule with no authenticate-* guard to lose.
-        continue;
-      }
-      const {
-        partial,
-        pathPatterns,
-        hostPatterns,
-        httpHeaderConditions,
-        httpRequestMethods,
-        queryStringConditions,
-        sourceIpCidrs,
-      } = parsed;
-      const conditions = {
-        pathPatterns,
-        hostPatterns,
-        httpHeaderConditions,
-        httpRequestMethods,
-        queryStringConditions,
-        sourceIpCidrs,
-      };
-      const hasAnyCondition =
-        pathPatterns.length > 0 ||
-        hostPatterns.length > 0 ||
-        httpHeaderConditions.length > 0 ||
-        httpRequestMethods.length > 0 ||
-        queryStringConditions.length > 0 ||
-        sourceIpCidrs.length > 0;
-      if (partial) {
-        // A guarded rule with a condition cdk-local cannot evaluate: skipping it
-        // would let its requests fall through unguarded, so it stays at its
-        // priority as a deny over its supported conditions (a superset).
+      const { undetermined, ...parsedConditions } = parsed;
+      const evaluable = hasAnyCondition(parsedConditions);
+      const settledConditions =
+        undetermined || !evaluable
+          ? widenIfGuarded(guarded, parsedConditions, SKIP_RULE)
+          : parsedConditions;
+      // Unguarded: an undetermined condition was warned by parseRuleConditions;
+      // a rule with no condition to route on was never served.
+      if (settledConditions === SKIP_RULE) continue;
+      const conditions: ParsedRuleConditions = settledConditions;
+      if (undetermined) {
         warnings.push(
           `${ruleLabel} carries (or may carry) an authenticate-* action, so ` +
             'instead of being skipped it is kept at its priority as a local 503 deny (fail closed) ' +
-            (hasAnyCondition
+            (evaluable
               ? 'over its remaining supported conditions'
               : 'over every request that reaches its priority (no supported condition is left)') +
             '. Dropping the unsupported condition only widens what it denies, and its requests ' +
             'cannot fall through to a lower-priority rule or the listener default.'
         );
+      } else if (!evaluable) {
+        warnings.push(
+          `${ruleLabel} carries (or may carry) an authenticate-* action but has no condition ` +
+            'cdk-local can route on (no Conditions, an empty list, or only empty / non-object ' +
+            'entries), so instead of being skipped it is kept at its priority as a catch-all over ' +
+            'every request that reaches it (fail closed).'
+        );
+      }
+
+      // Action dimension.
+      const ruleLabelAction = `${ruleLabel} action`;
+      const ruleResolved = undetermined
+        ? {
+            deny: {
+              warning: '',
+              body: 'the rule has an authenticate-* guard on a condition cdk-local cannot evaluate',
+            },
+          }
+        : resolveAction(
+            ruleProps['Actions'],
+            resources,
+            tgToService,
+            stackName,
+            ruleLogicalId,
+            ruleLabelAction,
+            warnings
+          );
+      const settledAction =
+        ruleResolved ??
+        widenIfGuarded(
+          guarded,
+          {
+            deny: {
+              warning: 'has no locally servable action',
+              body: 'its action cannot be served',
+            },
+          },
+          SKIP_RULE
+        );
+      // Unguarded: resolveAction already warned (no guard to lose).
+      if (settledAction === SKIP_RULE) continue;
+      if ('deny' in settledAction) {
+        if (!undetermined) {
+          warnings.push(
+            `${ruleLabelAction} ${settledAction.deny.warning}, so the rule is kept at its priority ` +
+              'as a local 503 deny (fail closed): its requests are refused rather than falling ' +
+              'through to a lower-priority rule or the listener default.'
+          );
+        }
+        rules.push({ priority, ...conditions, action: denyAction(settledAction.deny.body) });
+      } else {
         rules.push({
           priority,
           ...conditions,
-          action: denyAction(
-            'the rule has an authenticate-* guard on a condition cdk-local cannot evaluate'
-          ),
+          action: settledAction.action,
+          ...(settledAction.authGuard ? { authGuard: settledAction.authGuard } : {}),
         });
-        continue;
       }
-      if (!hasAnyCondition) {
-        // No supported condition to route on (an empty / catch-all rule).
-        continue;
-      }
-      const ruleLabelAction = `${ruleLabel} action`;
-      const ruleResolved = resolveAction(
-        ruleProps['Actions'],
-        resources,
-        tgToService,
-        stackName,
-        ruleLogicalId,
-        ruleLabelAction,
-        warnings
-      );
-      if (!ruleResolved) continue; // resolveAction already warned (no guard to lose)
-      if ('deny' in ruleResolved) {
-        // Dropping the rule would let its requests fall through to a
-        // lower-priority rule or the listener default without the guard.
-        warnings.push(
-          `${ruleLabelAction} ${ruleResolved.deny.warning}, so the rule is kept at its priority as ` +
-            'a local 503 deny (fail closed): its requests are refused rather than falling through ' +
-            'to a lower-priority rule or the listener default.'
-        );
-        rules.push({ priority, ...conditions, action: denyAction(ruleResolved.deny.body) });
-        continue;
-      }
-      rules.push({
-        priority,
-        ...conditions,
-        action: ruleResolved.action,
-        ...(ruleResolved.authGuard ? { authGuard: ruleResolved.authGuard } : {}),
-      });
     }
 
     if (!defaultResolved && rules.length === 0) {
@@ -581,18 +609,25 @@ function resolveAction(
 
   let authGuard: FrontDoorAuthGuard | undefined;
   let sawAuthenticate = false;
+  // ALB runs every authenticate-* action before the terminal one whatever its
+  // array position (`Order` decides), so read the guard first: a terminal
+  // listed before its authenticate-* is never served unguarded.
   for (const action of actions) {
-    if (!action || typeof action !== 'object') continue;
+    if (!action || typeof action !== 'object') continue; // not an action (cannot be a guard)
     const a = action as Record<string, unknown>;
     const type = a['Type'];
-
     if (type === 'authenticate-cognito' || type === 'authenticate-oidc') {
       sawAuthenticate = true;
       // A declared guard is never dropped (#1004): an unresolvable config
       // yields a guard that still requires a token.
       authGuard = parseAuthenticateAction(a, type, stackName, siteLogicalId, label, warnings);
-      continue;
     }
+  }
+  for (const action of actions) {
+    if (!action || typeof action !== 'object') continue; // not an action (cannot be a guard)
+    const a = action as Record<string, unknown>;
+    const type = a['Type'];
+    if (type === 'authenticate-cognito' || type === 'authenticate-oidc') continue; // read above
     let terminal: ResolvedListenerAction | undefined;
     if (type === 'forward') {
       terminal = resolveForwardAction(a, resources, tgToService, stackName, label, warnings);
@@ -878,24 +913,70 @@ function indexTargetGroupToService(
   return index;
 }
 
-/** Group every `AWS::ElasticLoadBalancingV2::ListenerRule` by the listener it references. */
-function indexRulesByListener(
-  resources: Record<string, TemplateResource>
-): Map<string, Array<{ ruleLogicalId: string; ruleProps: Record<string, unknown> }>> {
-  const index = new Map<
-    string,
-    Array<{ ruleLogicalId: string; ruleProps: Record<string, unknown> }>
-  >();
+type IndexedRule = { ruleLogicalId: string; ruleProps: Record<string, unknown> };
+
+/**
+ * Group every `AWS::ElasticLoadBalancingV2::ListenerRule` by the listener it
+ * references. The listener is determined only by a `Ref` to an in-stack
+ * `AWS::ElasticLoadBalancingV2::Listener`; any other ListenerArn (an
+ * `Fn::If` / `Fn::Sub` / `Fn::ImportValue`, a literal ARN, a `Ref` to a
+ * parameter) goes through {@link widenIfGuarded}: a guarded rule lands in
+ * `anyListener` (served on every listener), an unguarded one is skipped.
+ */
+function indexRulesByListener(resources: Record<string, TemplateResource>): {
+  byListener: Map<string, IndexedRule[]>;
+  anyListener: IndexedRule[];
+} {
+  const byListener = new Map<string, IndexedRule[]>();
+  const anyListener: IndexedRule[] = [];
   for (const [ruleLogicalId, resource] of Object.entries(resources)) {
-    if (resource.Type !== LISTENER_RULE_TYPE) continue;
+    if (resource.Type !== LISTENER_RULE_TYPE) continue; // not a rule
     const ruleProps = (resource.Properties ?? {}) as Record<string, unknown>;
-    const listenerRef = refOf(ruleProps['ListenerArn']);
-    if (!listenerRef) continue;
-    const list = index.get(listenerRef) ?? [];
-    list.push({ ruleLogicalId, ruleProps });
-    index.set(listenerRef, list);
+    const entry = { ruleLogicalId, ruleProps };
+    const ref = refOf(ruleProps['ListenerArn']);
+    const listenerRef =
+      ref !== undefined && resources[ref]?.Type === LISTENER_TYPE
+        ? ref
+        : widenIfGuarded(actionsMayCarryGuard(ruleProps['Actions']), ANY_LISTENER, SKIP_RULE);
+    if (listenerRef === SKIP_RULE) continue;
+    if (listenerRef === ANY_LISTENER) {
+      anyListener.push(entry);
+      continue;
+    }
+    const list = byListener.get(listenerRef) ?? [];
+    list.push(entry);
+    byListener.set(listenerRef, list);
   }
-  return index;
+  return { byListener, anyListener };
+}
+
+/** Sentinel: an unguarded rule whose dimension cannot be determined is skipped. */
+const SKIP_RULE: unique symbol = Symbol('skip-rule');
+/** Sentinel: the listener of a guarded rule cannot be determined (every listener). */
+const ANY_LISTENER: unique symbol = Symbol('any-listener');
+
+/**
+ * The single fail-closed decision for a listener-rule dimension (listener,
+ * priority, conditions, action) the template does not determine: a rule that
+ * carries, or may carry, an authenticate-* guard gets `widest` (the dimension's
+ * widest superset) and is never skipped; an unguarded rule keeps `unguarded`
+ * (its earlier fallback, usually {@link SKIP_RULE}). Route every new dimension
+ * through here so a guarded rule cannot be dropped by a per-site `continue`.
+ */
+function widenIfGuarded<W, U>(guarded: boolean, widest: W, unguarded: U): W | U {
+  return guarded ? widest : unguarded;
+}
+
+/** True when the parsed conditions constrain at least one field. */
+function hasAnyCondition(c: ParsedRuleConditions): boolean {
+  return (
+    c.pathPatterns.length > 0 ||
+    c.hostPatterns.length > 0 ||
+    c.httpHeaderConditions.length > 0 ||
+    c.httpRequestMethods.length > 0 ||
+    c.queryStringConditions.length > 0 ||
+    c.sourceIpCidrs.length > 0
+  );
 }
 
 interface ParsedRuleConditions {
@@ -908,18 +989,19 @@ interface ParsedRuleConditions {
 }
 
 /**
- * Parse a ListenerRule's `Conditions` into the six supported fields. Returns
- * `undefined` when an unknown field is encountered or a known field is
- * malformed enough that honoring the rule would silently drop a constraint
- * — both surface a warning and skip the whole rule (ALB ANDs conditions of
- * different fields, so dropping any condition would route requests it should
- * not).
+ * Parse a ListenerRule's `Conditions` into the six supported fields. Sets
+ * `undetermined: true` (with a warning) when an unknown field is encountered
+ * or a known field is malformed enough that honoring the rule would silently
+ * drop a constraint (ALB ANDs conditions of different fields, so dropping any
+ * condition would route requests it should not). The caller settles it via
+ * {@link widenIfGuarded}: an unguarded rule is skipped (the parse stops at the
+ * first failure).
  *
  * For a `guarded` rule (one whose actions carry, or may carry, an
  * authenticate-* guard) skipping is not safe: its requests would fall through
  * to a lower-priority rule or the listener default without the guard. Such a
- * rule instead returns its supported conditions with every unsupported field
- * dropped whole and `partial: true`; the caller turns it into a 503 deny.
+ * rule's result keeps its supported conditions with every unsupported field
+ * dropped whole; the caller turns it into a 503 deny.
  * Dropping a field (ANDed with the others) only widens the matched set, so the
  * deny over-denies locally but never under-guards.
  *
@@ -938,7 +1020,7 @@ function parseRuleConditions(
   ruleLabel: string,
   warnings: string[],
   guarded: boolean
-): (ParsedRuleConditions & { partial?: true }) | undefined {
+): ParsedRuleConditions & { undetermined?: true } {
   const out: ParsedRuleConditions = {
     pathPatterns: [],
     hostPatterns: [],
@@ -952,12 +1034,12 @@ function parseRuleConditions(
   if (!Array.isArray(conditions)) {
     // A whole Conditions value that is not a literal array (an `Fn::If`): no
     // condition can be evaluated, so a guarded rule denies every request at
-    // its priority (the caller's partial path); an unguarded one is skipped.
+    // its priority (the caller's undetermined path); an unguarded one is skipped.
     warnings.push(
       `${ruleLabel} has a Conditions value that is not a literal array (for example an Fn::If); ` +
         `${tail}.`
     );
-    return guarded ? { ...out, partial: true } : undefined;
+    return { ...out, undetermined: true };
   }
   const failedFields = new Set<string>();
   // Record one unsupported condition. True = stop and skip the rule (unguarded).
@@ -967,20 +1049,32 @@ function parseRuleConditions(
     return !guarded;
   };
   for (const cond of conditions) {
-    if (!cond || typeof cond !== 'object') continue;
+    if (!cond || typeof cond !== 'object') {
+      // Not a condition: ignoring it only widens the rule (zero evaluable
+      // conditions make a guarded rule a catch-all in the caller).
+      if (guarded) {
+        warnings.push(
+          `${ruleLabel} has a Conditions entry that is not an object; it is ignored, which only ` +
+            'widens the rule.'
+        );
+      }
+      continue;
+    }
     const c = cond as Record<string, unknown>;
     const field = typeof c['Field'] === 'string' ? c['Field'] : '(unknown)';
     if (field === 'path-pattern') {
       const values = conditionValues(c, 'PathPatternConfig');
       if (!values) {
-        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
         continue;
       }
       out.pathPatterns.push(...values);
     } else if (field === 'host-header') {
       const values = hostHeaderConditionValues(c, albLogicalId);
       if (!values) {
-        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
         continue;
       }
       out.hostPatterns.push(...values);
@@ -990,21 +1084,23 @@ function parseRuleConditions(
         const message =
           `${ruleLabel} has an http-header condition with no HttpHeaderName / Values, or a value ` +
           `that is not a literal string; ${tail}.`;
-        if (fail(field, message)) return undefined;
+        if (fail(field, message)) return { ...out, undetermined: true };
         continue;
       }
       out.httpHeaderConditions.push(parsed);
     } else if (field === 'http-request-method') {
       const values = conditionValues(c, 'HttpRequestMethodConfig');
       if (!values) {
-        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
         continue;
       }
       out.httpRequestMethods.push(...values);
     } else if (field === 'query-string') {
       const qs = parseQueryStringConditionValues(c);
       if (!qs) {
-        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
         continue;
       }
       const { parsed, hadEntries } = qs;
@@ -1012,14 +1108,15 @@ function parseRuleConditions(
         const message =
           `${ruleLabel} query-string condition has no parseable { Key?, Value } entries; ` +
           `${tail}.`;
-        if (fail(field, message)) return undefined;
+        if (fail(field, message)) return { ...out, undetermined: true };
         continue;
       }
       out.queryStringConditions.push(...parsed);
     } else if (field === 'source-ip') {
       const values = conditionValues(c, 'SourceIpConfig');
       if (!values) {
-        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
         continue;
       }
       const invalid = values.filter((v) => !isValidCidr(v));
@@ -1027,7 +1124,7 @@ function parseRuleConditions(
         const message =
           `${ruleLabel} source-ip condition has unparseable CIDR(s): ${invalid.join(', ')}. ` +
           `The local ALB front-door requires valid IPv4 / IPv6 CIDRs; ${tail}.`;
-        if (fail(field, message)) return undefined;
+        if (fail(field, message)) return { ...out, undetermined: true };
         continue;
       }
       out.sourceIpCidrs.push(...values);
@@ -1035,7 +1132,7 @@ function parseRuleConditions(
       const message =
         `${ruleLabel} uses unsupported condition field ${displayIdent(field)}. ` +
         `${tail.charAt(0).toUpperCase()}${tail.slice(1)}.`;
-      if (fail(field, message)) return undefined;
+      if (fail(field, message)) return { ...out, undetermined: true };
     }
   }
   if (failedFields.size === 0) return out;
@@ -1047,7 +1144,7 @@ function parseRuleConditions(
   if (failedFields.has('http-request-method')) out.httpRequestMethods = [];
   if (failedFields.has('query-string')) out.queryStringConditions = [];
   if (failedFields.has('source-ip')) out.sourceIpCidrs = [];
-  return { ...out, partial: true };
+  return { ...out, undetermined: true };
 }
 
 /**
@@ -1310,13 +1407,16 @@ function parseFixedResponseStatusCode(raw: unknown): number {
 
 /**
  * Parse a literal ListenerRule `Priority` (ALB priorities are 1-50000, lower =
- * higher precedence). `undefined` for a missing / non-literal priority: the
- * caller places it (last when unguarded, first when guarded).
+ * higher precedence). Only an integer 1-50000 (number or digit string) is a
+ * literal; anything else (missing, an intrinsic, a fraction, 0, out of range)
+ * is `undefined` and the caller places it via {@link widenIfGuarded} (last
+ * when unguarded, first when guarded).
  */
 function parsePriority(raw: unknown): number | undefined {
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-  if (typeof raw === 'string' && /^\d+$/.test(raw)) return parseInt(raw, 10);
-  return undefined;
+  let n: number | undefined;
+  if (typeof raw === 'number' && Number.isInteger(raw)) n = raw;
+  else if (typeof raw === 'string' && /^\d+$/.test(raw)) n = parseInt(raw, 10);
+  return n !== undefined && n >= 1 && n <= 50000 ? n : undefined;
 }
 
 /** Where a guarded rule with a non-literal Priority sorts: before every ALB priority (1-50000). */
