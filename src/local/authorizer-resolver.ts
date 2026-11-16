@@ -9,6 +9,7 @@ import { isFunctionUrlOacFronted } from './cors-handler.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
 import { pickRefLogicalId } from './intrinsic-utils.js';
 import { getEmbedConfig } from './embed-config.js';
+import { substituteAgainstState, type SubstitutionContext } from './state-resolver.js';
 
 /**
  * Authorizer detection for `cdkl start-api` (PR 8b of #224).
@@ -148,6 +149,16 @@ export interface JwtAuthorizer {
    */
   region?: string;
   userPoolId?: string;
+  /**
+   * Set when the template's `Issuer` or an `Audience` entry is an intrinsic
+   * (#1001): `HttpUserPoolAuthorizer` always emits the issuer as a
+   * `Fn::Join` over `Ref AWS::Region` + `Ref <UserPool>` and the audience as
+   * `Ref <UserPoolClient>`. Route discovery runs before any state source
+   * loads, so it records the raw values here and serves the unreachable
+   * placeholder issuer meanwhile; {@link resolveJwtAuthorizerIntrinsics}
+   * resolves them from state, or warns that JWKS pass-through applies.
+   */
+  pending?: { stackName: string; issuer: unknown; audience: readonly unknown[] };
   declaredAt: string;
 }
 
@@ -353,31 +364,30 @@ export function resolveHttpApiAuthorizer(
       );
     }
     const obj = jwt as Record<string, unknown>;
-    const issuer = obj['Issuer'];
-    if (typeof issuer !== 'string' || issuer.length === 0) {
+    const rawIssuer = obj['Issuer'];
+    const issuerIsIntrinsic = isIntrinsicObject(rawIssuer);
+    if (!issuerIsIntrinsic && (typeof rawIssuer !== 'string' || rawIssuer.length === 0)) {
       throw new RouteDiscoveryError(
-        `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: JwtConfiguration.Issuer must be a string.`
+        `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}: JwtConfiguration.Issuer must be a string or an intrinsic.`
       );
     }
     const audienceRaw = obj['Audience'];
-    const audience = Array.isArray(audienceRaw)
-      ? audienceRaw.filter((s): s is string => typeof s === 'string')
-      : [];
-
-    // Cognito-issued JWTs encode the user pool id in the issuer URL; we
-    // detect that shape so the JWKS fetcher can use the canonical
-    // `cognito-idp.<region>.amazonaws.com/<userPoolId>/.well-known/jwks.json`
-    // URL even when the user-supplied issuer omits the trailing slash.
-    const cognito = parseCognitoIssuer(issuer);
+    const rawAudience: readonly unknown[] = Array.isArray(audienceRaw) ? audienceRaw : [];
+    const audienceIsIntrinsic = rawAudience.some(isIntrinsicObject);
     void routeAuthorizationScopes; // scopes are not enforced in v1; accepted for parity.
-    return {
-      kind: 'jwt',
-      logicalId: authorizerLogicalId,
-      issuer,
-      audience,
-      ...(cognito && { region: cognito.region, userPoolId: cognito.userPoolId }),
-      declaredAt,
-    };
+    if (issuerIsIntrinsic || audienceIsIntrinsic) {
+      // Served as the unreachable placeholder until state resolves it.
+      return {
+        ...buildJwtAuthorizer(authorizerLogicalId, jwtPlaceholderIssuer(authorizerLogicalId), [], declaredAt),
+        pending: { stackName, issuer: rawIssuer, audience: rawAudience },
+      };
+    }
+    return buildJwtAuthorizer(
+      authorizerLogicalId,
+      rawIssuer as string,
+      rawAudience.filter((s): s is string => typeof s === 'string'),
+      declaredAt
+    );
   }
 
   throw new RouteDiscoveryError(
@@ -571,6 +581,118 @@ function parseCognitoIssuer(issuer: string): { region: string; userPoolId: strin
   const m = /^https:\/\/cognito-idp\.([a-z0-9-]+)\.amazonaws\.com\/([^/]+)\/?$/.exec(issuer);
   if (!m) return undefined;
   return { region: m[1]!, userPoolId: m[2]! };
+}
+
+function isIntrinsicObject(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * The issuer an HTTP v2 JWT authorizer is served with while its template
+ * issuer is an unresolved intrinsic: a Cognito-shaped URL naming a pool that
+ * does not exist, so the JWKS fetch fails into the documented pass-through
+ * mode — the same placeholder the REST v1 `Fn::GetAtt` ARN case uses.
+ */
+function jwtPlaceholderIssuer(logicalId: string): string {
+  return `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_${getEmbedConfig().binaryName}placeholder${logicalId}`;
+}
+
+function buildJwtAuthorizer(
+  logicalId: string,
+  issuer: string,
+  audience: ReadonlyArray<string>,
+  declaredAt: string
+): JwtAuthorizer {
+  // Cognito-issued JWTs encode the user pool id in the issuer URL; we
+  // detect that shape so the JWKS fetcher can use the canonical
+  // `cognito-idp.<region>.amazonaws.com/<userPoolId>/.well-known/jwks.json`
+  // URL even when the user-supplied issuer omits the trailing slash.
+  const cognito = parseCognitoIssuer(issuer);
+  return {
+    kind: 'jwt',
+    logicalId,
+    issuer,
+    audience,
+    ...(cognito && { region: cognito.region, userPoolId: cognito.userPoolId }),
+    declaredAt,
+  };
+}
+
+/**
+ * Resolve every HTTP v2 JWT authorizer whose template `Issuer` / `Audience`
+ * is an intrinsic (#1001) against the routed stack's state, once a state
+ * source has loaded. `contextFor` returns the stack's substitution context,
+ * or `undefined` when it has no state.
+ *
+ * - Issuer and every audience entry resolve: the authorizer verifies exactly
+ *   as one with literal values would.
+ * - Issuer resolves, an audience entry does not: signature, issuer and expiry
+ *   are verified and the audience is NOT checked (warned), which is stricter
+ *   than pass-through and never rejects a token the deployed API accepts.
+ * - Issuer does not resolve (no state source, or no record): the placeholder
+ *   stays, so JWKS pass-through admits every token (warned once per
+ *   authorizer).
+ */
+export function resolveJwtAuthorizerIntrinsics(
+  routes: readonly RouteWithAuth[],
+  contextFor: (stackName: string) => SubstitutionContext | undefined
+): RouteWithAuth[] {
+  const warned = new Set<string>();
+  const warnOnce = (key: string, message: string): void => {
+    if (warned.has(key)) return;
+    warned.add(key);
+    getLogger().warn(message);
+  };
+  return routes.map((entry) => {
+    const auth = entry.authorizer;
+    if (!auth || auth.kind !== 'jwt' || !auth.pending) return entry;
+    const { stackName, issuer, audience } = auth.pending;
+    const label = `${displayStackName(stackName)}/${displayIdent(auth.logicalId)}`;
+    const context = contextFor(stackName);
+    const resolveString = (value: unknown): { value: string } | { reason: string } => {
+      if (typeof value === 'string') return { value };
+      if (!context) return { reason: 'no state source is loaded for the stack' };
+      const result = substituteAgainstState(value, context);
+      if (result.kind === 'literal' && typeof result.value === 'string' && result.value.length > 0) {
+        return { value: result.value };
+      }
+      return { reason: result.kind === 'unresolved' ? result.reason : 'resolved to a non-string' };
+    };
+
+    const issuerResult = resolveString(issuer);
+    if (!('value' in issuerResult)) {
+      warnOnce(
+        `${stackName}\0${auth.logicalId}`,
+        `${label}: JwtConfiguration.Issuer is an intrinsic ${getEmbedConfig().cliName} start-api could not resolve ` +
+          `(${issuerResult.reason}), so JWKS pass-through admits every token on its routes. ` +
+          `Deploy the stack and pass --from-state (or --from-cfn-stack) for real signature verification.`
+      );
+      return entry;
+    }
+    const resolvedAudience: string[] = [];
+    const unresolvedAudience: number[] = [];
+    audience.forEach((value, idx) => {
+      const r = resolveString(value);
+      if ('value' in r) resolvedAudience.push(r.value);
+      else unresolvedAudience.push(idx);
+    });
+    if (unresolvedAudience.length > 0) {
+      warnOnce(
+        `${stackName}\0${auth.logicalId}`,
+        `${label}: JwtConfiguration.Audience ${unresolvedAudience.map((i) => `[${i}]`).join(', ')} could not be resolved, ` +
+          `so the token audience is not checked on its routes (signature, issuer and expiry still are).`
+      );
+    }
+    return {
+      ...entry,
+      authorizer: buildJwtAuthorizer(
+        auth.logicalId,
+        issuerResult.value,
+        unresolvedAudience.length > 0 ? [] : resolvedAudience,
+        auth.declaredAt
+      ),
+    };
+  });
 }
 
 /**

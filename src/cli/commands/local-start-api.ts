@@ -173,6 +173,7 @@ import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
 import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,
+  resolveJwtAuthorizerIntrinsics,
   type AuthorizerInfo,
   type RouteWithAuth,
 } from '../../local/authorizer-resolver.js';
@@ -1055,6 +1056,18 @@ async function serveStartApi(
           webSocketApis
         )
       : new Map<string, StackStateBundle>();
+    // #1001: an HTTP v2 JWT authorizer's intrinsic Issuer / Audience
+    // (`HttpUserPoolAuthorizer`) resolves from the stack's shared state.
+    routesWithAuth = resolveJwtAuthorizerIntrinsics(routesWithAuth, (stackName) => {
+      const bundle = stateByStack.get(stackName);
+      if (!bundle || bundle.withoutSharedState) return undefined;
+      const pseudoParameters =
+        bundle.pseudoParameters ?? derivePseudoParametersFromRegion(bundle.region);
+      return {
+        resources: bundle.state.resources,
+        ...(pseudoParameters && { pseudoParameters }),
+      };
+    });
 
     // Issue #654: resolve `--profile <p>` to a concrete credential set
     // ONCE at boot for forwarding into every Lambda container that
