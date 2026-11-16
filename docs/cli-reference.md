@@ -2060,20 +2060,26 @@ intrinsic, or a whole `Actions` value that is not a literal array, counts) is
 never skipped, so its requests never fall through to an unguarded
 lower-priority rule or the listener default. Each part of such a rule that the
 template does not determine widens to the largest set it could stand for, with
-a warning: a `ListenerArn` that is not a `Ref` to an in-stack listener (for
-example an `Fn::If`, `Fn::Sub` or `Fn::ImportValue`) puts the rule on every
-listener of the ALB; a `Priority` that is not a literal integer 1-50000 sorts
+a warning: a `ListenerArn` that is an intrinsic referencing in-stack listeners
+(for example an `Fn::If` over two listeners, or an `Fn::Sub` / `Fn::Join` /
+`Fn::Select` naming one) puts the rule on every one of those listeners; a
+`Priority` that is not a literal integer 1-50000 sorts
 it before every other rule; a condition cdk-local cannot evaluate (an
 unsupported field, a value that is not a literal string, a whole `Conditions`
 value that is not a literal array) is dropped and the rule answers `503` (no
 guard) over its remaining conditions, or over every request reaching its
 priority when none is left; a rule with no condition to route on (no
-`Conditions`, an empty list, entries that are not objects, empty `Values`) is a
-catch-all at its priority; and an action that cannot be served (an intrinsic
-`Type`, a non-array `Actions`, an `authenticate-*` action with no locally
-servable terminal action such as a `forward` to a target group outside the
-stack) makes the rule answer `503`. Dropping a part only widens what is guarded
-or denied locally. A rule with no `authenticate-*` action keeps the earlier
+`Conditions`, an empty list, entries that are not objects, empty `Values`)
+answers `503` over every request reaching its priority; and an action that
+cannot be served (an intrinsic `Type`, a non-array `Actions`, an
+`authenticate-*` action with no locally servable terminal action such as a
+`forward` to a target group outside the stack or an unsupported `Type`) makes
+the rule answer `503`. Dropping a part only widens what is guarded or denied
+locally. A rule whose `ListenerArn` references no in-stack listener (a literal
+ARN, an `Fn::ImportValue`, a `Ref` to a parameter, as for a rule on
+`ApplicationListener.fromListenerAttributes(...)`) belongs to another stack's
+listener and is not served, with a warning when it carries an `authenticate-*`
+action. A rule with no `authenticate-*` action keeps the earlier
 behaviour: it is skipped, with a warning, when a condition or its action cannot
 be evaluated, and sorts after every literal-priority rule when its `Priority`
 is not a literal. On the listener's default action, the same cases mean the

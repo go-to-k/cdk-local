@@ -1914,10 +1914,9 @@ describe('resolveAlbFrontDoor — a guarded rule is never skipped (#1004 fail-cl
   // `props` makes that dimension undeterminable for the rule.
   const SKIP_SITES: Array<{ site: string; props: Record<string, unknown> }> = [
     { site: 'listener: Fn::If ListenerArn', props: { ListenerArn: { 'Fn::If': ['C', { Ref: LISTENER }, 'x'] } } },
-    { site: 'listener: Fn::Sub ListenerArn', props: { ListenerArn: { 'Fn::Sub': '${Arn}' } } },
-    { site: 'listener: Fn::ImportValue ListenerArn', props: { ListenerArn: { 'Fn::ImportValue': 'Lsn' } } },
-    { site: 'listener: Ref to a parameter', props: { ListenerArn: { Ref: 'ListenerParam' } } },
-    { site: 'listener: literal ARN', props: { ListenerArn: 'arn:aws:elasticloadbalancing:us-east-1:1:listener/app/x/y/z' } },
+    { site: 'listener: Fn::Sub ListenerArn', props: { ListenerArn: { 'Fn::Sub': '${WebListener}' } } },
+    { site: 'listener: Fn::Join ListenerArn', props: { ListenerArn: { 'Fn::Join': ['', [{ Ref: LISTENER }]] } } },
+    { site: 'listener: Fn::Select ListenerArn', props: { ListenerArn: { 'Fn::Select': [0, [{ Ref: LISTENER }, 'x']] } } },
     { site: 'priority: intrinsic', props: { Priority: { Ref: 'P' } } },
     { site: 'priority: out of range', props: { Priority: 50001 } },
     { site: 'conditions: whole intrinsic', props: { Conditions: { 'Fn::If': ['C', PATH_ADMIN, []] } } },
@@ -1930,6 +1929,7 @@ describe('resolveAlbFrontDoor — a guarded rule is never skipped (#1004 fail-cl
     { site: 'action: no servable terminal', props: { Actions: [AUTH, { Type: 'forward', TargetGroupArn: { Ref: 'MissingTg' } }] } },
     { site: 'action: whole intrinsic', props: { Actions: { 'Fn::If': ['C', GUARDED, UNGUARDED] } } },
     { site: 'action: intrinsic Type', props: { Actions: [{ Type: { 'Fn::If': ['C', 'authenticate-oidc', 'forward'] } }, FORWARD_API] } },
+    { site: 'action: unsupported literal terminal Type', props: { Actions: [AUTH, { Type: 'foo' }] } },
   ];
 
   it.each(SKIP_SITES)('keeps a guarded rule through every skip site: $site', ({ props }) => {
@@ -1939,31 +1939,86 @@ describe('resolveAlbFrontDoor — a guarded rule is never skipped (#1004 fail-cl
     expectGuardedOrDenied(listeners[0]!.rules[0]);
   });
 
-  it('listener: serves a guarded rule with an undetermined ListenerArn on every listener of the ALB (warned)', () => {
+  function listenerOn(port: number, alb: string = ALB): Record<string, unknown> {
+    return {
+      Type: 'AWS::ElasticLoadBalancingV2::Listener',
+      Properties: {
+        LoadBalancerArn: { Ref: alb },
+        Port: port,
+        Protocol: 'HTTP',
+        DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: TG } }],
+      },
+    };
+  }
+
+  it('listener: serves a guarded Fn::If ListenerArn on the listeners its branches reference only (warned)', () => {
     const stack = ruleStack(
-      { ListenerArn: { 'Fn::ImportValue': 'SharedListener' }, Actions: GUARDED },
       {
-        SecondListener: {
-          Type: 'AWS::ElasticLoadBalancingV2::Listener',
-          Properties: {
-            LoadBalancerArn: { Ref: ALB },
-            Port: 8080,
-            Protocol: 'HTTP',
-            DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: TG } }],
-          },
-        },
-      }
+        ListenerArn: { 'Fn::If': ['C', { Ref: LISTENER }, { Ref: 'SecondListener' }] },
+        Actions: GUARDED,
+      },
+      { SecondListener: listenerOn(8080), ThirdListener: listenerOn(9090) }
     );
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
-    expect(listeners.map((l) => l.listenerPort).sort()).toEqual([80, 8080]);
-    for (const l of listeners) {
-      expect(l.rules).toHaveLength(1);
-      expect(l.rules[0]!.pathPatterns).toEqual(['/admin/*']);
-      expect(l.rules[0]!.authGuard?.kind).toBe('authenticate-cognito');
+    const byPort = new Map(listeners.map((l) => [l.listenerPort, l]));
+    expect([...byPort.keys()].sort()).toEqual([80, 8080, 9090]);
+    for (const port of [80, 8080]) {
+      const rules = byPort.get(port)!.rules;
+      expect(rules).toHaveLength(1);
+      expect(rules[0]!.pathPatterns).toEqual(['/admin/*']);
+      expect(rules[0]!.authGuard?.kind).toBe('authenticate-cognito');
     }
+    expect(byPort.get(9090)!.rules).toEqual([]);
     expect(warnings.join('\n')).toMatch(
-      /ApiRule has a ListenerArn that is not a Ref to an in-stack listener.*every served listener of WebLB \(fail closed\)/s
+      /ApiRule has a ListenerArn that is not a bare Ref.*every listener of WebLB the expression references \(SecondListener, WebListener\) \(fail closed\)/s
     );
+  });
+
+  it('listener: a guarded Fn::Sub / Fn::GetAtt ListenerArn widens onto the referenced listener only', () => {
+    for (const ListenerArn of [
+      { 'Fn::Sub': '${SecondListener}' },
+      { 'Fn::Sub': ['${Arn}', { Arn: { 'Fn::GetAtt': ['SecondListener', 'ListenerArn'] } }] },
+      { 'Fn::Join': ['', [{ 'Fn::GetAtt': 'SecondListener.ListenerArn' }]] },
+    ]) {
+      const stack = ruleStack({ ListenerArn, Actions: GUARDED }, { SecondListener: listenerOn(8080) });
+      const { listeners } = resolveAlbFrontDoor(stack, ALB);
+      const byPort = new Map(listeners.map((l) => [l.listenerPort, l]));
+      expect(byPort.get(80)!.rules).toEqual([]);
+      expect(byPort.get(8080)!.rules[0]!.authGuard?.kind).toBe('authenticate-cognito');
+    }
+  });
+
+  it('listener: a guarded composite ListenerArn referencing only another ALB\'s listener is not served here', () => {
+    const stack = ruleStack(
+      { ListenerArn: { 'Fn::If': ['C', { Ref: 'OtherListener' }, 'x'] }, Actions: GUARDED },
+      { OtherListener: listenerOn(8080, 'OtherLB') }
+    );
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners.map((l) => l.listenerPort)).toEqual([80]);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings.join('\n')).not.toMatch(/ApiRule/);
+  });
+
+  it('listener: a guarded rule whose ListenerArn references no in-stack listener is skipped (another stack, warned)', () => {
+    for (const ListenerArn of [
+      // ApplicationListener.fromListenerAttributes({ listenerArn: '<literal>' })
+      'arn:aws:elasticloadbalancing:us-east-1:111122223333:listener/app/other/50dc6c495c0c9188/f2f7dc8efc522ab2',
+      // ... with a cross-stack reference (Fn::ImportValue of the producer's export)
+      { 'Fn::ImportValue': 'OtherStack:ExportsOutputRefOtherListenerArn' },
+      { Ref: 'ListenerParam' },
+      { 'Fn::Sub': 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/x/y/z' },
+      { 'Fn::If': ['C', { 'Fn::ImportValue': 'A' }, 'arn:aws:elasticloadbalancing:us-east-1:1:listener/app/x/y/z'] },
+    ]) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        ruleStack({ ListenerArn, Actions: GUARDED }),
+        ALB
+      );
+      expect(listeners).toHaveLength(1);
+      expect(listeners[0]!.rules).toEqual([]);
+      expect(listeners[0]!.defaultAction).toBeDefined();
+      expect(warnings.join('\n')).toMatch(/ApiRule carries.*references no in-stack listener.*not served on WebLB/s);
+      expect(warnings.join('\n')).not.toMatch(/fail closed/);
+    }
   });
 
   it('listener: still skips an unguarded rule with an undetermined ListenerArn (silently)', () => {
@@ -1997,7 +2052,7 @@ describe('resolveAlbFrontDoor — a guarded rule is never skipped (#1004 fail-cl
     }
   });
 
-  it('conditions: a guarded rule with zero evaluable conditions is a guarded catch-all (warned)', () => {
+  it('conditions: a guarded rule with zero evaluable conditions is a 503 deny at its priority (warned)', () => {
     const cases: unknown[] = [
       undefined,
       [],
@@ -2013,9 +2068,9 @@ describe('resolveAlbFrontDoor — a guarded rule is never skipped (#1004 fail-cl
       expect(rule.priority).toBe(10);
       expect(rule.pathPatterns).toEqual([]);
       expect(rule.hostPatterns).toEqual([]);
-      expect(rule.authGuard?.kind).toBe('authenticate-cognito');
-      expect(forwardTarget(rule.action).serviceLogicalId).toBe(API_SERVICE);
-      expect(warnings.join('\n')).toMatch(/ApiRule.*no condition cdk-local can route on.*catch-all.*fail closed/s);
+      expect(rule.authGuard).toBeUndefined();
+      expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+      expect(warnings.join('\n')).toMatch(/ApiRule.*no condition cdk-local can route on.*503 deny.*fail closed/s);
     }
   });
 
@@ -2026,7 +2081,7 @@ describe('resolveAlbFrontDoor — a guarded rule is never skipped (#1004 fail-cl
         ALB
       );
       expect(listeners[0]!.rules).toEqual([]);
-      expect(warnings.join('\n')).not.toMatch(/catch-all/);
+      expect(warnings.join('\n')).not.toMatch(/no condition cdk-local can route on/);
     }
   });
 
@@ -2046,6 +2101,18 @@ describe('resolveAlbFrontDoor — a guarded rule is never skipped (#1004 fail-cl
     const rule = listeners[0]!.rules[0]!;
     expect(rule.authGuard?.kind).toBe('authenticate-cognito');
     expect(forwardTarget(rule.action).serviceLogicalId).toBe(API_SERVICE);
+  });
+
+  it('action: an authenticate-* with an unsupported literal terminal Type is a 503 deny; unguarded it is skipped', () => {
+    const guarded = resolveAlbFrontDoor(ruleStack({ Actions: [AUTH, { Type: 'foo' }] }), ALB);
+    const rule = guarded.listeners[0]!.rules[0]!;
+    expect(rule.priority).toBe(10);
+    expect(rule.pathPatterns).toEqual(['/admin/*']);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+    expect(guarded.warnings.join('\n')).toMatch(/ApiRule.*503 deny \(fail closed\)/s);
+    const unguarded = resolveAlbFrontDoor(ruleStack({ Actions: [{ Type: 'foo' }] }), ALB);
+    expect(unguarded.listeners[0]!.rules).toEqual([]);
   });
 
   it('action: an unguarded rule with no servable action is still skipped', () => {

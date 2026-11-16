@@ -325,24 +325,38 @@ export function resolveAlbFrontDoor(
 
   // TG logical id -> backing ECS service (reverse of Service.LoadBalancers[]).
   const tgToService = indexTargetGroupToService(resources);
-  // Listener logical id -> its ListenerRules, plus the guarded rules whose
-  // listener the template does not determine (served on every listener).
-  const { byListener: rulesByListener, anyListener } = indexRulesByListener(resources);
-  for (const { ruleLogicalId } of anyListener) {
+  // Listener logical id -> its ListenerRules, including the guarded rules
+  // whose composite ListenerArn may name it (widened onto every listener the
+  // expression references).
+  const { byListener: rulesByListener, widened, external } = indexRulesByListener(resources);
+  const isOwnListener = (id: string): boolean =>
+    refOf(
+      (resources[id]?.Properties as Record<string, unknown> | undefined)?.['LoadBalancerArn']
+    ) === albLogicalId;
+  for (const { ruleLogicalId, listenerLogicalIds } of widened) {
+    const own = listenerLogicalIds.filter(isOwnListener);
+    if (own.length === 0) continue;
     warnings.push(
-      `Listener rule ${displayIdent(ruleLogicalId)} has a ListenerArn that is not a Ref to an ` +
-        'in-stack listener (for example an Fn::If, Fn::Sub or Fn::ImportValue) and carries (or may ' +
-        `carry) an authenticate-* action, so it is evaluated on every served listener of ` +
-        `${displayIdent(albLogicalId)} (fail closed): its requests cannot reach an unguarded rule ` +
-        'or listener default on whichever listener it belongs to.'
+      `Listener rule ${displayIdent(ruleLogicalId)} has a ListenerArn that is not a bare Ref to an ` +
+        'in-stack listener (for example an Fn::If or Fn::Sub) and carries (or may carry) an ' +
+        'authenticate-* action, so it is evaluated on every listener of ' +
+        `${displayIdent(albLogicalId)} the expression references (${own.map((id) => displayIdent(id, { listMember: true })).join(', ')}) ` +
+        '(fail closed): its requests cannot reach an unguarded rule or listener default on ' +
+        'whichever listener it belongs to.'
+    );
+  }
+  for (const ruleLogicalId of external) {
+    warnings.push(
+      `Listener rule ${displayIdent(ruleLogicalId)} carries (or may carry) an authenticate-* action ` +
+        'but its ListenerArn references no in-stack listener (a literal ARN, an Fn::ImportValue or ' +
+        'a Ref to a parameter: a listener of another stack), so it is not served on ' +
+        `${displayIdent(albLogicalId)}.`
     );
   }
   const rulesForListener = (
     listenerLogicalId: string
-  ): Array<{ ruleLogicalId: string; ruleProps: Record<string, unknown> }> => [
-    ...(rulesByListener.get(listenerLogicalId) ?? []),
-    ...anyListener,
-  ];
+  ): Array<{ ruleLogicalId: string; ruleProps: Record<string, unknown> }> =>
+    rulesByListener.get(listenerLogicalId) ?? [];
 
   const listeners: ResolvedListenerFrontDoor[] = [];
 
@@ -406,14 +420,18 @@ export function resolveAlbFrontDoor(
     // the listener default. Each dimension the template does not determine
     // collapses to its widest superset (with a warning; ids via displayIdent),
     // decided in one place, `widenIfGuarded`:
-    //   - listener   -> every served listener of this ALB (rulesForListener)
+    //   - listener   -> every in-stack listener its ListenerArn expression
+    //                   references (indexRulesByListener; an expression that
+    //                   references none names another stack's listener and is
+    //                   not served here)
     //   - priority   -> UNPLACEABLE_GUARDED_PRIORITY (evaluated first)
-    //   - conditions -> the evaluable subset, down to a catch-all (zero
+    //   - conditions -> the evaluable subset, down to none at all (also zero
     //                   evaluable conditions: none, `Conditions: []`,
     //                   non-object entries, all-empty Values)
-    //   - action     -> a 503 deny (also forced when a condition was dropped,
-    //                   since serving the target on a widened set would route
-    //                   requests the deployed ALB sends elsewhere)
+    //   - action     -> a 503 deny (also forced when a condition was dropped
+    //                   or none is evaluable, since serving the target on a
+    //                   widened set would route requests the deployed ALB
+    //                   sends elsewhere)
     // An unguarded rule keeps its earlier fallback (usually a skip: there is
     // no guard to lose). The only `continue` in this loop is on SKIP_RULE.
     const rules: ResolvedListenerRule[] = [];
@@ -456,6 +474,9 @@ export function resolveAlbFrontDoor(
       // a rule with no condition to route on was never served.
       if (settledConditions === SKIP_RULE) continue;
       const conditions: ParsedRuleConditions = settledConditions;
+      // Reached only when guarded: the conditions do not determine what the
+      // rule matches, so it denies rather than serving its target.
+      const conditionsUndetermined = undetermined || !evaluable;
       if (undetermined) {
         warnings.push(
           `${ruleLabel} carries (or may carry) an authenticate-* action, so ` +
@@ -470,18 +491,21 @@ export function resolveAlbFrontDoor(
         warnings.push(
           `${ruleLabel} carries (or may carry) an authenticate-* action but has no condition ` +
             'cdk-local can route on (no Conditions, an empty list, or only empty / non-object ' +
-            'entries), so instead of being skipped it is kept at its priority as a catch-all over ' +
-            'every request that reaches it (fail closed).'
+            'entries), so instead of being skipped it is kept at its priority as a local 503 deny ' +
+            'over every request that reaches it (fail closed): its requests cannot fall through ' +
+            'to a lower-priority rule or the listener default.'
         );
       }
 
       // Action dimension.
       const ruleLabelAction = `${ruleLabel} action`;
-      const ruleResolved = undetermined
+      const ruleResolved = conditionsUndetermined
         ? {
             deny: {
               warning: '',
-              body: 'the rule has an authenticate-* guard on a condition cdk-local cannot evaluate',
+              body: undetermined
+                ? 'the rule has an authenticate-* guard on a condition cdk-local cannot evaluate'
+                : 'the rule has an authenticate-* guard but no condition cdk-local can route on',
             },
           }
         : resolveAction(
@@ -508,7 +532,7 @@ export function resolveAlbFrontDoor(
       // Unguarded: resolveAction already warned (no guard to lose).
       if (settledAction === SKIP_RULE) continue;
       if ('deny' in settledAction) {
-        if (!undetermined) {
+        if (!conditionsUndetermined) {
           warnings.push(
             `${ruleLabelAction} ${settledAction.deny.warning}, so the rule is kept at its priority ` +
               'as a local 503 deny (fail closed): its requests are refused rather than falling ' +
@@ -917,43 +941,102 @@ type IndexedRule = { ruleLogicalId: string; ruleProps: Record<string, unknown> }
 
 /**
  * Group every `AWS::ElasticLoadBalancingV2::ListenerRule` by the listener it
- * references. The listener is determined only by a `Ref` to an in-stack
- * `AWS::ElasticLoadBalancingV2::Listener`; any other ListenerArn (an
- * `Fn::If` / `Fn::Sub` / `Fn::ImportValue`, a literal ARN, a `Ref` to a
- * parameter) goes through {@link widenIfGuarded}: a guarded rule lands in
- * `anyListener` (served on every listener), an unguarded one is skipped.
+ * references. A bare `Ref` to an in-stack `AWS::ElasticLoadBalancingV2::Listener`
+ * names exactly that listener. Any other ListenerArn goes through
+ * {@link widenIfGuarded}: a guarded rule widens to every in-stack listener its
+ * expression references (`Fn::If` branches, `Fn::Sub` / `Fn::Join` /
+ * `Fn::Select` operands, ...), recorded in `widened`; an unguarded one is
+ * skipped. An expression that references no in-stack listener (a literal ARN,
+ * `Fn::ImportValue`, a `Ref` to a parameter, e.g. a rule on
+ * `ApplicationListener.fromListenerAttributes(...)`) cannot name a listener of
+ * this stack, so the rule is skipped whether guarded or not (guarded ones are
+ * recorded in `external` for a warning).
  */
 function indexRulesByListener(resources: Record<string, TemplateResource>): {
   byListener: Map<string, IndexedRule[]>;
-  anyListener: IndexedRule[];
+  widened: Array<{ ruleLogicalId: string; listenerLogicalIds: string[] }>;
+  external: string[];
 } {
   const byListener = new Map<string, IndexedRule[]>();
-  const anyListener: IndexedRule[] = [];
+  const widened: Array<{ ruleLogicalId: string; listenerLogicalIds: string[] }> = [];
+  const external: string[] = [];
+  const add = (listenerLogicalId: string, entry: IndexedRule): void => {
+    const list = byListener.get(listenerLogicalId) ?? [];
+    list.push(entry);
+    byListener.set(listenerLogicalId, list);
+  };
   for (const [ruleLogicalId, resource] of Object.entries(resources)) {
     if (resource.Type !== LISTENER_RULE_TYPE) continue; // not a rule
     const ruleProps = (resource.Properties ?? {}) as Record<string, unknown>;
     const entry = { ruleLogicalId, ruleProps };
-    const ref = refOf(ruleProps['ListenerArn']);
-    const listenerRef =
-      ref !== undefined && resources[ref]?.Type === LISTENER_TYPE
-        ? ref
-        : widenIfGuarded(actionsMayCarryGuard(ruleProps['Actions']), ANY_LISTENER, SKIP_RULE);
-    if (listenerRef === SKIP_RULE) continue;
-    if (listenerRef === ANY_LISTENER) {
-      anyListener.push(entry);
+    const listenerArn = ruleProps['ListenerArn'];
+    const ref = refOf(listenerArn);
+    if (ref !== undefined && resources[ref]?.Type === LISTENER_TYPE) {
+      add(ref, entry);
       continue;
     }
-    const list = byListener.get(listenerRef) ?? [];
-    list.push(entry);
-    byListener.set(listenerRef, list);
+    const candidates = inStackListenerRefsIn(listenerArn, resources);
+    const guarded = actionsMayCarryGuard(ruleProps['Actions']);
+    if (candidates.length === 0) {
+      // Cannot name an in-stack listener: not served here (as for an unguarded rule).
+      if (guarded) external.push(ruleLogicalId);
+      continue;
+    }
+    const settled = widenIfGuarded(guarded, candidates, SKIP_RULE);
+    if (settled === SKIP_RULE) continue;
+    for (const listenerLogicalId of settled) add(listenerLogicalId, entry);
+    widened.push({ ruleLogicalId, listenerLogicalIds: settled });
   }
-  return { byListener, anyListener };
+  return { byListener, widened, external };
+}
+
+/**
+ * Every in-stack `AWS::ElasticLoadBalancingV2::Listener` logical id an
+ * intrinsic expression references: a `Ref`, an `Fn::GetAtt` target, or a
+ * `${Id}` / `${Id.Attr}` token of an `Fn::Sub` string, found at any depth. A
+ * superset of the listeners the expression can evaluate to: the deployed ARN
+ * of an in-stack listener is unknown to the template except through one of
+ * these references.
+ */
+function inStackListenerRefsIn(
+  expr: unknown,
+  resources: Record<string, TemplateResource>
+): string[] {
+  const found = new Set<string>();
+  const consider = (id: unknown): void => {
+    if (typeof id === 'string' && resources[id]?.Type === LISTENER_TYPE) found.add(id);
+  };
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === 'Ref') consider(value);
+      else if (key === 'Fn::GetAtt') {
+        consider(
+          Array.isArray(value)
+            ? value[0]
+            : typeof value === 'string'
+              ? value.split('.')[0]
+              : undefined
+        );
+      } else if (key === 'Fn::Sub') {
+        const template = Array.isArray(value) ? value[0] : value;
+        if (typeof template === 'string') {
+          for (const m of template.matchAll(/\$\{([^!}][^}]*)\}/g)) consider(m[1]!.split('.')[0]);
+        }
+      }
+      walk(value);
+    }
+  };
+  walk(expr);
+  return [...found].sort();
 }
 
 /** Sentinel: an unguarded rule whose dimension cannot be determined is skipped. */
 const SKIP_RULE: unique symbol = Symbol('skip-rule');
-/** Sentinel: the listener of a guarded rule cannot be determined (every listener). */
-const ANY_LISTENER: unique symbol = Symbol('any-listener');
 
 /**
  * The single fail-closed decision for a listener-rule dimension (listener,
@@ -1051,7 +1134,7 @@ function parseRuleConditions(
   for (const cond of conditions) {
     if (!cond || typeof cond !== 'object') {
       // Not a condition: ignoring it only widens the rule (zero evaluable
-      // conditions make a guarded rule a catch-all in the caller).
+      // conditions make a guarded rule a 503 deny in the caller).
       if (guarded) {
         warnings.push(
           `${ruleLabel} has a Conditions entry that is not an object; it is ignored, which only ` +
