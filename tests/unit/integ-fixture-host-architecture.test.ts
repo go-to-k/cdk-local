@@ -145,6 +145,7 @@ const HOST_ARCHITECTURE_STACKS = [
   'tests/integration/local-start-api-container/lib/local-start-api-container-stack.ts',
   'tests/integration/local-start-api-from-cfn-stack/lib/local-start-api-from-cfn-stack-stack.ts',
   'tests/integration/local-start-api-rest-v1-non-proxy/lib/local-start-api-rest-v1-non-proxy-stack.ts',
+  'tests/integration/local-start-api-user-pool-authorizer/lib/local-start-api-user-pool-authorizer-stack.ts',
   'tests/integration/local-start-api-watch/lib/watch-stack.ts',
   'tests/integration/local-start-alb-lambda/lib/local-start-alb-lambda-stack.ts',
   'tests/integration/local-start-alb-websocket/lib/local-start-alb-websocket-stack.ts',
