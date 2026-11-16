@@ -271,11 +271,14 @@ export {
  * `start-api` authorizer wiring — attaches the discovered authorizers (Lambda
  * TOKEN / REQUEST, Cognito JWT, AWS_IAM SigV4) to the route list. `AuthorizerInfo`
  * is the per-route resolved-authorizer descriptor; `RouteWithAuth` is a route
- * paired with its authorizer. Exposed only as the consuming host's `import`
+ * paired with its authorizer. `resolveJwtAuthorizerIntrinsics` resolves an HTTP
+ * v2 JWT authorizer's intrinsic Issuer / Audience once the host's state source
+ * has loaded (#1001). Exposed only as the consuming host's `import`
  * statements require them.
  */
 export {
   attachAuthorizers,
+  resolveJwtAuthorizerIntrinsics,
   type AuthorizerInfo,
   type RouteWithAuth,
 } from './local/authorizer-resolver.js';

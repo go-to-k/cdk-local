@@ -173,6 +173,7 @@ import { createShutdownSignalHandler } from '../../utils/shutdown-signal.js';
 import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,
+  resolveJwtAuthorizerIntrinsics,
   type AuthorizerInfo,
   type RouteWithAuth,
 } from '../../local/authorizer-resolver.js';
@@ -796,6 +797,8 @@ async function serveStartApi(
   // set and skip it. Per-`localStartApiCommand`-invocation (new server boot
   // starts with a fresh empty set).
   const unmatchedTargetWarned = new Set<string>();
+  // Same once-per-run dedup for the JWT authorizer intrinsic warnings (#1001).
+  const jwtIntrinsicWarned = new Set<string>();
 
   /**
    * One synth + discover + build pass. Returns the next-state
@@ -1055,6 +1058,13 @@ async function serveStartApi(
           webSocketApis
         )
       : new Map<string, StackStateBundle>();
+    // #1001: an HTTP v2 JWT authorizer's intrinsic Issuer / Audience
+    // (`HttpUserPoolAuthorizer`) resolves from the stack's shared state.
+    routesWithAuth = resolveJwtAuthorizerIntrinsics(
+      routesWithAuth,
+      (stackName) => jwtAuthorizerSubstitutionContext(stateByStack.get(stackName)),
+      jwtIntrinsicWarned
+    );
 
     // Issue #654: resolve `--profile <p>` to a concrete credential set
     // ONCE at boot for forwarding into every Lambda container that
@@ -3960,6 +3970,24 @@ export function envHasIntrinsicValue(templateEnv: Record<string, unknown> | unde
 }
 
 /**
+ * The substitution context an HTTP v2 JWT authorizer's intrinsic Issuer /
+ * Audience resolves against (#1001): the stack's SHARED state, with the
+ * pseudo parameters derived from the state's region when no reachable Lambda
+ * needed the STS-resolved bag. `undefined` without shared state.
+ */
+export function jwtAuthorizerSubstitutionContext(
+  bundle: StackStateBundle | undefined
+): SubstitutionContext | undefined {
+  if (!bundle || bundle.withoutSharedState) return undefined;
+  const pseudoParameters =
+    bundle.pseudoParameters ?? derivePseudoParametersFromRegion(bundle.region);
+  return {
+    resources: bundle.state.resources,
+    ...(pseudoParameters && { pseudoParameters }),
+  };
+}
+
+/**
  * Load deployed state for every stack that owns a routed Lambda. Once
  * per `synthesizeAndBuild` pass (initial boot + every reload), so a
  * Lambda's per-spec build does not pay one round-trip per Lambda. Per-
@@ -4000,6 +4028,14 @@ export async function loadStateForRoutedStacks(
         reachableStackNames.add(stack.stackName);
         break;
       }
+    }
+  }
+  // A JWT authorizer whose Issuer / Audience waits on state (#1001) needs its
+  // own stack's state even when no Lambda there is routed (an HTTP_PROXY or
+  // service-integration route, or a Lambda in another stack).
+  for (const { authorizer } of routesWithAuth) {
+    if (authorizer?.kind === 'jwt' && authorizer.pending) {
+      reachableStackNames.add(authorizer.pending.stackName);
     }
   }
 
