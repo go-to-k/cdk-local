@@ -596,9 +596,11 @@ function isIntrinsicObject(value: unknown): boolean {
  * The issuer an HTTP v2 JWT authorizer is served with while its template
  * issuer is an unresolved intrinsic: a Cognito-shaped URL naming a pool that
  * does not exist, so the JWKS fetch fails into the documented pass-through
- * mode — the same placeholder the REST v1 `Fn::GetAtt` ARN case uses.
+ * mode — the same placeholder the REST v1 `Fn::GetAtt` ARN case uses. Also
+ * the issuer of a `start-alb` authenticate-* guard that cannot be resolved
+ * (#1004).
  */
-function jwtPlaceholderIssuer(logicalId: string): string {
+export function jwtPlaceholderIssuer(logicalId: string): string {
   return `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_${getEmbedConfig().binaryName}placeholder${logicalId}`;
 }
 

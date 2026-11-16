@@ -3,6 +3,10 @@ import type { TemplateResource } from '../types/resource.js';
 import type { AlbHttpHeaderCondition, AlbQueryStringCondition } from './alb-path-matcher.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { getLogger } from '../utils/logger.js';
+import { getEmbedConfig } from './embed-config.js';
+import { jwtPlaceholderIssuer } from './authorizer-resolver.js';
+import { substituteAgainstState, type SubstitutionContext } from './state-resolver.js';
 
 /**
  * Resolve an `AWS::ElasticLoadBalancingV2::LoadBalancer` (an ALB) into the
@@ -60,6 +64,12 @@ import { displayUntrustedValue } from '../utils/assembly-path.js';
  * terminal action they wrap. The front-door enforces a Bearer-JWT check
  * locally (signature + `iss` + `exp` + `aud`) using the existing JWKS-cached
  * verifier; missing / invalid token -> 401 with `WWW-Authenticate: Bearer`.
+ * A declared guard is never dropped (#1004): an intrinsic `UserPoolArn` /
+ * `UserPoolClientId` / `Issuer` / `ClientId` is recorded as `pending` and
+ * resolved from the state source at boot
+ * ({@link resolveFrontDoorAuthGuardIntrinsics}); a config that cannot be
+ * resolved keeps a placeholder guard that still refuses a request without a
+ * Bearer token (any Bearer token is admitted, warned).
  * Out of scope: the full OAuth roundtrip (authorize-endpoint redirect +
  * callback). The local-dev parity is "I have a JWT, let me through" — the
  * `--bearer-token <jwt>` flag is the convenience escape hatch; the
@@ -186,8 +196,12 @@ export interface FrontDoorAuthGuard {
   kind: 'authenticate-cognito' | 'authenticate-oidc';
   /** Expected JWT `iss` (Cognito issuer URL or the OIDC `Issuer`). */
   issuer: string;
-  /** Allowed JWT `aud` value (Cognito `UserPoolClientId` or OIDC `ClientId`). */
-  audience: string;
+  /**
+   * Allowed JWT `aud` value (Cognito `UserPoolClientId` or OIDC `ClientId`).
+   * Absent when that field could not be resolved (#1004): signature, `iss`
+   * and `exp` are still verified, the audience is not.
+   */
+  audience?: string;
   /** Cognito-only: enables the direct JWKS URL fast path. */
   region?: string;
   /** Cognito-only: enables the direct JWKS URL fast path. */
@@ -201,6 +215,27 @@ export interface FrontDoorAuthGuard {
   sessionCookieName: string;
   /** Diagnostic label for log lines + the 401 `WWW-Authenticate` realm. */
   label: string;
+  /**
+   * Set while a required config field is an intrinsic (#1004). The guard
+   * meanwhile carries the unresolved placeholder (a token is required, and
+   * not verified); {@link resolveFrontDoorAuthGuardIntrinsics} replaces it
+   * once the state source has loaded.
+   */
+  pending?: FrontDoorAuthGuardPending;
+}
+
+/** The raw template values of an authenticate-* guard awaiting state (#1004). */
+export interface FrontDoorAuthGuardPending {
+  /** Stack whose state the intrinsics resolve against. */
+  stackName: string;
+  /** Logical id of the listener / rule declaring the action (warn-once key). */
+  siteLogicalId: string;
+  /** Diagnostic location, e.g. `Listener X (port 80) default action`. */
+  location: string;
+  /** Raw `UserPoolArn` (cognito) or `Issuer` (oidc). */
+  primary: unknown;
+  /** Raw `UserPoolClientId` (cognito) or `ClientId` (oidc). */
+  audience: unknown;
 }
 
 /** Any resolved listener / rule action the local front-door can serve. */
@@ -323,6 +358,7 @@ export function resolveAlbFrontDoor(
       resources,
       tgToService,
       stackName,
+      listenerLogicalId,
       `Listener ${displayIdent(listenerLogicalId)} (port ${port}) default action`,
       warnings
     );
@@ -365,6 +401,7 @@ export function resolveAlbFrontDoor(
         resources,
         tgToService,
         stackName,
+        ruleLogicalId,
         `${ruleLabel} action`,
         warnings
       );
@@ -419,7 +456,7 @@ interface BackingServiceRef {
  * Resolve a listener / rule `Actions` (or `DefaultActions`) array. ALB allows
  * any number of `authenticate-cognito` / `authenticate-oidc` entries followed
  * by exactly one terminal action (`forward` / `redirect` / `fixed-response`).
- * The first parseable authenticate-* (last wins if multiple) becomes the
+ * The authenticate-* entry (the last one if multiple) becomes the
  * returned `authGuard`; the terminal action becomes `action`. Returns
  * `undefined` when no terminal action is resolvable.
  */
@@ -428,6 +465,7 @@ function resolveAction(
   resources: Record<string, TemplateResource>,
   tgToService: Map<string, BackingServiceRef>,
   stackName: string,
+  siteLogicalId: string,
   label: string,
   warnings: string[]
 ): { action: ResolvedListenerAction; authGuard?: FrontDoorAuthGuard } | undefined {
@@ -442,8 +480,9 @@ function resolveAction(
 
     if (type === 'authenticate-cognito' || type === 'authenticate-oidc') {
       sawAuthenticate = true;
-      const parsed = parseAuthenticateAction(a, type, label, warnings);
-      if (parsed) authGuard = parsed;
+      // A declared guard is never dropped (#1004): an unresolvable config
+      // yields a guard that still requires a token.
+      authGuard = parseAuthenticateAction(a, type, stackName, siteLogicalId, label, warnings);
       continue;
     }
     let terminal: ResolvedListenerAction | undefined;
@@ -1100,87 +1139,350 @@ const DEFAULT_ALB_SESSION_COOKIE = 'AWSELBAuthSessionCookie';
  */
 const COGNITO_USERPOOL_ARN = /^arn:[^:]+:cognito-idp:([^:]+):[^:]+:userpool\/([^/]+)$/;
 
+/** A Cognito user pool id (`<region>_<suffix>`), which is the pool's physical id. */
+const COGNITO_USERPOOL_ID = /^([a-z]{2}(?:-[a-z]+)+-\d+)_[0-9A-Za-z]+$/;
+
+const COGNITO_USERPOOL_TYPE = 'AWS::Cognito::UserPool';
+
+type GuardKind = FrontDoorAuthGuard['kind'];
+
+/** One config field's value, or why it has none. */
+type FieldResult = { value: string } | { reason: string; intrinsic: boolean };
+
+/** The two required config fields of each authenticate-* kind. */
+function fieldNames(kind: GuardKind): { primary: string; audience: string; config: string } {
+  return kind === 'authenticate-cognito'
+    ? { primary: 'UserPoolArn', audience: 'UserPoolClientId', config: 'AuthenticateCognitoConfig' }
+    : { primary: 'Issuer', audience: 'ClientId', config: 'AuthenticateOidcConfig' };
+}
+
+function isIntrinsicValue(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** A literal field value: a non-empty string, or why it is not one. */
+function literalField(raw: unknown): FieldResult {
+  if (typeof raw === 'string') {
+    return raw === '' ? { reason: 'it is an empty string', intrinsic: false } : { value: raw };
+  }
+  return { reason: 'it is missing or not a string', intrinsic: false };
+}
+
 /**
- * Parse an `authenticate-cognito` / `authenticate-oidc` ALB action into a
- * resolvable {@link FrontDoorAuthGuard}, or `undefined` when the config is
- * unresolvable (a Ref / intrinsic in a required field, a malformed
- * UserPoolArn, etc.) — a warning is emitted in that case so the user knows
- * the guard was dropped (the terminal action will still serve unguarded).
+ * The placeholder guard an unresolvable authenticate-* config is served with
+ * (#1004): a Cognito-shaped issuer naming a pool that does not exist, so the
+ * JWKS fetch fails into the documented pass-through mode. A request without a
+ * Bearer token is refused (401); any Bearer token is admitted, warned.
  */
-function parseAuthenticateAction(
-  action: Record<string, unknown>,
-  type: 'authenticate-cognito' | 'authenticate-oidc',
-  label: string,
-  warnings: string[]
-): FrontDoorAuthGuard | undefined {
-  if (type === 'authenticate-cognito') {
-    const cfg = action['AuthenticateCognitoConfig'];
-    if (!cfg || typeof cfg !== 'object') {
-      warnings.push(
-        `${label}: authenticate-cognito missing AuthenticateCognitoConfig; skipping guard.`
-      );
-      return undefined;
-    }
-    const c = cfg as Record<string, unknown>;
-    const userPoolArn = c['UserPoolArn'];
-    const userPoolClientId = c['UserPoolClientId'];
-    if (typeof userPoolArn !== 'string' || typeof userPoolClientId !== 'string') {
-      warnings.push(
-        `${label}: authenticate-cognito UserPoolArn / UserPoolClientId must be literal strings ` +
-          '(Ref / intrinsics cannot be resolved by the local front-door); skipping guard.'
-      );
-      return undefined;
-    }
-    const match = COGNITO_USERPOOL_ARN.exec(userPoolArn);
+function placeholderGuard(
+  kind: GuardKind,
+  siteLogicalId: string,
+  sessionCookieName: string,
+  pending?: FrontDoorAuthGuardPending
+): FrontDoorAuthGuard {
+  // The id lands in the JWKS URL path; keep it to URL-safe characters.
+  const issuer = jwtPlaceholderIssuer(siteLogicalId.replace(/[^A-Za-z0-9]/g, ''));
+  return {
+    kind,
+    issuer,
+    region: 'us-east-1',
+    userPoolId: issuer.slice(issuer.lastIndexOf('/') + 1),
+    sessionCookieName,
+    label: `${kind} (unresolved)`,
+    ...(pending && { pending }),
+  };
+}
+
+/**
+ * An OIDC `Issuer` the guard verifies against: an `https://` URL, as ALB
+ * requires. A plain-`http://` loopback issuer is also accepted, so a local
+ * test IdP on the host keeps working; it is never a deployed value.
+ */
+function isUsableOidcIssuer(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol === 'https:') return true;
+  return (
+    url.protocol === 'http:' &&
+    (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]')
+  );
+}
+
+/**
+ * The one builder every guard goes through — literal template values and
+ * values resolved from state alike (#1004). The primary field (Cognito
+ * `UserPoolArn` / OIDC `Issuer`) must be a Cognito user pool ARN / an
+ * `https://` URL; otherwise the placeholder guard is returned. An audience
+ * that has no value leaves the audience unchecked. Every shortfall is
+ * reported through `warn`, keyed by the field it concerns.
+ */
+function materializeGuard(
+  kind: GuardKind,
+  primary: FieldResult,
+  audience: FieldResult,
+  sessionCookieName: string,
+  siteLogicalId: string,
+  location: string,
+  warn: (field: string, message: string) => void
+): FrontDoorAuthGuard {
+  const names = fieldNames(kind);
+  const cli = `${getEmbedConfig().cliName} start-alb`;
+  const unguardedTail =
+    'The route still requires a Bearer token, but does not verify it (JWKS pass-through admits any token).';
+  const intrinsicHint =
+    'Deploy the stack and pass --from-cfn-stack (or another state source) for real verification, ' +
+    `or --no-verify-auth to disable the guard. Restart ${cli} after deploying: --watch does not rebuild the front-door.`;
+  const literalHint = 'Fix the template value, or pass --no-verify-auth to disable the guard.';
+
+  const unresolved = (reason: string, intrinsic: boolean): FrontDoorAuthGuard => {
+    warn(
+      names.primary,
+      `${location}: ${kind} ${names.primary} ${intrinsic ? `is an intrinsic ${cli} could not resolve` : 'is unusable'} ` +
+        `(${reason}). ${unguardedTail} ${intrinsic ? intrinsicHint : literalHint}`
+    );
+    return placeholderGuard(kind, siteLogicalId, sessionCookieName);
+  };
+
+  if (!('value' in primary)) return unresolved(primary.reason, primary.intrinsic);
+
+  let base: Pick<FrontDoorAuthGuard, 'issuer' | 'region' | 'userPoolId' | 'label'>;
+  if (kind === 'authenticate-cognito') {
+    const match = COGNITO_USERPOOL_ARN.exec(primary.value);
     if (!match) {
-      warnings.push(
-        `${label}: authenticate-cognito UserPoolArn ${displayUntrustedValue(userPoolArn)} is not in the expected ` +
-          'arn:...:cognito-idp:<region>:<account>:userpool/<pool-id> shape; skipping guard.'
+      return unresolved(
+        `${displayUntrustedValue(primary.value)} is not in the expected ` +
+          'arn:...:cognito-idp:<region>:<account>:userpool/<pool-id> shape',
+        false
       );
-      return undefined;
     }
     const region = match[1]!;
     const userPoolId = match[2]!;
-    const sessionCookieName =
-      typeof c['SessionCookieName'] === 'string' && c['SessionCookieName'] !== ''
-        ? c['SessionCookieName']
-        : DEFAULT_ALB_SESSION_COOKIE;
-    return {
-      kind: 'authenticate-cognito',
+    base = {
       issuer: `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`,
-      audience: userPoolClientId,
       region,
       userPoolId,
-      sessionCookieName,
       label: `authenticate-cognito (UserPool=${userPoolId})`,
+    };
+  } else {
+    if (!isUsableOidcIssuer(primary.value)) {
+      return unresolved(`${displayUntrustedValue(primary.value)} is not an https:// URL`, false);
+    }
+    base = {
+      issuer: primary.value.replace(/\/+$/, ''),
+      label: `authenticate-oidc (Issuer=${primary.value})`,
     };
   }
 
-  // authenticate-oidc
-  const cfg = action['AuthenticateOidcConfig'];
-  if (!cfg || typeof cfg !== 'object') {
-    warnings.push(`${label}: authenticate-oidc missing AuthenticateOidcConfig; skipping guard.`);
-    return undefined;
+  if (!('value' in audience)) {
+    warn(
+      names.audience,
+      `${location}: ${kind} ${names.audience} could not be resolved (${audience.reason}), so the token ` +
+        'audience is not checked (signature, issuer and expiry still are).' +
+        (audience.intrinsic ? ' Pass --from-cfn-stack (or another state source) to check it.' : '')
+    );
+  }
+  return {
+    kind,
+    issuer: base.issuer,
+    ...('value' in audience && { audience: audience.value }),
+    ...(base.region !== undefined && { region: base.region }),
+    ...(base.userPoolId !== undefined && { userPoolId: base.userPoolId }),
+    sessionCookieName,
+    label: base.label,
+  };
+}
+
+/**
+ * Parse an `authenticate-cognito` / `authenticate-oidc` ALB action into a
+ * {@link FrontDoorAuthGuard}. A declared guard is never dropped (#1004):
+ *
+ * - every required field is a usable literal: the real guard;
+ * - a required field is an intrinsic: the placeholder guard carrying
+ *   `pending`, resolved by {@link resolveFrontDoorAuthGuardIntrinsics} once
+ *   the state source has loaded;
+ * - the config block is missing, or a literal is unusable (a malformed
+ *   UserPoolArn, a non-https Issuer, an empty string): the placeholder guard,
+ *   warned — a request without a Bearer token is refused.
+ */
+function parseAuthenticateAction(
+  action: Record<string, unknown>,
+  type: GuardKind,
+  stackName: string,
+  siteLogicalId: string,
+  label: string,
+  warnings: string[]
+): FrontDoorAuthGuard {
+  const names = fieldNames(type);
+  const cfg = action[names.config];
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    warnings.push(
+      `${label}: ${type} is missing ${names.config}. The route still requires a Bearer token, but does not ` +
+        'verify it (JWKS pass-through admits any token). Fix the template, or pass --no-verify-auth to disable the guard.'
+    );
+    return placeholderGuard(type, siteLogicalId, DEFAULT_ALB_SESSION_COOKIE);
   }
   const c = cfg as Record<string, unknown>;
-  const issuer = c['Issuer'];
-  const clientId = c['ClientId'];
-  if (typeof issuer !== 'string' || typeof clientId !== 'string') {
-    warnings.push(
-      `${label}: authenticate-oidc Issuer / ClientId must be literal strings ` +
-        '(Ref / intrinsics cannot be resolved by the local front-door); skipping guard.'
-    );
-    return undefined;
-  }
   const sessionCookieName =
     typeof c['SessionCookieName'] === 'string' && c['SessionCookieName'] !== ''
       ? c['SessionCookieName']
       : DEFAULT_ALB_SESSION_COOKIE;
-  return {
-    kind: 'authenticate-oidc',
-    issuer: issuer.replace(/\/+$/, ''),
-    audience: clientId,
+  const rawPrimary = c[names.primary];
+  const rawAudience = c[names.audience];
+  if (isIntrinsicValue(rawPrimary) || isIntrinsicValue(rawAudience)) {
+    return placeholderGuard(type, siteLogicalId, sessionCookieName, {
+      stackName,
+      siteLogicalId,
+      location: label,
+      primary: rawPrimary,
+      audience: rawAudience,
+    });
+  }
+  return materializeGuard(
+    type,
+    literalField(rawPrimary),
+    literalField(rawAudience),
     sessionCookieName,
-    label: `authenticate-oidc (Issuer=${issuer})`,
+    siteLogicalId,
+    label,
+    (_field, message) => warnings.push(message)
+  );
+}
+
+/**
+ * The deployed ARN behind `Fn::GetAtt: [<UserPool>, 'Arn']` when the state
+ * record carries no `Arn` attribute (the `--from-cfn-stack` provider records
+ * physical ids only): a Cognito user pool's physical id is its pool id, whose
+ * `<region>_` prefix names the region. Only the region and the pool id are
+ * read back out of the ARN, so the account falls back to a filler.
+ */
+function userPoolArnFromState(raw: unknown, context: SubstitutionContext): string | undefined {
+  if (!isIntrinsicValue(raw)) return undefined;
+  const getAtt = (raw as Record<string, unknown>)['Fn::GetAtt'];
+  let logicalId: string | undefined;
+  if (Array.isArray(getAtt) && getAtt.length === 2 && getAtt[1] === 'Arn') {
+    logicalId = typeof getAtt[0] === 'string' ? getAtt[0] : undefined;
+  } else if (typeof getAtt === 'string' && getAtt.endsWith('.Arn')) {
+    logicalId = getAtt.slice(0, -'.Arn'.length);
+  }
+  if (logicalId === undefined) return undefined;
+  const record = context.resources[logicalId];
+  if (!record || record.resourceType !== COGNITO_USERPOOL_TYPE) return undefined;
+  if (record.attributes?.['Arn'] !== undefined) return undefined; // the substituter reads it
+  const match = COGNITO_USERPOOL_ID.exec(record.physicalId);
+  if (!match) return undefined;
+  const partition = context.pseudoParameters?.partition ?? 'aws';
+  const account = context.pseudoParameters?.accountId ?? '000000000000';
+  return `arn:${partition}:cognito-idp:${match[1]}:${account}:userpool/${record.physicalId}`;
+}
+
+/** Resolve one raw config field against a stack's state. */
+function resolveField(
+  raw: unknown,
+  context: SubstitutionContext | undefined,
+  isUserPoolArn: boolean
+): FieldResult {
+  if (!isIntrinsicValue(raw)) return literalField(raw);
+  if (!context) return { reason: 'no deployed state was loaded for the stack', intrinsic: true };
+  if (isUserPoolArn) {
+    const derived = userPoolArnFromState(raw, context);
+    if (derived !== undefined) return { value: derived };
+  }
+  const result = substituteAgainstState(raw, context);
+  if (result.kind === 'literal' && typeof result.value === 'string' && result.value !== '') {
+    return { value: result.value };
+  }
+  return {
+    reason: result.kind === 'unresolved' ? result.reason : 'it resolved to a non-string',
+    intrinsic: true,
   };
+}
+
+/**
+ * Resolve one guard's pending intrinsics; a guard without `pending` is
+ * returned as-is. See {@link resolveFrontDoorAuthGuardIntrinsics}.
+ */
+function resolvePendingGuard(
+  guard: FrontDoorAuthGuard,
+  contextFor: (stackName: string) => SubstitutionContext | undefined,
+  warnOnce: (key: string, message: string) => void
+): FrontDoorAuthGuard {
+  const pending = guard.pending;
+  if (!pending) return guard;
+  const context = contextFor(pending.stackName);
+  return materializeGuard(
+    guard.kind,
+    resolveField(pending.primary, context, guard.kind === 'authenticate-cognito'),
+    resolveField(pending.audience, context, false),
+    guard.sessionCookieName,
+    pending.siteLogicalId,
+    `${displayStackName(pending.stackName)}: ${pending.location}`,
+    (field, message) =>
+      warnOnce(`${pending.stackName}\0${pending.siteLogicalId}\0${guard.kind}\0${field}`, message)
+  );
+}
+
+/**
+ * Resolve every `start-alb` authenticate-* guard whose template config is an
+ * intrinsic (#1004) — the listener default guard and every rule guard —
+ * against its stack's state, once a state source has loaded. `contextFor`
+ * returns the stack's substitution context, or `undefined` when it has no
+ * state. Pure: returns new listeners, leaving the input untouched.
+ *
+ * - Every field resolves to a usable value: the real guard, exactly as with
+ *   literal values.
+ * - The primary field (`UserPoolArn` / `Issuer`) does not resolve, or
+ *   resolves to an unusable value: the placeholder guard stays — a request
+ *   without a Bearer token gets 401, any Bearer token is admitted (warned).
+ * - Only the audience does not resolve: signature, issuer and expiry are
+ *   verified, the audience is not (warned).
+ *
+ * `warned` dedups the warnings by stack + logical id + field.
+ */
+export function resolveFrontDoorAuthGuardIntrinsics<
+  L extends {
+    defaultAuthGuard?: FrontDoorAuthGuard;
+    rules: ReadonlyArray<{ authGuard?: FrontDoorAuthGuard }>;
+  },
+>(
+  listeners: readonly L[],
+  contextFor: (stackName: string) => SubstitutionContext | undefined,
+  warned: Set<string> = new Set<string>()
+): L[] {
+  const warnOnce = (key: string, message: string): void => {
+    if (warned.has(key)) return;
+    warned.add(key);
+    getLogger().warn(message);
+  };
+  return listeners.map((listener) => ({
+    ...listener,
+    ...(listener.defaultAuthGuard && {
+      defaultAuthGuard: resolvePendingGuard(listener.defaultAuthGuard, contextFor, warnOnce),
+    }),
+    rules: listener.rules.map((rule) =>
+      rule.authGuard
+        ? { ...rule, authGuard: resolvePendingGuard(rule.authGuard, contextFor, warnOnce) }
+        : rule
+    ),
+  }));
+}
+
+/** The stacks owning a guard that awaits state (#1004), deduplicated. */
+export function pendingAuthGuardStackNames(
+  listeners: ReadonlyArray<{
+    defaultAuthGuard?: FrontDoorAuthGuard;
+    rules: ReadonlyArray<{ authGuard?: FrontDoorAuthGuard }>;
+  }>
+): string[] {
+  const names = new Set<string>();
+  for (const listener of listeners) {
+    const guards = [listener.defaultAuthGuard, ...listener.rules.map((r) => r.authGuard)];
+    for (const guard of guards) {
+      if (guard?.pending) names.add(guard.pending.stackName);
+    }
+  }
+  return [...names];
 }

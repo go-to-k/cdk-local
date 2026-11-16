@@ -2037,10 +2037,26 @@ deployed ALB also accepts an already-signed-in browser via the
 of that cookie as a pass-through (no JWT check) so a browser session that
 authenticated through the cloud ALB keeps working against the local
 front-door. `--no-verify-auth` disables every guard on the listener (every
-request passes). `UserPoolArn` / `Issuer` / `ClientId` MUST be literal
-strings in the synthesized template — a `Ref` / `Fn::GetAtt` / cross-stack
-intrinsic in any of those fields drops the guard with a warning, and the
-terminal action then serves unguarded.
+request passes).
+
+A declared `authenticate-*` action is never dropped. When `UserPoolArn` /
+`UserPoolClientId` (Cognito) or `Issuer` / `ClientId` (OIDC) is an intrinsic
+— the normal shape for `ListenerAction.authenticateCognito({ userPool,
+userPoolClient, ... })`, which emits `Fn::GetAtt <Pool>.Arn` and
+`Ref <Client>` — it is resolved from the deployed stack once a state source
+loads (`--from-cfn-stack`, or a host-provided state provider), and the guard
+then verifies exactly as one with literal values would. A field that cannot
+be resolved (no state source, no record for the resource, a value that is
+not a Cognito user pool ARN or an `https://` issuer, an empty string, or a
+missing `AuthenticateCognitoConfig` / `AuthenticateOidcConfig`) leaves the
+route on a placeholder guard, with a warning: a request without a Bearer
+token still answers `401`, but a Bearer token is admitted without
+verification (the JWKS pass-through below). When only the client id is
+unresolved, the token's signature, `iss` and `exp` are verified and its
+audience is not. Pass `--from-cfn-stack` for real verification, or
+`--no-verify-auth` to serve the route without a guard. The guards are
+resolved once at boot, so restart `cdkl start-alb` after deploying the
+stack — `--watch` does not rebuild the front-door.
 
 **JWKS / OIDC discovery unreachable → token accepted without verification.**
 When the upstream JWKS endpoint (Cognito) or OIDC discovery URL is

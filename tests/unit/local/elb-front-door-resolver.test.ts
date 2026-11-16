@@ -1329,90 +1329,139 @@ describe('resolveAlbFrontDoor — authenticate-* guards', () => {
     expect(listeners[0]!.rules[0]!.action.kind).toBe('forward');
   });
 
-  it('warns + skips guard when UserPoolArn is an intrinsic (Ref / GetAtt)', () => {
-    const stack = stackWith({
+  // #1004: a declared guard is never dropped. An intrinsic config yields the
+  // placeholder guard carrying `pending` (resolved once state loads); an
+  // unusable literal or a missing config yields the placeholder, warned.
+  function listenerWith(defaultAction: Record<string, unknown>): StackInfo {
+    return stackWith({
       [LISTENER]: {
         Type: 'AWS::ElasticLoadBalancingV2::Listener',
         Properties: {
           LoadBalancerArn: { Ref: ALB },
           Port: 80,
           Protocol: 'HTTP',
-          DefaultActions: [
-            {
-              Type: 'authenticate-cognito',
-              AuthenticateCognitoConfig: {
-                UserPoolArn: { Ref: 'MyPool' }, // intrinsic, not a literal
-                UserPoolClientId: 'client-abc',
-                UserPoolDomain: 'auth.example.com',
-              },
-            },
-            { Type: 'forward', TargetGroupArn: { Ref: TG } },
-          ],
+          DefaultActions: [defaultAction, { Type: 'forward', TargetGroupArn: { Ref: TG } }],
         },
       },
     });
-    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
-    // The terminal forward still serves, but the guard is dropped + warned.
+  }
+
+  it('keeps a pending placeholder guard when UserPoolArn / UserPoolClientId are intrinsics', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-cognito',
+        AuthenticateCognitoConfig: {
+          UserPoolArn: { 'Fn::GetAtt': ['MyPool', 'Arn'] },
+          UserPoolClientId: { Ref: 'MyClient' },
+          UserPoolDomain: { Ref: 'MyDomain' },
+        },
+      }),
+      ALB
+    );
+    expect(warnings).toEqual([]);
     expect(listeners[0]!.defaultAction?.kind).toBe('forward');
-    expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
-    expect(warnings.join('\n')).toMatch(/UserPoolArn .*literal strings/);
+    const guard = listeners[0]!.defaultAuthGuard!;
+    expect(guard.kind).toBe('authenticate-cognito');
+    expect(guard.issuer).toMatch(/^https:\/\/cognito-idp\.us-east-1\.amazonaws\.com\/us-east-1_.*placeholderWebListener$/);
+    expect(guard.region).toBe('us-east-1');
+    expect(guard.userPoolId).toMatch(/placeholderWebListener$/);
+    expect(guard.audience).toBeUndefined();
+    expect(guard.pending).toEqual({
+      stackName: 'AlbStack',
+      siteLogicalId: LISTENER,
+      location: expect.stringContaining('default action'),
+      primary: { 'Fn::GetAtt': ['MyPool', 'Arn'] },
+      audience: { Ref: 'MyClient' },
+    });
   });
 
-  it('warns + skips guard when UserPoolArn is not in the expected shape', () => {
-    const stack = stackWith({
-      [LISTENER]: {
-        Type: 'AWS::ElasticLoadBalancingV2::Listener',
-        Properties: {
-          LoadBalancerArn: { Ref: ALB },
-          Port: 80,
-          Protocol: 'HTTP',
-          DefaultActions: [
-            {
-              Type: 'authenticate-cognito',
-              AuthenticateCognitoConfig: {
-                UserPoolArn: 'arn:aws:s3:::not-a-cognito-arn',
-                UserPoolClientId: 'client-abc',
-                UserPoolDomain: 'auth.example.com',
-              },
-            },
-            { Type: 'forward', TargetGroupArn: { Ref: TG } },
-          ],
+  it('keeps a placeholder guard (warned) when the literal UserPoolArn is malformed', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-cognito',
+        AuthenticateCognitoConfig: {
+          UserPoolArn: 'arn:aws:s3:::not-a-cognito-arn',
+          UserPoolClientId: 'client-abc',
         },
-      },
-    });
-    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+      }),
+      ALB
+    );
     expect(listeners[0]!.defaultAction?.kind).toBe('forward');
-    expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
+    const guard = listeners[0]!.defaultAuthGuard!;
+    expect(guard.label).toBe('authenticate-cognito (unresolved)');
+    expect(guard.userPoolId).toMatch(/placeholder/);
+    expect(guard.pending).toBeUndefined();
     expect(warnings.join('\n')).toMatch(/not in the expected/);
+    expect(warnings.join('\n')).toMatch(/still requires a Bearer token/);
+    expect(warnings.join('\n')).toMatch(/--no-verify-auth/);
   });
 
-  it('warns + skips OIDC guard when Issuer is an intrinsic (Ref / GetAtt)', () => {
-    const stack = stackWith({
-      [LISTENER]: {
-        Type: 'AWS::ElasticLoadBalancingV2::Listener',
-        Properties: {
-          LoadBalancerArn: { Ref: ALB },
-          Port: 80,
-          Protocol: 'HTTP',
-          DefaultActions: [
-            {
-              Type: 'authenticate-oidc',
-              AuthenticateOidcConfig: {
-                Issuer: { Ref: 'MyIssuer' }, // intrinsic, not a literal
-                AuthorizationEndpoint: 'https://idp.example.com/authorize',
-                TokenEndpoint: 'https://idp.example.com/token',
-                ClientId: 'oidc-client-xyz',
-              },
-            },
-            { Type: 'forward', TargetGroupArn: { Ref: TG } },
-          ],
+  it('keeps a pending placeholder OIDC guard when Issuer is an intrinsic', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-oidc',
+        AuthenticateOidcConfig: {
+          Issuer: { Ref: 'MyIssuer' },
+          AuthorizationEndpoint: 'https://idp.example.com/authorize',
+          TokenEndpoint: 'https://idp.example.com/token',
+          ClientId: 'oidc-client-xyz',
         },
-      },
-    });
-    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
-    expect(listeners[0]!.defaultAction?.kind).toBe('forward');
-    expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
-    expect(warnings.join('\n')).toMatch(/Issuer .*literal strings/);
+      }),
+      ALB
+    );
+    expect(warnings).toEqual([]);
+    const guard = listeners[0]!.defaultAuthGuard!;
+    expect(guard.kind).toBe('authenticate-oidc');
+    expect(guard.userPoolId).toMatch(/placeholder/);
+    expect(guard.pending?.primary).toEqual({ Ref: 'MyIssuer' });
+    expect(guard.pending?.audience).toBe('oidc-client-xyz');
+  });
+
+  it('keeps a placeholder guard (warned) when AuthenticateCognitoConfig / AuthenticateOidcConfig is missing', () => {
+    for (const type of ['authenticate-cognito', 'authenticate-oidc']) {
+      const { listeners, warnings } = resolveAlbFrontDoor(listenerWith({ Type: type }), ALB);
+      expect(listeners[0]!.defaultAction?.kind).toBe('forward');
+      expect(listeners[0]!.defaultAuthGuard?.label).toBe(`${type} (unresolved)`);
+      expect(warnings.join('\n')).toMatch(/is missing Authenticate(Cognito|Oidc)Config/);
+    }
+  });
+
+  it('keeps a placeholder guard (warned) when the literal OIDC Issuer is not https://', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-oidc',
+        AuthenticateOidcConfig: { Issuer: 'http://idp.example.com', ClientId: 'c' },
+      }),
+      ALB
+    );
+    expect(listeners[0]!.defaultAuthGuard?.label).toBe('authenticate-oidc (unresolved)');
+    expect(warnings.join('\n')).toMatch(/is not an https:\/\/ URL/);
+  });
+
+  it('accepts a plain-http loopback OIDC Issuer (a local test IdP)', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-oidc',
+        AuthenticateOidcConfig: { Issuer: 'http://127.0.0.1:19000', ClientId: 'c' },
+      }),
+      ALB
+    );
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.defaultAuthGuard?.issuer).toBe('http://127.0.0.1:19000');
+  });
+
+  it('keeps the real guard with the audience unchecked (warned) when the literal client id is empty', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-cognito',
+        AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: '' },
+      }),
+      ALB
+    );
+    const guard = listeners[0]!.defaultAuthGuard!;
+    expect(guard.userPoolId).toBe('us-east-1_abcDEF123');
+    expect(guard.audience).toBeUndefined();
+    expect(warnings.join('\n')).toMatch(/UserPoolClientId could not be resolved/);
   });
 
   it('warns + skips listener when authenticate-* has no terminal action', () => {

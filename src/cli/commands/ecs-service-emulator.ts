@@ -98,10 +98,14 @@ import {
   UNNAMED_WORKLOAD,
   type ExtraStateProviders,
   isCfnFlagPresent,
+  isStateSourceActive,
   deployedStackNamePseudo,
 } from './local-state-source.js';
 import { isAwsServiceRoutedToEmulator, type AwsEmulatorWorkload } from '../../utils/aws-proxy.js';
-import type { ContainerStateContext } from '../../local/intrinsic-image.js';
+import {
+  derivePseudoParametersFromRegion,
+  type ContainerStateContext,
+} from '../../local/intrinsic-image.js';
 import { getEmbedConfig } from '../../local/embed-config.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import { CloudMapRegistry } from '../../local/cloud-map-registry.js';
@@ -147,7 +151,12 @@ import {
   type LambdaContainerEnvOptions,
   type LambdaContainerEnvResult,
 } from './local-invoke.js';
-import type { FrontDoorAuthGuard } from '../../local/elb-front-door-resolver.js';
+import {
+  pendingAuthGuardStackNames,
+  resolveFrontDoorAuthGuardIntrinsics,
+  type FrontDoorAuthGuard,
+} from '../../local/elb-front-door-resolver.js';
+import type { SubstitutionContext } from '../../local/state-resolver.js';
 import { buildAuthCheck } from '../../local/front-door-auth.js';
 import { createJwksCache, type WarnedAt } from '../../local/cognito-jwt.js';
 import { isLocalCdkAssetImage, listPinnedTargets } from '../../local/image-pin-detector.js';
@@ -780,6 +789,12 @@ export async function runEcsServiceEmulator(
     // Issue #606: reject explicit `--from-cfn-stack <name>` when multiple
     // services are booted in one invocation.
     rejectExplicitCfnStackWithMultipleStacks(options, boots.length);
+    // #1004: an authenticate-* guard whose config is an intrinsic resolves
+    // from the deployed state before the front-door is built. Once per boot:
+    // `--watch` does not rebuild the front-door.
+    const resolvedFrontDoor = frontDoor
+      ? await resolveFrontDoorPlanAuthGuards(frontDoor, stacks, options, extraStateProviders)
+      : undefined;
     perTarget = boots.map((boot) => ({ boot, runState: createServiceRunState() }));
 
     const cloudMapIndexByStack = new Map<string, CloudMapIndex>();
@@ -832,15 +847,21 @@ export async function runEcsServiceEmulator(
     // empty (so the proxy answers 503 until replicas register) and a host-port
     // bind failure should surface before any docker budget is spent. No-op when
     // the strategy returned no plan (start-service / pure compute).
-    if (frontDoor && frontDoor.listeners.length > 0) {
+    if (resolvedFrontDoor && resolvedFrontDoor.listeners.length > 0) {
       // #973: each Lambda-target runner joins the cleanup as soon as it
       // exists, so a signal while `buildFrontDoor` boots them stops them too.
-      const built = await buildFrontDoor(frontDoor, options, logger, extraStateProviders, (r) => {
-        frontDoorLambdaRunners.push(r);
-        // The cleanup may already be past its runner step: stopped now, the
-        // runner refuses its `start()`.
-        if (stopping) void r.stop().catch(() => undefined);
-      });
+      const built = await buildFrontDoor(
+        resolvedFrontDoor,
+        options,
+        logger,
+        extraStateProviders,
+        (r) => {
+          frontDoorLambdaRunners.push(r);
+          // The cleanup may already be past its runner step: stopped now, the
+          // runner refuses its `start()`.
+          if (stopping) void r.stop().catch(() => undefined);
+        }
+      );
       frontDoorServers = built.servers;
       frontDoorByService = built.frontDoorByService;
     }
@@ -2746,6 +2767,60 @@ async function assumeTaskRole(
 }
 /** @internal — test-only: the task-role assume a refused AssumeRole falls back from. */
 export { assumeTaskRole as assumeTaskRoleForTest };
+
+/**
+ * Resolve the front-door plan's authenticate-* guards whose template config
+ * is an intrinsic (#1004) against each owning stack's deployed state. Without
+ * an active state source, or when a stack's state does not load, the guards
+ * stay on the placeholder (a Bearer token is required, not verified) and a
+ * warning says so. Exported for unit testing.
+ */
+export async function resolveFrontDoorPlanAuthGuards(
+  plan: FrontDoorPlan,
+  stacks: StackInfo[],
+  options: EcsServiceEmulatorOptions,
+  extraStateProviders: ExtraStateProviders | undefined
+): Promise<FrontDoorPlan> {
+  const stackNames = pendingAuthGuardStackNames(plan.listeners);
+  if (stackNames.length === 0) return plan;
+  const contexts = new Map<string, SubstitutionContext>();
+  if (isStateSourceActive(options, extraStateProviders)) {
+    for (const stackName of stackNames) {
+      const stack = stacks.find((s) => s.stackName === stackName);
+      const region = await resolveCfnFallbackRegion(options, stack?.region);
+      const provider = createLocalStateProvider(options, stackName, region, extraStateProviders);
+      if (!provider) continue;
+      try {
+        const loaded = await provider.load(stackName, stack?.region);
+        if (!loaded) {
+          const detail = provider.getLastLoadError?.();
+          getLogger().debug(
+            `authenticate-* guards of ${stackName}: no deployed state loaded${detail ? ` (${detail})` : ''}.`
+          );
+          continue;
+        }
+        const pseudoParameters = {
+          ...derivePseudoParametersFromRegion(loaded.region),
+          ...deployedStackNamePseudo(options, stackName),
+        };
+        contexts.set(stackName, {
+          resources: loaded.resources,
+          ...(Object.keys(pseudoParameters).length > 0 && { pseudoParameters }),
+        });
+      } catch (err) {
+        getLogger().debug(
+          `authenticate-* guards of ${stackName}: state load failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } finally {
+        provider.dispose();
+      }
+    }
+  }
+  return {
+    ...plan,
+    listeners: resolveFrontDoorAuthGuardIntrinsics(plan.listeners, (name) => contexts.get(name)),
+  };
+}
 
 /**
  * The state provider of one service target, for the names a container no
