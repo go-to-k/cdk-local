@@ -1616,7 +1616,13 @@ route:
 - **JWT** (HTTP v2) — `AuthorizerType: 'JWT'`. Same JWKS-based
   verification, with `aud` / `client_id` matched against the
   `JwtConfiguration.Audience` allowlist. Allow → claims under
-  `event.requestContext.authorizer.jwt.claims`. Deny → HTTP 401.
+  `event.requestContext.authorizer.jwt.claims`. Deny → HTTP 401. An
+  `HttpUserPoolAuthorizer`'s issuer and audience are intrinsics over the
+  user pool and app clients; `--from-cfn-stack` resolves them from the
+  deployed stack. Without a state source the stack still boots, warns,
+  and the authorizer runs in the JWKS pass-through mode below. An
+  audience entry that does not resolve alone is warned and skips the
+  audience check (signature, issuer and expiry are still verified).
 
 Authorizer results are cached per `(authorizer, identity)` for the TTL
 declared by the authorizer (REST v1: `AuthorizerResultTtlInSeconds`,

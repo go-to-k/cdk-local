@@ -378,7 +378,12 @@ export function resolveHttpApiAuthorizer(
     if (issuerIsIntrinsic || audienceIsIntrinsic) {
       // Served as the unreachable placeholder until state resolves it.
       return {
-        ...buildJwtAuthorizer(authorizerLogicalId, jwtPlaceholderIssuer(authorizerLogicalId), [], declaredAt),
+        ...buildJwtAuthorizer(
+          authorizerLogicalId,
+          jwtPlaceholderIssuer(authorizerLogicalId),
+          [],
+          declaredAt
+        ),
         pending: { stackName, issuer: rawIssuer, audience: rawAudience },
       };
     }
@@ -653,7 +658,11 @@ export function resolveJwtAuthorizerIntrinsics(
       if (typeof value === 'string') return { value };
       if (!context) return { reason: 'no state source is loaded for the stack' };
       const result = substituteAgainstState(value, context);
-      if (result.kind === 'literal' && typeof result.value === 'string' && result.value.length > 0) {
+      if (
+        result.kind === 'literal' &&
+        typeof result.value === 'string' &&
+        result.value.length > 0
+      ) {
         return { value: result.value };
       }
       return { reason: result.kind === 'unresolved' ? result.reason : 'resolved to a non-string' };
