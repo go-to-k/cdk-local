@@ -3,6 +3,10 @@ import type { TemplateResource } from '../types/resource.js';
 import type { AlbHttpHeaderCondition, AlbQueryStringCondition } from './alb-path-matcher.js';
 import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
+import { getLogger } from '../utils/logger.js';
+import { getEmbedConfig } from './embed-config.js';
+import { jwtPlaceholderIssuer } from './authorizer-resolver.js';
+import { substituteAgainstState, type SubstitutionContext } from './state-resolver.js';
 
 /**
  * Resolve an `AWS::ElasticLoadBalancingV2::LoadBalancer` (an ALB) into the
@@ -60,6 +64,12 @@ import { displayUntrustedValue } from '../utils/assembly-path.js';
  * terminal action they wrap. The front-door enforces a Bearer-JWT check
  * locally (signature + `iss` + `exp` + `aud`) using the existing JWKS-cached
  * verifier; missing / invalid token -> 401 with `WWW-Authenticate: Bearer`.
+ * A declared guard is never dropped (#1004): an intrinsic `UserPoolArn` /
+ * `UserPoolClientId` / `Issuer` / `ClientId` is recorded as `pending` and
+ * resolved from the state source at boot
+ * ({@link resolveFrontDoorAuthGuardIntrinsics}); a config that cannot be
+ * resolved keeps a placeholder guard that still refuses a request without a
+ * Bearer token (any Bearer token is admitted, warned).
  * Out of scope: the full OAuth roundtrip (authorize-endpoint redirect +
  * callback). The local-dev parity is "I have a JWT, let me through" — the
  * `--bearer-token <jwt>` flag is the convenience escape hatch; the
@@ -186,8 +196,12 @@ export interface FrontDoorAuthGuard {
   kind: 'authenticate-cognito' | 'authenticate-oidc';
   /** Expected JWT `iss` (Cognito issuer URL or the OIDC `Issuer`). */
   issuer: string;
-  /** Allowed JWT `aud` value (Cognito `UserPoolClientId` or OIDC `ClientId`). */
-  audience: string;
+  /**
+   * Allowed JWT `aud` value (Cognito `UserPoolClientId` or OIDC `ClientId`).
+   * Absent when that field could not be resolved (#1004): signature, `iss`
+   * and `exp` are still verified, the audience is not.
+   */
+  audience?: string;
   /** Cognito-only: enables the direct JWKS URL fast path. */
   region?: string;
   /** Cognito-only: enables the direct JWKS URL fast path. */
@@ -201,6 +215,27 @@ export interface FrontDoorAuthGuard {
   sessionCookieName: string;
   /** Diagnostic label for log lines + the 401 `WWW-Authenticate` realm. */
   label: string;
+  /**
+   * Set while a required config field is an intrinsic (#1004). The guard
+   * meanwhile carries the unresolved placeholder (a token is required, and
+   * not verified); {@link resolveFrontDoorAuthGuardIntrinsics} replaces it
+   * once the state source has loaded.
+   */
+  pending?: FrontDoorAuthGuardPending;
+}
+
+/** The raw template values of an authenticate-* guard awaiting state (#1004). */
+export interface FrontDoorAuthGuardPending {
+  /** Stack whose state the intrinsics resolve against. */
+  stackName: string;
+  /** Logical id of the listener / rule declaring the action (warn-once key). */
+  siteLogicalId: string;
+  /** Diagnostic location, e.g. `Listener X (port 80) default action`. */
+  location: string;
+  /** Raw `UserPoolArn` (cognito) or `Issuer` (oidc). */
+  primary: unknown;
+  /** Raw `UserPoolClientId` (cognito) or `ClientId` (oidc). */
+  audience: unknown;
 }
 
 /** Any resolved listener / rule action the local front-door can serve. */
@@ -245,9 +280,10 @@ export interface ResolvedListenerFrontDoor {
   listenerLogicalId: string;
   /**
    * Default action. Present when the listener's `DefaultActions` is a resolvable
-   * forward / redirect / fixed-response. Absent only when the default action
-   * was a bare authenticate-* with no terminal action — unmatched requests then
-   * get a 404 from the front-door.
+   * forward / redirect / fixed-response. Absent when the default action was a
+   * bare authenticate-* with no terminal action, or has an action whose Type
+   * is not a literal string (fail closed) — unmatched requests then get a 404
+   * from the front-door.
    */
   defaultAction?: ResolvedListenerAction;
   /**
@@ -270,6 +306,14 @@ export interface AlbFrontDoorResolution {
  * Resolve an ALB into its front-door listeners + routing tables. Pure — reads
  * only the supplied stack template. Returns an empty `listeners` array (with
  * warnings) when the ALB fronts nothing cdk-local can serve locally.
+ *
+ * An authenticate-* guard whose config is an intrinsic comes back as the
+ * placeholder guard carrying `pending` (#1004). A host that SERVES the result
+ * must pass the listeners through {@link resolveFrontDoorAuthGuardIntrinsics}
+ * (with the stack's state, or `undefined` for none) before building the
+ * front-door; otherwise every such route stays on the placeholder (a Bearer
+ * token is required but never verified). A host that only inspects routes
+ * (targets, paths) can ignore `pending`.
  */
 export function resolveAlbFrontDoor(
   stack: StackInfo,
@@ -281,8 +325,38 @@ export function resolveAlbFrontDoor(
 
   // TG logical id -> backing ECS service (reverse of Service.LoadBalancers[]).
   const tgToService = indexTargetGroupToService(resources);
-  // Listener logical id -> its ListenerRules.
-  const rulesByListener = indexRulesByListener(resources);
+  // Listener logical id -> its ListenerRules, including the guarded rules
+  // whose composite ListenerArn may name it (widened onto every listener the
+  // expression references).
+  const { byListener: rulesByListener, widened, external } = indexRulesByListener(resources);
+  const isOwnListener = (id: string): boolean =>
+    refOf(
+      (resources[id]?.Properties as Record<string, unknown> | undefined)?.['LoadBalancerArn']
+    ) === albLogicalId;
+  for (const { ruleLogicalId, listenerLogicalIds } of widened) {
+    const own = listenerLogicalIds.filter(isOwnListener);
+    if (own.length === 0) continue;
+    warnings.push(
+      `Listener rule ${displayIdent(ruleLogicalId)} has a ListenerArn that is not a bare Ref to an ` +
+        'in-stack listener (for example an Fn::If or Fn::Sub) and carries (or may carry) an ' +
+        'authenticate-* action, so it is evaluated on every listener of ' +
+        `${displayIdent(albLogicalId)} the expression references (${own.map((id) => displayIdent(id, { listMember: true })).join(', ')}) ` +
+        '(fail closed): its requests cannot reach an unguarded rule or listener default on ' +
+        'whichever listener it belongs to.'
+    );
+  }
+  for (const ruleLogicalId of external) {
+    warnings.push(
+      `Listener rule ${displayIdent(ruleLogicalId)} carries (or may carry) an authenticate-* action ` +
+        'but its ListenerArn references no in-stack listener (a literal ARN, an Fn::ImportValue or ' +
+        'a Ref to a parameter: a listener of another stack), so it is not served on ' +
+        `${displayIdent(albLogicalId)}.`
+    );
+  }
+  const rulesForListener = (
+    listenerLogicalId: string
+  ): Array<{ ruleLogicalId: string; ruleProps: Record<string, unknown> }> =>
+    rulesByListener.get(listenerLogicalId) ?? [];
 
   const listeners: ResolvedListenerFrontDoor[] = [];
 
@@ -318,68 +392,162 @@ export function resolveAlbFrontDoor(
       );
     }
 
-    const defaultResolved = resolveAction(
+    const defaultLabel = `Listener ${displayIdent(listenerLogicalId)} (port ${port}) default action`;
+    const defaultOutcome = resolveAction(
       props['DefaultActions'],
       resources,
       tgToService,
       stackName,
-      `Listener ${displayIdent(listenerLogicalId)} (port ${port}) default action`,
+      listenerLogicalId,
+      defaultLabel,
       warnings
     );
+    let defaultResolved: ResolvedActionOutcome | undefined;
+    if (defaultOutcome && 'deny' in defaultOutcome) {
+      // No lower-priority fallback exists below the default: leaving it unset
+      // already refuses unmatched requests (404, or no listener at all).
+      warnings.push(
+        `${defaultLabel} ${defaultOutcome.deny.warning}, so the default action is not served ` +
+          'locally (fail closed): a request no rule matches is refused.'
+      );
+    } else {
+      defaultResolved = defaultOutcome;
+    }
 
+    // FAIL-CLOSED RULE (#1004) for every rule below. Once
+    // `actionsMayCarryGuard` is true for a rule, the rule is NEVER skipped:
+    // skipping it lets its requests fall through to an unguarded lower rule or
+    // the listener default. Each dimension the template does not determine
+    // collapses to its widest superset (with a warning; ids via displayIdent),
+    // decided in one place, `widenIfGuarded`:
+    //   - listener   -> every in-stack listener its ListenerArn expression
+    //                   references (indexRulesByListener; an expression that
+    //                   references none names another stack's listener and is
+    //                   not served here)
+    //   - priority   -> UNPLACEABLE_GUARDED_PRIORITY (evaluated first)
+    //   - conditions -> the evaluable subset, down to none at all (also zero
+    //                   evaluable conditions: none, `Conditions: []`,
+    //                   non-object entries, all-empty Values)
+    //   - action     -> a 503 deny (also forced when a condition was dropped
+    //                   or none is evaluable, since serving the target on a
+    //                   widened set would route requests the deployed ALB
+    //                   sends elsewhere)
+    // An unguarded rule keeps its earlier fallback (usually a skip: there is
+    // no guard to lose). The only `continue` in this loop is on SKIP_RULE.
     const rules: ResolvedListenerRule[] = [];
-    for (const { ruleLogicalId, ruleProps } of rulesByListener.get(listenerLogicalId) ?? []) {
-      const priority = parsePriority(ruleProps['Priority']);
-      const ruleLabel = `Listener rule ${displayIdent(ruleLogicalId)} (priority ${priority})`;
+    for (const { ruleLogicalId, ruleProps } of rulesForListener(listenerLogicalId)) {
+      const literalPriority = parsePriority(ruleProps['Priority']);
+      const guarded = actionsMayCarryGuard(ruleProps['Actions']);
+      // An unguarded rule with no literal Priority sorts last (an explicitly
+      // prioritized rule wins over it).
+      const priority =
+        literalPriority ??
+        widenIfGuarded(guarded, UNPLACEABLE_GUARDED_PRIORITY, Number.MAX_SAFE_INTEGER);
+      const ruleLabel =
+        literalPriority === undefined
+          ? `Listener rule ${displayIdent(ruleLogicalId)} (Priority not a literal number)`
+          : `Listener rule ${displayIdent(ruleLogicalId)} (priority ${priority})`;
+      if (literalPriority === undefined && guarded) {
+        warnings.push(
+          `${ruleLabel} carries (or may carry) an authenticate-* action, so it is ` +
+            'evaluated before every other rule on the listener (fail closed): placing it first can ' +
+            'only guard or deny more requests locally, never let a lower-priority rule serve its ' +
+            'requests unguarded.'
+        );
+      }
+
+      // Conditions dimension.
       const parsed = parseRuleConditions(
         ruleProps['Conditions'],
         albLogicalId,
         ruleLabel,
-        warnings
+        warnings,
+        guarded
       );
-      if (!parsed) {
-        // parseRuleConditions warned about an unsupported / malformed condition.
-        continue;
+      const { undetermined, ...parsedConditions } = parsed;
+      const evaluable = hasAnyCondition(parsedConditions);
+      const settledConditions =
+        undetermined || !evaluable
+          ? widenIfGuarded(guarded, parsedConditions, SKIP_RULE)
+          : parsedConditions;
+      // Unguarded: an undetermined condition was warned by parseRuleConditions;
+      // a rule with no condition to route on was never served.
+      if (settledConditions === SKIP_RULE) continue;
+      const conditions: ParsedRuleConditions = settledConditions;
+      // Reached only when guarded: the conditions do not determine what the
+      // rule matches, so it denies rather than serving its target.
+      const conditionsUndetermined = undetermined || !evaluable;
+      if (undetermined) {
+        warnings.push(
+          `${ruleLabel} carries (or may carry) an authenticate-* action, so ` +
+            'instead of being skipped it is kept at its priority as a local 503 deny (fail closed) ' +
+            (evaluable
+              ? 'over its remaining supported conditions'
+              : 'over every request that reaches its priority (no supported condition is left)') +
+            '. Dropping the unsupported condition only widens what it denies, and its requests ' +
+            'cannot fall through to a lower-priority rule or the listener default.'
+        );
+      } else if (!evaluable) {
+        warnings.push(
+          `${ruleLabel} carries (or may carry) an authenticate-* action but has no condition ` +
+            'cdk-local can route on (no Conditions, an empty list, or only empty / non-object ' +
+            'entries), so instead of being skipped it is kept at its priority as a local 503 deny ' +
+            'over every request that reaches it (fail closed): its requests cannot fall through ' +
+            'to a lower-priority rule or the listener default.'
+        );
       }
-      const {
-        pathPatterns,
-        hostPatterns,
-        httpHeaderConditions,
-        httpRequestMethods,
-        queryStringConditions,
-        sourceIpCidrs,
-      } = parsed;
-      const hasAnyCondition =
-        pathPatterns.length > 0 ||
-        hostPatterns.length > 0 ||
-        httpHeaderConditions.length > 0 ||
-        httpRequestMethods.length > 0 ||
-        queryStringConditions.length > 0 ||
-        sourceIpCidrs.length > 0;
-      if (!hasAnyCondition) {
-        // No supported condition to route on (an empty / catch-all rule).
-        continue;
+
+      // Action dimension.
+      const ruleLabelAction = `${ruleLabel} action`;
+      const ruleResolved = conditionsUndetermined
+        ? {
+            deny: {
+              warning: '',
+              body: undetermined
+                ? 'the rule has an authenticate-* guard on a condition cdk-local cannot evaluate'
+                : 'the rule has an authenticate-* guard but no condition cdk-local can route on',
+            },
+          }
+        : resolveAction(
+            ruleProps['Actions'],
+            resources,
+            tgToService,
+            stackName,
+            ruleLogicalId,
+            ruleLabelAction,
+            warnings
+          );
+      const settledAction =
+        ruleResolved ??
+        widenIfGuarded(
+          guarded,
+          {
+            deny: {
+              warning: 'has no locally servable action',
+              body: 'its action cannot be served',
+            },
+          },
+          SKIP_RULE
+        );
+      // Unguarded: resolveAction already warned (no guard to lose).
+      if (settledAction === SKIP_RULE) continue;
+      if ('deny' in settledAction) {
+        if (!conditionsUndetermined) {
+          warnings.push(
+            `${ruleLabelAction} ${settledAction.deny.warning}, so the rule is kept at its priority ` +
+              'as a local 503 deny (fail closed): its requests are refused rather than falling ' +
+              'through to a lower-priority rule or the listener default.'
+          );
+        }
+        rules.push({ priority, ...conditions, action: denyAction(settledAction.deny.body) });
+      } else {
+        rules.push({
+          priority,
+          ...conditions,
+          action: settledAction.action,
+          ...(settledAction.authGuard ? { authGuard: settledAction.authGuard } : {}),
+        });
       }
-      const ruleResolved = resolveAction(
-        ruleProps['Actions'],
-        resources,
-        tgToService,
-        stackName,
-        `${ruleLabel} action`,
-        warnings
-      );
-      if (!ruleResolved) continue; // resolveAction already warned (or it was a bare authenticate-*)
-      rules.push({
-        priority,
-        pathPatterns,
-        hostPatterns,
-        httpHeaderConditions,
-        httpRequestMethods,
-        queryStringConditions,
-        sourceIpCidrs,
-        action: ruleResolved.action,
-        ...(ruleResolved.authGuard ? { authGuard: ruleResolved.authGuard } : {}),
-      });
     }
 
     if (!defaultResolved && rules.length === 0) {
@@ -419,33 +587,71 @@ interface BackingServiceRef {
  * Resolve a listener / rule `Actions` (or `DefaultActions`) array. ALB allows
  * any number of `authenticate-cognito` / `authenticate-oidc` entries followed
  * by exactly one terminal action (`forward` / `redirect` / `fixed-response`).
- * The first parseable authenticate-* (last wins if multiple) becomes the
+ * The authenticate-* entry (the last one if multiple) becomes the
  * returned `authGuard`; the terminal action becomes `action`. Returns
- * `undefined` when no terminal action is resolvable.
+ * `undefined` when no terminal action is resolvable and no guard is at stake,
+ * and `{ deny }` when the actions carry (or may carry) an authenticate-* guard
+ * that cannot be served: the caller must refuse the route, never drop it.
  */
 function resolveAction(
   actions: unknown,
   resources: Record<string, TemplateResource>,
   tgToService: Map<string, BackingServiceRef>,
   stackName: string,
+  siteLogicalId: string,
   label: string,
   warnings: string[]
-): { action: ResolvedListenerAction; authGuard?: FrontDoorAuthGuard } | undefined {
-  if (!Array.isArray(actions)) return undefined;
+): ResolvedActionOutcome | { deny: ActionDeny } | undefined {
+  if (actions === undefined || actions === null) return undefined;
+  // A whole Actions value that is not a literal array (an `Fn::If` choosing
+  // between two action lists): whether it carries a guard cannot be known.
+  if (!Array.isArray(actions)) {
+    return {
+      deny: {
+        warning:
+          'is not a literal array (for example an Fn::If choosing between two action lists). It ' +
+          'may carry an authenticate-* guard',
+        body: 'its Actions value is not a literal array, so its authenticate-* guard cannot be determined',
+      },
+    };
+  }
+
+  // Fail closed on an action whose Type is not a literal string (an `Fn::If`
+  // choosing between an authenticate-* and a forward, or a whole action entry
+  // wrapped in an intrinsic): skipping just that entry could serve the
+  // terminal action without the guard it may stand for.
+  if (actions.some(hasNonLiteralType)) {
+    return {
+      deny: {
+        warning:
+          'has an action whose Type is not a literal string (for example an Fn::If, or a whole ' +
+          'action wrapped in an intrinsic). It may be an authenticate-* guard',
+        body: 'an action Type is not a literal string, so its authenticate-* guard cannot be determined',
+      },
+    };
+  }
 
   let authGuard: FrontDoorAuthGuard | undefined;
   let sawAuthenticate = false;
+  // ALB runs every authenticate-* action before the terminal one whatever its
+  // array position (`Order` decides), so read the guard first: a terminal
+  // listed before its authenticate-* is never served unguarded.
   for (const action of actions) {
-    if (!action || typeof action !== 'object') continue;
+    if (!action || typeof action !== 'object') continue; // not an action (cannot be a guard)
     const a = action as Record<string, unknown>;
     const type = a['Type'];
-
     if (type === 'authenticate-cognito' || type === 'authenticate-oidc') {
       sawAuthenticate = true;
-      const parsed = parseAuthenticateAction(a, type, label, warnings);
-      if (parsed) authGuard = parsed;
-      continue;
+      // A declared guard is never dropped (#1004): an unresolvable config
+      // yields a guard that still requires a token.
+      authGuard = parseAuthenticateAction(a, type, stackName, siteLogicalId, label, warnings);
     }
+  }
+  for (const action of actions) {
+    if (!action || typeof action !== 'object') continue; // not an action (cannot be a guard)
+    const a = action as Record<string, unknown>;
+    const type = a['Type'];
+    if (type === 'authenticate-cognito' || type === 'authenticate-oidc') continue; // read above
     let terminal: ResolvedListenerAction | undefined;
     if (type === 'forward') {
       terminal = resolveForwardAction(a, resources, tgToService, stackName, label, warnings);
@@ -465,11 +671,58 @@ function resolveAction(
   }
 
   if (sawAuthenticate) {
-    warnings.push(
-      `${label} is an authenticate-* action with no local-servable terminal action; skipping it.`
-    );
+    return {
+      deny: {
+        warning: 'is an authenticate-* action with no local-servable terminal action',
+        body: 'its authenticate-* action has no locally servable terminal action',
+      },
+    };
   }
   return undefined;
+}
+
+/** A resolved action: the terminal action plus the guard in front of it, if any. */
+type ResolvedActionOutcome = { action: ResolvedListenerAction; authGuard?: FrontDoorAuthGuard };
+
+/** Why a guarded action cannot be served: warning text (after the label) + 503 body reason. */
+interface ActionDeny {
+  warning: string;
+  body: string;
+}
+
+/** True for an action entry whose `Type` is not a literal string (it may be an authenticate-*). */
+function hasNonLiteralType(action: unknown): boolean {
+  return (
+    action !== null &&
+    typeof action === 'object' &&
+    typeof (action as Record<string, unknown>)['Type'] !== 'string'
+  );
+}
+
+/** True when an `Actions` array carries, or may carry, an authenticate-* guard. */
+function actionsMayCarryGuard(actions: unknown): boolean {
+  // A present non-array value (an intrinsic) may stand for a guarded list.
+  if (!Array.isArray(actions)) return actions !== undefined && actions !== null;
+  return actions.some((action) => {
+    if (hasNonLiteralType(action)) return true;
+    if (!action || typeof action !== 'object') return false;
+    const type = (action as Record<string, unknown>)['Type'];
+    return type === 'authenticate-cognito' || type === 'authenticate-oidc';
+  });
+}
+
+/**
+ * The terminal a guarded rule that cannot be served is replaced with: a 503
+ * fixed-response with no guard, so the rule still claims its requests at its
+ * priority instead of letting them reach a lower-priority rule unguarded.
+ */
+function denyAction(reason: string): FrontDoorFixedResponseAction {
+  return {
+    kind: 'fixed-response',
+    statusCode: 503,
+    contentType: 'text/plain',
+    messageBody: `cdk-local: this ALB listener rule is denied locally because ${reason}.\n`,
+  };
 }
 
 /**
@@ -684,24 +937,129 @@ function indexTargetGroupToService(
   return index;
 }
 
-/** Group every `AWS::ElasticLoadBalancingV2::ListenerRule` by the listener it references. */
-function indexRulesByListener(
-  resources: Record<string, TemplateResource>
-): Map<string, Array<{ ruleLogicalId: string; ruleProps: Record<string, unknown> }>> {
-  const index = new Map<
-    string,
-    Array<{ ruleLogicalId: string; ruleProps: Record<string, unknown> }>
-  >();
+type IndexedRule = { ruleLogicalId: string; ruleProps: Record<string, unknown> };
+
+/**
+ * Group every `AWS::ElasticLoadBalancingV2::ListenerRule` by the listener it
+ * references. A bare `Ref` to an in-stack `AWS::ElasticLoadBalancingV2::Listener`
+ * names exactly that listener. Any other ListenerArn goes through
+ * {@link widenIfGuarded}: a guarded rule widens to every in-stack listener its
+ * expression references (`Fn::If` branches, `Fn::Sub` / `Fn::Join` /
+ * `Fn::Select` operands, ...), recorded in `widened`; an unguarded one is
+ * skipped. An expression that references no in-stack listener (a literal ARN,
+ * `Fn::ImportValue`, a `Ref` to a parameter, e.g. a rule on
+ * `ApplicationListener.fromListenerAttributes(...)`) cannot name a listener of
+ * this stack, so the rule is skipped whether guarded or not (guarded ones are
+ * recorded in `external` for a warning).
+ */
+function indexRulesByListener(resources: Record<string, TemplateResource>): {
+  byListener: Map<string, IndexedRule[]>;
+  widened: Array<{ ruleLogicalId: string; listenerLogicalIds: string[] }>;
+  external: string[];
+} {
+  const byListener = new Map<string, IndexedRule[]>();
+  const widened: Array<{ ruleLogicalId: string; listenerLogicalIds: string[] }> = [];
+  const external: string[] = [];
+  const add = (listenerLogicalId: string, entry: IndexedRule): void => {
+    const list = byListener.get(listenerLogicalId) ?? [];
+    list.push(entry);
+    byListener.set(listenerLogicalId, list);
+  };
   for (const [ruleLogicalId, resource] of Object.entries(resources)) {
-    if (resource.Type !== LISTENER_RULE_TYPE) continue;
+    if (resource.Type !== LISTENER_RULE_TYPE) continue; // not a rule
     const ruleProps = (resource.Properties ?? {}) as Record<string, unknown>;
-    const listenerRef = refOf(ruleProps['ListenerArn']);
-    if (!listenerRef) continue;
-    const list = index.get(listenerRef) ?? [];
-    list.push({ ruleLogicalId, ruleProps });
-    index.set(listenerRef, list);
+    const entry = { ruleLogicalId, ruleProps };
+    const listenerArn = ruleProps['ListenerArn'];
+    const ref = refOf(listenerArn);
+    if (ref !== undefined && resources[ref]?.Type === LISTENER_TYPE) {
+      add(ref, entry);
+      continue;
+    }
+    const candidates = inStackListenerRefsIn(listenerArn, resources);
+    const guarded = actionsMayCarryGuard(ruleProps['Actions']);
+    if (candidates.length === 0) {
+      // Cannot name an in-stack listener: not served here (as for an unguarded rule).
+      if (guarded) external.push(ruleLogicalId);
+      continue;
+    }
+    const settled = widenIfGuarded(guarded, candidates, SKIP_RULE);
+    if (settled === SKIP_RULE) continue;
+    for (const listenerLogicalId of settled) add(listenerLogicalId, entry);
+    widened.push({ ruleLogicalId, listenerLogicalIds: settled });
   }
-  return index;
+  return { byListener, widened, external };
+}
+
+/**
+ * Every in-stack `AWS::ElasticLoadBalancingV2::Listener` logical id an
+ * intrinsic expression references: a `Ref`, an `Fn::GetAtt` target, or a
+ * `${Id}` / `${Id.Attr}` token of an `Fn::Sub` string, found at any depth. A
+ * superset of the listeners the expression can evaluate to: the deployed ARN
+ * of an in-stack listener is unknown to the template except through one of
+ * these references.
+ */
+function inStackListenerRefsIn(
+  expr: unknown,
+  resources: Record<string, TemplateResource>
+): string[] {
+  const found = new Set<string>();
+  const consider = (id: unknown): void => {
+    if (typeof id === 'string' && resources[id]?.Type === LISTENER_TYPE) found.add(id);
+  };
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === 'Ref') consider(value);
+      else if (key === 'Fn::GetAtt') {
+        consider(
+          Array.isArray(value)
+            ? value[0]
+            : typeof value === 'string'
+              ? value.split('.')[0]
+              : undefined
+        );
+      } else if (key === 'Fn::Sub') {
+        const template = Array.isArray(value) ? value[0] : value;
+        if (typeof template === 'string') {
+          for (const m of template.matchAll(/\$\{([^!}][^}]*)\}/g)) consider(m[1]!.split('.')[0]);
+        }
+      }
+      walk(value);
+    }
+  };
+  walk(expr);
+  return [...found].sort();
+}
+
+/** Sentinel: an unguarded rule whose dimension cannot be determined is skipped. */
+const SKIP_RULE: unique symbol = Symbol('skip-rule');
+
+/**
+ * The single fail-closed decision for a listener-rule dimension (listener,
+ * priority, conditions, action) the template does not determine: a rule that
+ * carries, or may carry, an authenticate-* guard gets `widest` (the dimension's
+ * widest superset) and is never skipped; an unguarded rule keeps `unguarded`
+ * (its earlier fallback, usually {@link SKIP_RULE}). Route every new dimension
+ * through here so a guarded rule cannot be dropped by a per-site `continue`.
+ */
+function widenIfGuarded<W, U>(guarded: boolean, widest: W, unguarded: U): W | U {
+  return guarded ? widest : unguarded;
+}
+
+/** True when the parsed conditions constrain at least one field. */
+function hasAnyCondition(c: ParsedRuleConditions): boolean {
+  return (
+    c.pathPatterns.length > 0 ||
+    c.hostPatterns.length > 0 ||
+    c.httpHeaderConditions.length > 0 ||
+    c.httpRequestMethods.length > 0 ||
+    c.queryStringConditions.length > 0 ||
+    c.sourceIpCidrs.length > 0
+  );
 }
 
 interface ParsedRuleConditions {
@@ -714,12 +1072,21 @@ interface ParsedRuleConditions {
 }
 
 /**
- * Parse a ListenerRule's `Conditions` into the six supported fields. Returns
- * `undefined` when an unknown field is encountered or a known field is
- * malformed enough that honoring the rule would silently drop a constraint
- * — both surface a warning and skip the whole rule (ALB ANDs conditions of
- * different fields, so dropping any condition would route requests it should
- * not).
+ * Parse a ListenerRule's `Conditions` into the six supported fields. Sets
+ * `undetermined: true` (with a warning) when an unknown field is encountered
+ * or a known field is malformed enough that honoring the rule would silently
+ * drop a constraint (ALB ANDs conditions of different fields, so dropping any
+ * condition would route requests it should not). The caller settles it via
+ * {@link widenIfGuarded}: an unguarded rule is skipped (the parse stops at the
+ * first failure).
+ *
+ * For a `guarded` rule (one whose actions carry, or may carry, an
+ * authenticate-* guard) skipping is not safe: its requests would fall through
+ * to a lower-priority rule or the listener default without the guard. Such a
+ * rule's result keeps its supported conditions with every unsupported field
+ * dropped whole; the caller turns it into a 503 deny.
+ * Dropping a field (ANDed with the others) only widens the matched set, so the
+ * deny over-denies locally but never under-guards.
  *
  * Multiple `http-header` conditions on different names are kept (they AND).
  * Multiple `path-pattern` / `host-header` / `http-request-method` /
@@ -734,8 +1101,9 @@ function parseRuleConditions(
   conditions: unknown,
   albLogicalId: string,
   ruleLabel: string,
-  warnings: string[]
-): ParsedRuleConditions | undefined {
+  warnings: string[],
+  guarded: boolean
+): ParsedRuleConditions & { undetermined?: true } {
   const out: ParsedRuleConditions = {
     pathPatterns: [],
     hostPatterns: [],
@@ -744,80 +1112,122 @@ function parseRuleConditions(
     queryStringConditions: [],
     sourceIpCidrs: [],
   };
-  if (!Array.isArray(conditions)) return out;
+  const tail = guarded ? 'the rule is kept as a local 503 deny instead' : 'skipping the rule';
+  if (conditions === undefined || conditions === null) return out;
+  if (!Array.isArray(conditions)) {
+    // A whole Conditions value that is not a literal array (an `Fn::If`): no
+    // condition can be evaluated, so a guarded rule denies every request at
+    // its priority (the caller's undetermined path); an unguarded one is skipped.
+    warnings.push(
+      `${ruleLabel} has a Conditions value that is not a literal array (for example an Fn::If); ` +
+        `${tail}.`
+    );
+    return { ...out, undetermined: true };
+  }
+  const failedFields = new Set<string>();
+  // Record one unsupported condition. True = stop and skip the rule (unguarded).
+  const fail = (field: string, message: string): boolean => {
+    warnings.push(message);
+    failedFields.add(field);
+    return !guarded;
+  };
   for (const cond of conditions) {
-    if (!cond || typeof cond !== 'object') continue;
+    if (!cond || typeof cond !== 'object') {
+      // Not a condition: ignoring it only widens the rule (zero evaluable
+      // conditions make a guarded rule a 503 deny in the caller).
+      if (guarded) {
+        warnings.push(
+          `${ruleLabel} has a Conditions entry that is not an object; it is ignored, which only ` +
+            'widens the rule.'
+        );
+      }
+      continue;
+    }
     const c = cond as Record<string, unknown>;
     const field = typeof c['Field'] === 'string' ? c['Field'] : '(unknown)';
     if (field === 'path-pattern') {
       const values = conditionValues(c, 'PathPatternConfig');
       if (!values) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
+        continue;
       }
       out.pathPatterns.push(...values);
     } else if (field === 'host-header') {
       const values = hostHeaderConditionValues(c, albLogicalId);
       if (!values) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
+        continue;
       }
       out.hostPatterns.push(...values);
     } else if (field === 'http-header') {
       const parsed = parseHttpHeaderCondition(c);
       if (!parsed) {
-        warnings.push(
+        const message =
           `${ruleLabel} has an http-header condition with no HttpHeaderName / Values, or a value ` +
-            'that is not a literal string; skipping the rule.'
-        );
-        return undefined;
+          `that is not a literal string; ${tail}.`;
+        if (fail(field, message)) return { ...out, undetermined: true };
+        continue;
       }
       out.httpHeaderConditions.push(parsed);
     } else if (field === 'http-request-method') {
       const values = conditionValues(c, 'HttpRequestMethodConfig');
       if (!values) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
+        continue;
       }
       out.httpRequestMethods.push(...values);
     } else if (field === 'query-string') {
       const qs = parseQueryStringConditionValues(c);
       if (!qs) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
+        continue;
       }
       const { parsed, hadEntries } = qs;
       if (hadEntries && parsed.length === 0) {
-        warnings.push(
-          `${ruleLabel} query-string condition has no parseable { Key?, Value } entries; skipping ` +
-            'the rule.'
-        );
-        return undefined;
+        const message =
+          `${ruleLabel} query-string condition has no parseable { Key?, Value } entries; ` +
+          `${tail}.`;
+        if (fail(field, message)) return { ...out, undetermined: true };
+        continue;
       }
       out.queryStringConditions.push(...parsed);
     } else if (field === 'source-ip') {
       const values = conditionValues(c, 'SourceIpConfig');
       if (!values) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail)))
+          return { ...out, undetermined: true };
+        continue;
       }
       const invalid = values.filter((v) => !isValidCidr(v));
       if (invalid.length > 0) {
-        warnings.push(
+        const message =
           `${ruleLabel} source-ip condition has unparseable CIDR(s): ${invalid.join(', ')}. ` +
-            'The local ALB front-door requires valid IPv4 / IPv6 CIDRs; skipping the rule.'
-        );
-        return undefined;
+          `The local ALB front-door requires valid IPv4 / IPv6 CIDRs; ${tail}.`;
+        if (fail(field, message)) return { ...out, undetermined: true };
+        continue;
       }
       out.sourceIpCidrs.push(...values);
     } else {
-      warnings.push(
-        `${ruleLabel} uses unsupported condition field ${displayIdent(field)}. Skipping the rule.`
-      );
-      return undefined;
+      const message =
+        `${ruleLabel} uses unsupported condition field ${displayIdent(field)}. ` +
+        `${tail.charAt(0).toUpperCase()}${tail.slice(1)}.`;
+      if (fail(field, message)) return { ...out, undetermined: true };
     }
   }
-  return out;
+  if (failedFields.size === 0) return out;
+  // Guarded rule: drop every failed field whole (a partially kept field could
+  // narrow its OR-set; a dropped field only widens the deny).
+  if (failedFields.has('path-pattern')) out.pathPatterns = [];
+  if (failedFields.has('host-header')) out.hostPatterns = [];
+  if (failedFields.has('http-header')) out.httpHeaderConditions = [];
+  if (failedFields.has('http-request-method')) out.httpRequestMethods = [];
+  if (failedFields.has('query-string')) out.queryStringConditions = [];
+  if (failedFields.has('source-ip')) out.sourceIpCidrs = [];
+  return { ...out, undetermined: true };
 }
 
 /**
@@ -979,11 +1389,11 @@ function isOwnDnsNameGetAtt(raw: unknown, albLogicalId: string): boolean {
   );
 }
 
-function unresolvableConditionWarning(ruleLabel: string, field: string): string {
+function unresolvableConditionWarning(ruleLabel: string, field: string, tail: string): string {
   return (
     `${ruleLabel} has a ${field} condition value that is not a literal string (an intrinsic ` +
     'such as Ref / Fn::GetAtt / Fn::Join / Fn::ImportValue that cannot be resolved locally); ' +
-    'skipping the rule.'
+    `${tail}.`
   );
 }
 
@@ -1079,15 +1489,21 @@ function parseFixedResponseStatusCode(raw: unknown): number {
 }
 
 /**
- * Parse a ListenerRule `Priority` (ALB priorities are 1-50000, lower = higher
- * precedence). A missing / unparseable priority sorts last so an explicitly
- * prioritized rule always wins over it.
+ * Parse a literal ListenerRule `Priority` (ALB priorities are 1-50000, lower =
+ * higher precedence). Only an integer 1-50000 (number or digit string) is a
+ * literal; anything else (missing, an intrinsic, a fraction, 0, out of range)
+ * is `undefined` and the caller places it via {@link widenIfGuarded} (last
+ * when unguarded, first when guarded).
  */
-function parsePriority(raw: unknown): number {
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-  if (typeof raw === 'string' && /^\d+$/.test(raw)) return parseInt(raw, 10);
-  return Number.MAX_SAFE_INTEGER;
+function parsePriority(raw: unknown): number | undefined {
+  let n: number | undefined;
+  if (typeof raw === 'number' && Number.isInteger(raw)) n = raw;
+  else if (typeof raw === 'string' && /^\d+$/.test(raw)) n = parseInt(raw, 10);
+  return n !== undefined && n >= 1 && n <= 50000 ? n : undefined;
 }
+
+/** Where a guarded rule with a non-literal Priority sorts: before every ALB priority (1-50000). */
+const UNPLACEABLE_GUARDED_PRIORITY = 0;
 
 /** ALB's default session cookie name prefix (suffixed `-0` / `-1` / ... by ALB). */
 const DEFAULT_ALB_SESSION_COOKIE = 'AWSELBAuthSessionCookie';
@@ -1096,91 +1512,392 @@ const DEFAULT_ALB_SESSION_COOKIE = 'AWSELBAuthSessionCookie';
  * Cognito User Pool ARN shape:
  *   `arn:aws:cognito-idp:<region>:<account>:userpool/<pool-id>`
  * The pool id itself contains a `_`, but never a `/`, so anchoring on the
- * `userpool/` segment is robust.
+ * `userpool/` segment is robust. The region is restricted to `[a-z0-9-]` because
+ * it is spliced into the JWKS host (`cognito-idp.<region>.amazonaws.com`): a
+ * value such as `evil.example/x` must not steer that fetch to another host.
  */
-const COGNITO_USERPOOL_ARN = /^arn:[^:]+:cognito-idp:([^:]+):[^:]+:userpool\/([^/]+)$/;
+const COGNITO_USERPOOL_ARN = /^arn:[^:]+:cognito-idp:([a-z0-9-]+):[^:]+:userpool\/([^/]+)$/;
+
+/** A Cognito user pool id (`<region>_<suffix>`), which is the pool's physical id. */
+const COGNITO_USERPOOL_ID = /^([a-z]{2}(?:-[a-z]+)+-\d+)_[0-9A-Za-z]+$/;
+
+const COGNITO_USERPOOL_TYPE = 'AWS::Cognito::UserPool';
+
+type GuardKind = FrontDoorAuthGuard['kind'];
 
 /**
- * Parse an `authenticate-cognito` / `authenticate-oidc` ALB action into a
- * resolvable {@link FrontDoorAuthGuard}, or `undefined` when the config is
- * unresolvable (a Ref / intrinsic in a required field, a malformed
- * UserPoolArn, etc.) — a warning is emitted in that case so the user knows
- * the guard was dropped (the terminal action will still serve unguarded).
+ * One config field's value, or why it has none. `stateSourceActive` marks an
+ * intrinsic that a state source was asked to resolve (loaded or failed), so
+ * the warning does not tell the user to pass one.
  */
-function parseAuthenticateAction(
-  action: Record<string, unknown>,
-  type: 'authenticate-cognito' | 'authenticate-oidc',
-  label: string,
-  warnings: string[]
-): FrontDoorAuthGuard | undefined {
-  if (type === 'authenticate-cognito') {
-    const cfg = action['AuthenticateCognitoConfig'];
-    if (!cfg || typeof cfg !== 'object') {
-      warnings.push(
-        `${label}: authenticate-cognito missing AuthenticateCognitoConfig; skipping guard.`
-      );
-      return undefined;
-    }
-    const c = cfg as Record<string, unknown>;
-    const userPoolArn = c['UserPoolArn'];
-    const userPoolClientId = c['UserPoolClientId'];
-    if (typeof userPoolArn !== 'string' || typeof userPoolClientId !== 'string') {
-      warnings.push(
-        `${label}: authenticate-cognito UserPoolArn / UserPoolClientId must be literal strings ` +
-          '(Ref / intrinsics cannot be resolved by the local front-door); skipping guard.'
-      );
-      return undefined;
-    }
-    const match = COGNITO_USERPOOL_ARN.exec(userPoolArn);
+type FieldResult =
+  | { value: string }
+  | { reason: string; intrinsic: boolean; stateSourceActive?: boolean };
+
+/**
+ * A stack's substitution context for {@link resolveFrontDoorAuthGuardIntrinsics}:
+ * the loaded state, `{ loadError }` when a state source was active but the
+ * stack's state did not load, or `undefined` when no state source is active.
+ */
+export type AuthGuardStateContext = SubstitutionContext | { loadError: string } | undefined;
+
+/** The two required config fields of each authenticate-* kind. */
+function fieldNames(kind: GuardKind): { primary: string; audience: string; config: string } {
+  return kind === 'authenticate-cognito'
+    ? { primary: 'UserPoolArn', audience: 'UserPoolClientId', config: 'AuthenticateCognitoConfig' }
+    : { primary: 'Issuer', audience: 'ClientId', config: 'AuthenticateOidcConfig' };
+}
+
+function isIntrinsicValue(value: unknown): boolean {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** A literal field value: a non-empty string, or why it is not one. */
+function literalField(raw: unknown): FieldResult {
+  if (typeof raw === 'string') {
+    return raw === '' ? { reason: 'it is an empty string', intrinsic: false } : { value: raw };
+  }
+  return { reason: 'it is missing or not a string', intrinsic: false };
+}
+
+/**
+ * The placeholder guard an unresolvable authenticate-* config is served with
+ * (#1004): a Cognito-shaped issuer naming a pool that does not exist, so the
+ * JWKS fetch fails into the documented pass-through mode. A request without a
+ * Bearer token is refused (401); any Bearer token is admitted, warned.
+ */
+function placeholderGuard(
+  kind: GuardKind,
+  siteLogicalId: string,
+  sessionCookieName: string,
+  pending?: FrontDoorAuthGuardPending
+): FrontDoorAuthGuard {
+  // The id lands in the JWKS URL path; keep it to URL-safe characters.
+  const issuer = jwtPlaceholderIssuer(siteLogicalId.replace(/[^A-Za-z0-9]/g, ''));
+  return {
+    kind,
+    issuer,
+    region: 'us-east-1',
+    userPoolId: issuer.slice(issuer.lastIndexOf('/') + 1),
+    sessionCookieName,
+    label: `${kind} (unresolved)`,
+    ...(pending && { pending }),
+  };
+}
+
+/**
+ * An OIDC `Issuer` the guard verifies against: any `http://` or `https://`
+ * URL. ALB itself requires `https://` and rejects a plain-`http://` issuer at
+ * deploy time, so an `http://` value is only ever a local test IdP; it is
+ * still verified, as it was before #1004. A non-http(s), unparseable or empty
+ * value is unresolved.
+ */
+function isUsableOidcIssuer(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === 'https:' || url.protocol === 'http:';
+}
+
+/**
+ * The one builder every guard goes through — literal template values and
+ * values resolved from state alike (#1004). The primary field (Cognito
+ * `UserPoolArn` / OIDC `Issuer`) must be a Cognito user pool ARN / an
+ * `http(s)://` URL; otherwise the placeholder guard is returned. An audience
+ * that has no value leaves the audience unchecked. Every shortfall is
+ * reported through `warn`, keyed by the field it concerns.
+ */
+function materializeGuard(
+  kind: GuardKind,
+  primary: FieldResult,
+  audience: FieldResult,
+  sessionCookieName: string,
+  siteLogicalId: string,
+  location: string,
+  warn: (field: string, message: string) => void
+): FrontDoorAuthGuard {
+  const names = fieldNames(kind);
+  const cli = `${getEmbedConfig().cliName} start-alb`;
+  const unguardedTail =
+    'The route still requires a Bearer token, but does not verify it (JWKS pass-through admits any token).';
+  const restartTail = `Restart ${cli} after deploying: --watch does not rebuild the front-door.`;
+  const intrinsicHint =
+    'Deploy the stack and pass --from-cfn-stack (or another state source) for real verification, ' +
+    `or --no-verify-auth to disable the guard. ${restartTail}`;
+  const activeSourceHint =
+    'Check that the stack is deployed and its state source can read it, ' +
+    `or pass --no-verify-auth to disable the guard. ${restartTail}`;
+  const literalHint = 'Fix the template value, or pass --no-verify-auth to disable the guard.';
+
+  const unresolved = (
+    reason: string,
+    intrinsic: boolean,
+    stateSourceActive = false
+  ): FrontDoorAuthGuard => {
+    const hint = !intrinsic ? literalHint : stateSourceActive ? activeSourceHint : intrinsicHint;
+    warn(
+      names.primary,
+      `${location}: ${kind} ${names.primary} ${intrinsic ? `is an intrinsic ${cli} could not resolve` : 'is unusable'} ` +
+        `(${reason}). ${unguardedTail} ${hint}`
+    );
+    return placeholderGuard(kind, siteLogicalId, sessionCookieName);
+  };
+
+  if (!('value' in primary)) {
+    return unresolved(primary.reason, primary.intrinsic, primary.stateSourceActive);
+  }
+
+  let base: Pick<FrontDoorAuthGuard, 'issuer' | 'region' | 'userPoolId' | 'label'>;
+  if (kind === 'authenticate-cognito') {
+    const match = COGNITO_USERPOOL_ARN.exec(primary.value);
     if (!match) {
-      warnings.push(
-        `${label}: authenticate-cognito UserPoolArn ${displayUntrustedValue(userPoolArn)} is not in the expected ` +
-          'arn:...:cognito-idp:<region>:<account>:userpool/<pool-id> shape; skipping guard.'
+      return unresolved(
+        `${displayUntrustedValue(primary.value)} is not in the expected ` +
+          'arn:...:cognito-idp:<region>:<account>:userpool/<pool-id> shape',
+        false
       );
-      return undefined;
     }
     const region = match[1]!;
     const userPoolId = match[2]!;
-    const sessionCookieName =
-      typeof c['SessionCookieName'] === 'string' && c['SessionCookieName'] !== ''
-        ? c['SessionCookieName']
-        : DEFAULT_ALB_SESSION_COOKIE;
-    return {
-      kind: 'authenticate-cognito',
+    base = {
       issuer: `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`,
-      audience: userPoolClientId,
       region,
       userPoolId,
-      sessionCookieName,
       label: `authenticate-cognito (UserPool=${userPoolId})`,
+    };
+  } else {
+    if (!isUsableOidcIssuer(primary.value)) {
+      return unresolved(
+        `${displayUntrustedValue(primary.value)} is not an http:// or https:// URL`,
+        false
+      );
+    }
+    base = {
+      issuer: primary.value.replace(/\/+$/, ''),
+      label: `authenticate-oidc (Issuer=${primary.value})`,
     };
   }
 
-  // authenticate-oidc
-  const cfg = action['AuthenticateOidcConfig'];
-  if (!cfg || typeof cfg !== 'object') {
-    warnings.push(`${label}: authenticate-oidc missing AuthenticateOidcConfig; skipping guard.`);
-    return undefined;
+  if (!('value' in audience)) {
+    warn(
+      names.audience,
+      `${location}: ${kind} ${names.audience} could not be resolved (${audience.reason}), so the token ` +
+        'audience is not checked (signature, issuer and expiry still are).' +
+        (audience.intrinsic && !audience.stateSourceActive
+          ? ' Pass --from-cfn-stack (or another state source) to check it.'
+          : '')
+    );
+  }
+  return {
+    kind,
+    issuer: base.issuer,
+    ...('value' in audience && { audience: audience.value }),
+    ...(base.region !== undefined && { region: base.region }),
+    ...(base.userPoolId !== undefined && { userPoolId: base.userPoolId }),
+    sessionCookieName,
+    label: base.label,
+  };
+}
+
+/**
+ * Parse an `authenticate-cognito` / `authenticate-oidc` ALB action into a
+ * {@link FrontDoorAuthGuard}. A declared guard is never dropped (#1004):
+ *
+ * - every required field is a usable literal: the real guard;
+ * - a required field is an intrinsic: the placeholder guard carrying
+ *   `pending`, resolved by {@link resolveFrontDoorAuthGuardIntrinsics} once
+ *   the state source has loaded;
+ * - the config block is missing, or a literal is unusable (a malformed
+ *   UserPoolArn, a non-https Issuer, an empty string): the placeholder guard,
+ *   warned — a request without a Bearer token is refused.
+ */
+function parseAuthenticateAction(
+  action: Record<string, unknown>,
+  type: GuardKind,
+  stackName: string,
+  siteLogicalId: string,
+  label: string,
+  warnings: string[]
+): FrontDoorAuthGuard {
+  const names = fieldNames(type);
+  const cfg = action[names.config];
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    warnings.push(
+      `${label}: ${type} is missing ${names.config}. The route still requires a Bearer token, but does not ` +
+        'verify it (JWKS pass-through admits any token). Fix the template, or pass --no-verify-auth to disable the guard.'
+    );
+    return placeholderGuard(type, siteLogicalId, DEFAULT_ALB_SESSION_COOKIE);
   }
   const c = cfg as Record<string, unknown>;
-  const issuer = c['Issuer'];
-  const clientId = c['ClientId'];
-  if (typeof issuer !== 'string' || typeof clientId !== 'string') {
-    warnings.push(
-      `${label}: authenticate-oidc Issuer / ClientId must be literal strings ` +
-        '(Ref / intrinsics cannot be resolved by the local front-door); skipping guard.'
-    );
-    return undefined;
-  }
   const sessionCookieName =
     typeof c['SessionCookieName'] === 'string' && c['SessionCookieName'] !== ''
       ? c['SessionCookieName']
       : DEFAULT_ALB_SESSION_COOKIE;
-  return {
-    kind: 'authenticate-oidc',
-    issuer: issuer.replace(/\/+$/, ''),
-    audience: clientId,
+  const rawPrimary = c[names.primary];
+  const rawAudience = c[names.audience];
+  if (isIntrinsicValue(rawPrimary) || isIntrinsicValue(rawAudience)) {
+    return placeholderGuard(type, siteLogicalId, sessionCookieName, {
+      stackName,
+      siteLogicalId,
+      location: label,
+      primary: rawPrimary,
+      audience: rawAudience,
+    });
+  }
+  return materializeGuard(
+    type,
+    literalField(rawPrimary),
+    literalField(rawAudience),
     sessionCookieName,
-    label: `authenticate-oidc (Issuer=${issuer})`,
+    siteLogicalId,
+    label,
+    (_field, message) => warnings.push(message)
+  );
+}
+
+/**
+ * The deployed ARN behind `Fn::GetAtt: [<UserPool>, 'Arn']` when the state
+ * record carries no `Arn` attribute (the `--from-cfn-stack` provider records
+ * physical ids only): a Cognito user pool's physical id is its pool id, whose
+ * `<region>_` prefix names the region. Only the region and the pool id are
+ * read back out of the ARN, so the account falls back to a filler.
+ */
+function userPoolArnFromState(raw: unknown, context: SubstitutionContext): string | undefined {
+  if (!isIntrinsicValue(raw)) return undefined;
+  const getAtt = (raw as Record<string, unknown>)['Fn::GetAtt'];
+  let logicalId: string | undefined;
+  if (Array.isArray(getAtt) && getAtt.length === 2 && getAtt[1] === 'Arn') {
+    logicalId = typeof getAtt[0] === 'string' ? getAtt[0] : undefined;
+  } else if (typeof getAtt === 'string' && getAtt.endsWith('.Arn')) {
+    logicalId = getAtt.slice(0, -'.Arn'.length);
+  }
+  if (logicalId === undefined) return undefined;
+  const record = context.resources[logicalId];
+  if (!record || record.resourceType !== COGNITO_USERPOOL_TYPE) return undefined;
+  if (record.attributes?.['Arn'] !== undefined) return undefined; // the substituter reads it
+  const match = COGNITO_USERPOOL_ID.exec(record.physicalId);
+  if (!match) return undefined;
+  const partition = context.pseudoParameters?.partition ?? 'aws';
+  const account = context.pseudoParameters?.accountId ?? '000000000000';
+  return `arn:${partition}:cognito-idp:${match[1]}:${account}:userpool/${record.physicalId}`;
+}
+
+/** Resolve one raw config field against a stack's state. */
+function resolveField(
+  raw: unknown,
+  context: AuthGuardStateContext,
+  isUserPoolArn: boolean
+): FieldResult {
+  if (!isIntrinsicValue(raw)) return literalField(raw);
+  if (!context) return { reason: 'no state source is active', intrinsic: true };
+  if ('loadError' in context) {
+    return {
+      reason: `the stack's deployed state did not load: ${context.loadError}`,
+      intrinsic: true,
+      stateSourceActive: true,
+    };
+  }
+  if (isUserPoolArn) {
+    const derived = userPoolArnFromState(raw, context);
+    if (derived !== undefined) return { value: derived };
+  }
+  const result = substituteAgainstState(raw, context);
+  if (result.kind === 'literal' && typeof result.value === 'string' && result.value !== '') {
+    return { value: result.value };
+  }
+  return {
+    reason: result.kind === 'unresolved' ? result.reason : 'it resolved to a non-string',
+    intrinsic: true,
+    stateSourceActive: true,
   };
+}
+
+/**
+ * Resolve one guard's pending intrinsics; a guard without `pending` is
+ * returned as-is. See {@link resolveFrontDoorAuthGuardIntrinsics}.
+ */
+function resolvePendingGuard(
+  guard: FrontDoorAuthGuard,
+  contextFor: (stackName: string) => AuthGuardStateContext,
+  warnOnce: (key: string, message: string) => void
+): FrontDoorAuthGuard {
+  const pending = guard.pending;
+  if (!pending) return guard;
+  const context = contextFor(pending.stackName);
+  return materializeGuard(
+    guard.kind,
+    resolveField(pending.primary, context, guard.kind === 'authenticate-cognito'),
+    resolveField(pending.audience, context, false),
+    guard.sessionCookieName,
+    pending.siteLogicalId,
+    `${displayStackName(pending.stackName)}: ${pending.location}`,
+    (field, message) =>
+      warnOnce(`${pending.stackName}\0${pending.siteLogicalId}\0${guard.kind}\0${field}`, message)
+  );
+}
+
+/**
+ * Resolve every `start-alb` authenticate-* guard whose template config is an
+ * intrinsic (#1004) — the listener default guard and every rule guard —
+ * against its stack's state, once a state source has loaded. `contextFor`
+ * returns the stack's substitution context, `{ loadError }` when a state
+ * source was active but the stack's state did not load (the cause lands in
+ * the warning), or `undefined` when no state source is active. Pure: returns new listeners, leaving the input untouched.
+ *
+ * - Every field resolves to a usable value: the real guard, exactly as with
+ *   literal values.
+ * - The primary field (`UserPoolArn` / `Issuer`) does not resolve, or
+ *   resolves to an unusable value: the placeholder guard stays — a request
+ *   without a Bearer token gets 401, any Bearer token is admitted (warned).
+ * - Only the audience does not resolve: signature, issuer and expiry are
+ *   verified, the audience is not (warned).
+ *
+ * `warned` dedups the warnings by stack + logical id + field.
+ */
+export function resolveFrontDoorAuthGuardIntrinsics<
+  L extends {
+    defaultAuthGuard?: FrontDoorAuthGuard;
+    rules: ReadonlyArray<{ authGuard?: FrontDoorAuthGuard }>;
+  },
+>(
+  listeners: readonly L[],
+  contextFor: (stackName: string) => AuthGuardStateContext,
+  warned: Set<string> = new Set<string>()
+): L[] {
+  const warnOnce = (key: string, message: string): void => {
+    if (warned.has(key)) return;
+    warned.add(key);
+    getLogger().warn(message);
+  };
+  return listeners.map((listener) => ({
+    ...listener,
+    ...(listener.defaultAuthGuard && {
+      defaultAuthGuard: resolvePendingGuard(listener.defaultAuthGuard, contextFor, warnOnce),
+    }),
+    rules: listener.rules.map((rule) =>
+      rule.authGuard
+        ? { ...rule, authGuard: resolvePendingGuard(rule.authGuard, contextFor, warnOnce) }
+        : rule
+    ),
+  }));
+}
+
+/** The stacks owning a guard that awaits state (#1004), deduplicated. */
+export function pendingAuthGuardStackNames(
+  listeners: ReadonlyArray<{
+    defaultAuthGuard?: FrontDoorAuthGuard;
+    rules: ReadonlyArray<{ authGuard?: FrontDoorAuthGuard }>;
+  }>
+): string[] {
+  const names = new Set<string>();
+  for (const listener of listeners) {
+    const guards = [listener.defaultAuthGuard, ...listener.rules.map((r) => r.authGuard)];
+    for (const guard of guards) {
+      if (guard?.pending) names.add(guard.pending.stackName);
+    }
+  }
+  return [...names];
 }

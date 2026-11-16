@@ -106,7 +106,8 @@ export function buildAuthCheck(
             logicalId: guard.label,
             declaredAt: 'start-alb authenticate-* action',
             issuer: guard.issuer,
-            audience: [guard.audience],
+            // An unresolved audience (#1004) leaves `aud` unchecked.
+            audience: guard.audience !== undefined ? [guard.audience] : [],
             ...(guard.region !== undefined && { region: guard.region }),
             ...(guard.userPoolId !== undefined && { userPoolId: guard.userPoolId }),
           },

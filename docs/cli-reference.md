@@ -2037,10 +2037,62 @@ deployed ALB also accepts an already-signed-in browser via the
 of that cookie as a pass-through (no JWT check) so a browser session that
 authenticated through the cloud ALB keeps working against the local
 front-door. `--no-verify-auth` disables every guard on the listener (every
-request passes). `UserPoolArn` / `Issuer` / `ClientId` MUST be literal
-strings in the synthesized template — a `Ref` / `Fn::GetAtt` / cross-stack
-intrinsic in any of those fields drops the guard with a warning, and the
-terminal action then serves unguarded.
+request passes).
+
+A declared `authenticate-*` action is never dropped. When `UserPoolArn` /
+`UserPoolClientId` (Cognito) or `Issuer` / `ClientId` (OIDC) is an intrinsic
+— the normal shape for `ListenerAction.authenticateCognito({ userPool,
+userPoolClient, ... })`, which emits `Fn::GetAtt <Pool>.Arn` and
+`Ref <Client>` — it is resolved from the deployed stack once a state source
+loads (`--from-cfn-stack`, or a host-provided state provider), and the guard
+then verifies exactly as one with literal values would. A field that cannot
+be resolved (no state source, no record for the resource, a value that is
+not a Cognito user pool ARN or an `http://` / `https://` issuer, an empty
+string, or a missing `AuthenticateCognitoConfig` / `AuthenticateOidcConfig`)
+leaves the route on a placeholder guard, with a warning: a request without a
+Bearer token still answers `401`, but a Bearer token is admitted without
+verification (the JWKS pass-through below), and so is a request carrying an
+`AWSELBAuthSessionCookie-*` cookie, exactly as on a resolved guard. An
+`http://` issuer is verified like an `https://` one: the deployed ALB rejects
+a plain-`http://` issuer, so it only ever names a local test IdP. A listener rule
+that carries, or may carry, an `authenticate-*` action (one whose `Type` is an
+intrinsic, or a whole `Actions` value that is not a literal array, counts) is
+never skipped, so its requests never fall through to an unguarded
+lower-priority rule or the listener default. Each part of such a rule that the
+template does not determine widens to the largest set it could stand for, with
+a warning: a `ListenerArn` that is an intrinsic referencing in-stack listeners
+(for example an `Fn::If` over two listeners, or an `Fn::Sub` / `Fn::Join` /
+`Fn::Select` naming one) puts the rule on every one of those listeners; a
+`Priority` that is not a literal integer 1-50000 sorts
+it before every other rule; a condition cdk-local cannot evaluate (an
+unsupported field, a value that is not a literal string, a whole `Conditions`
+value that is not a literal array) is dropped and the rule answers `503` (no
+guard) over its remaining conditions, or over every request reaching its
+priority when none is left; a rule with no condition to route on (no
+`Conditions`, an empty list, entries that are not objects, empty `Values`)
+answers `503` over every request reaching its priority; and an action that
+cannot be served (an intrinsic `Type`, a non-array `Actions`, an
+`authenticate-*` action with no locally servable terminal action such as a
+`forward` to a target group outside the stack or an unsupported `Type`) makes
+the rule answer `503`. Dropping a part only widens what is guarded or denied
+locally. A rule whose `ListenerArn` references no in-stack listener (a literal
+ARN, an `Fn::ImportValue`, a `Ref` to a parameter, as for a rule on
+`ApplicationListener.fromListenerAttributes(...)`) belongs to another stack's
+listener and is not served, with a warning when it carries an `authenticate-*`
+action. A rule with no `authenticate-*` action keeps the earlier
+behaviour: it is skipped, with a warning, when a condition or its action cannot
+be evaluated, and sorts after every literal-priority rule when its `Priority`
+is not a literal. On the listener's default action, the same cases mean the
+default is not served (a request no rule matches is refused). When only the client id is
+unresolved, the token's signature, `iss` and `exp` are verified and its
+audience is not. Pass `--from-cfn-stack` for real verification, or
+`--no-verify-auth` to serve the route without a guard (the guards are then
+not resolved at all, and no intrinsic-resolution warnings are printed; the
+parse-time warnings, such as an invalid literal or an intrinsic `Type`, still
+appear, and a rule kept as a `503` deny above still answers `503`). When a state source is active
+but the stack's state does not load, the warning names the cause. The guards are
+resolved once at boot, so restart `cdkl start-alb` after deploying the
+stack — `--watch` does not rebuild the front-door.
 
 **JWKS / OIDC discovery unreachable → token accepted without verification.**
 When the upstream JWKS endpoint (Cognito) or OIDC discovery URL is

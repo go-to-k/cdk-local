@@ -4,6 +4,7 @@ import {
   isApplicationLoadBalancer,
   type FrontDoorEcsTarget,
   type FrontDoorForwardTarget,
+  type ResolvedListenerRule,
 } from '../../../src/local/elb-front-door-resolver.js';
 import { albHostPatternMatches } from '../../../src/local/alb-path-matcher.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
@@ -1329,90 +1330,524 @@ describe('resolveAlbFrontDoor — authenticate-* guards', () => {
     expect(listeners[0]!.rules[0]!.action.kind).toBe('forward');
   });
 
-  it('warns + skips guard when UserPoolArn is an intrinsic (Ref / GetAtt)', () => {
-    const stack = stackWith({
+  // #1004: a declared guard is never dropped. An intrinsic config yields the
+  // placeholder guard carrying `pending` (resolved once state loads); an
+  // unusable literal or a missing config yields the placeholder, warned.
+  function listenerWith(defaultAction: Record<string, unknown>): StackInfo {
+    return stackWith({
       [LISTENER]: {
         Type: 'AWS::ElasticLoadBalancingV2::Listener',
         Properties: {
           LoadBalancerArn: { Ref: ALB },
           Port: 80,
           Protocol: 'HTTP',
-          DefaultActions: [
-            {
-              Type: 'authenticate-cognito',
-              AuthenticateCognitoConfig: {
-                UserPoolArn: { Ref: 'MyPool' }, // intrinsic, not a literal
-                UserPoolClientId: 'client-abc',
-                UserPoolDomain: 'auth.example.com',
-              },
-            },
-            { Type: 'forward', TargetGroupArn: { Ref: TG } },
-          ],
+          DefaultActions: [defaultAction, { Type: 'forward', TargetGroupArn: { Ref: TG } }],
         },
       },
     });
-    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
-    // The terminal forward still serves, but the guard is dropped + warned.
+  }
+
+  it('keeps a pending placeholder guard when UserPoolArn / UserPoolClientId are intrinsics', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-cognito',
+        AuthenticateCognitoConfig: {
+          UserPoolArn: { 'Fn::GetAtt': ['MyPool', 'Arn'] },
+          UserPoolClientId: { Ref: 'MyClient' },
+          UserPoolDomain: { Ref: 'MyDomain' },
+        },
+      }),
+      ALB
+    );
+    expect(warnings).toEqual([]);
     expect(listeners[0]!.defaultAction?.kind).toBe('forward');
-    expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
-    expect(warnings.join('\n')).toMatch(/UserPoolArn .*literal strings/);
+    const guard = listeners[0]!.defaultAuthGuard!;
+    expect(guard.kind).toBe('authenticate-cognito');
+    expect(guard.issuer).toMatch(/^https:\/\/cognito-idp\.us-east-1\.amazonaws\.com\/us-east-1_.*placeholderWebListener$/);
+    expect(guard.region).toBe('us-east-1');
+    expect(guard.userPoolId).toMatch(/placeholderWebListener$/);
+    expect(guard.audience).toBeUndefined();
+    expect(guard.pending).toEqual({
+      stackName: 'AlbStack',
+      siteLogicalId: LISTENER,
+      location: expect.stringContaining('default action'),
+      primary: { 'Fn::GetAtt': ['MyPool', 'Arn'] },
+      audience: { Ref: 'MyClient' },
+    });
   });
 
-  it('warns + skips guard when UserPoolArn is not in the expected shape', () => {
-    const stack = stackWith({
-      [LISTENER]: {
-        Type: 'AWS::ElasticLoadBalancingV2::Listener',
-        Properties: {
-          LoadBalancerArn: { Ref: ALB },
-          Port: 80,
-          Protocol: 'HTTP',
-          DefaultActions: [
-            {
-              Type: 'authenticate-cognito',
-              AuthenticateCognitoConfig: {
-                UserPoolArn: 'arn:aws:s3:::not-a-cognito-arn',
-                UserPoolClientId: 'client-abc',
-                UserPoolDomain: 'auth.example.com',
-              },
-            },
-            { Type: 'forward', TargetGroupArn: { Ref: TG } },
-          ],
+  it('keeps a placeholder guard (warned) when the literal UserPoolArn is malformed', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-cognito',
+        AuthenticateCognitoConfig: {
+          UserPoolArn: 'arn:aws:s3:::not-a-cognito-arn',
+          UserPoolClientId: 'client-abc',
         },
-      },
-    });
-    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+      }),
+      ALB
+    );
     expect(listeners[0]!.defaultAction?.kind).toBe('forward');
-    expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
+    const guard = listeners[0]!.defaultAuthGuard!;
+    expect(guard.label).toBe('authenticate-cognito (unresolved)');
+    expect(guard.userPoolId).toMatch(/placeholder/);
+    expect(guard.pending).toBeUndefined();
     expect(warnings.join('\n')).toMatch(/not in the expected/);
+    expect(warnings.join('\n')).toMatch(/still requires a Bearer token/);
+    expect(warnings.join('\n')).toMatch(/--no-verify-auth/);
   });
 
-  it('warns + skips OIDC guard when Issuer is an intrinsic (Ref / GetAtt)', () => {
+  it('keeps a pending placeholder OIDC guard when Issuer is an intrinsic', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-oidc',
+        AuthenticateOidcConfig: {
+          Issuer: { Ref: 'MyIssuer' },
+          AuthorizationEndpoint: 'https://idp.example.com/authorize',
+          TokenEndpoint: 'https://idp.example.com/token',
+          ClientId: 'oidc-client-xyz',
+        },
+      }),
+      ALB
+    );
+    expect(warnings).toEqual([]);
+    const guard = listeners[0]!.defaultAuthGuard!;
+    expect(guard.kind).toBe('authenticate-oidc');
+    expect(guard.userPoolId).toMatch(/placeholder/);
+    expect(guard.pending?.primary).toEqual({ Ref: 'MyIssuer' });
+    expect(guard.pending?.audience).toBe('oidc-client-xyz');
+  });
+
+  it('keeps a placeholder guard (warned) when AuthenticateCognitoConfig / AuthenticateOidcConfig is missing', () => {
+    for (const type of ['authenticate-cognito', 'authenticate-oidc']) {
+      const { listeners, warnings } = resolveAlbFrontDoor(listenerWith({ Type: type }), ALB);
+      expect(listeners[0]!.defaultAction?.kind).toBe('forward');
+      expect(listeners[0]!.defaultAuthGuard?.label).toBe(`${type} (unresolved)`);
+      expect(warnings.join('\n')).toMatch(/is missing Authenticate(Cognito|Oidc)Config/);
+    }
+  });
+
+  it('keeps a placeholder guard (warned) when the literal OIDC Issuer is not an http(s):// URL', () => {
+    for (const issuer of ['ftp://idp.example.com', 'idp.example.com', 'not a url']) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        listenerWith({
+          Type: 'authenticate-oidc',
+          AuthenticateOidcConfig: { Issuer: issuer, ClientId: 'c' },
+        }),
+        ALB
+      );
+      expect(listeners[0]!.defaultAuthGuard?.label).toBe('authenticate-oidc (unresolved)');
+      expect(warnings.join('\n')).toMatch(/is not an http:\/\/ or https:\/\/ URL/);
+    }
+  });
+
+  it('keeps a placeholder guard (warned) when the literal OIDC Issuer is empty', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-oidc',
+        AuthenticateOidcConfig: { Issuer: '', ClientId: 'c' },
+      }),
+      ALB
+    );
+    expect(listeners[0]!.defaultAuthGuard?.label).toBe('authenticate-oidc (unresolved)');
+    expect(warnings.join('\n')).toMatch(/empty string/);
+  });
+
+  it('verifies a plain-http OIDC Issuer, loopback or not (ALB rejects http on deploy, so it is a local IdP)', () => {
+    for (const issuer of ['http://127.0.0.1:19000', 'http://idp.internal:8080']) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        listenerWith({
+          Type: 'authenticate-oidc',
+          AuthenticateOidcConfig: { Issuer: issuer, ClientId: 'c' },
+        }),
+        ALB
+      );
+      expect(warnings).toEqual([]);
+      const guard = listeners[0]!.defaultAuthGuard!;
+      expect(guard.issuer).toBe(issuer);
+      expect(guard.label).toBe(`authenticate-oidc (Issuer=${issuer})`);
+    }
+  });
+
+  it('refuses a Cognito UserPoolArn whose region would steer the JWKS host', () => {
+    for (const arn of [
+      'arn:aws:cognito-idp:evil.example/x:123456789012:userpool/us-east-1_abcDEF123',
+      'arn:aws:cognito-idp:evil.example:123456789012:userpool/us-east-1_abcDEF123',
+      'arn:aws:cognito-idp:US-EAST-1:123456789012:userpool/us-east-1_abcDEF123',
+    ]) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        listenerWith({
+          Type: 'authenticate-cognito',
+          AuthenticateCognitoConfig: { UserPoolArn: arn, UserPoolClientId: 'c' },
+        }),
+        ALB
+      );
+      const guard = listeners[0]!.defaultAuthGuard!;
+      expect(guard.label).toBe('authenticate-cognito (unresolved)');
+      expect(guard.issuer).not.toContain('evil');
+      expect(warnings.join('\n')).toMatch(/is not in the expected/);
+    }
+  });
+
+  it('fails closed on a default action whose Type is not a literal string (the listener default is not served)', () => {
+    const fnIfType = {
+      Type: { 'Fn::If': ['UseAuth', 'authenticate-cognito', 'fixed-response'] },
+      AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+    };
+    const wrappedAction = {
+      'Fn::If': [
+        'UseAuth',
+        {
+          Type: 'authenticate-cognito',
+          AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+        },
+        { Ref: 'AWS::NoValue' },
+      ],
+    };
+    for (const action of [fnIfType, wrappedAction]) {
+      const { listeners, warnings } = resolveAlbFrontDoor(listenerWith(action), ALB);
+      // Without the fail-closed check, the trailing forward is served unguarded.
+      expect(listeners).toEqual([]);
+      expect(warnings.join('\n')).toMatch(/Type is not a literal string.*fail closed/s);
+    }
+  });
+
+  it('fails closed on a rule action whose Type is not a literal string (the rule stays at its priority as a 503 deny, the default still served)', () => {
     const stack = stackWith({
-      [LISTENER]: {
-        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
         Properties: {
-          LoadBalancerArn: { Ref: ALB },
-          Port: 80,
-          Protocol: 'HTTP',
-          DefaultActions: [
-            {
-              Type: 'authenticate-oidc',
-              AuthenticateOidcConfig: {
-                Issuer: { Ref: 'MyIssuer' }, // intrinsic, not a literal
-                AuthorizationEndpoint: 'https://idp.example.com/authorize',
-                TokenEndpoint: 'https://idp.example.com/token',
-                ClientId: 'oidc-client-xyz',
-              },
-            },
-            { Type: 'forward', TargetGroupArn: { Ref: TG } },
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } }],
+          Actions: [
+            { Type: { 'Fn::If': ['UseAuth', 'authenticate-oidc', 'forward'] } },
+            { Type: 'forward', TargetGroupArn: { Ref: API_TG } },
           ],
         },
       },
     });
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
-    expect(listeners[0]!.defaultAction?.kind).toBe('forward');
+    expect(listeners).toHaveLength(1);
+    // Dropping the rule would let `/api/*` fall through to the unguarded
+    // default; it must keep claiming its path with a guard-less 503 deny.
+    expect(listeners[0]!.rules).toHaveLength(1);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.priority).toBe(10);
+    expect(rule.pathPatterns).toEqual(['/api/*']);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toEqual({
+      kind: 'fixed-response',
+      statusCode: 503,
+      contentType: 'text/plain',
+      messageBody: expect.stringMatching(/denied locally because an action Type is not a literal string/),
+    });
+    expect(forwardTarget(listeners[0]!.defaultAction).serviceLogicalId).toBe(SERVICE);
     expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
-    expect(warnings.join('\n')).toMatch(/Issuer .*literal strings/);
+    expect(warnings.join('\n')).toMatch(
+      /ApiRule.*Type is not a literal string.*kept at its priority as a local 503 deny/s
+    );
+  });
+
+  it('keeps a guarded rule whose terminal is not servable as a 503 deny (no fallthrough to the default)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/admin/*'] } }],
+          Actions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+            },
+            { Type: 'forward', TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:1:targetgroup/x/y' },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.pathPatterns).toEqual(['/admin/*']);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+    expect(warnings.join('\n')).toMatch(
+      /ApiRule.*no local-servable terminal action, so the rule is kept at its priority as a local 503 deny/s
+    );
+  });
+
+  it('keeps a guarded rule with an unsupported condition as a 503 deny over its supported conditions', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            { Field: 'path-pattern', PathPatternConfig: { Values: ['/admin/*'] } },
+            { Field: 'host-header', HostHeaderConfig: { Values: [{ Ref: 'DomainParam' }] } },
+          ],
+          Actions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+            },
+            { Type: 'forward', TargetGroupArn: { Ref: API_TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    // The host-header field is dropped whole: the deny covers /admin/* on any host.
+    expect(rule.pathPatterns).toEqual(['/admin/*']);
+    expect(rule.hostPatterns).toEqual([]);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+    const text = warnings.join('\n');
+    expect(text).toMatch(/host-header condition value that is not a literal string.*kept as a local 503 deny instead/s);
+    expect(text).toMatch(/over its remaining supported conditions/);
+  });
+
+  it('denies every request at its priority when a guarded rule has no supported condition left', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: [{ Ref: 'PathParam' }] } }],
+          Actions: [
+            { Type: { 'Fn::If': ['UseAuth', 'authenticate-oidc', 'forward'] } },
+            { Type: 'forward', TargetGroupArn: { Ref: API_TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.pathPatterns).toEqual([]);
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+    expect(warnings.join('\n')).toMatch(/over every request that reaches its priority/);
+  });
+
+  it('still skips an unguarded rule with an unsupported condition (no guard to lose)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: [{ Ref: 'PathParam' }] } }],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/not a literal string.*skipping the rule\./s);
+  });
+
+  it('keeps a rule whose whole Actions value is not an array as a 503 deny at its priority', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } }],
+          Actions: {
+            'Fn::If': [
+              'UseAuth',
+              [{ Type: 'authenticate-oidc' }, { Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+              [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+            ],
+          },
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.priority).toBe(10);
+    expect(rule.pathPatterns).toEqual(['/api/*']);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toMatchObject({
+      kind: 'fixed-response',
+      statusCode: 503,
+      messageBody: expect.stringMatching(/its Actions value is not a literal array/),
+    });
+    expect(forwardTarget(listeners[0]!.defaultAction).serviceLogicalId).toBe(SERVICE);
+    expect(warnings.join('\n')).toMatch(
+      /ApiRule.*action is not a literal array.*kept at its priority as a local 503 deny/s
+    );
+  });
+
+  it('denies every request at its priority when a guarded rule has a whole Conditions value that is not an array', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: {
+            'Fn::If': ['Prod', [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/a/*'] } }], []],
+          },
+          Actions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+            },
+            { Type: 'forward', TargetGroupArn: { Ref: API_TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.priority).toBe(10);
+    expect(rule.pathPatterns).toEqual([]);
+    expect(rule.hostPatterns).toEqual([]);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+    const text = warnings.join('\n');
+    expect(text).toMatch(/ApiRule.*Conditions value that is not a literal array.*kept as a local 503 deny instead/s);
+    expect(text).toMatch(/over every request that reaches its priority/);
+  });
+
+  it('denies every request at its priority when both the whole Actions and Conditions values are not arrays', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: { 'Fn::If': ['Prod', [], []] },
+          Actions: { 'Fn::If': ['UseAuth', [], []] },
+        },
+      },
+    });
+    const { listeners } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.pathPatterns).toEqual([]);
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+  });
+
+  it('still skips (warned) an unguarded rule whose whole Conditions value is not an array', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: { 'Fn::If': ['Prod', [], []] },
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/ApiRule.*Conditions value that is not a literal array.*skipping the rule\./s);
+  });
+
+  it('sorts a guarded rule with an intrinsic Priority before every literal-priority rule (warned)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: { Ref: 'AdminPriority' },
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/admin/*'] } }],
+          Actions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+            },
+            { Type: 'forward', TargetGroupArn: { Ref: API_TG } },
+          ],
+        },
+      },
+      OpenRule: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 1,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/*'] } }],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const ordered = [...listeners[0]!.rules].sort((a, b) => a.priority - b.priority);
+    expect(ordered).toHaveLength(2);
+    expect(ordered[0]!.pathPatterns).toEqual(['/admin/*']);
+    expect(ordered[0]!.authGuard?.kind).toBe('authenticate-cognito');
+    expect(ordered[0]!.priority).toBeLessThan(1);
+    expect(ordered[1]!.priority).toBe(1);
+    expect(warnings.join('\n')).toMatch(
+      /ApiRule \(Priority not a literal number\) carries \(or may carry\) an authenticate-\* action, so it is evaluated before every other rule/
+    );
+  });
+
+  it('sorts a deny rule (whole Actions intrinsic) with an intrinsic Priority first', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: { Ref: 'AdminPriority' },
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/admin/*'] } }],
+          Actions: { 'Fn::If': ['UseAuth', [], []] },
+        },
+      },
+    });
+    const { listeners } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.priority).toBeLessThan(1);
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+  });
+
+  it('still sorts an unguarded rule with an intrinsic Priority last (no promotion warning)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: { Ref: 'ApiPriority' },
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } }],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules[0]!.priority).toBe(Number.MAX_SAFE_INTEGER);
+    expect(warnings.join('\n')).not.toMatch(/evaluated before every other rule/);
+  });
+
+  it('keeps the real guard with the audience unchecked (warned) when the literal client id is empty', () => {
+    const { listeners, warnings } = resolveAlbFrontDoor(
+      listenerWith({
+        Type: 'authenticate-cognito',
+        AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: '' },
+      }),
+      ALB
+    );
+    const guard = listeners[0]!.defaultAuthGuard!;
+    expect(guard.userPoolId).toBe('us-east-1_abcDEF123');
+    expect(guard.audience).toBeUndefined();
+    expect(warnings.join('\n')).toMatch(/UserPoolClientId could not be resolved/);
   });
 
   it('warns + skips listener when authenticate-* has no terminal action', () => {
@@ -1439,6 +1874,275 @@ describe('resolveAlbFrontDoor — authenticate-* guards', () => {
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
     expect(listeners).toEqual([]);
     expect(warnings.join('\n')).toMatch(/no local-servable terminal action/);
+  });
+});
+
+describe('resolveAlbFrontDoor — a guarded rule is never skipped (#1004 fail-closed rule)', () => {
+  const COGNITO_ARN = 'arn:aws:cognito-idp:us-east-1:111122223333:userpool/us-east-1_abcDEF123';
+  const AUTH = {
+    Type: 'authenticate-cognito',
+    AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+  };
+  const FORWARD_API = { Type: 'forward', TargetGroupArn: { Ref: API_TG } };
+  const GUARDED = [AUTH, FORWARD_API];
+  const UNGUARDED = [FORWARD_API];
+  const PATH_ADMIN = [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/admin/*'] } }];
+
+  function ruleStack(
+    props: Record<string, unknown>,
+    extra: Record<string, unknown> = {}
+  ): StackInfo {
+    return stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: { ListenerArn: { Ref: LISTENER }, Priority: 10, Conditions: PATH_ADMIN, ...props },
+      },
+      ...extra,
+    });
+  }
+
+  /** The guarded invariant: the rule is present and either guards or denies its requests. */
+  function expectGuardedOrDenied(rule: ResolvedListenerRule | undefined): void {
+    expect(rule).toBeDefined();
+    const guards = rule!.authGuard !== undefined;
+    const denies = rule!.action.kind === 'fixed-response' && rule!.action.statusCode === 503;
+    expect(guards || denies).toBe(true);
+  }
+
+  // One row per `continue` / skip in the rule loop and its helpers. Each
+  // `props` makes that dimension undeterminable for the rule.
+  const SKIP_SITES: Array<{ site: string; props: Record<string, unknown> }> = [
+    { site: 'listener: Fn::If ListenerArn', props: { ListenerArn: { 'Fn::If': ['C', { Ref: LISTENER }, 'x'] } } },
+    { site: 'listener: Fn::Sub ListenerArn', props: { ListenerArn: { 'Fn::Sub': '${WebListener}' } } },
+    { site: 'listener: Fn::Join ListenerArn', props: { ListenerArn: { 'Fn::Join': ['', [{ Ref: LISTENER }]] } } },
+    { site: 'listener: Fn::Select ListenerArn', props: { ListenerArn: { 'Fn::Select': [0, [{ Ref: LISTENER }, 'x']] } } },
+    { site: 'priority: intrinsic', props: { Priority: { Ref: 'P' } } },
+    { site: 'priority: out of range', props: { Priority: 50001 } },
+    { site: 'conditions: whole intrinsic', props: { Conditions: { 'Fn::If': ['C', PATH_ADMIN, []] } } },
+    { site: 'conditions: unsupported field', props: { Conditions: [{ Field: 'x-future', Values: ['a'] }] } },
+    { site: 'conditions: intrinsic value', props: { Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: [{ Ref: 'P' }] } }] } },
+    { site: 'conditions: absent', props: { Conditions: undefined } },
+    { site: 'conditions: []', props: { Conditions: [] } },
+    { site: 'conditions: non-object entries only', props: { Conditions: [null, 'path'] } },
+    { site: 'conditions: all-empty Values', props: { Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: [] } }] } },
+    { site: 'action: no servable terminal', props: { Actions: [AUTH, { Type: 'forward', TargetGroupArn: { Ref: 'MissingTg' } }] } },
+    { site: 'action: whole intrinsic', props: { Actions: { 'Fn::If': ['C', GUARDED, UNGUARDED] } } },
+    { site: 'action: intrinsic Type', props: { Actions: [{ Type: { 'Fn::If': ['C', 'authenticate-oidc', 'forward'] } }, FORWARD_API] } },
+    { site: 'action: unsupported literal terminal Type', props: { Actions: [AUTH, { Type: 'foo' }] } },
+  ];
+
+  it.each(SKIP_SITES)('keeps a guarded rule through every skip site: $site', ({ props }) => {
+    const { listeners } = resolveAlbFrontDoor(ruleStack({ Actions: GUARDED, ...props }), ALB);
+    expect(listeners).toHaveLength(1);
+    expect(listeners[0]!.rules).toHaveLength(1);
+    expectGuardedOrDenied(listeners[0]!.rules[0]);
+  });
+
+  function listenerOn(port: number, alb: string = ALB): Record<string, unknown> {
+    return {
+      Type: 'AWS::ElasticLoadBalancingV2::Listener',
+      Properties: {
+        LoadBalancerArn: { Ref: alb },
+        Port: port,
+        Protocol: 'HTTP',
+        DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: TG } }],
+      },
+    };
+  }
+
+  it('listener: serves a guarded Fn::If ListenerArn on the listeners its branches reference only (warned)', () => {
+    const stack = ruleStack(
+      {
+        ListenerArn: { 'Fn::If': ['C', { Ref: LISTENER }, { Ref: 'SecondListener' }] },
+        Actions: GUARDED,
+      },
+      { SecondListener: listenerOn(8080), ThirdListener: listenerOn(9090) }
+    );
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const byPort = new Map(listeners.map((l) => [l.listenerPort, l]));
+    expect([...byPort.keys()].sort()).toEqual([80, 8080, 9090]);
+    for (const port of [80, 8080]) {
+      const rules = byPort.get(port)!.rules;
+      expect(rules).toHaveLength(1);
+      expect(rules[0]!.pathPatterns).toEqual(['/admin/*']);
+      expect(rules[0]!.authGuard?.kind).toBe('authenticate-cognito');
+    }
+    expect(byPort.get(9090)!.rules).toEqual([]);
+    expect(warnings.join('\n')).toMatch(
+      /ApiRule has a ListenerArn that is not a bare Ref.*every listener of WebLB the expression references \(SecondListener, WebListener\) \(fail closed\)/s
+    );
+  });
+
+  it('listener: a guarded Fn::Sub / Fn::GetAtt ListenerArn widens onto the referenced listener only', () => {
+    for (const ListenerArn of [
+      { 'Fn::Sub': '${SecondListener}' },
+      { 'Fn::Sub': ['${Arn}', { Arn: { 'Fn::GetAtt': ['SecondListener', 'ListenerArn'] } }] },
+      { 'Fn::Join': ['', [{ 'Fn::GetAtt': 'SecondListener.ListenerArn' }]] },
+    ]) {
+      const stack = ruleStack({ ListenerArn, Actions: GUARDED }, { SecondListener: listenerOn(8080) });
+      const { listeners } = resolveAlbFrontDoor(stack, ALB);
+      const byPort = new Map(listeners.map((l) => [l.listenerPort, l]));
+      expect(byPort.get(80)!.rules).toEqual([]);
+      expect(byPort.get(8080)!.rules[0]!.authGuard?.kind).toBe('authenticate-cognito');
+    }
+  });
+
+  it('listener: a guarded composite ListenerArn referencing only another ALB\'s listener is not served here', () => {
+    const stack = ruleStack(
+      { ListenerArn: { 'Fn::If': ['C', { Ref: 'OtherListener' }, 'x'] }, Actions: GUARDED },
+      { OtherListener: listenerOn(8080, 'OtherLB') }
+    );
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners.map((l) => l.listenerPort)).toEqual([80]);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings.join('\n')).not.toMatch(/ApiRule/);
+  });
+
+  it('listener: a guarded rule whose ListenerArn references no in-stack listener is skipped (another stack, warned)', () => {
+    for (const ListenerArn of [
+      // ApplicationListener.fromListenerAttributes({ listenerArn: '<literal>' })
+      'arn:aws:elasticloadbalancing:us-east-1:111122223333:listener/app/other/50dc6c495c0c9188/f2f7dc8efc522ab2',
+      // ... with a cross-stack reference (Fn::ImportValue of the producer's export)
+      { 'Fn::ImportValue': 'OtherStack:ExportsOutputRefOtherListenerArn' },
+      { Ref: 'ListenerParam' },
+      { 'Fn::Sub': 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/x/y/z' },
+      { 'Fn::If': ['C', { 'Fn::ImportValue': 'A' }, 'arn:aws:elasticloadbalancing:us-east-1:1:listener/app/x/y/z'] },
+    ]) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        ruleStack({ ListenerArn, Actions: GUARDED }),
+        ALB
+      );
+      expect(listeners).toHaveLength(1);
+      expect(listeners[0]!.rules).toEqual([]);
+      expect(listeners[0]!.defaultAction).toBeDefined();
+      expect(warnings.join('\n')).toMatch(/ApiRule carries.*references no in-stack listener.*not served on WebLB/s);
+      expect(warnings.join('\n')).not.toMatch(/fail closed/);
+    }
+  });
+
+  it('listener: still skips an unguarded rule with an undetermined ListenerArn (silently)', () => {
+    for (const ListenerArn of [{ 'Fn::ImportValue': 'SharedListener' }, { Ref: 'ListenerParam' }]) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        ruleStack({ ListenerArn, Actions: UNGUARDED }),
+        ALB
+      );
+      expect(listeners[0]!.rules).toEqual([]);
+      expect(warnings.join('\n')).not.toMatch(/ListenerArn/);
+    }
+  });
+
+  it('priority: only an integer 1-50000 is literal; anything else sorts a guarded rule first', () => {
+    for (const Priority of [0, -1, 1.5, 50001, '0', '50001', { Ref: 'P' }]) {
+      const { listeners, warnings } = resolveAlbFrontDoor(ruleStack({ Priority, Actions: GUARDED }), ALB);
+      expect(listeners[0]!.rules[0]!.priority).toBeLessThan(1);
+      expect(listeners[0]!.rules[0]!.authGuard?.kind).toBe('authenticate-cognito');
+      expect(warnings.join('\n')).toMatch(/Priority not a literal number.*evaluated before every other rule/s);
+    }
+    for (const [Priority, expected] of [[1, 1], [50000, 50000], ['7', 7]] as const) {
+      const { listeners } = resolveAlbFrontDoor(ruleStack({ Priority, Actions: GUARDED }), ALB);
+      expect(listeners[0]!.rules[0]!.priority).toBe(expected);
+    }
+  });
+
+  it('priority: an unguarded rule with a non-literal Priority still sorts last', () => {
+    for (const Priority of [0, 1.5, 50001, { Ref: 'P' }]) {
+      const { listeners } = resolveAlbFrontDoor(ruleStack({ Priority, Actions: UNGUARDED }), ALB);
+      expect(listeners[0]!.rules[0]!.priority).toBe(Number.MAX_SAFE_INTEGER);
+    }
+  });
+
+  it('conditions: a guarded rule with zero evaluable conditions is a 503 deny at its priority (warned)', () => {
+    const cases: unknown[] = [
+      undefined,
+      [],
+      [null, 'path'],
+      [{ Field: 'path-pattern', PathPatternConfig: { Values: [] } }],
+    ];
+    for (const Conditions of cases) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        ruleStack({ Conditions, Actions: GUARDED }),
+        ALB
+      );
+      const rule = listeners[0]!.rules[0]!;
+      expect(rule.priority).toBe(10);
+      expect(rule.pathPatterns).toEqual([]);
+      expect(rule.hostPatterns).toEqual([]);
+      expect(rule.authGuard).toBeUndefined();
+      expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+      expect(warnings.join('\n')).toMatch(/ApiRule.*no condition cdk-local can route on.*503 deny.*fail closed/s);
+    }
+  });
+
+  it('conditions: an unguarded rule with zero evaluable conditions is still skipped', () => {
+    for (const Conditions of [undefined, [], [null], [{ Field: 'path-pattern', PathPatternConfig: { Values: [] } }]]) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        ruleStack({ Conditions, Actions: UNGUARDED }),
+        ALB
+      );
+      expect(listeners[0]!.rules).toEqual([]);
+      expect(warnings.join('\n')).not.toMatch(/no condition cdk-local can route on/);
+    }
+  });
+
+  it('conditions: a non-object entry is ignored (warned when guarded) and the other conditions kept', () => {
+    const Conditions = [null, ...PATH_ADMIN];
+    const guarded = resolveAlbFrontDoor(ruleStack({ Conditions, Actions: GUARDED }), ALB);
+    expect(guarded.listeners[0]!.rules[0]!.pathPatterns).toEqual(['/admin/*']);
+    expect(guarded.listeners[0]!.rules[0]!.authGuard?.kind).toBe('authenticate-cognito');
+    expect(guarded.warnings.join('\n')).toMatch(/ApiRule.*Conditions entry that is not an object/s);
+    const unguarded = resolveAlbFrontDoor(ruleStack({ Conditions, Actions: UNGUARDED }), ALB);
+    expect(unguarded.listeners[0]!.rules[0]!.pathPatterns).toEqual(['/admin/*']);
+    expect(unguarded.warnings.join('\n')).not.toMatch(/not an object/);
+  });
+
+  it('action: an authenticate-* listed after its terminal still guards it (ALB runs it first)', () => {
+    const { listeners } = resolveAlbFrontDoor(ruleStack({ Actions: [FORWARD_API, AUTH] }), ALB);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.authGuard?.kind).toBe('authenticate-cognito');
+    expect(forwardTarget(rule.action).serviceLogicalId).toBe(API_SERVICE);
+  });
+
+  it('action: an authenticate-* with an unsupported literal terminal Type is a 503 deny; unguarded it is skipped', () => {
+    const guarded = resolveAlbFrontDoor(ruleStack({ Actions: [AUTH, { Type: 'foo' }] }), ALB);
+    const rule = guarded.listeners[0]!.rules[0]!;
+    expect(rule.priority).toBe(10);
+    expect(rule.pathPatterns).toEqual(['/admin/*']);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+    expect(guarded.warnings.join('\n')).toMatch(/ApiRule.*503 deny \(fail closed\)/s);
+    const unguarded = resolveAlbFrontDoor(ruleStack({ Actions: [{ Type: 'foo' }] }), ALB);
+    expect(unguarded.listeners[0]!.rules).toEqual([]);
+  });
+
+  it('action: an unguarded rule with no servable action is still skipped', () => {
+    const { listeners } = resolveAlbFrontDoor(
+      ruleStack({ Actions: [{ Type: 'forward', TargetGroupArn: { Ref: 'MissingTg' } }] }),
+      ALB
+    );
+    expect(listeners[0]!.rules).toEqual([]);
+  });
+
+  it('default action: a whole-intrinsic DefaultActions is not served (fail closed)', () => {
+    const DefaultActions = { 'Fn::If': ['UseAuth', [AUTH, FORWARD_API], [FORWARD_API]] };
+    const listenerProps = { LoadBalancerArn: { Ref: ALB }, Port: 80, Protocol: 'HTTP', DefaultActions };
+    // With a rule left, the listener is served without a default.
+    const withRule = ruleStack(
+      { Actions: UNGUARDED },
+      { [LISTENER]: { Type: 'AWS::ElasticLoadBalancingV2::Listener', Properties: listenerProps } }
+    );
+    const served = resolveAlbFrontDoor(withRule, ALB);
+    expect(served.listeners).toHaveLength(1);
+    expect(served.listeners[0]!.defaultAction).toBeUndefined();
+    expect(served.listeners[0]!.defaultAuthGuard).toBeUndefined();
+    expect(served.warnings.join('\n')).toMatch(
+      /WebListener \(port 80\) default action is not a literal array.*default action is not served/s
+    );
+    // With no rule, the listener serves nothing.
+    const bare = stackWith({
+      [LISTENER]: { Type: 'AWS::ElasticLoadBalancingV2::Listener', Properties: listenerProps },
+    });
+    expect(resolveAlbFrontDoor(bare, ALB).listeners).toEqual([]);
   });
 });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vite-plus/test';
 import { Command } from 'commander';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,9 +15,12 @@ import { serviceStrategy } from '../../../src/cli/commands/local-start-service.j
 import {
   buildFrontDoor,
   addCommonEcsServiceOptions,
+  resolveFrontDoorPlanAuthGuards,
 } from '../../../src/cli/commands/ecs-service-emulator.js';
+import { request as httpRequest } from 'node:http';
 import { resolveFrontDoorTlsMaterials } from '../../../src/local/front-door-tls.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 const ALB = 'WebLB';
 const TG = 'WebTargetGroup';
@@ -850,6 +853,169 @@ describe('buildFrontDoor', () => {
     }
   });
 
+  it('serves 503 on a rule whose action Type is not a literal string while the unguarded default still serves', async () => {
+    const stack = {
+      stackName: 'AlbStack',
+      template: {
+        Resources: {
+          WebLB: {
+            Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+            Properties: { Type: 'application' },
+          },
+          WebListener: {
+            Type: 'AWS::ElasticLoadBalancingV2::Listener',
+            Properties: {
+              LoadBalancerArn: { Ref: 'WebLB' },
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [
+                {
+                  Type: 'fixed-response',
+                  FixedResponseConfig: { StatusCode: '200', MessageBody: 'public' },
+                },
+              ],
+            },
+          },
+          AdminRule: {
+            Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+            Properties: {
+              ListenerArn: { Ref: 'WebListener' },
+              Priority: 1,
+              Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/admin'] } }],
+              Actions: [
+                { Type: { 'Fn::If': ['UseAuth', 'authenticate-oidc', 'fixed-response'] } },
+                {
+                  Type: 'fixed-response',
+                  FixedResponseConfig: { StatusCode: '200', MessageBody: 'admin-secret' },
+                },
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+    const { frontDoor } = albStrategy({} as never).resolveBoots([stack], ['AlbStack:WebLB']);
+    const plan = { ...frontDoor!, listeners: frontDoor!.listeners.map((l) => ({ ...l, hostPort: 0 })) };
+    const logger = { info: () => {}, warn: () => {} } as never;
+    const { servers } = await buildFrontDoor(
+      plan,
+      { containerHost: '127.0.0.1', pull: true } as never,
+      logger
+    );
+    const fetchPath = (port: number, path: string): Promise<{ status: number; body: string }> =>
+      new Promise((resolve, reject) => {
+        const req = httpRequest({ host: '127.0.0.1', port, path, method: 'GET' }, (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    try {
+      const port = servers[0]!.port;
+      const admin = await fetchPath(port, '/admin');
+      expect(admin.status).toBe(503);
+      expect(admin.body).not.toContain('admin-secret');
+      expect(admin.body).not.toContain('public');
+      const other = await fetchPath(port, '/other');
+      expect(other.status).toBe(200);
+      expect(other.body).toBe('public');
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+
+  describe('a guarded rule whose whole Conditions value is an intrinsic (catch-all 503 deny)', () => {
+    const fixed = (body: string): Record<string, unknown> => ({
+      Type: 'fixed-response',
+      FixedResponseConfig: { StatusCode: '200', MessageBody: body },
+    });
+    const stack = {
+      stackName: 'AlbStack',
+      template: {
+        Resources: {
+          WebLB: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Type: 'application' } },
+          WebListener: {
+            Type: 'AWS::ElasticLoadBalancingV2::Listener',
+            Properties: {
+              LoadBalancerArn: { Ref: 'WebLB' },
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [fixed('default-open')],
+            },
+          },
+          // Higher precedence than the deny, literal: must still serve.
+          PublicRule: {
+            Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+            Properties: {
+              ListenerArn: { Ref: 'WebListener' },
+              Priority: 5,
+              Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/public'] } }],
+              Actions: [fixed('public')],
+            },
+          },
+          AdminRule: {
+            Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+            Properties: {
+              ListenerArn: { Ref: 'WebListener' },
+              Priority: 10,
+              Conditions: {
+                'Fn::If': ['Prod', [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/admin'] } }], []],
+              },
+              Actions: [
+                {
+                  Type: 'authenticate-oidc',
+                  AuthenticateOidcConfig: { Issuer: 'https://idp.example.com', ClientId: 'c' },
+                },
+                fixed('admin-secret'),
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+
+    const fetchPath = (port: number, path: string): Promise<{ status: number; body: string }> =>
+      new Promise((resolve, reject) => {
+        const req = httpRequest({ host: '127.0.0.1', port, path, method: 'GET' }, (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+
+    for (const verifyAuth of [undefined, false] as const) {
+      it(`answers 503 below a higher-priority literal rule (verifyAuth: ${String(verifyAuth)})`, async () => {
+        const { frontDoor } = albStrategy({} as never).resolveBoots([stack], ['AlbStack:WebLB']);
+        const plan = { ...frontDoor!, listeners: frontDoor!.listeners.map((l) => ({ ...l, hostPort: 0 })) };
+        const logger = { info: () => {}, warn: () => {} } as never;
+        const { servers } = await buildFrontDoor(
+          plan,
+          { containerHost: '127.0.0.1', pull: true, verifyAuth } as never,
+          logger
+        );
+        try {
+          const port = servers[0]!.port;
+          // The literal priority-5 rule beats the zero-condition deny.
+          expect(await fetchPath(port, '/public')).toEqual({ status: 200, body: 'public' });
+          // Everything else reaches the deny (not the open default), and the
+          // deny carries no guard, so --no-verify-auth does not lift it.
+          for (const path of ['/admin', '/other']) {
+            const r = await fetchPath(port, path);
+            expect(r.status).toBe(503);
+            expect(r.body).not.toContain('admin-secret');
+            expect(r.body).not.toContain('default-open');
+          }
+        } finally {
+          await Promise.all(servers.map((s) => s.close()));
+        }
+      });
+    }
+  });
+
   describe('authenticate-* gate threading (verifyAuth / bearerToken options)', () => {
     /**
      * Build a 1-listener plan with a fixed-response default action wrapped
@@ -1143,5 +1309,196 @@ describe('parseAssumeHostOverrides — review follow-ups (go-to-k/cdk-local#862)
 
   it('accepts a host with an in-range port', () => {
     expect(parseAssumeHostOverrides(['api.example.com:8443']).all).toBe('api.example.com:8443');
+  });
+});
+
+describe('start-alb authenticate-cognito with intrinsic config (#1004)', () => {
+  /** The CDK `ListenerAction.authenticateCognito` shape, fronting a fixed-response. */
+  function cdkCognitoStack(): StackInfo {
+    return {
+      stackName: 'AlbStack',
+      template: {
+        Resources: {
+          WebLB: {
+            Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+            Properties: { Type: 'application' },
+          },
+          Pool: { Type: 'AWS::Cognito::UserPool', Properties: {} },
+          Client: { Type: 'AWS::Cognito::UserPoolClient', Properties: {} },
+          WebListener: {
+            Type: 'AWS::ElasticLoadBalancingV2::Listener',
+            Properties: {
+              LoadBalancerArn: { Ref: 'WebLB' },
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [
+                {
+                  Type: 'authenticate-cognito',
+                  AuthenticateCognitoConfig: {
+                    UserPoolArn: { 'Fn::GetAtt': ['Pool', 'Arn'] },
+                    UserPoolClientId: { Ref: 'Client' },
+                    UserPoolDomain: { Ref: 'Domain' },
+                  },
+                },
+                {
+                  Type: 'fixed-response',
+                  FixedResponseConfig: { StatusCode: '200', MessageBody: 'secret' },
+                },
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+  }
+
+  function get(port: number, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = httpRequest({ host: '127.0.0.1', port, path: '/', headers }, (res) => {
+        let body = '';
+        res.on('data', (c: Buffer) => (body += c.toString()));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  it('refuses an anonymous request with 401 when the guard cannot be resolved (no state source)', async () => {
+    const { frontDoor, warnings } = albStrategy({} as never).resolveBoots(
+      [cdkCognitoStack()],
+      ['AlbStack:WebLB']
+    );
+    expect(warnings).toEqual([]);
+    const plan = { ...frontDoor!, listeners: frontDoor!.listeners.map((l) => ({ ...l, hostPort: 0 })) };
+    const resolved = await resolveFrontDoorPlanAuthGuards(plan, [cdkCognitoStack()], {} as never, undefined);
+    expect(resolved.listeners[0]!.defaultAuthGuard?.pending).toBeUndefined();
+    const logger = { info: () => {}, warn: () => {} } as never;
+    const { servers } = await buildFrontDoor(
+      resolved,
+      { containerHost: '127.0.0.1', pull: true } as never,
+      logger
+    );
+    try {
+      const port = servers[0]!.port;
+      const anonymous = await get(port);
+      expect(anonymous.status).toBe(401);
+      expect(anonymous.body).not.toContain('secret');
+      const basic = await get(port, { authorization: 'Basic dXNlcjpwdw==' });
+      expect(basic.status).toBe(401);
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+
+  it('resolves the guard from a loaded state source and disposes the provider', async () => {
+    const dispose = vi.fn();
+    const load = vi.fn(async () => ({
+      resources: {
+        Pool: { physicalId: 'us-east-1_Pool42', resourceType: 'AWS::Cognito::UserPool', properties: {}, attributes: {}, dependencies: [] },
+        Client: { physicalId: 'client-42', resourceType: 'AWS::Cognito::UserPoolClient', properties: {}, attributes: {}, dependencies: [] },
+      },
+      outputs: {},
+      region: 'us-east-1',
+    }));
+    const extra = { fromFake: () => ({ label: '--from-fake', load, dispose }) } as never;
+    const { frontDoor } = albStrategy({} as never).resolveBoots([cdkCognitoStack()], ['AlbStack:WebLB']);
+    const resolved = await resolveFrontDoorPlanAuthGuards(
+      frontDoor!,
+      [cdkCognitoStack()],
+      { fromFake: true } as never,
+      extra
+    );
+    expect(load).toHaveBeenCalledWith('AlbStack', undefined);
+    expect(dispose).toHaveBeenCalled();
+    expect(resolved.listeners[0]!.defaultAuthGuard).toEqual({
+      kind: 'authenticate-cognito',
+      issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_Pool42',
+      audience: 'client-42',
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_Pool42',
+      sessionCookieName: 'AWSELBAuthSessionCookie',
+      label: 'authenticate-cognito (UserPool=us-east-1_Pool42)',
+    });
+  });
+
+  it('keeps the placeholder guard and disposes the provider when the state load throws', async () => {
+    const dispose = vi.fn();
+    const load = vi.fn(async () => {
+      throw new Error('AccessDenied');
+    });
+    const extra = { fromFake: () => ({ label: '--from-fake', load, dispose }) } as never;
+    const { frontDoor } = albStrategy({} as never).resolveBoots([cdkCognitoStack()], ['AlbStack:WebLB']);
+    const resolved = await resolveFrontDoorPlanAuthGuards(
+      frontDoor!,
+      [cdkCognitoStack()],
+      { fromFake: true } as never,
+      extra
+    );
+    const guard = resolved.listeners[0]!.defaultAuthGuard!;
+    expect(guard.label).toBe('authenticate-cognito (unresolved)');
+    expect(guard.pending).toBeUndefined();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the placeholder guard when the provider returns no state', async () => {
+    const dispose = vi.fn();
+    const load = vi.fn(async () => undefined);
+    const extra = {
+      fromFake: () => ({
+        label: '--from-fake',
+        load,
+        dispose,
+        getLastLoadError: () => 'Stack with id AlbStack does not exist',
+      }),
+    } as never;
+    const { frontDoor } = albStrategy({} as never).resolveBoots([cdkCognitoStack()], ['AlbStack:WebLB']);
+    const resolved = await resolveFrontDoorPlanAuthGuards(
+      frontDoor!,
+      [cdkCognitoStack()],
+      { fromFake: true } as never,
+      extra
+    );
+    const guard = resolved.listeners[0]!.defaultAuthGuard!;
+    expect(guard.label).toBe('authenticate-cognito (unresolved)');
+    expect(guard.pending).toBeUndefined();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the generic cause when the provider reports an empty last-load error', async () => {
+    const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      const extra = {
+        fromFake: () => ({
+          label: '--from-fake',
+          load: vi.fn(async () => undefined),
+          dispose: vi.fn(),
+          getLastLoadError: () => '',
+        }),
+      } as never;
+      const { frontDoor } = albStrategy({} as never).resolveBoots([cdkCognitoStack()], ['AlbStack:WebLB']);
+      await resolveFrontDoorPlanAuthGuards(frontDoor!, [cdkCognitoStack()], { fromFake: true } as never, extra);
+      const text = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(text).toMatch(
+        /deployed state did not load: the state source returned no state for the stack\)/
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('serves the route with --no-verify-auth (the explicit opt-out)', async () => {
+    const { frontDoor } = albStrategy({} as never).resolveBoots([cdkCognitoStack()], ['AlbStack:WebLB']);
+    const plan = { ...frontDoor!, listeners: frontDoor!.listeners.map((l) => ({ ...l, hostPort: 0 })) };
+    const options = { containerHost: '127.0.0.1', pull: true, verifyAuth: false } as never;
+    const resolved = await resolveFrontDoorPlanAuthGuards(plan, [cdkCognitoStack()], options, undefined);
+    const { servers } = await buildFrontDoor(resolved, options, { info: () => {}, warn: () => {} } as never);
+    try {
+      const res = await get(servers[0]!.port);
+      expect(res.status).toBe(200);
+      expect(res.body).toBe('secret');
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
   });
 });
