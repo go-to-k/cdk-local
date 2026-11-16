@@ -926,6 +926,96 @@ describe('buildFrontDoor', () => {
     }
   });
 
+  describe('a guarded rule whose whole Conditions value is an intrinsic (catch-all 503 deny)', () => {
+    const fixed = (body: string): Record<string, unknown> => ({
+      Type: 'fixed-response',
+      FixedResponseConfig: { StatusCode: '200', MessageBody: body },
+    });
+    const stack = {
+      stackName: 'AlbStack',
+      template: {
+        Resources: {
+          WebLB: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Type: 'application' } },
+          WebListener: {
+            Type: 'AWS::ElasticLoadBalancingV2::Listener',
+            Properties: {
+              LoadBalancerArn: { Ref: 'WebLB' },
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [fixed('default-open')],
+            },
+          },
+          // Higher precedence than the deny, literal: must still serve.
+          PublicRule: {
+            Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+            Properties: {
+              ListenerArn: { Ref: 'WebListener' },
+              Priority: 5,
+              Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/public'] } }],
+              Actions: [fixed('public')],
+            },
+          },
+          AdminRule: {
+            Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+            Properties: {
+              ListenerArn: { Ref: 'WebListener' },
+              Priority: 10,
+              Conditions: {
+                'Fn::If': ['Prod', [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/admin'] } }], []],
+              },
+              Actions: [
+                {
+                  Type: 'authenticate-oidc',
+                  AuthenticateOidcConfig: { Issuer: 'https://idp.example.com', ClientId: 'c' },
+                },
+                fixed('admin-secret'),
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+
+    const fetchPath = (port: number, path: string): Promise<{ status: number; body: string }> =>
+      new Promise((resolve, reject) => {
+        const req = httpRequest({ host: '127.0.0.1', port, path, method: 'GET' }, (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+
+    for (const verifyAuth of [undefined, false] as const) {
+      it(`answers 503 below a higher-priority literal rule (verifyAuth: ${String(verifyAuth)})`, async () => {
+        const { frontDoor } = albStrategy({} as never).resolveBoots([stack], ['AlbStack:WebLB']);
+        const plan = { ...frontDoor!, listeners: frontDoor!.listeners.map((l) => ({ ...l, hostPort: 0 })) };
+        const logger = { info: () => {}, warn: () => {} } as never;
+        const { servers } = await buildFrontDoor(
+          plan,
+          { containerHost: '127.0.0.1', pull: true, verifyAuth } as never,
+          logger
+        );
+        try {
+          const port = servers[0]!.port;
+          // The literal priority-5 rule beats the zero-condition deny.
+          expect(await fetchPath(port, '/public')).toEqual({ status: 200, body: 'public' });
+          // Everything else reaches the deny (not the open default), and the
+          // deny carries no guard, so --no-verify-auth does not lift it.
+          for (const path of ['/admin', '/other']) {
+            const r = await fetchPath(port, path);
+            expect(r.status).toBe(503);
+            expect(r.body).not.toContain('admin-secret');
+            expect(r.body).not.toContain('default-open');
+          }
+        } finally {
+          await Promise.all(servers.map((s) => s.close()));
+        }
+      });
+    }
+  });
+
   describe('authenticate-* gate threading (verifyAuth / bearerToken options)', () => {
     /**
      * Build a 1-listener plan with a fixed-response default action wrapped

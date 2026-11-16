@@ -386,9 +386,26 @@ export function resolveAlbFrontDoor(
 
     const rules: ResolvedListenerRule[] = [];
     for (const { ruleLogicalId, ruleProps } of rulesByListener.get(listenerLogicalId) ?? []) {
-      const priority = parsePriority(ruleProps['Priority']);
-      const ruleLabel = `Listener rule ${displayIdent(ruleLogicalId)} (priority ${priority})`;
+      const literalPriority = parsePriority(ruleProps['Priority']);
       const guarded = actionsMayCarryGuard(ruleProps['Actions']);
+      // A non-literal Priority cannot be placed. An unguarded rule sorts last
+      // (an explicitly prioritized rule wins over it); a guarded rule (or one
+      // that may be guarded, or becomes a deny) sorts first so it can only
+      // guard / deny more requests, never let a lower rule serve them unguarded.
+      const priority =
+        literalPriority ?? (guarded ? UNPLACEABLE_GUARDED_PRIORITY : Number.MAX_SAFE_INTEGER);
+      const ruleLabel =
+        literalPriority === undefined
+          ? `Listener rule ${displayIdent(ruleLogicalId)} (Priority not a literal number)`
+          : `Listener rule ${displayIdent(ruleLogicalId)} (priority ${priority})`;
+      if (literalPriority === undefined && guarded) {
+        warnings.push(
+          `${ruleLabel} carries (or may carry) an authenticate-* action, so it is ` +
+            'evaluated before every other rule on the listener (fail closed): placing it first can ' +
+            'only guard or deny more requests locally, never let a lower-priority rule serve its ' +
+            'requests unguarded.'
+        );
+      }
       const parsed = parseRuleConditions(
         ruleProps['Conditions'],
         albLogicalId,
@@ -430,7 +447,7 @@ export function resolveAlbFrontDoor(
         // would let its requests fall through unguarded, so it stays at its
         // priority as a deny over its supported conditions (a superset).
         warnings.push(
-          `${ruleLabel} carries an authenticate-* action (or an action whose Type may be one), so ` +
+          `${ruleLabel} carries (or may carry) an authenticate-* action, so ` +
             'instead of being skipped it is kept at its priority as a local 503 deny (fail closed) ' +
             (hasAnyCondition
               ? 'over its remaining supported conditions'
@@ -533,7 +550,19 @@ function resolveAction(
   label: string,
   warnings: string[]
 ): ResolvedActionOutcome | { deny: ActionDeny } | undefined {
-  if (!Array.isArray(actions)) return undefined;
+  if (actions === undefined || actions === null) return undefined;
+  // A whole Actions value that is not a literal array (an `Fn::If` choosing
+  // between two action lists): whether it carries a guard cannot be known.
+  if (!Array.isArray(actions)) {
+    return {
+      deny: {
+        warning:
+          'is not a literal array (for example an Fn::If choosing between two action lists). It ' +
+          'may carry an authenticate-* guard',
+        body: 'its Actions value is not a literal array, so its authenticate-* guard cannot be determined',
+      },
+    };
+  }
 
   // Fail closed on an action whose Type is not a literal string (an `Fn::If`
   // choosing between an authenticate-* and a forward, or a whole action entry
@@ -613,7 +642,8 @@ function hasNonLiteralType(action: unknown): boolean {
 
 /** True when an `Actions` array carries, or may carry, an authenticate-* guard. */
 function actionsMayCarryGuard(actions: unknown): boolean {
-  if (!Array.isArray(actions)) return false;
+  // A present non-array value (an intrinsic) may stand for a guarded list.
+  if (!Array.isArray(actions)) return actions !== undefined && actions !== null;
   return actions.some((action) => {
     if (hasNonLiteralType(action)) return true;
     if (!action || typeof action !== 'object') return false;
@@ -917,8 +947,18 @@ function parseRuleConditions(
     queryStringConditions: [],
     sourceIpCidrs: [],
   };
-  if (!Array.isArray(conditions)) return out;
   const tail = guarded ? 'the rule is kept as a local 503 deny instead' : 'skipping the rule';
+  if (conditions === undefined || conditions === null) return out;
+  if (!Array.isArray(conditions)) {
+    // A whole Conditions value that is not a literal array (an `Fn::If`): no
+    // condition can be evaluated, so a guarded rule denies every request at
+    // its priority (the caller's partial path); an unguarded one is skipped.
+    warnings.push(
+      `${ruleLabel} has a Conditions value that is not a literal array (for example an Fn::If); ` +
+        `${tail}.`
+    );
+    return guarded ? { ...out, partial: true } : undefined;
+  }
   const failedFields = new Set<string>();
   // Record one unsupported condition. True = stop and skip the rule (unguarded).
   const fail = (field: string, message: string): boolean => {
@@ -1269,15 +1309,18 @@ function parseFixedResponseStatusCode(raw: unknown): number {
 }
 
 /**
- * Parse a ListenerRule `Priority` (ALB priorities are 1-50000, lower = higher
- * precedence). A missing / unparseable priority sorts last so an explicitly
- * prioritized rule always wins over it.
+ * Parse a literal ListenerRule `Priority` (ALB priorities are 1-50000, lower =
+ * higher precedence). `undefined` for a missing / non-literal priority: the
+ * caller places it (last when unguarded, first when guarded).
  */
-function parsePriority(raw: unknown): number {
+function parsePriority(raw: unknown): number | undefined {
   if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
   if (typeof raw === 'string' && /^\d+$/.test(raw)) return parseInt(raw, 10);
-  return Number.MAX_SAFE_INTEGER;
+  return undefined;
 }
+
+/** Where a guarded rule with a non-literal Priority sorts: before every ALB priority (1-50000). */
+const UNPLACEABLE_GUARDED_PRIORITY = 0;
 
 /** ALB's default session cookie name prefix (suffixed `-0` / `-1` / ... by ALB). */
 const DEFAULT_ALB_SESSION_COOKIE = 'AWSELBAuthSessionCookie';

@@ -2066,7 +2066,17 @@ rule whose `authenticate-*` action has no locally servable terminal action
 carrying an `authenticate-*` action (or an intrinsic `Type`) with a condition
 cdk-local cannot evaluate: the unsupported condition field is dropped from the
 deny, which only widens what is denied locally (with no supported condition
-left, every request reaching that priority answers `503`). When only the client id is
+left, every request reaching that priority answers `503`). A whole `Actions`
+value that is not a literal array (for example an `Fn::If` choosing between two
+action lists) is treated the same way: it may carry an `authenticate-*` action,
+so the rule answers `503` at its priority over its conditions (or the listener
+default is not served, for `DefaultActions`). A whole `Conditions` value that is
+not a literal array makes a rule that carries (or may carry) an
+`authenticate-*` action answer `503` for every request reaching its priority;
+an unguarded rule with one is skipped, with a warning. A rule whose `Priority`
+is not a literal number sorts after every literal-priority rule when it carries
+no `authenticate-*` action, but before every other rule when it carries (or may
+carry) one, so it can only guard or deny more requests locally. When only the client id is
 unresolved, the token's signature, `iss` and `exp` are verified and its
 audience is not. Pass `--from-cfn-stack` for real verification, or
 `--no-verify-auth` to serve the route without a guard (the guards are then
