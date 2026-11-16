@@ -154,9 +154,9 @@ import {
 import {
   pendingAuthGuardStackNames,
   resolveFrontDoorAuthGuardIntrinsics,
+  type AuthGuardStateContext,
   type FrontDoorAuthGuard,
 } from '../../local/elb-front-door-resolver.js';
-import type { SubstitutionContext } from '../../local/state-resolver.js';
 import { buildAuthCheck } from '../../local/front-door-auth.js';
 import { createJwksCache, type WarnedAt } from '../../local/cognito-jwt.js';
 import { isLocalCdkAssetImage, listPinnedTargets } from '../../local/image-pin-detector.js';
@@ -791,10 +791,13 @@ export async function runEcsServiceEmulator(
     rejectExplicitCfnStackWithMultipleStacks(options, boots.length);
     // #1004: an authenticate-* guard whose config is an intrinsic resolves
     // from the deployed state before the front-door is built. Once per boot:
-    // `--watch` does not rebuild the front-door.
-    const resolvedFrontDoor = frontDoor
-      ? await resolveFrontDoorPlanAuthGuards(frontDoor, stacks, options, extraStateProviders)
-      : undefined;
+    // `--watch` does not rebuild the front-door. Under --no-verify-auth the
+    // guards are disabled, so there is nothing to resolve (and nothing to
+    // warn about).
+    const resolvedFrontDoor =
+      frontDoor && options.verifyAuth !== false
+        ? await resolveFrontDoorPlanAuthGuards(frontDoor, stacks, options, extraStateProviders)
+        : frontDoor;
     perTarget = boots.map((boot) => ({ boot, runState: createServiceRunState() }));
 
     const cloudMapIndexByStack = new Map<string, CloudMapIndex>();
@@ -2783,20 +2786,27 @@ export async function resolveFrontDoorPlanAuthGuards(
 ): Promise<FrontDoorPlan> {
   const stackNames = pendingAuthGuardStackNames(plan.listeners);
   if (stackNames.length === 0) return plan;
-  const contexts = new Map<string, SubstitutionContext>();
+  // A stack missing from `contexts` means no state source is active; a
+  // `{ loadError }` entry means one was, and carries why the state did not
+  // load, so the guard warning names the cause rather than a flag the user
+  // already passed.
+  const contexts = new Map<string, AuthGuardStateContext>();
   if (isStateSourceActive(options, extraStateProviders)) {
     for (const stackName of stackNames) {
       const stack = stacks.find((s) => s.stackName === stackName);
       const region = await resolveCfnFallbackRegion(options, stack?.region);
       const provider = createLocalStateProvider(options, stackName, region, extraStateProviders);
-      if (!provider) continue;
+      if (!provider) {
+        contexts.set(stackName, { loadError: 'no state provider is available for the stack' });
+        continue;
+      }
       try {
         const loaded = await provider.load(stackName, stack?.region);
         if (!loaded) {
           const detail = provider.getLastLoadError?.();
-          getLogger().debug(
-            `authenticate-* guards of ${stackName}: no deployed state loaded${detail ? ` (${detail})` : ''}.`
-          );
+          contexts.set(stackName, {
+            loadError: detail ?? 'the state source returned no state for the stack',
+          });
           continue;
         }
         const pseudoParameters = {
@@ -2808,9 +2818,9 @@ export async function resolveFrontDoorPlanAuthGuards(
           ...(Object.keys(pseudoParameters).length > 0 && { pseudoParameters }),
         });
       } catch (err) {
-        getLogger().debug(
-          `authenticate-* guards of ${stackName}: state load failed: ${err instanceof Error ? err.message : String(err)}`
-        );
+        contexts.set(stackName, {
+          loadError: err instanceof Error ? err.message : String(err),
+        });
       } finally {
         provider.dispose();
       }

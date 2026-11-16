@@ -305,6 +305,14 @@ export interface AlbFrontDoorResolution {
  * Resolve an ALB into its front-door listeners + routing tables. Pure — reads
  * only the supplied stack template. Returns an empty `listeners` array (with
  * warnings) when the ALB fronts nothing cdk-local can serve locally.
+ *
+ * An authenticate-* guard whose config is an intrinsic comes back as the
+ * placeholder guard carrying `pending` (#1004). A host that SERVES the result
+ * must pass the listeners through {@link resolveFrontDoorAuthGuardIntrinsics}
+ * (with the stack's state, or `undefined` for none) before building the
+ * front-door; otherwise every such route stays on the placeholder (a Bearer
+ * token is required but never verified). A host that only inspects routes
+ * (targets, paths) can ignore `pending`.
  */
 export function resolveAlbFrontDoor(
   stack: StackInfo,
@@ -470,6 +478,25 @@ function resolveAction(
   warnings: string[]
 ): { action: ResolvedListenerAction; authGuard?: FrontDoorAuthGuard } | undefined {
   if (!Array.isArray(actions)) return undefined;
+
+  // Fail closed on an action whose Type is not a literal string (an `Fn::If`
+  // choosing between an authenticate-* and a forward, or a whole action entry
+  // wrapped in an intrinsic): skipping just that entry could serve the
+  // terminal action without the guard it may stand for.
+  const hasUnknownType = actions.some(
+    (action) =>
+      action !== null &&
+      typeof action === 'object' &&
+      typeof (action as Record<string, unknown>)['Type'] !== 'string'
+  );
+  if (hasUnknownType) {
+    warnings.push(
+      `${label} has an action whose Type is not a literal string (for example an Fn::If, or a ` +
+        'whole action wrapped in an intrinsic). It may be an authenticate-* guard, so the route is ' +
+        'not served locally (fail closed). Skipping it.'
+    );
+    return undefined;
+  }
 
   let authGuard: FrontDoorAuthGuard | undefined;
   let sawAuthenticate = false;
@@ -1135,9 +1162,11 @@ const DEFAULT_ALB_SESSION_COOKIE = 'AWSELBAuthSessionCookie';
  * Cognito User Pool ARN shape:
  *   `arn:aws:cognito-idp:<region>:<account>:userpool/<pool-id>`
  * The pool id itself contains a `_`, but never a `/`, so anchoring on the
- * `userpool/` segment is robust.
+ * `userpool/` segment is robust. The region is restricted to `[a-z0-9-]` because
+ * it is spliced into the JWKS host (`cognito-idp.<region>.amazonaws.com`): a
+ * value such as `evil.example/x` must not steer that fetch to another host.
  */
-const COGNITO_USERPOOL_ARN = /^arn:[^:]+:cognito-idp:([^:]+):[^:]+:userpool\/([^/]+)$/;
+const COGNITO_USERPOOL_ARN = /^arn:[^:]+:cognito-idp:([a-z0-9-]+):[^:]+:userpool\/([^/]+)$/;
 
 /** A Cognito user pool id (`<region>_<suffix>`), which is the pool's physical id. */
 const COGNITO_USERPOOL_ID = /^([a-z]{2}(?:-[a-z]+)+-\d+)_[0-9A-Za-z]+$/;
@@ -1146,8 +1175,21 @@ const COGNITO_USERPOOL_TYPE = 'AWS::Cognito::UserPool';
 
 type GuardKind = FrontDoorAuthGuard['kind'];
 
-/** One config field's value, or why it has none. */
-type FieldResult = { value: string } | { reason: string; intrinsic: boolean };
+/**
+ * One config field's value, or why it has none. `stateSourceActive` marks an
+ * intrinsic that a state source was asked to resolve (loaded or failed), so
+ * the warning does not tell the user to pass one.
+ */
+type FieldResult =
+  | { value: string }
+  | { reason: string; intrinsic: boolean; stateSourceActive?: boolean };
+
+/**
+ * A stack's substitution context for {@link resolveFrontDoorAuthGuardIntrinsics}:
+ * the loaded state, `{ loadError }` when a state source was active but the
+ * stack's state did not load, or `undefined` when no state source is active.
+ */
+export type AuthGuardStateContext = SubstitutionContext | { loadError: string } | undefined;
 
 /** The two required config fields of each authenticate-* kind. */
 function fieldNames(kind: GuardKind): { primary: string; audience: string; config: string } {
@@ -1194,9 +1236,11 @@ function placeholderGuard(
 }
 
 /**
- * An OIDC `Issuer` the guard verifies against: an `https://` URL, as ALB
- * requires. A plain-`http://` loopback issuer is also accepted, so a local
- * test IdP on the host keeps working; it is never a deployed value.
+ * An OIDC `Issuer` the guard verifies against: any `http://` or `https://`
+ * URL. ALB itself requires `https://` and rejects a plain-`http://` issuer at
+ * deploy time, so an `http://` value is only ever a local test IdP; it is
+ * still verified, as it was before #1004. A non-http(s), unparseable or empty
+ * value is unresolved.
  */
 function isUsableOidcIssuer(value: string): boolean {
   let url: URL;
@@ -1205,18 +1249,14 @@ function isUsableOidcIssuer(value: string): boolean {
   } catch {
     return false;
   }
-  if (url.protocol === 'https:') return true;
-  return (
-    url.protocol === 'http:' &&
-    (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]')
-  );
+  return url.protocol === 'https:' || url.protocol === 'http:';
 }
 
 /**
  * The one builder every guard goes through — literal template values and
  * values resolved from state alike (#1004). The primary field (Cognito
  * `UserPoolArn` / OIDC `Issuer`) must be a Cognito user pool ARN / an
- * `https://` URL; otherwise the placeholder guard is returned. An audience
+ * `http(s)://` URL; otherwise the placeholder guard is returned. An audience
  * that has no value leaves the audience unchecked. Every shortfall is
  * reported through `warn`, keyed by the field it concerns.
  */
@@ -1233,21 +1273,32 @@ function materializeGuard(
   const cli = `${getEmbedConfig().cliName} start-alb`;
   const unguardedTail =
     'The route still requires a Bearer token, but does not verify it (JWKS pass-through admits any token).';
+  const restartTail = `Restart ${cli} after deploying: --watch does not rebuild the front-door.`;
   const intrinsicHint =
     'Deploy the stack and pass --from-cfn-stack (or another state source) for real verification, ' +
-    `or --no-verify-auth to disable the guard. Restart ${cli} after deploying: --watch does not rebuild the front-door.`;
+    `or --no-verify-auth to disable the guard. ${restartTail}`;
+  const activeSourceHint =
+    'Check that the stack is deployed and its state source can read it, ' +
+    `or pass --no-verify-auth to disable the guard. ${restartTail}`;
   const literalHint = 'Fix the template value, or pass --no-verify-auth to disable the guard.';
 
-  const unresolved = (reason: string, intrinsic: boolean): FrontDoorAuthGuard => {
+  const unresolved = (
+    reason: string,
+    intrinsic: boolean,
+    stateSourceActive = false
+  ): FrontDoorAuthGuard => {
+    const hint = !intrinsic ? literalHint : stateSourceActive ? activeSourceHint : intrinsicHint;
     warn(
       names.primary,
       `${location}: ${kind} ${names.primary} ${intrinsic ? `is an intrinsic ${cli} could not resolve` : 'is unusable'} ` +
-        `(${reason}). ${unguardedTail} ${intrinsic ? intrinsicHint : literalHint}`
+        `(${reason}). ${unguardedTail} ${hint}`
     );
     return placeholderGuard(kind, siteLogicalId, sessionCookieName);
   };
 
-  if (!('value' in primary)) return unresolved(primary.reason, primary.intrinsic);
+  if (!('value' in primary)) {
+    return unresolved(primary.reason, primary.intrinsic, primary.stateSourceActive);
+  }
 
   let base: Pick<FrontDoorAuthGuard, 'issuer' | 'region' | 'userPoolId' | 'label'>;
   if (kind === 'authenticate-cognito') {
@@ -1269,7 +1320,10 @@ function materializeGuard(
     };
   } else {
     if (!isUsableOidcIssuer(primary.value)) {
-      return unresolved(`${displayUntrustedValue(primary.value)} is not an https:// URL`, false);
+      return unresolved(
+        `${displayUntrustedValue(primary.value)} is not an http:// or https:// URL`,
+        false
+      );
     }
     base = {
       issuer: primary.value.replace(/\/+$/, ''),
@@ -1282,7 +1336,9 @@ function materializeGuard(
       names.audience,
       `${location}: ${kind} ${names.audience} could not be resolved (${audience.reason}), so the token ` +
         'audience is not checked (signature, issuer and expiry still are).' +
-        (audience.intrinsic ? ' Pass --from-cfn-stack (or another state source) to check it.' : '')
+        (audience.intrinsic && !audience.stateSourceActive
+          ? ' Pass --from-cfn-stack (or another state source) to check it.'
+          : '')
     );
   }
   return {
@@ -1382,11 +1438,18 @@ function userPoolArnFromState(raw: unknown, context: SubstitutionContext): strin
 /** Resolve one raw config field against a stack's state. */
 function resolveField(
   raw: unknown,
-  context: SubstitutionContext | undefined,
+  context: AuthGuardStateContext,
   isUserPoolArn: boolean
 ): FieldResult {
   if (!isIntrinsicValue(raw)) return literalField(raw);
-  if (!context) return { reason: 'no deployed state was loaded for the stack', intrinsic: true };
+  if (!context) return { reason: 'no state source is active', intrinsic: true };
+  if ('loadError' in context) {
+    return {
+      reason: `the stack's deployed state did not load: ${context.loadError}`,
+      intrinsic: true,
+      stateSourceActive: true,
+    };
+  }
   if (isUserPoolArn) {
     const derived = userPoolArnFromState(raw, context);
     if (derived !== undefined) return { value: derived };
@@ -1398,6 +1461,7 @@ function resolveField(
   return {
     reason: result.kind === 'unresolved' ? result.reason : 'it resolved to a non-string',
     intrinsic: true,
+    stateSourceActive: true,
   };
 }
 
@@ -1407,7 +1471,7 @@ function resolveField(
  */
 function resolvePendingGuard(
   guard: FrontDoorAuthGuard,
-  contextFor: (stackName: string) => SubstitutionContext | undefined,
+  contextFor: (stackName: string) => AuthGuardStateContext,
   warnOnce: (key: string, message: string) => void
 ): FrontDoorAuthGuard {
   const pending = guard.pending;
@@ -1429,8 +1493,9 @@ function resolvePendingGuard(
  * Resolve every `start-alb` authenticate-* guard whose template config is an
  * intrinsic (#1004) — the listener default guard and every rule guard —
  * against its stack's state, once a state source has loaded. `contextFor`
- * returns the stack's substitution context, or `undefined` when it has no
- * state. Pure: returns new listeners, leaving the input untouched.
+ * returns the stack's substitution context, `{ loadError }` when a state
+ * source was active but the stack's state did not load (the cause lands in
+ * the warning), or `undefined` when no state source is active. Pure: returns new listeners, leaving the input untouched.
  *
  * - Every field resolves to a usable value: the real guard, exactly as with
  *   literal values.
@@ -1449,7 +1514,7 @@ export function resolveFrontDoorAuthGuardIntrinsics<
   },
 >(
   listeners: readonly L[],
-  contextFor: (stackName: string) => SubstitutionContext | undefined,
+  contextFor: (stackName: string) => AuthGuardStateContext,
   warned: Set<string> = new Set<string>()
 ): L[] {
   const warnOnce = (key: string, message: string): void => {

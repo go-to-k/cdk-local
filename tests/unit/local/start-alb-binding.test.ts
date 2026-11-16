@@ -1258,6 +1258,49 @@ describe('start-alb authenticate-cognito with intrinsic config (#1004)', () => {
     });
   });
 
+  it('keeps the placeholder guard and disposes the provider when the state load throws', async () => {
+    const dispose = vi.fn();
+    const load = vi.fn(async () => {
+      throw new Error('AccessDenied');
+    });
+    const extra = { fromFake: () => ({ label: '--from-fake', load, dispose }) } as never;
+    const { frontDoor } = albStrategy({} as never).resolveBoots([cdkCognitoStack()], ['AlbStack:WebLB']);
+    const resolved = await resolveFrontDoorPlanAuthGuards(
+      frontDoor!,
+      [cdkCognitoStack()],
+      { fromFake: true } as never,
+      extra
+    );
+    const guard = resolved.listeners[0]!.defaultAuthGuard!;
+    expect(guard.label).toBe('authenticate-cognito (unresolved)');
+    expect(guard.pending).toBeUndefined();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the placeholder guard when the provider returns no state', async () => {
+    const dispose = vi.fn();
+    const load = vi.fn(async () => undefined);
+    const extra = {
+      fromFake: () => ({
+        label: '--from-fake',
+        load,
+        dispose,
+        getLastLoadError: () => 'Stack with id AlbStack does not exist',
+      }),
+    } as never;
+    const { frontDoor } = albStrategy({} as never).resolveBoots([cdkCognitoStack()], ['AlbStack:WebLB']);
+    const resolved = await resolveFrontDoorPlanAuthGuards(
+      frontDoor!,
+      [cdkCognitoStack()],
+      { fromFake: true } as never,
+      extra
+    );
+    const guard = resolved.listeners[0]!.defaultAuthGuard!;
+    expect(guard.label).toBe('authenticate-cognito (unresolved)');
+    expect(guard.pending).toBeUndefined();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('serves the route with --no-verify-auth (the explicit opt-out)', async () => {
     const { frontDoor } = albStrategy({} as never).resolveBoots([cdkCognitoStack()], ['AlbStack:WebLB']);
     const plan = { ...frontDoor!, listeners: frontDoor!.listeners.map((l) => ({ ...l, hostPort: 0 })) };

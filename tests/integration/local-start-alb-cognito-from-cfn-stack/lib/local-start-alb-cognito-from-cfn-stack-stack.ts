@@ -28,7 +28,7 @@ export class LocalStartAlbCognitoFromCfnStackStack extends cdk.Stack {
     });
     const client = pool.addClient('Client', { authFlows: { adminUserPassword: true } });
     const domain = pool.addDomain('Domain', {
-      cognitoDomain: { domainPrefix: integScopedName('cdkl-alb-cognito-fixture') },
+      cognitoDomain: { domainPrefix: integScopedName('cdkl-alb-idp-fixture') },
     });
 
     const localOnly = new cdk.CfnCondition(this, 'LocalOnly', {

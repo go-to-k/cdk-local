@@ -3,6 +3,7 @@ import {
   resolveAlbFrontDoor,
   resolveFrontDoorAuthGuardIntrinsics,
   pendingAuthGuardStackNames,
+  type AuthGuardStateContext,
   type FrontDoorAuthGuard,
 } from '../../../src/local/elb-front-door-resolver.js';
 import type { SubstitutionContext } from '../../../src/local/state-resolver.js';
@@ -83,7 +84,7 @@ const CDK_COGNITO = cognitoAction({
 
 function resolveDefault(
   stack: StackInfo,
-  contextFor: (stackName: string) => SubstitutionContext | undefined,
+  contextFor: (stackName: string) => AuthGuardStateContext,
   warned?: Set<string>
 ): FrontDoorAuthGuard {
   const { listeners } = resolveAlbFrontDoor(stack, 'Alb');
@@ -162,7 +163,7 @@ describe('resolveFrontDoorAuthGuardIntrinsics (#1004)', () => {
     const guard = resolveDefault(albStack(CDK_COGNITO), () => undefined);
     expect(isPlaceholder(guard)).toBe(true);
     const text = warnText();
-    expect(text).toMatch(/UserPoolArn is an intrinsic .* could not resolve \(no deployed state was loaded/);
+    expect(text).toMatch(/UserPoolArn is an intrinsic .* could not resolve \(no state source is active/);
     expect(text.indexOf('--from-cfn-stack')).toBeGreaterThan(-1);
     expect(text.indexOf('--from-cfn-stack')).toBeLessThan(text.indexOf('--no-verify-auth'));
     expect(text).toMatch(/--watch does not rebuild the front-door/);
@@ -180,6 +181,36 @@ describe('resolveFrontDoorAuthGuardIntrinsics (#1004)', () => {
     );
     expect(isPlaceholder(guard)).toBe(true);
     expect(warnText()).toMatch(/no record in the state source/);
+    // A state source was active: the hint does not tell the user to pass one.
+    expect(warnText()).not.toMatch(/--from-cfn-stack/);
+    expect(warnText()).toMatch(/Check that the stack is deployed/);
+  });
+
+  it('names the load cause, not --from-cfn-stack, when an active state source failed to load the stack', () => {
+    const guard = resolveDefault(albStack(CDK_COGNITO), () => ({
+      loadError: 'Stack with id AlbStack does not exist',
+    }));
+    expect(isPlaceholder(guard)).toBe(true);
+    const text = warnText();
+    expect(text).toMatch(
+      /could not resolve \(the stack's deployed state did not load: Stack with id AlbStack does not exist\)/
+    );
+    expect(text).not.toMatch(/--from-cfn-stack/);
+    expect(text).toMatch(/--no-verify-auth/);
+  });
+
+  it('does not suggest --from-cfn-stack for an unresolved audience when the state source was active', () => {
+    resolveDefault(
+      albStack(
+        cognitoAction({
+          UserPoolArn: 'arn:aws:cognito-idp:us-east-1:111122223333:userpool/us-east-1_AbC123xyz',
+          UserPoolClientId: { Ref: 'Client' },
+        })
+      ),
+      () => ({ loadError: 'boom' })
+    );
+    expect(warnText()).toMatch(/UserPoolClientId could not be resolved \(the stack's deployed state did not load: boom\)/);
+    expect(warnText()).not.toMatch(/--from-cfn-stack/);
   });
 
   it('keeps the placeholder when the resolved ARN fails the Cognito ARN shape', () => {
@@ -199,7 +230,7 @@ describe('resolveFrontDoorAuthGuardIntrinsics (#1004)', () => {
     expect(isPlaceholder(guard)).toBe(true);
   });
 
-  it('resolves an OIDC Issuer intrinsic, and refuses a resolved non-https Issuer', () => {
+  it('resolves an OIDC Issuer intrinsic, verifies a resolved http Issuer, and refuses a non-http(s) one', () => {
     const oidc = (issuer: string): SubstitutionContext => ({
       resources: { IssuerParam: record(issuer, 'AWS::SSM::Parameter') },
     });
@@ -215,9 +246,12 @@ describe('resolveFrontDoorAuthGuardIntrinsics (#1004)', () => {
       sessionCookieName: 'AWSELBAuthSessionCookie',
       label: 'authenticate-oidc (Issuer=https://idp.example.com/)',
     });
-    const bad = resolveDefault(stack, () => oidc('http://idp.example.com'));
+    const http = resolveDefault(stack, () => oidc('http://idp.example.com'));
+    expect(isPlaceholder(http)).toBe(false);
+    expect(http?.issuer).toBe('http://idp.example.com');
+    const bad = resolveDefault(stack, () => oidc('ftp://idp.example.com'));
     expect(isPlaceholder(bad)).toBe(true);
-    expect(warnText()).toMatch(/is not an https:\/\/ URL/);
+    expect(warnText()).toMatch(/is not an http:\/\/ or https:\/\/ URL/);
   });
 
   it('resolves the rule guard as well as the listener default guard', () => {

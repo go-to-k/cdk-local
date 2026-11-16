@@ -1426,28 +1426,113 @@ describe('resolveAlbFrontDoor — authenticate-* guards', () => {
     }
   });
 
-  it('keeps a placeholder guard (warned) when the literal OIDC Issuer is not https://', () => {
+  it('keeps a placeholder guard (warned) when the literal OIDC Issuer is not an http(s):// URL', () => {
+    for (const issuer of ['ftp://idp.example.com', 'idp.example.com', 'not a url']) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        listenerWith({
+          Type: 'authenticate-oidc',
+          AuthenticateOidcConfig: { Issuer: issuer, ClientId: 'c' },
+        }),
+        ALB
+      );
+      expect(listeners[0]!.defaultAuthGuard?.label).toBe('authenticate-oidc (unresolved)');
+      expect(warnings.join('\n')).toMatch(/is not an http:\/\/ or https:\/\/ URL/);
+    }
+  });
+
+  it('keeps a placeholder guard (warned) when the literal OIDC Issuer is empty', () => {
     const { listeners, warnings } = resolveAlbFrontDoor(
       listenerWith({
         Type: 'authenticate-oidc',
-        AuthenticateOidcConfig: { Issuer: 'http://idp.example.com', ClientId: 'c' },
+        AuthenticateOidcConfig: { Issuer: '', ClientId: 'c' },
       }),
       ALB
     );
     expect(listeners[0]!.defaultAuthGuard?.label).toBe('authenticate-oidc (unresolved)');
-    expect(warnings.join('\n')).toMatch(/is not an https:\/\/ URL/);
+    expect(warnings.join('\n')).toMatch(/empty string/);
   });
 
-  it('accepts a plain-http loopback OIDC Issuer (a local test IdP)', () => {
-    const { listeners, warnings } = resolveAlbFrontDoor(
-      listenerWith({
-        Type: 'authenticate-oidc',
-        AuthenticateOidcConfig: { Issuer: 'http://127.0.0.1:19000', ClientId: 'c' },
-      }),
-      ALB
-    );
-    expect(warnings).toEqual([]);
-    expect(listeners[0]!.defaultAuthGuard?.issuer).toBe('http://127.0.0.1:19000');
+  it('verifies a plain-http OIDC Issuer, loopback or not (ALB rejects http on deploy, so it is a local IdP)', () => {
+    for (const issuer of ['http://127.0.0.1:19000', 'http://idp.internal:8080']) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        listenerWith({
+          Type: 'authenticate-oidc',
+          AuthenticateOidcConfig: { Issuer: issuer, ClientId: 'c' },
+        }),
+        ALB
+      );
+      expect(warnings).toEqual([]);
+      const guard = listeners[0]!.defaultAuthGuard!;
+      expect(guard.issuer).toBe(issuer);
+      expect(guard.label).toBe(`authenticate-oidc (Issuer=${issuer})`);
+    }
+  });
+
+  it('refuses a Cognito UserPoolArn whose region would steer the JWKS host', () => {
+    for (const arn of [
+      'arn:aws:cognito-idp:evil.example/x:123456789012:userpool/us-east-1_abcDEF123',
+      'arn:aws:cognito-idp:evil.example:123456789012:userpool/us-east-1_abcDEF123',
+      'arn:aws:cognito-idp:US-EAST-1:123456789012:userpool/us-east-1_abcDEF123',
+    ]) {
+      const { listeners, warnings } = resolveAlbFrontDoor(
+        listenerWith({
+          Type: 'authenticate-cognito',
+          AuthenticateCognitoConfig: { UserPoolArn: arn, UserPoolClientId: 'c' },
+        }),
+        ALB
+      );
+      const guard = listeners[0]!.defaultAuthGuard!;
+      expect(guard.label).toBe('authenticate-cognito (unresolved)');
+      expect(guard.issuer).not.toContain('evil');
+      expect(warnings.join('\n')).toMatch(/is not in the expected/);
+    }
+  });
+
+  it('fails closed on a default action whose Type is not a literal string (the listener default is not served)', () => {
+    const fnIfType = {
+      Type: { 'Fn::If': ['UseAuth', 'authenticate-cognito', 'fixed-response'] },
+      AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+    };
+    const wrappedAction = {
+      'Fn::If': [
+        'UseAuth',
+        {
+          Type: 'authenticate-cognito',
+          AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+        },
+        { Ref: 'AWS::NoValue' },
+      ],
+    };
+    for (const action of [fnIfType, wrappedAction]) {
+      const { listeners, warnings } = resolveAlbFrontDoor(listenerWith(action), ALB);
+      // Without the fail-closed check, the trailing forward is served unguarded.
+      expect(listeners).toEqual([]);
+      expect(warnings.join('\n')).toMatch(/Type is not a literal string.*fail closed/s);
+    }
+  });
+
+  it('fails closed on a rule action whose Type is not a literal string (the rule is skipped, the default still served)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } }],
+          Actions: [
+            { Type: { 'Fn::If': ['UseAuth', 'authenticate-oidc', 'forward'] } },
+            { Type: 'forward', TargetGroupArn: { Ref: API_TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners).toHaveLength(1);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(forwardTarget(listeners[0]!.defaultAction).serviceLogicalId).toBe(SERVICE);
+    expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
+    expect(warnings.join('\n')).toMatch(/ApiRule.*Type is not a literal string/s);
   });
 
   it('keeps the real guard with the audience unchecked (warned) when the literal client id is empty', () => {

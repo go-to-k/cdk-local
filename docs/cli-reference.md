@@ -2047,14 +2047,22 @@ userPoolClient, ... })`, which emits `Fn::GetAtt <Pool>.Arn` and
 loads (`--from-cfn-stack`, or a host-provided state provider), and the guard
 then verifies exactly as one with literal values would. A field that cannot
 be resolved (no state source, no record for the resource, a value that is
-not a Cognito user pool ARN or an `https://` issuer, an empty string, or a
-missing `AuthenticateCognitoConfig` / `AuthenticateOidcConfig`) leaves the
-route on a placeholder guard, with a warning: a request without a Bearer
-token still answers `401`, but a Bearer token is admitted without
-verification (the JWKS pass-through below). When only the client id is
+not a Cognito user pool ARN or an `http://` / `https://` issuer, an empty
+string, or a missing `AuthenticateCognitoConfig` / `AuthenticateOidcConfig`)
+leaves the route on a placeholder guard, with a warning: a request without a
+Bearer token still answers `401`, but a Bearer token is admitted without
+verification (the JWKS pass-through below), and so is a request carrying an
+`AWSELBAuthSessionCookie-*` cookie, exactly as on a resolved guard. An
+`http://` issuer is verified like an `https://` one: the deployed ALB rejects
+a plain-`http://` issuer, so it only ever names a local test IdP. An action
+whose `Type` is itself an intrinsic (for example an `Fn::If` choosing between
+an `authenticate-*` action and another one) fails closed: the rule, or the
+listener's default action, is not served locally, with a warning. When only the client id is
 unresolved, the token's signature, `iss` and `exp` are verified and its
 audience is not. Pass `--from-cfn-stack` for real verification, or
-`--no-verify-auth` to serve the route without a guard. The guards are
+`--no-verify-auth` to serve the route without a guard (the guards are then
+not resolved at all, and nothing is warned). When a state source is active
+but the stack's state does not load, the warning names the cause. The guards are
 resolved once at boot, so restart `cdkl start-alb` after deploying the
 stack — `--watch` does not rebuild the front-door.
 
