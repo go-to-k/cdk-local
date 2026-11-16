@@ -2805,7 +2805,8 @@ export async function resolveFrontDoorPlanAuthGuards(
         if (!loaded) {
           const detail = provider.getLastLoadError?.();
           contexts.set(stackName, {
-            loadError: detail ?? 'the state source returned no state for the stack',
+            // `||`, not `??`: an empty last-load error carries no cause.
+            loadError: detail || 'the state source returned no state for the stack',
           });
           continue;
         }

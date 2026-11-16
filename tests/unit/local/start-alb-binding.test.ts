@@ -20,6 +20,7 @@ import {
 import { request as httpRequest } from 'node:http';
 import { resolveFrontDoorTlsMaterials } from '../../../src/local/front-door-tls.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 const ALB = 'WebLB';
 const TG = 'WebTargetGroup';
@@ -852,6 +853,79 @@ describe('buildFrontDoor', () => {
     }
   });
 
+  it('serves 503 on a rule whose action Type is not a literal string while the unguarded default still serves', async () => {
+    const stack = {
+      stackName: 'AlbStack',
+      template: {
+        Resources: {
+          WebLB: {
+            Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+            Properties: { Type: 'application' },
+          },
+          WebListener: {
+            Type: 'AWS::ElasticLoadBalancingV2::Listener',
+            Properties: {
+              LoadBalancerArn: { Ref: 'WebLB' },
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [
+                {
+                  Type: 'fixed-response',
+                  FixedResponseConfig: { StatusCode: '200', MessageBody: 'public' },
+                },
+              ],
+            },
+          },
+          AdminRule: {
+            Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+            Properties: {
+              ListenerArn: { Ref: 'WebListener' },
+              Priority: 1,
+              Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/admin'] } }],
+              Actions: [
+                { Type: { 'Fn::If': ['UseAuth', 'authenticate-oidc', 'fixed-response'] } },
+                {
+                  Type: 'fixed-response',
+                  FixedResponseConfig: { StatusCode: '200', MessageBody: 'admin-secret' },
+                },
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+    const { frontDoor } = albStrategy({} as never).resolveBoots([stack], ['AlbStack:WebLB']);
+    const plan = { ...frontDoor!, listeners: frontDoor!.listeners.map((l) => ({ ...l, hostPort: 0 })) };
+    const logger = { info: () => {}, warn: () => {} } as never;
+    const { servers } = await buildFrontDoor(
+      plan,
+      { containerHost: '127.0.0.1', pull: true } as never,
+      logger
+    );
+    const fetchPath = (port: number, path: string): Promise<{ status: number; body: string }> =>
+      new Promise((resolve, reject) => {
+        const req = httpRequest({ host: '127.0.0.1', port, path, method: 'GET' }, (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    try {
+      const port = servers[0]!.port;
+      const admin = await fetchPath(port, '/admin');
+      expect(admin.status).toBe(503);
+      expect(admin.body).not.toContain('admin-secret');
+      expect(admin.body).not.toContain('public');
+      const other = await fetchPath(port, '/other');
+      expect(other.status).toBe(200);
+      expect(other.body).toBe('public');
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+
   describe('authenticate-* gate threading (verifyAuth / bearerToken options)', () => {
     /**
      * Build a 1-listener plan with a fixed-response default action wrapped
@@ -1299,6 +1373,28 @@ describe('start-alb authenticate-cognito with intrinsic config (#1004)', () => {
     expect(guard.label).toBe('authenticate-cognito (unresolved)');
     expect(guard.pending).toBeUndefined();
     expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the generic cause when the provider reports an empty last-load error', async () => {
+    const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      const extra = {
+        fromFake: () => ({
+          label: '--from-fake',
+          load: vi.fn(async () => undefined),
+          dispose: vi.fn(),
+          getLastLoadError: () => '',
+        }),
+      } as never;
+      const { frontDoor } = albStrategy({} as never).resolveBoots([cdkCognitoStack()], ['AlbStack:WebLB']);
+      await resolveFrontDoorPlanAuthGuards(frontDoor!, [cdkCognitoStack()], { fromFake: true } as never, extra);
+      const text = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(text).toMatch(
+        /deployed state did not load: the state source returned no state for the stack\)/
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('serves the route with --no-verify-auth (the explicit opt-out)', async () => {

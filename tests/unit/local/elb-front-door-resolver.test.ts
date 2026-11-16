@@ -1511,7 +1511,7 @@ describe('resolveAlbFrontDoor — authenticate-* guards', () => {
     }
   });
 
-  it('fails closed on a rule action whose Type is not a literal string (the rule is skipped, the default still served)', () => {
+  it('fails closed on a rule action whose Type is not a literal string (the rule stays at its priority as a 503 deny, the default still served)', () => {
     const stack = stackWith({
       ...apiServiceResources,
       [RULE]: {
@@ -1529,10 +1529,128 @@ describe('resolveAlbFrontDoor — authenticate-* guards', () => {
     });
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
     expect(listeners).toHaveLength(1);
-    expect(listeners[0]!.rules).toEqual([]);
+    // Dropping the rule would let `/api/*` fall through to the unguarded
+    // default; it must keep claiming its path with a guard-less 503 deny.
+    expect(listeners[0]!.rules).toHaveLength(1);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.priority).toBe(10);
+    expect(rule.pathPatterns).toEqual(['/api/*']);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toEqual({
+      kind: 'fixed-response',
+      statusCode: 503,
+      contentType: 'text/plain',
+      messageBody: expect.stringMatching(/denied locally because an action Type is not a literal string/),
+    });
     expect(forwardTarget(listeners[0]!.defaultAction).serviceLogicalId).toBe(SERVICE);
     expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
-    expect(warnings.join('\n')).toMatch(/ApiRule.*Type is not a literal string/s);
+    expect(warnings.join('\n')).toMatch(
+      /ApiRule.*Type is not a literal string.*kept at its priority as a local 503 deny/s
+    );
+  });
+
+  it('keeps a guarded rule whose terminal is not servable as a 503 deny (no fallthrough to the default)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/admin/*'] } }],
+          Actions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+            },
+            { Type: 'forward', TargetGroupArn: 'arn:aws:elasticloadbalancing:us-east-1:1:targetgroup/x/y' },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.pathPatterns).toEqual(['/admin/*']);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+    expect(warnings.join('\n')).toMatch(
+      /ApiRule.*no local-servable terminal action, so the rule is kept at its priority as a local 503 deny/s
+    );
+  });
+
+  it('keeps a guarded rule with an unsupported condition as a 503 deny over its supported conditions', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            { Field: 'path-pattern', PathPatternConfig: { Values: ['/admin/*'] } },
+            { Field: 'host-header', HostHeaderConfig: { Values: [{ Ref: 'DomainParam' }] } },
+          ],
+          Actions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: { UserPoolArn: COGNITO_ARN, UserPoolClientId: 'c' },
+            },
+            { Type: 'forward', TargetGroupArn: { Ref: API_TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    // The host-header field is dropped whole: the deny covers /admin/* on any host.
+    expect(rule.pathPatterns).toEqual(['/admin/*']);
+    expect(rule.hostPatterns).toEqual([]);
+    expect(rule.authGuard).toBeUndefined();
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+    const text = warnings.join('\n');
+    expect(text).toMatch(/host-header condition value that is not a literal string.*kept as a local 503 deny instead/s);
+    expect(text).toMatch(/over its remaining supported conditions/);
+  });
+
+  it('denies every request at its priority when a guarded rule has no supported condition left', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: [{ Ref: 'PathParam' }] } }],
+          Actions: [
+            { Type: { 'Fn::If': ['UseAuth', 'authenticate-oidc', 'forward'] } },
+            { Type: 'forward', TargetGroupArn: { Ref: API_TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.pathPatterns).toEqual([]);
+    expect(rule.action).toMatchObject({ kind: 'fixed-response', statusCode: 503 });
+    expect(warnings.join('\n')).toMatch(/over every request that reaches its priority/);
+  });
+
+  it('still skips an unguarded rule with an unsupported condition (no guard to lose)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: [{ Ref: 'PathParam' }] } }],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/not a literal string.*skipping the rule\./s);
   });
 
   it('keeps the real guard with the audience unchecked (warned) when the literal client id is empty', () => {

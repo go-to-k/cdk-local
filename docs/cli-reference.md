@@ -2056,12 +2056,23 @@ verification (the JWKS pass-through below), and so is a request carrying an
 `http://` issuer is verified like an `https://` one: the deployed ALB rejects
 a plain-`http://` issuer, so it only ever names a local test IdP. An action
 whose `Type` is itself an intrinsic (for example an `Fn::If` choosing between
-an `authenticate-*` action and another one) fails closed: the rule, or the
-listener's default action, is not served locally, with a warning. When only the client id is
+an `authenticate-*` action and another one) fails closed, with a warning: on a
+listener rule, the rule stays at its priority with its conditions and answers
+`503` (no guard), so its requests never fall through to a lower-priority rule
+or the listener default; on the listener's default action, the default is not
+served (a request no rule matches is refused). The same `503` deny replaces a
+rule whose `authenticate-*` action has no locally servable terminal action
+(for example a `forward` to a target group outside the stack), and a rule
+carrying an `authenticate-*` action (or an intrinsic `Type`) with a condition
+cdk-local cannot evaluate: the unsupported condition field is dropped from the
+deny, which only widens what is denied locally (with no supported condition
+left, every request reaching that priority answers `503`). When only the client id is
 unresolved, the token's signature, `iss` and `exp` are verified and its
 audience is not. Pass `--from-cfn-stack` for real verification, or
 `--no-verify-auth` to serve the route without a guard (the guards are then
-not resolved at all, and nothing is warned). When a state source is active
+not resolved at all, and no intrinsic-resolution warnings are printed; the
+parse-time warnings, such as an invalid literal or an intrinsic `Type`, still
+appear, and a rule kept as a `503` deny above still answers `503`). When a state source is active
 but the stack's state does not load, the warning names the cause. The guards are
 resolved once at boot, so restart `cdkl start-alb` after deploying the
 stack — `--watch` does not rebuild the front-door.

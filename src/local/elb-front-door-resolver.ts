@@ -280,9 +280,10 @@ export interface ResolvedListenerFrontDoor {
   listenerLogicalId: string;
   /**
    * Default action. Present when the listener's `DefaultActions` is a resolvable
-   * forward / redirect / fixed-response. Absent only when the default action
-   * was a bare authenticate-* with no terminal action — unmatched requests then
-   * get a 404 from the front-door.
+   * forward / redirect / fixed-response. Absent when the default action was a
+   * bare authenticate-* with no terminal action, or has an action whose Type
+   * is not a literal string (fail closed) — unmatched requests then get a 404
+   * from the front-door.
    */
   defaultAction?: ResolvedListenerAction;
   /**
@@ -361,31 +362,47 @@ export function resolveAlbFrontDoor(
       );
     }
 
-    const defaultResolved = resolveAction(
+    const defaultLabel = `Listener ${displayIdent(listenerLogicalId)} (port ${port}) default action`;
+    const defaultOutcome = resolveAction(
       props['DefaultActions'],
       resources,
       tgToService,
       stackName,
       listenerLogicalId,
-      `Listener ${displayIdent(listenerLogicalId)} (port ${port}) default action`,
+      defaultLabel,
       warnings
     );
+    let defaultResolved: ResolvedActionOutcome | undefined;
+    if (defaultOutcome && 'deny' in defaultOutcome) {
+      // No lower-priority fallback exists below the default: leaving it unset
+      // already refuses unmatched requests (404, or no listener at all).
+      warnings.push(
+        `${defaultLabel} ${defaultOutcome.deny.warning}, so the default action is not served ` +
+          'locally (fail closed): a request no rule matches is refused.'
+      );
+    } else {
+      defaultResolved = defaultOutcome;
+    }
 
     const rules: ResolvedListenerRule[] = [];
     for (const { ruleLogicalId, ruleProps } of rulesByListener.get(listenerLogicalId) ?? []) {
       const priority = parsePriority(ruleProps['Priority']);
       const ruleLabel = `Listener rule ${displayIdent(ruleLogicalId)} (priority ${priority})`;
+      const guarded = actionsMayCarryGuard(ruleProps['Actions']);
       const parsed = parseRuleConditions(
         ruleProps['Conditions'],
         albLogicalId,
         ruleLabel,
-        warnings
+        warnings,
+        guarded
       );
       if (!parsed) {
-        // parseRuleConditions warned about an unsupported / malformed condition.
+        // parseRuleConditions warned about an unsupported / malformed condition
+        // on a rule with no authenticate-* guard to lose.
         continue;
       }
       const {
+        partial,
         pathPatterns,
         hostPatterns,
         httpHeaderConditions,
@@ -393,6 +410,14 @@ export function resolveAlbFrontDoor(
         queryStringConditions,
         sourceIpCidrs,
       } = parsed;
+      const conditions = {
+        pathPatterns,
+        hostPatterns,
+        httpHeaderConditions,
+        httpRequestMethods,
+        queryStringConditions,
+        sourceIpCidrs,
+      };
       const hasAnyCondition =
         pathPatterns.length > 0 ||
         hostPatterns.length > 0 ||
@@ -400,28 +425,57 @@ export function resolveAlbFrontDoor(
         httpRequestMethods.length > 0 ||
         queryStringConditions.length > 0 ||
         sourceIpCidrs.length > 0;
+      if (partial) {
+        // A guarded rule with a condition cdk-local cannot evaluate: skipping it
+        // would let its requests fall through unguarded, so it stays at its
+        // priority as a deny over its supported conditions (a superset).
+        warnings.push(
+          `${ruleLabel} carries an authenticate-* action (or an action whose Type may be one), so ` +
+            'instead of being skipped it is kept at its priority as a local 503 deny (fail closed) ' +
+            (hasAnyCondition
+              ? 'over its remaining supported conditions'
+              : 'over every request that reaches its priority (no supported condition is left)') +
+            '. Dropping the unsupported condition only widens what it denies, and its requests ' +
+            'cannot fall through to a lower-priority rule or the listener default.'
+        );
+        rules.push({
+          priority,
+          ...conditions,
+          action: denyAction(
+            'the rule has an authenticate-* guard on a condition cdk-local cannot evaluate'
+          ),
+        });
+        continue;
+      }
       if (!hasAnyCondition) {
         // No supported condition to route on (an empty / catch-all rule).
         continue;
       }
+      const ruleLabelAction = `${ruleLabel} action`;
       const ruleResolved = resolveAction(
         ruleProps['Actions'],
         resources,
         tgToService,
         stackName,
         ruleLogicalId,
-        `${ruleLabel} action`,
+        ruleLabelAction,
         warnings
       );
-      if (!ruleResolved) continue; // resolveAction already warned (or it was a bare authenticate-*)
+      if (!ruleResolved) continue; // resolveAction already warned (no guard to lose)
+      if ('deny' in ruleResolved) {
+        // Dropping the rule would let its requests fall through to a
+        // lower-priority rule or the listener default without the guard.
+        warnings.push(
+          `${ruleLabelAction} ${ruleResolved.deny.warning}, so the rule is kept at its priority as ` +
+            'a local 503 deny (fail closed): its requests are refused rather than falling through ' +
+            'to a lower-priority rule or the listener default.'
+        );
+        rules.push({ priority, ...conditions, action: denyAction(ruleResolved.deny.body) });
+        continue;
+      }
       rules.push({
         priority,
-        pathPatterns,
-        hostPatterns,
-        httpHeaderConditions,
-        httpRequestMethods,
-        queryStringConditions,
-        sourceIpCidrs,
+        ...conditions,
         action: ruleResolved.action,
         ...(ruleResolved.authGuard ? { authGuard: ruleResolved.authGuard } : {}),
       });
@@ -466,7 +520,9 @@ interface BackingServiceRef {
  * by exactly one terminal action (`forward` / `redirect` / `fixed-response`).
  * The authenticate-* entry (the last one if multiple) becomes the
  * returned `authGuard`; the terminal action becomes `action`. Returns
- * `undefined` when no terminal action is resolvable.
+ * `undefined` when no terminal action is resolvable and no guard is at stake,
+ * and `{ deny }` when the actions carry (or may carry) an authenticate-* guard
+ * that cannot be served: the caller must refuse the route, never drop it.
  */
 function resolveAction(
   actions: unknown,
@@ -476,26 +532,22 @@ function resolveAction(
   siteLogicalId: string,
   label: string,
   warnings: string[]
-): { action: ResolvedListenerAction; authGuard?: FrontDoorAuthGuard } | undefined {
+): ResolvedActionOutcome | { deny: ActionDeny } | undefined {
   if (!Array.isArray(actions)) return undefined;
 
   // Fail closed on an action whose Type is not a literal string (an `Fn::If`
   // choosing between an authenticate-* and a forward, or a whole action entry
   // wrapped in an intrinsic): skipping just that entry could serve the
   // terminal action without the guard it may stand for.
-  const hasUnknownType = actions.some(
-    (action) =>
-      action !== null &&
-      typeof action === 'object' &&
-      typeof (action as Record<string, unknown>)['Type'] !== 'string'
-  );
-  if (hasUnknownType) {
-    warnings.push(
-      `${label} has an action whose Type is not a literal string (for example an Fn::If, or a ` +
-        'whole action wrapped in an intrinsic). It may be an authenticate-* guard, so the route is ' +
-        'not served locally (fail closed). Skipping it.'
-    );
-    return undefined;
+  if (actions.some(hasNonLiteralType)) {
+    return {
+      deny: {
+        warning:
+          'has an action whose Type is not a literal string (for example an Fn::If, or a whole ' +
+          'action wrapped in an intrinsic). It may be an authenticate-* guard',
+        body: 'an action Type is not a literal string, so its authenticate-* guard cannot be determined',
+      },
+    };
   }
 
   let authGuard: FrontDoorAuthGuard | undefined;
@@ -531,11 +583,57 @@ function resolveAction(
   }
 
   if (sawAuthenticate) {
-    warnings.push(
-      `${label} is an authenticate-* action with no local-servable terminal action; skipping it.`
-    );
+    return {
+      deny: {
+        warning: 'is an authenticate-* action with no local-servable terminal action',
+        body: 'its authenticate-* action has no locally servable terminal action',
+      },
+    };
   }
   return undefined;
+}
+
+/** A resolved action: the terminal action plus the guard in front of it, if any. */
+type ResolvedActionOutcome = { action: ResolvedListenerAction; authGuard?: FrontDoorAuthGuard };
+
+/** Why a guarded action cannot be served: warning text (after the label) + 503 body reason. */
+interface ActionDeny {
+  warning: string;
+  body: string;
+}
+
+/** True for an action entry whose `Type` is not a literal string (it may be an authenticate-*). */
+function hasNonLiteralType(action: unknown): boolean {
+  return (
+    action !== null &&
+    typeof action === 'object' &&
+    typeof (action as Record<string, unknown>)['Type'] !== 'string'
+  );
+}
+
+/** True when an `Actions` array carries, or may carry, an authenticate-* guard. */
+function actionsMayCarryGuard(actions: unknown): boolean {
+  if (!Array.isArray(actions)) return false;
+  return actions.some((action) => {
+    if (hasNonLiteralType(action)) return true;
+    if (!action || typeof action !== 'object') return false;
+    const type = (action as Record<string, unknown>)['Type'];
+    return type === 'authenticate-cognito' || type === 'authenticate-oidc';
+  });
+}
+
+/**
+ * The terminal a guarded rule that cannot be served is replaced with: a 503
+ * fixed-response with no guard, so the rule still claims its requests at its
+ * priority instead of letting them reach a lower-priority rule unguarded.
+ */
+function denyAction(reason: string): FrontDoorFixedResponseAction {
+  return {
+    kind: 'fixed-response',
+    statusCode: 503,
+    contentType: 'text/plain',
+    messageBody: `cdk-local: this ALB listener rule is denied locally because ${reason}.\n`,
+  };
 }
 
 /**
@@ -787,6 +885,14 @@ interface ParsedRuleConditions {
  * different fields, so dropping any condition would route requests it should
  * not).
  *
+ * For a `guarded` rule (one whose actions carry, or may carry, an
+ * authenticate-* guard) skipping is not safe: its requests would fall through
+ * to a lower-priority rule or the listener default without the guard. Such a
+ * rule instead returns its supported conditions with every unsupported field
+ * dropped whole and `partial: true`; the caller turns it into a 503 deny.
+ * Dropping a field (ANDed with the others) only widens the matched set, so the
+ * deny over-denies locally but never under-guards.
+ *
  * Multiple `http-header` conditions on different names are kept (they AND).
  * Multiple `path-pattern` / `host-header` / `http-request-method` /
  * `query-string` / `source-ip` conditions on the same field merge their
@@ -800,8 +906,9 @@ function parseRuleConditions(
   conditions: unknown,
   albLogicalId: string,
   ruleLabel: string,
-  warnings: string[]
-): ParsedRuleConditions | undefined {
+  warnings: string[],
+  guarded: boolean
+): (ParsedRuleConditions & { partial?: true }) | undefined {
   const out: ParsedRuleConditions = {
     pathPatterns: [],
     hostPatterns: [],
@@ -811,6 +918,14 @@ function parseRuleConditions(
     sourceIpCidrs: [],
   };
   if (!Array.isArray(conditions)) return out;
+  const tail = guarded ? 'the rule is kept as a local 503 deny instead' : 'skipping the rule';
+  const failedFields = new Set<string>();
+  // Record one unsupported condition. True = stop and skip the rule (unguarded).
+  const fail = (field: string, message: string): boolean => {
+    warnings.push(message);
+    failedFields.add(field);
+    return !guarded;
+  };
   for (const cond of conditions) {
     if (!cond || typeof cond !== 'object') continue;
     const c = cond as Record<string, unknown>;
@@ -818,72 +933,81 @@ function parseRuleConditions(
     if (field === 'path-pattern') {
       const values = conditionValues(c, 'PathPatternConfig');
       if (!values) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        continue;
       }
       out.pathPatterns.push(...values);
     } else if (field === 'host-header') {
       const values = hostHeaderConditionValues(c, albLogicalId);
       if (!values) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        continue;
       }
       out.hostPatterns.push(...values);
     } else if (field === 'http-header') {
       const parsed = parseHttpHeaderCondition(c);
       if (!parsed) {
-        warnings.push(
+        const message =
           `${ruleLabel} has an http-header condition with no HttpHeaderName / Values, or a value ` +
-            'that is not a literal string; skipping the rule.'
-        );
-        return undefined;
+          `that is not a literal string; ${tail}.`;
+        if (fail(field, message)) return undefined;
+        continue;
       }
       out.httpHeaderConditions.push(parsed);
     } else if (field === 'http-request-method') {
       const values = conditionValues(c, 'HttpRequestMethodConfig');
       if (!values) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        continue;
       }
       out.httpRequestMethods.push(...values);
     } else if (field === 'query-string') {
       const qs = parseQueryStringConditionValues(c);
       if (!qs) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        continue;
       }
       const { parsed, hadEntries } = qs;
       if (hadEntries && parsed.length === 0) {
-        warnings.push(
-          `${ruleLabel} query-string condition has no parseable { Key?, Value } entries; skipping ` +
-            'the rule.'
-        );
-        return undefined;
+        const message =
+          `${ruleLabel} query-string condition has no parseable { Key?, Value } entries; ` +
+          `${tail}.`;
+        if (fail(field, message)) return undefined;
+        continue;
       }
       out.queryStringConditions.push(...parsed);
     } else if (field === 'source-ip') {
       const values = conditionValues(c, 'SourceIpConfig');
       if (!values) {
-        warnings.push(unresolvableConditionWarning(ruleLabel, field));
-        return undefined;
+        if (fail(field, unresolvableConditionWarning(ruleLabel, field, tail))) return undefined;
+        continue;
       }
       const invalid = values.filter((v) => !isValidCidr(v));
       if (invalid.length > 0) {
-        warnings.push(
+        const message =
           `${ruleLabel} source-ip condition has unparseable CIDR(s): ${invalid.join(', ')}. ` +
-            'The local ALB front-door requires valid IPv4 / IPv6 CIDRs; skipping the rule.'
-        );
-        return undefined;
+          `The local ALB front-door requires valid IPv4 / IPv6 CIDRs; ${tail}.`;
+        if (fail(field, message)) return undefined;
+        continue;
       }
       out.sourceIpCidrs.push(...values);
     } else {
-      warnings.push(
-        `${ruleLabel} uses unsupported condition field ${displayIdent(field)}. Skipping the rule.`
-      );
-      return undefined;
+      const message =
+        `${ruleLabel} uses unsupported condition field ${displayIdent(field)}. ` +
+        `${tail.charAt(0).toUpperCase()}${tail.slice(1)}.`;
+      if (fail(field, message)) return undefined;
     }
   }
-  return out;
+  if (failedFields.size === 0) return out;
+  // Guarded rule: drop every failed field whole (a partially kept field could
+  // narrow its OR-set; a dropped field only widens the deny).
+  if (failedFields.has('path-pattern')) out.pathPatterns = [];
+  if (failedFields.has('host-header')) out.hostPatterns = [];
+  if (failedFields.has('http-header')) out.httpHeaderConditions = [];
+  if (failedFields.has('http-request-method')) out.httpRequestMethods = [];
+  if (failedFields.has('query-string')) out.queryStringConditions = [];
+  if (failedFields.has('source-ip')) out.sourceIpCidrs = [];
+  return { ...out, partial: true };
 }
 
 /**
@@ -1045,11 +1169,11 @@ function isOwnDnsNameGetAtt(raw: unknown, albLogicalId: string): boolean {
   );
 }
 
-function unresolvableConditionWarning(ruleLabel: string, field: string): string {
+function unresolvableConditionWarning(ruleLabel: string, field: string, tail: string): string {
   return (
     `${ruleLabel} has a ${field} condition value that is not a literal string (an intrinsic ` +
     'such as Ref / Fn::GetAtt / Fn::Join / Fn::ImportValue that cannot be resolved locally); ' +
-    'skipping the rule.'
+    `${tail}.`
   );
 }
 
