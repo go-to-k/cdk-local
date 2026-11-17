@@ -2699,7 +2699,7 @@ async function resolvePlaceholderAccount(
     const account = identity.Account;
     if (!account) {
       throw new LocalStartServiceError(
-        `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN ${displayUntrustedValue(arn)}.`
+        `--assume-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN ${displayUntrustedValue(arn)}.`
       );
     }
     return fillTaskRolePlaceholders(arn, account, identity.Arn);
@@ -2718,8 +2718,8 @@ async function resolvePlaceholderAccount(
     const shownArn = displayUntrustedValue(arn);
     const detail = describeAwsFailureForWarn(err, 'STS GetCallerIdentity (task-role placeholder)');
     throw new LocalStartServiceError(
-      `--assume-task-role: STS GetCallerIdentity failed while resolving placeholder ARN ${shownArn}: ${detail}. ` +
-        `Pass the ARN explicitly: --assume-task-role <arn>`
+      `--assume-role: STS GetCallerIdentity failed while resolving placeholder ARN ${shownArn}: ${detail}. ` +
+        `Pass the ARN explicitly: --assume-role <arn>`
     );
   } finally {
     sts.destroy();
@@ -3552,30 +3552,57 @@ export function ecsClusterOption(): Option {
  *
  * Breaking unification of all three parsers (`invoke`, `start-api`,
  * ECS) is tracked separately under issue #256.
+ *
+ * A host CLI that has retired the legacy name passes
+ * `{ legacyAssumeTaskRoleAlias: false }` (go-to-k/cdk-local#1007): only
+ * `--assume-role` is registered, so Commander rejects `--assume-task-role`
+ * as an unknown option and {@link resolveEcsAssumeRoleOption} never sees it.
+ * The default keeps both flags, byte-identical to the pre-#1007 surface.
  */
-export function addEcsAssumeRoleOptions(cmd: Command): Command {
-  return cmd
-    .addOption(
+export function addEcsAssumeRoleOptions(
+  cmd: Command,
+  config: EcsAssumeRoleOptionsConfig = {}
+): Command {
+  const legacyAlias = config.legacyAssumeTaskRoleAlias ?? true;
+  const sharedDescription =
+    "Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp " +
+    'credentials via the metadata sidecar so containers run with the deployed task role. ' +
+    "Bare flag uses the template's TaskRoleArn; pass an explicit ARN to override. ";
+  if (legacyAlias) {
+    cmd.addOption(
       new Option(
         '--assume-task-role [arn]',
-        "Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp " +
-          'credentials via the metadata sidecar so containers run with the deployed task role. ' +
-          "Bare flag uses the template's TaskRoleArn; pass an explicit ARN to override. " +
+        sharedDescription +
           'DEPRECATED alias of `--assume-role`; both forms work, but `--assume-role` is the ' +
           'cross-command name and will become the only form in a future release.'
       )
-    )
+    );
+  }
+  return cmd
     .addOption(
       new Option(
         '--assume-role [arn]',
-        "Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp " +
-          'credentials via the metadata sidecar so containers run with the deployed task role. ' +
-          "Bare flag uses the template's TaskRoleArn; pass an explicit ARN to override. " +
-          'Cross-command alias matching the same flag on `invoke` / `invoke-agentcore` / ' +
-          '`start-api`; supersedes the older `--assume-task-role` (which still works).'
+        sharedDescription +
+          (legacyAlias
+            ? 'Cross-command alias matching the same flag on `invoke` / `invoke-agentcore` / ' +
+              '`start-api`; supersedes the older `--assume-task-role` (which still works).'
+            : 'Same flag as on `invoke` / `invoke-agentcore` / `start-api`.')
       )
     )
     .addOption(emulateRoleViaOption('--assume-role'));
+}
+
+/**
+ * Settings for {@link addEcsAssumeRoleOptions} and
+ * {@link addCommonEcsServiceOptions} (go-to-k/cdk-local#1007).
+ */
+export interface EcsAssumeRoleOptionsConfig {
+  /**
+   * Register the deprecated `--assume-task-role` alias next to
+   * `--assume-role`. Default `true`. A host CLI that has removed the legacy
+   * name passes `false`.
+   */
+  readonly legacyAssumeTaskRoleAlias?: boolean;
 }
 
 /**
@@ -3642,8 +3669,14 @@ export function resolveEcsAssumeRoleOption(options: {
  * `start-alb`) to a command. The command-specific argument / description and
  * the one unique option (`--host-port` vs `--lb-port`) are added by each
  * factory.
+ *
+ * `config` is forwarded to {@link addEcsAssumeRoleOptions}; the default
+ * keeps the deprecated `--assume-task-role` alias.
  */
-export function addCommonEcsServiceOptions(cmd: Command): Command {
+export function addCommonEcsServiceOptions(
+  cmd: Command,
+  config: EcsAssumeRoleOptionsConfig = {}
+): Command {
   addAwsEndpointOptions(cmd);
   cmd
     .addOption(ecsClusterOption())
@@ -3659,7 +3692,7 @@ export function addCommonEcsServiceOptions(cmd: Command): Command {
         'Host IP to bind published container ports to. Must be a numeric IP (Docker rejects hostnames here)'
       ).default('127.0.0.1')
     );
-  addEcsAssumeRoleOptions(cmd);
+  addEcsAssumeRoleOptions(cmd, config);
   cmd
     .addOption(
       new Option('--no-pull', 'Skip docker pull for every container image and the metadata sidecar')

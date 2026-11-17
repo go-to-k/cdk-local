@@ -510,7 +510,12 @@ SIGINT — every CLI behavior the upstream `cdkl` commands have:
   commands (`--cluster`, `--max-tasks`, `--container-host`,
   `--from-cfn-stack`, etc.). Compose with `addAlbSpecificOptions(cmd)`
   for an ALB-fronted host CLI; `start-service` hosts only need the
-  common block.
+  common block. Pass `addCommonEcsServiceOptions(cmd, {
+  legacyAssumeTaskRoleAlias: false })` to register `--assume-role`
+  without its deprecated `--assume-task-role` alias (Commander then
+  rejects the old name as an unknown option); the default keeps both.
+  `addEcsAssumeRoleOptions(cmd, config?)` takes the same
+  `EcsAssumeRoleOptionsConfig`.
 - `addAlbSpecificOptions(cmd)` — ALB-only option block (`--lb-port`,
   `--assume-host`, `--tls`, `--tls-cert`, `--tls-key`, `--no-verify-auth`,
   `--bearer-token`). Calling this from a host's `start-alb` keeps the

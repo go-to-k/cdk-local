@@ -658,10 +658,12 @@ export {
   // etc.) that compose flag sets from cdk-local inherit the
   // `--cluster` default-once dedupe (C12) and the
   // `--assume-task-role` / `--assume-role` non-breaking alias pair
-  // (C6) without reproducing them inline.
+  // (C6) without reproducing them inline. `EcsAssumeRoleOptionsConfig`
+  // lets a host omit the legacy `--assume-task-role` alias (#1007).
   ecsClusterOption,
   addEcsAssumeRoleOptions,
   resolveEcsAssumeRoleOption,
+  type EcsAssumeRoleOptionsConfig,
   runEcsServiceEmulator,
   parseMaxTasks,
   parseRestartPolicy,
