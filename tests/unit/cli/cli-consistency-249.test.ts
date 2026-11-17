@@ -152,6 +152,110 @@ describe('issue #249 / C6 — `--assume-role` non-breaking alias on ECS commands
   });
 });
 
+describe('issue #1007 — a host CLI can omit the legacy `--assume-task-role` alias', () => {
+  const SHARED =
+    "Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp " +
+    'credentials via the metadata sidecar so containers run with the deployed task role. ' +
+    "Bare flag uses the template's TaskRoleArn; pass an explicit ARN to override. ";
+
+  /** A command whose parse errors throw instead of exiting / printing. */
+  function quietCommand(): Command {
+    return new Command()
+      .exitOverride()
+      .configureOutput({ writeErr: () => undefined, writeOut: () => undefined });
+  }
+
+  it('default keeps both flags, with the pre-#1007 descriptions byte-for-byte', () => {
+    const cmd = addEcsAssumeRoleOptions(new Command());
+    expect(cmd.options.map((o) => o.long)).toEqual([
+      '--assume-task-role',
+      '--assume-role',
+      '--emulate-role-via',
+    ]);
+    expect(optionByLong(cmd, '--assume-task-role')!.description).toBe(
+      SHARED +
+        'DEPRECATED alias of `--assume-role`; both forms work, but `--assume-role` is the ' +
+        'cross-command name and will become the only form in a future release.'
+    );
+    expect(optionByLong(cmd, '--assume-role')!.description).toBe(
+      SHARED +
+        'Cross-command alias matching the same flag on `invoke` / `invoke-agentcore` / ' +
+        '`start-api`; supersedes the older `--assume-task-role` (which still works).'
+    );
+  });
+
+  it('explicit `legacyAssumeTaskRoleAlias: true` renders the same help as the default', () => {
+    const byDefault = addEcsAssumeRoleOptions(new Command('x')).helpInformation();
+    const explicit = addEcsAssumeRoleOptions(new Command('x'), {
+      legacyAssumeTaskRoleAlias: true,
+    }).helpInformation();
+    expect(explicit).toBe(byDefault);
+    expect(
+      addCommonEcsServiceOptions(new Command('x'), {
+        legacyAssumeTaskRoleAlias: true,
+      }).helpInformation()
+    ).toBe(addCommonEcsServiceOptions(new Command('x')).helpInformation());
+  });
+
+  it('opt-out registers only --assume-role, whose description no longer names the alias', () => {
+    const cmd = addEcsAssumeRoleOptions(new Command('x'), { legacyAssumeTaskRoleAlias: false });
+    expect(cmd.options.map((o) => o.long)).toEqual(['--assume-role', '--emulate-role-via']);
+    expect(optionByLong(cmd, '--assume-role')!.description).toBe(
+      SHARED + 'Same flag as on `invoke` / `invoke-agentcore` / `start-api`.'
+    );
+    expect(cmd.helpInformation()).not.toContain('assume-task-role');
+  });
+
+  it('addCommonEcsServiceOptions threads the opt-out through to the assume-role block', () => {
+    const cmd = addCommonEcsServiceOptions(new Command('x'), {
+      legacyAssumeTaskRoleAlias: false,
+    });
+    const longs = cmd.options.map((o) => o.long);
+    expect(longs).toContain('--assume-role');
+    expect(longs).not.toContain('--assume-task-role');
+    expect(cmd.helpInformation()).not.toContain('assume-task-role');
+    // The rest of the shared block is unchanged by the opt-out.
+    const defaultLongs = addCommonEcsServiceOptions(new Command('x'))
+      .options.map((o) => o.long)
+      .filter((l) => l !== '--assume-task-role');
+    expect(longs).toEqual(defaultLongs);
+  });
+
+  it('opt-out: Commander rejects --assume-task-role as an unknown option', () => {
+    const cmd = addCommonEcsServiceOptions(quietCommand(), { legacyAssumeTaskRoleAlias: false });
+    cmd.action(() => undefined);
+    expect(() =>
+      cmd.parse(['node', 'host', '--assume-task-role', 'arn:aws:iam::222222222222:role/Old'])
+    ).toThrow(expect.objectContaining({ code: 'commander.unknownOption' }));
+  });
+
+  it('default: Commander still accepts --assume-task-role on the shared block', () => {
+    const cmd = addCommonEcsServiceOptions(quietCommand());
+    cmd.action(() => undefined);
+    cmd.parse(['node', 'host', '--assume-task-role', 'arn:aws:iam::222222222222:role/Old']);
+    expect((cmd.opts() as { assumeTaskRole?: string }).assumeTaskRole).toBe(
+      'arn:aws:iam::222222222222:role/Old'
+    );
+  });
+
+  it('opt-out: --assume-role resolves as the only flag, with no deprecation warn', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    for (const [argv, expected] of [
+      [['--assume-role', 'arn:aws:iam::111111111111:role/New'], 'arn:aws:iam::111111111111:role/New'],
+      [['--assume-role'], true],
+      [[], undefined],
+    ] as const) {
+      const cmd = addCommonEcsServiceOptions(quietCommand(), { legacyAssumeTaskRoleAlias: false });
+      cmd.action(() => undefined);
+      cmd.parse(['node', 'host', ...argv]);
+      const opts = cmd.opts() as { assumeRole?: string | boolean; assumeTaskRole?: unknown };
+      expect(opts.assumeTaskRole).toBeUndefined();
+      expect(resolveEcsAssumeRoleOption(opts)).toBe(expected);
+    }
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
 describe('issue #249 / C7 — `--ecr-role-arn` added to start-api', () => {
   it('addStartApiSpecificOptions registers --ecr-role-arn', () => {
     const longs = addStartApiSpecificOptions(new Command())

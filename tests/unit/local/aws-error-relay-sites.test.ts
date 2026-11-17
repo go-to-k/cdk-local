@@ -1494,6 +1494,9 @@ describe('#579 round 3 — the catch-less sends the derived population found', (
         emulatorResolvePlaceholderAccount(PLACEHOLDER_ARN, 'us-east-1', undefined)
       );
       expect(message).toContain('GetCallerIdentity returned no Account');
+      // Names the flag every host has (go-to-k/cdk-local#1007).
+      expect(message).toMatch(/^--assume-role: /);
+      expect(message).not.toContain('--assume-task-role');
       // The relay's framing must NOT be layered on top of it.
       expect(message).not.toContain('STS GetCallerIdentity failed while resolving');
     });
@@ -1502,13 +1505,16 @@ describe('#579 round 3 — the catch-less sends the derived population found', (
       // Called "the exact twin" of `local-run-task.ts`'s site, and it dropped
       // the remedy that BOTH the twin and this function's own in-`try` throw
       // carry — so a user hitting the relay path got no way forward while the
-      // adjacent path told them exactly what to do.
+      // adjacent path told them exactly what to do. It names the canonical
+      // `--assume-role`, not the twin's `--assume-task-role`: a host CLI can
+      // register start-service / start-alb without the legacy alias
+      // (go-to-k/cdk-local#1007), and `--assume-role` exists on every host.
       mocks.stsSend.mockRejectedValue(new Error('boom'));
-      expect(
-        await thrownMessage(() =>
-          emulatorResolvePlaceholderAccount(PLACEHOLDER_ARN, 'us-east-1', undefined)
-        )
-      ).toContain('Pass the ARN explicitly: --assume-task-role <arn>');
+      const message = await thrownMessage(() =>
+        emulatorResolvePlaceholderAccount(PLACEHOLDER_ARN, 'us-east-1', undefined)
+      );
+      expect(message).toContain('Pass the ARN explicitly: --assume-role <arn>');
+      expect(message).not.toContain('--assume-task-role');
     });
 
     it('flattens a forged newline in the placeholder ARN', async () => {
