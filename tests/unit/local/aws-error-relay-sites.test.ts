@@ -1494,6 +1494,9 @@ describe('#579 round 3 — the catch-less sends the derived population found', (
         emulatorResolvePlaceholderAccount(PLACEHOLDER_ARN, 'us-east-1', undefined)
       );
       expect(message).toContain('GetCallerIdentity returned no Account');
+      // Names the flag every host has (go-to-k/cdk-local#1007).
+      expect(message).toMatch(/^--assume-role: /);
+      expect(message).not.toContain('--assume-task-role');
       // The relay's framing must NOT be layered on top of it.
       expect(message).not.toContain('STS GetCallerIdentity failed while resolving');
     });
