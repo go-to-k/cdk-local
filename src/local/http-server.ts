@@ -26,7 +26,15 @@ import {
 } from './rest-v1-integrations.js';
 import { randomUUID } from 'node:crypto';
 import { applyCorsResponseHeaders, matchPreflight, type CorsConfig } from './cors-handler.js';
-import type { AuthorizerInfo, RouteWithAuth } from './authorizer-resolver.js';
+import {
+  buildIdentityHash,
+  compileIdentityValidation,
+  tokenHasAnyScope,
+  type AuthorizerInfo,
+  type CognitoUserPoolAuthorizer,
+  type JwtAuthorizer,
+  type RouteWithAuth,
+} from './authorizer-resolver.js';
 import type { AuthorizerCache, CachedAuthorizerResult } from './authorizer-cache.js';
 import { buildAuthorizerContextShape } from './authorizer-context.js';
 import {
@@ -41,6 +49,7 @@ import {
   type WarnedAt,
   verifyCognitoJwt,
   verifyJwtAuthorizer,
+  extractToken,
 } from './cognito-jwt.js';
 import { type CredentialsLoader, verifySigV4 } from './sigv4-verify.js';
 import {
@@ -985,18 +994,36 @@ function pickFirstHeaderValue(headers: Record<string, string[]>, name: string): 
 }
 
 /**
- * Outcome of an authorizer pass. The HTTP server uses `denyKind` to
- * differentiate REST v1 missing-identity (401) from policy-deny (403);
- * HTTP v2 collapses both to 401.
+ * Why an authorizer pass denied, which picks the status {@link writeAuthRejection}
+ * answers:
+ *
+ * - `'missing-identity'`: the identity source is absent, or a TOKEN
+ *   authorizer's value fails its `IdentityValidationExpression` (REST v1 → 401).
+ * - `'policy-deny'`: a Lambda authorizer ran and denied (REST v1 → 403).
+ * - `'invalid-token'`: a Cognito / JWT token is malformed, unsigned, from
+ *   another issuer, the wrong token type, or fails a route claim check
+ *   (REST v1 → 401, go-to-k/cdk-local#1012).
+ * - `'access-denied'`: a REST v1 Cognito token whose signature does not
+ *   verify (REST v1 → 403 `{"Message":"Access Denied"}`).
+ * - `'token-expired'`: a REST v1 Cognito token past its `exp` (REST v1 →
+ *   401 `{"message":"The incoming token has expired"}`).
+ * - `'insufficient-scope'`: an HTTP v2 JWT token without one of the route's
+ *   `AuthorizationScopes` (HTTP v2 → 403, go-to-k/cdk-local#1011).
+ *
+ * HTTP v2 answers every other kind 401.
  */
+export type AuthDenyKind =
+  | 'missing-identity'
+  | 'policy-deny'
+  | 'invalid-token'
+  | 'access-denied'
+  | 'token-expired'
+  | 'insufficient-scope';
+
+/** Outcome of an authorizer pass. `denyKind` is unset on Allow outcomes. */
 interface AuthorizerOutcome {
   result: CachedAuthorizerResult;
-  /**
-   * `'missing-identity'` when the request lacks the configured identity
-   * source (REST v1 → 401); `'policy-deny'` when the authorizer ran and
-   * denied (REST v1 → 403). Unset on Allow outcomes.
-   */
-  denyKind?: 'missing-identity' | 'policy-deny';
+  denyKind?: AuthDenyKind;
 }
 
 /**
@@ -1056,6 +1083,15 @@ async function runAuthorizerPass(
   if (authorizer.kind === 'lambda-token') {
     const token = headers[authorizer.tokenHeader];
     if (!token) {
+      return { result: { allow: false }, denyKind: 'missing-identity' };
+    }
+    // IdentityValidationExpression (#1011): the deployed API answers a token
+    // that does not match it 401 without invoking the Lambda — or reading
+    // the cache.
+    if (
+      authorizer.identityValidation?.state === 'enforced' &&
+      !compileIdentityValidation(authorizer.identityValidation.value).test(token)
+    ) {
       return { result: { allow: false }, denyKind: 'missing-identity' };
     }
     if (cache) {
@@ -1185,11 +1221,17 @@ async function runAuthorizerPass(
   }
 
   const authHeader = headers['authorization'];
+  // The verifiers cache under the token itself (`identityHash`), so the
+  // lookup keys on the same extraction — with the header verbatim, a
+  // `Bearer <t>` request never found its own entry.
+  const cacheToken = extractToken(authHeader);
   const jwksOpts = { ...(opts.jwksWarnedAt && { warnedAt: opts.jwksWarnedAt }) };
   if (authorizer.kind === 'cognito') {
-    if (cache && authHeader !== undefined) {
-      const cached = cache.get(authorizer.logicalId, hashOne(authHeader));
-      if (cached) return shapeOutcome(cached);
+    // The cache is per authorizer + token while the claim checks are per
+    // route, so they run on a cache hit too.
+    if (cache && cacheToken !== undefined) {
+      const cached = cache.get(authorizer.logicalId, buildIdentityHash([cacheToken]));
+      if (cached) return checkCognitoRouteClaims(authorizer, cached);
     }
     const result = await verifyCognitoJwt(authorizer, authHeader, opts.jwksCache, jwksOpts);
     if (cache && result.identityHash !== undefined && result.ttlSeconds > 0) {
@@ -1200,16 +1242,28 @@ async function runAuthorizerPass(
         stripHashAndTtl(result)
       );
     }
-    if (!result.allow && authHeader === undefined) {
-      return { result: stripHashAndTtl(result), denyKind: 'missing-identity' };
+    if (!result.allow) {
+      // Measured against the deployed REST API (#1012): a token whose
+      // signature does not verify answers 403 Access Denied, an expired one
+      // 401 "The incoming token has expired"; every other rejected token,
+      // and a missing one, 401 Unauthorized.
+      const denyKind: AuthDenyKind =
+        authHeader === undefined
+          ? 'missing-identity'
+          : result.signatureInvalid
+            ? 'access-denied'
+            : result.expired
+              ? 'token-expired'
+              : 'invalid-token';
+      return { result: stripHashAndTtl(result), denyKind };
     }
-    return shapeOutcome(stripHashAndTtl(result));
+    return checkCognitoRouteClaims(authorizer, stripHashAndTtl(result));
   }
 
   // jwt
-  if (cache && authHeader !== undefined) {
-    const cached = cache.get(authorizer.logicalId, hashOne(authHeader));
-    if (cached) return shapeOutcome(cached);
+  if (cache && cacheToken !== undefined) {
+    const cached = cache.get(authorizer.logicalId, buildIdentityHash([cacheToken]));
+    if (cached) return checkJwtRouteScopes(authorizer, cached);
   }
   const result = await verifyJwtAuthorizer(authorizer, authHeader, opts.jwksCache, jwksOpts);
   if (cache && result.identityHash !== undefined && result.ttlSeconds > 0) {
@@ -1223,7 +1277,63 @@ async function runAuthorizerPass(
   if (!result.allow && authHeader === undefined) {
     return { result: stripHashAndTtl(result), denyKind: 'missing-identity' };
   }
-  return shapeOutcome(stripHashAndTtl(result));
+  return checkJwtRouteScopes(authorizer, stripHashAndTtl(result));
+}
+
+/**
+ * The per-route checks a REST v1 Cognito authorizer applies to a verified
+ * token (#1011), as measured against the deployed API:
+ *
+ * - `IdentityValidationExpression` is matched against the WHOLE `aud` claim
+ *   (an access token, which carries none, never matches);
+ * - a method WITHOUT `AuthorizationScopes` accepts an ID token only;
+ * - a method WITH them accepts an access token whose `scope` claim carries
+ *   at least one — while the scopes stay unresolved, any access token.
+ *
+ * Every failure answers 401. A JWKS pass-through Allow verified nothing, so
+ * its claims are not checked.
+ */
+function checkCognitoRouteClaims(
+  authorizer: CognitoUserPoolAuthorizer,
+  result: CachedAuthorizerResult
+): AuthorizerOutcome {
+  if (!result.allow) return shapeOutcome(result);
+  if (result.passThrough) return { result };
+  const claims = result.context ?? {};
+  const deny: AuthorizerOutcome = { result: { allow: false }, denyKind: 'invalid-token' };
+  const validation = authorizer.identityValidation;
+  if (validation?.state === 'enforced') {
+    const aud = claims['aud'];
+    if (typeof aud !== 'string' || !compileIdentityValidation(validation.value).test(aud)) {
+      return deny;
+    }
+  }
+  const scopes = authorizer.scopes;
+  if (scopes === undefined) {
+    return claims['token_use'] === 'id' ? { result } : deny;
+  }
+  if (claims['token_use'] !== 'access') return deny;
+  if (scopes.state === 'enforced' && !tokenHasAnyScope([claims['scope']], scopes.value))
+    return deny;
+  return { result };
+}
+
+/**
+ * An HTTP v2 JWT route's `AuthorizationScopes` (#1011): the token's `scope`
+ * or `scp` claim must carry at least one, or the deployed API answers 403. A JWKS
+ * pass-through Allow verified nothing, so its claims are not checked.
+ */
+function checkJwtRouteScopes(
+  authorizer: JwtAuthorizer,
+  result: CachedAuthorizerResult
+): AuthorizerOutcome {
+  if (!result.allow) return shapeOutcome(result);
+  if (result.passThrough || authorizer.scopes?.state !== 'enforced') return { result };
+  const claims = result.context ?? {};
+  if (tokenHasAnyScope([claims['scope'], claims['scp']], authorizer.scopes.value)) {
+    return { result };
+  }
+  return { result: { allow: false }, denyKind: 'insufficient-scope' };
 }
 
 /**
@@ -1339,13 +1449,19 @@ function buildOverlay(
  *     `{"message":"Missing Authentication Token"}` and signature/policy
  *     failures with 403 `{"message":"Forbidden"}` — lowercase `message`
  *     distinguishes the REST v1 shape from the Function URL shape below).
- *   - REST v1, missing identity → 401 `{"message":"Unauthorized"}`
- *     (matches deployed behavior; the route reaches the Method but no
- *     identity source is present so the authorizer never runs).
+ *   - REST v1, missing identity / invalid token → 401
+ *     `{"message":"Unauthorized"}` (matches deployed behavior: no identity
+ *     source, a failed IdentityValidationExpression, or a Cognito token
+ *     the authorizer rejects — measured for go-to-k/cdk-local#1012).
+ *   - REST v1, access-denied → 403 `{"Message":"Access Denied"}` (a Cognito
+ *     token whose signature does not verify; capital `Message`, measured).
+ *   - REST v1, token-expired → 401 `{"message":"The incoming token has
+ *     expired"}` (a Cognito token past its `exp`, measured).
  *   - REST v1, policy-deny → 403 `{"message":"Forbidden"}` (the
  *     authorizer ran and denied; status mirrors AWS API Gateway).
- *   - HTTP v2, both kinds → 401 `{"message":"Unauthorized"}` (HTTP API
- *     collapses both into the same response).
+ *   - HTTP v2, insufficient-scope → 403 `{"message":"Forbidden"}` (a JWT
+ *     without one of the route's AuthorizationScopes, #1011); every other
+ *     kind → 401 `{"message":"Unauthorized"}`.
  *   - Function URL with AWS_IAM (issue #621) → 403 `{"Message":"Forbidden"}`
  *     for both deny kinds (matches Lambda's deployed Function URL IAM
  *     behavior — the AWS SigV4 layer rejects with 403, not 401). Note the
@@ -1355,7 +1471,7 @@ function buildOverlay(
 export function writeAuthRejection(
   res: ServerResponse,
   apiVersion: 'v1' | 'v2',
-  denyKind: 'missing-identity' | 'policy-deny',
+  denyKind: AuthDenyKind,
   authorizerKind?: AuthorizerInfo['kind']
 ): void {
   // REST v1 with AWS_IAM rides the same SigV4 verifier as the v2 path
@@ -1378,14 +1494,26 @@ export function writeAuthRejection(
     return;
   }
   if (apiVersion === 'v2') {
+    if (denyKind === 'insufficient-scope') {
+      writeError(res, 403, '{"message":"Forbidden"}');
+      return;
+    }
     writeError(res, 401, '{"message":"Unauthorized"}');
     return;
   }
-  if (denyKind === 'missing-identity') {
-    writeError(res, 401, '{"message":"Unauthorized"}');
+  if (denyKind === 'access-denied') {
+    writeError(res, 403, '{"Message":"Access Denied"}');
     return;
   }
-  writeError(res, 403, '{"message":"Forbidden"}');
+  if (denyKind === 'token-expired') {
+    writeError(res, 401, '{"message":"The incoming token has expired"}');
+    return;
+  }
+  if (denyKind === 'policy-deny') {
+    writeError(res, 403, '{"message":"Forbidden"}');
+    return;
+  }
+  writeError(res, 401, '{"message":"Unauthorized"}');
 }
 
 function hashOne(value: string): string {

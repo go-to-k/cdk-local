@@ -72,6 +72,41 @@ describe('writeAuthRejection', () => {
     expect(res.capturedBody).toBe('{"message":"Forbidden"}');
   });
 
+  it('REST v1 + invalid-token → 401 Unauthorized (#1012, measured)', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v1', 'invalid-token', 'cognito');
+    expect(res.statusCode).toBe(401);
+    expect(res.capturedBody).toBe('{"message":"Unauthorized"}');
+  });
+
+  it('REST v1 + access-denied → 403 Access Denied with a capital Message (#1012, measured)', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v1', 'access-denied', 'cognito');
+    expect(res.statusCode).toBe(403);
+    expect(res.capturedBody).toBe('{"Message":"Access Denied"}');
+  });
+
+  it('REST v1 + token-expired → 401 with the deployed message (#1012, measured)', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v1', 'token-expired', 'cognito');
+    expect(res.statusCode).toBe(401);
+    expect(res.capturedBody).toBe('{"message":"The incoming token has expired"}');
+  });
+
+  it('HTTP v2 + insufficient-scope → 403 Forbidden (#1011, measured)', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v2', 'insufficient-scope', 'jwt');
+    expect(res.statusCode).toBe(403);
+    expect(res.capturedBody).toBe('{"message":"Forbidden"}');
+  });
+
+  it('HTTP v2 + invalid-token → 401 Unauthorized', () => {
+    const res = makeResponse();
+    writeAuthRejection(res, 'v2', 'invalid-token', 'jwt');
+    expect(res.statusCode).toBe(401);
+    expect(res.capturedBody).toBe('{"message":"Unauthorized"}');
+  });
+
   it('HTTP v2 + missing-identity → 401 Unauthorized', () => {
     const res = makeResponse();
     writeAuthRejection(res, 'v2', 'missing-identity');

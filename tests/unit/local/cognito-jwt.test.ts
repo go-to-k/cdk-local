@@ -538,6 +538,41 @@ describe('verifyCognitoJwt — extractBearer edge cases', () => {
     expect(result.allow).toBe(true);
   });
 
+  it('accepts a raw token without the Bearer scheme, as the deployed authorizers do (#1015)', async () => {
+    const fx = makeJwtFixture();
+    const cache = createJwksCache({
+      fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ keys: [fx.jwk] }) }),
+    });
+    const exp = Math.floor(Date.now() / 1000) + 600;
+    const idToken = fx.sign({}, { iss: JWT_AUTH.issuer, aud: 'test-audience', exp });
+    expect((await verifyCognitoJwt(COGNITO_AUTH, idToken, cache)).allow).toBe(true);
+    expect((await verifyJwtAuthorizer(JWT_AUTH, idToken, cache)).allow).toBe(true);
+  });
+
+  it('rejects a bare Bearer scheme as no token, even in pass-through', async () => {
+    const cache = createJwksCache({
+      fetchImpl: async () => {
+        throw new Error('boom');
+      },
+    });
+    expect((await verifyCognitoJwt(COGNITO_AUTH, 'Bearer', cache)).allow).toBe(false);
+  });
+
+  it('marks a token whose signature does not verify as signatureInvalid (#1012)', async () => {
+    const fx = makeJwtFixture();
+    const cache = createJwksCache({
+      fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ keys: [fx.jwk] }) }),
+    });
+    const token = fx.sign({}, { iss: JWT_AUTH.issuer, exp: Math.floor(Date.now() / 1000) + 600 });
+    const [h, p] = token.split('.');
+    const other = makeJwtFixture().sign({}, { iss: JWT_AUTH.issuer });
+    const forged = `${h}.${p}.${other.split('.')[2]}`;
+    const result = await verifyCognitoJwt(COGNITO_AUTH, `Bearer ${forged}`, cache);
+    expect(result).toMatchObject({ allow: false, signatureInvalid: true });
+    const expired = fx.sign({}, { iss: JWT_AUTH.issuer, exp: 1 });
+    expect((await verifyCognitoJwt(COGNITO_AUTH, `Bearer ${expired}`, cache)).signatureInvalid).toBeUndefined();
+  });
+
   it('rejects a Bearer scheme with no token (just whitespace)', async () => {
     const cache = createJwksCache({
       fetchImpl: async () => {

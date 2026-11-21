@@ -20,6 +20,15 @@
 #     and admits any Bearer token (JWKS pass-through); under --from-cfn-stack
 #     the pool resolves, a real token -> 200 with the user's sub and a garbage
 #     / tampered token or no header is denied.
+#   - go-to-k/cdk-local#1011 / #1012 / #1015, under --from-cfn-stack, each
+#     status as measured against the deployed API: REST garbage / no header ->
+#     401 Unauthorized, tampered signature -> 403 Access Denied, an access
+#     token on an unscoped method -> 401, a raw (no Bearer) ID token -> 200;
+#     REST scoped method: access token -> 200, ID token -> 401; HTTP scoped
+#     routes: carried scope -> 200, missing scope -> 403 Forbidden, a raw
+#     access token -> 200; REST TOKEN authorizer validationRegex
+#     `^Bearer [a-z]+$`: `Bearer abc` -> 200, `Bearer ABC1` -> 401. Literal
+#     scopes / regex are enforced, so no per-route warning names them.
 #
 # Run via `/run-integ local-start-api-user-pool-authorizer` or:
 #
@@ -152,11 +161,13 @@ mint_token() {
   aws cognito-idp admin-initiate-auth --user-pool-id "${POOL_ID}" --client-id "$1" \
     --auth-flow ADMIN_USER_PASSWORD_AUTH \
     --auth-parameters "USERNAME=${USERNAME},PASSWORD=${PASSWORD}" \
-    --region "${REGION}" --query 'AuthenticationResult.IdToken' --output text
+    --region "${REGION}" --query "AuthenticationResult.${2:-IdToken}" --output text
 }
 TOKEN_A="$(mint_token "${CLIENT_A}")"
 TOKEN_B="$(mint_token "${CLIENT_B}")"
-for t in "${TOKEN_A}" "${TOKEN_B}"; do
+# #1011: an access token carries scope "aws.cognito.signin.user.admin".
+ACCESS_A="$(mint_token "${CLIENT_A}" AccessToken)"
+for t in "${TOKEN_A}" "${TOKEN_B}" "${ACCESS_A}"; do
   case "${t}" in
     eyJ*.*.*) ;;
     *) echo "[verify] FAIL: minted token does not look like a JWT"; exit 1 ;;
@@ -221,6 +232,41 @@ request_rest() {
   fi
 }
 
+# #1011: literal scopes / validationRegex are enforced, so no per-route
+# warning may call them unchecked or unresolved.
+UNENFORCED_RE='AuthorizationScopes .*(are not checked|could not be resolved)|IdentityValidationExpression could not be applied'
+assert_no_unenforced_scope_warning() {
+  if grep -Eq "${UNENFORCED_RE}" "${LOG_FILE}"; then
+    fail "a literal AuthorizationScopes / IdentityValidationExpression was warned as unenforced: $(grep -E "${UNENFORCED_RE}" "${LOG_FILE}")"
+  fi
+}
+
+# GET <path> on <port>; sets HTTP_CODE, body to BODY_FILE. $3 is the
+# Authorization header value ("" = send none).
+request_path() {
+  local port="$1" path="$2" auth="$3"
+  if [ -n "${auth}" ]; then
+    HTTP_CODE="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' \
+      -H "Authorization: ${auth}" "http://127.0.0.1:${port}${path}" || true)"
+  else
+    HTTP_CODE="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' \
+      "http://127.0.0.1:${port}${path}" || true)"
+  fi
+}
+
+# expect_status <port> <path> <auth> <code> [<exact body>] <label>
+expect_status() {
+  local port="$1" path="$2" auth="$3" code="$4" body="$5" label="$6"
+  request_path "${port}" "${path}" "${auth}"
+  [ "${HTTP_CODE}" = "${code}" ] || \
+    fail "${label}: expected ${code}, got ${HTTP_CODE} body=$(cat "${BODY_FILE}")"
+  if [ -n "${body}" ]; then
+    [ "$(cat "${BODY_FILE}")" = "${body}" ] || \
+      fail "${label}: expected body ${body}, got $(cat "${BODY_FILE}")"
+  fi
+  echo "[verify]   ${label} -> ${code}"
+}
+
 # GET /secure; sets HTTP_CODE and writes the body to BODY_FILE. $2 is the
 # Authorization header value ("" = send none).
 request_secure() {
@@ -254,6 +300,8 @@ request_rest "${REST_PORT}" "Bearer ${TOKEN_A}"
 [ "${HTTP_CODE}" = "200" ] || fail "REST, no state: a real token expected 200 (pass-through), got ${HTTP_CODE}"
 grep -q 'ApiKeyRequired is not enforced .*route GET /rest-secure is served without an x-api-key check' "${LOG_FILE}" || \
   fail "expected the per-route ApiKeyRequired warning for GET /rest-secure"
+# #1011: literal scopes and a literal validationRegex are enforced, not warned.
+assert_no_unenforced_scope_warning
 echo "[verify]   REST, no state: warned per route (ProviderARNs, ApiKeyRequired); garbage and real tokens -> 200 (pass-through)"
 stop_server
 
@@ -268,6 +316,7 @@ fi
 if grep -q 'JWKS unreachable' "${LOG_FILE}"; then
   fail "JWKS unreachable under --from-cfn-stack (issuer did not resolve to the real pool)"
 fi
+assert_no_unenforced_scope_warning
 
 OK=0
 for _ in $(seq 1 30); do
@@ -306,15 +355,33 @@ done
 grep -q "\"sub\":\"${USER_SUB}\"" "${BODY_FILE}" || \
   fail "REST real token: body sub mismatch (want ${USER_SUB}): $(cat "${BODY_FILE}")"
 echo "[verify]   REST real token -> 200, sub matches"
-# A denied token answers 401 or 403 depending on the deny kind; never 2xx.
-for bad in "Bearer garbage" "Bearer ${TOKEN_TAMPERED}" ""; do
-  request_rest "${REST_PORT}" "${bad}"
-  case "${HTTP_CODE}" in
-    401|403) ;;
-    *) fail "REST denied token (${bad:0:16}...): expected 401/403, got ${HTTP_CODE}" ;;
-  esac
+# #1012: the statuses the deployed REST API answers (measured).
+UNAUTH='{"message":"Unauthorized"}'
+expect_status "${REST_PORT}" /rest-secure "Bearer garbage" 401 "${UNAUTH}" "REST garbage token"
+expect_status "${REST_PORT}" /rest-secure "" 401 "${UNAUTH}" "REST no header"
+expect_status "${REST_PORT}" /rest-secure "Bearer ${TOKEN_TAMPERED}" 403 '{"Message":"Access Denied"}' \
+  "REST tampered signature"
+# #1015: the Bearer prefix is optional on the deployed authorizers.
+expect_status "${REST_PORT}" /rest-secure "${TOKEN_A}" 200 "" "REST raw ID token (no Bearer)"
+# #1011: an unscoped Cognito method accepts an ID token only; a scoped one an
+# access token carrying a listed scope only.
+expect_status "${REST_PORT}" /rest-secure "Bearer ${ACCESS_A}" 401 "${UNAUTH}" "REST access token, unscoped method"
+expect_status "${REST_PORT}" /rest-scoped "Bearer ${ACCESS_A}" 200 "" "REST access token, scoped method"
+expect_status "${REST_PORT}" /rest-scoped "Bearer ${TOKEN_A}" 401 "${UNAUTH}" "REST ID token, scoped method"
+expect_status "${PORT_CFN}" /secure-scoped-ok "Bearer ${ACCESS_A}" 200 "" "HTTP carried scope"
+expect_status "${PORT_CFN}" /secure-scoped-miss "Bearer ${ACCESS_A}" 403 '{"message":"Forbidden"}' \
+  "HTTP missing scope"
+expect_status "${PORT_CFN}" /secure "${ACCESS_A}" 200 "" "HTTP raw access token (no Bearer)"
+# #1011: the TOKEN authorizer's validationRegex runs before the Lambda.
+OK=0
+for _ in $(seq 1 30); do
+  request_path "${REST_PORT}" /rest-token "Bearer abc"
+  if [ "${HTTP_CODE}" = "200" ]; then OK=1; break; fi
+  sleep 1
 done
-echo "[verify]   REST garbage / tampered / no header -> denied"
+[ "${OK}" -eq 1 ] || fail "REST TOKEN 'Bearer abc': expected 200, last got ${HTTP_CODE} body=$(cat "${BODY_FILE}")"
+echo "[verify]   REST TOKEN matching the validationRegex -> 200"
+expect_status "${REST_PORT}" /rest-token "Bearer ABC1" 401 "${UNAUTH}" "REST TOKEN failing the validationRegex"
 stop_server
 
 echo "[verify] step 7: cdk destroy --force"
@@ -337,3 +404,4 @@ echo "[verify] All checks passed:"
 echo "[verify]   - no state source: boots with the intrinsic-issuer warning (JWKS pass-through)."
 echo "[verify]   - --from-cfn-stack: issuer + audience resolved; 200 / tampered 401 / no-header 401 / wrong-audience 401."
 echo "[verify]   - REST v1 Cognito (#1010): no state -> per-route warning + pass-through; --from-cfn-stack -> real token 200, garbage / tampered / none denied."
+echo "[verify]   - #1011 / #1012 / #1015: deployed statuses for scopes, token type, validationRegex, invalid tokens, raw tokens."

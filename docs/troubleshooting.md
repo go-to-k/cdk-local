@@ -84,7 +84,7 @@ The stack-qualified logical ID form (`MyStack:MyFunctionLogicalId`) is also acce
 
 ### API Gateway: 403 / 404 from a route that exists
 
-- **403 from an authorizer** — for REST v1 Cognito User Pool authorizers, cdk-local validates the JWT against the configured user pool. The token must be a real JWT issued for that pool; SAM-local-style "anything works" tokens are NOT accepted. See the `cognito-jwt-verify` flow notes in the README.
+- **401 / 403 from a Cognito authorizer** — for REST v1 Cognito User Pool authorizers, cdk-local validates the JWT against the configured user pool, as the deployed API does. The token must be a real JWT issued for that pool; SAM-local-style "anything works" tokens are NOT accepted. Most rejections answer 401: a malformed, expired or foreign token, an access token on a method without `AuthorizationScopes` (send the ID token), or an ID token / missing scope on a method with them (send an access token carrying one). 403 `{"Message":"Access Denied"}` means the token's signature does not verify. See "start-api authorizers" in `docs/local-emulation.md`.
 - **403 from a Lambda authorizer** — your authorizer Lambda returned `Deny` or did not return the expected `Allow` shape. Add `console.log(event)` inside the authorizer + re-run.
 - **404 for a route you wrote** — the route was registered after the API Gateway resource and is not in the synth output yet. Run `npx cdk synth` and confirm the route appears in the template.
 

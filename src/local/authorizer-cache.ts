@@ -54,6 +54,13 @@ export interface CachedAuthorizerResult {
    * policy can't leak across routes. JWT authorizers omit this.
    */
   policy?: unknown;
+  /**
+   * Set on a JWT / Cognito Allow admitted by JWKS pass-through: the token was
+   * NOT verified, so its claims prove nothing and the route-level claim
+   * checks (`AuthorizationScopes`, token type, `IdentityValidationExpression`)
+   * are not applied to it (go-to-k/cdk-local#1011).
+   */
+  passThrough?: true;
 }
 
 interface Entry {
