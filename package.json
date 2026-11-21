@@ -82,7 +82,7 @@
     "@smithy/signature-v4": "^5.4.4",
     "@smithy/types": "^4.14.2",
     "agent-base": "^9.0.0",
-    "chokidar": "^5.0.0",
+    "chokidar": "^6.0.0",
     "commander": "^14.0.0",
     "fflate": "^0.8.3",
     "graphlib": "^2.1.8",
