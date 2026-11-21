@@ -1226,6 +1226,9 @@ forwarded on pass. `GET /ping` is an unauthenticated health check. A
 `customJwtAuthorizer`) signs each forwarded request with AWS SigV4 (service
 `bedrock-agentcore`) so the container sees the same `Authorization` / `X-Amz-*`
 header set the cloud receives — mutually exclusive with `--bearer-token`.
+An intrinsic `DiscoveryUrl` / `AllowedClients` resolves from `--from-cfn-stack`
+state exactly as for `invoke-agentcore`; one that cannot resolve serves the
+runtime unverified, with a startup warning naming it.
 
 **`/ws` bridge (same port).** The serve also fronts the agent's bidirectional
 `/ws` WebSocket endpoint behind a host **bridge** on the same port. The

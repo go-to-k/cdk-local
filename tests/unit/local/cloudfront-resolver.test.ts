@@ -328,6 +328,27 @@ describe('resolveCloudFrontDistribution — unresolved + custom origins', () => 
     );
   });
 
+  it('warns for a Lambda@Edge association with a non-literal EventType', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const template = s3DistributionTemplate();
+    template.Resources!['EdgeFn'] = { Type: 'AWS::Lambda::Function', Properties: {} };
+    const dc = (template.Resources!['Dist']!.Properties as Record<string, Record<string, unknown>>)[
+      'DistributionConfig'
+    ]!;
+    (dc['DefaultCacheBehavior'] as Record<string, unknown>)['LambdaFunctionAssociations'] = [
+      { EventType: { Ref: 'Evt' }, LambdaFunctionARN: { Ref: 'EdgeFn' } },
+    ];
+    const resolved = resolveCloudFrontDistribution({ stack: buildStack(template, HASH), logicalId: 'Dist' });
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
+    expect(resolved.behaviors[0]?.lambdaEdge).toBeUndefined();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/Lambda@Edge function EdgeFn has EventType \(not a literal\).*it will not run/),
+      ])
+    );
+  });
+
   it('throws on a distribution with no DistributionConfig', () => {
     const template: CloudFormationTemplate = {
       Resources: { Dist: { Type: 'AWS::CloudFront::Distribution', Properties: {} } },

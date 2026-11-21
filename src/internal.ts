@@ -276,12 +276,15 @@ export {
  * authorizer's intrinsic ProviderARNs (#1010) once the host's state source has
  * loaded, warning per route for what stays unresolved; a host that attaches
  * authorizers must call it (with no state, `() => undefined`) or those
- * routes serve their placeholder without a warning. Exposed only as the consuming host's `import`
+ * routes serve their placeholder without a warning; it must also call
+ * `warnUnenforcedRouteAuthSettings` on the served routes, which warns per route
+ * for the auth settings `start-api` does not enforce (#1010). Exposed only as the consuming host's `import`
  * statements require them.
  */
 export {
   attachAuthorizers,
   resolveJwtAuthorizerIntrinsics,
+  warnUnenforcedRouteAuthSettings,
   type AuthorizerInfo,
   type RouteWithAuth,
 } from './local/authorizer-resolver.js';

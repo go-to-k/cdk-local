@@ -54,6 +54,27 @@ describe('loadStateForRoutedStacks with a JWT authorizer waiting on state', () =
     expect(createProviderMock.mock.calls.map((c) => c[1])).toEqual(['Api']);
   });
 
+  it("loads a REST v1 Cognito authorizer's stack while its ProviderARNs wait on state (#1010)", async () => {
+    const pool = {
+      userPoolArn: 'arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_cdklplaceholderAuth',
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_cdklplaceholderAuth',
+    };
+    const entry: RouteWithAuth = {
+      route: { declaredAt: 'Api/Method', serviceIntegration: true } as never,
+      authorizer: {
+        kind: 'cognito',
+        logicalId: 'Auth',
+        pools: [pool],
+        ...pool,
+        pending: { stackName: 'Api', providerArns: [{ 'Fn::GetAtt': ['Pool', 'Arn'] }] },
+        declaredAt: 'Api/Method',
+      },
+    };
+    await loadStateForRoutedStacks([apiStack], [], [entry], {} as never, undefined);
+    expect(createProviderMock.mock.calls.map((c) => c[1])).toEqual(['Api']);
+  });
+
   it('does not load a stack whose JWT authorizer is all literal', async () => {
     await loadStateForRoutedStacks([apiStack], [], [jwtEntry(false)], {} as never, undefined);
     expect(createProviderMock).not.toHaveBeenCalled();

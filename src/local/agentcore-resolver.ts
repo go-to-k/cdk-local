@@ -415,9 +415,26 @@ function authorizerSubstitutionContext(imageContext: ImageResolutionContext | un
     context: {
       resources: imageContext.stateResources,
       ...(imageContext.pseudoParameters && { pseudoParameters: imageContext.pseudoParameters }),
-      ...(imageContext.stateParameters && { parameters: imageContext.stateParameters }),
+      // A SecureString parameter is left out: a DiscoveryUrl built from one
+      // would be printed (boot line, refusals, the serve's 403 body), so it
+      // stays unresolved and warned instead.
+      ...(imageContext.stateParameters && {
+        parameters: withoutSensitive(
+          imageContext.stateParameters,
+          imageContext.stateSensitiveParameters
+        ),
+      }),
     },
   };
+}
+
+function withoutSensitive(
+  parameters: Record<string, string | string[]>,
+  sensitive: readonly string[] | undefined
+): Record<string, string | string[]> {
+  if (!sensitive || sensitive.length === 0) return parameters;
+  const drop = new Set(sensitive);
+  return Object.fromEntries(Object.entries(parameters).filter(([id]) => !drop.has(id)));
 }
 
 /** What an unverified inbound request reaches, as a warning names it. */
@@ -487,6 +504,12 @@ function extractJwtAuthorizer(
       return unverified(
         `AuthorizerConfiguration is an intrinsic (${displayIdent(keys[0]!)})`,
         'a whole-value intrinsic cannot be evaluated locally'
+      );
+    }
+    if (keys.length > 0) {
+      return unverified(
+        `AuthorizerConfiguration declares no CustomJWTAuthorizer (keys: ${keys.map((k) => displayIdent(k, { listMember: true })).join(', ')})`,
+        'only a CustomJWTAuthorizer is verified locally'
       );
     }
     return undefined;

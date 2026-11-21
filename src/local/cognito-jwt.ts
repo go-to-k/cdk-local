@@ -330,7 +330,14 @@ export async function verifyCognitoJwt(
   // never has one, but be tolerant).
   let selectedPool = pools[0]!;
   let issMatched = false;
-  if (parsed && typeof parsed.payload['iss'] === 'string') {
+  // Every pool is the stand-in for an unresolved intrinsic ARN (#1010): no
+  // issuer can match it, so skip the match and let the stand-in's failing
+  // JWKS fetch put the request on the documented pass-through path, which
+  // admits every Bearer token — a real one from the deployed pool too.
+  const allPlaceholder = pools.every((pool) => 'placeholder' in pool && pool.placeholder === true);
+  if (allPlaceholder) {
+    // fall through to verifyAndShape against pools[0]
+  } else if (parsed && typeof parsed.payload['iss'] === 'string') {
     const tokenIss = parsed.payload['iss'].replace(/\/+$/, '');
     for (const pool of pools) {
       if (buildCognitoIssuer(pool.region, pool.userPoolId) === tokenIss) {

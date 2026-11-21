@@ -187,7 +187,8 @@ start_server_and_get_port() {
 
   local ready=0
   for _ in $(seq 1 120); do
-    if grep -q "Server listening" "${LOG_FILE}" 2>/dev/null; then
+    # Two APIs: wait for both banners.
+    if [ "$(grep -c "Server listening" "${LOG_FILE}" 2>/dev/null)" -ge 2 ]; then
       ready=1
       break
     fi
@@ -249,7 +250,11 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 [ "${OK}" -eq 1 ] || fail "REST, no state: garbage token expected 200 (pass-through), last got ${HTTP_CODE}"
-echo "[verify]   REST, no state: warned per route; garbage token -> 200 (pass-through)"
+request_rest "${REST_PORT}" "Bearer ${TOKEN_A}"
+[ "${HTTP_CODE}" = "200" ] || fail "REST, no state: a real token expected 200 (pass-through), got ${HTTP_CODE}"
+grep -q 'ApiKeyRequired is not enforced .*route GET /rest-secure is served without an x-api-key check' "${LOG_FILE}" || \
+  fail "expected the per-route ApiKeyRequired warning for GET /rest-secure"
+echo "[verify]   REST, no state: warned per route (ProviderARNs, ApiKeyRequired); garbage and real tokens -> 200 (pass-through)"
 stop_server
 
 echo "[verify] step 6: --from-cfn-stack — issuer + audience resolved from the stack"

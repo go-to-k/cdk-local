@@ -64,6 +64,9 @@ export class LocalStartApiUserPoolAuthorizerStack extends cdk.Stack {
         cognitoUserPools: [pool],
       }),
       authorizationType: apigw.AuthorizationType.COGNITO,
+      // Not enforced locally (API keys live in the deployed API): it must be
+      // warned per route rather than dropped silently.
+      apiKeyRequired: true,
     });
 
     new cdk.CfnOutput(this, 'PoolId', { value: pool.userPoolId });

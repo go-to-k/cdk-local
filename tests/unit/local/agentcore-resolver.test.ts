@@ -1009,6 +1009,50 @@ describe('resolveAgentCoreTarget — intrinsic JWT authorizer settings (#1010)',
     );
   });
 
+  it('warns for a CustomJWTAuthorizer that is itself an intrinsic', () => {
+    const stack = cognitoRuntime({
+      CustomJWTAuthorizer: { 'Fn::If': ['UseAuth', { DiscoveryUrl: 'https://x' }, { Ref: 'AWS::NoValue' }] },
+    });
+    let resolved: ReturnType<typeof resolveAgentCoreTarget> | undefined;
+    const messages = warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [stack], STATE_CONTEXT);
+    });
+    expect(resolved?.jwtAuthorizer).toBeUndefined();
+    expect(messages[0]).toMatch(/CustomJWTAuthorizer is an intrinsic \(Fn::If\).*WITHOUT inbound JWT verification/);
+  });
+
+  it('warns for an AuthorizerConfiguration with no CustomJWTAuthorizer', () => {
+    const stack = cognitoRuntime({ SomeFutureAuthorizer: { Foo: 'bar' } });
+    const messages = warnings(() => resolveAgentCoreTarget('App:ChatAgent', [stack]));
+    expect(messages[0]).toMatch(
+      /AuthorizerConfiguration declares no CustomJWTAuthorizer \(keys: SomeFutureAuthorizer\).*WITHOUT inbound JWT verification/
+    );
+  });
+
+  it('does not resolve a DiscoveryUrl from a SecureString parameter (it would be printed)', () => {
+    const stack = cognitoRuntime({ CustomJWTAuthorizer: { DiscoveryUrl: { Ref: 'SecretUrl' } } });
+    let resolved: ReturnType<typeof resolveAgentCoreTarget> | undefined;
+    const messages = warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [stack], {
+        stateResources: {},
+        stateParameters: { SecretUrl: 'https://secret.example.com/.well-known/openid-configuration', PlainUrl: 'https://p' },
+        stateSensitiveParameters: ['SecretUrl'],
+      } as never);
+    });
+    expect(resolved?.jwtAuthorizer).toBeUndefined();
+    expect(messages[0]).toContain('CustomJWTAuthorizer.DiscoveryUrl could not be resolved');
+    expect(messages.join('\n')).not.toContain('secret.example.com');
+    const plain = cognitoRuntime({ CustomJWTAuthorizer: { DiscoveryUrl: { Ref: 'PlainUrl' } } });
+    warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [plain], {
+        stateResources: {},
+        stateParameters: { SecretUrl: 'x', PlainUrl: 'https://p' },
+        stateSensitiveParameters: ['SecretUrl'],
+      } as never);
+    });
+    expect(resolved?.jwtAuthorizer?.discoveryUrl).toBe('https://p');
+  });
+
   it('keeps the resolved scopes and warns for an unresolved one', () => {
     const stack = cognitoRuntime({
       CustomJWTAuthorizer: {

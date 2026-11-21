@@ -70,8 +70,11 @@ fi
 
 WE_CREATED_STACK=0
 WE_CREATED_PARAM=0
+JWT_ERR=""
+JWT_STDOUT=""
 cleanup() {
   rc=$?
+  rm -f "${JWT_ERR}" "${JWT_STDOUT}"
   if [ "${rc}" -ne 0 ] && [ "${WE_CREATED_STACK}" -eq 1 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cdk destroy to clean up"
     (cd "${TEST_DIR}" && cdk destroy "${STACK}" --force --region "${REGION}" \

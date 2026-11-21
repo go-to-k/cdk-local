@@ -91,6 +91,12 @@ export interface CognitoPoolRef {
   region: string;
   /** Pool id parsed from the ARN. */
   userPoolId: string;
+  /**
+   * Set on the unreachable stand-in for an intrinsic `ProviderARNs[]` entry
+   * that did not resolve (#1010). When every pool is one, the verifier skips
+   * the `iss` match so JWKS pass-through admits every token, a real one too.
+   */
+  placeholder?: true;
 }
 
 export interface CognitoUserPoolAuthorizer {
@@ -628,6 +634,7 @@ function cognitoPlaceholderPool(logicalId: string): CognitoPoolRef {
     userPoolArn: `arn:aws:cognito-idp:us-east-1:000000000000:userpool/${userPoolId}`,
     region: 'us-east-1',
     userPoolId,
+    placeholder: true,
   };
 }
 
@@ -772,42 +779,56 @@ export function resolveJwtAuthorizerIntrinsics(
 
     if (auth.kind === 'cognito') {
       const providerArns = auth.pending.providerArns;
-      const pools = auth.pools.map((pool, idx) => {
+      // Resolve every intrinsic entry first; the warning's effect depends on
+      // whether any real pool is left.
+      const outcomes = auth.pools.map((pool, idx) => {
         const raw = providerArns[idx];
-        if (!isIntrinsicObject(raw)) return pool;
-        const location = `${label}.ProviderARNs[${idx}]`;
+        if (!isIntrinsicObject(raw)) return { pool, real: true as const };
         const derived = context ? userPoolArnFromState(raw, context) : undefined;
         const r = derived !== undefined ? { value: derived } : resolveString(raw);
-        let reason: string;
         if ('value' in r) {
           const m = /^arn:aws[a-z0-9-]*:cognito-idp:([a-z0-9-]+):[0-9]+:userpool\/(.+)$/.exec(
             r.value
           );
-          if (m) return { userPoolArn: r.value, region: m[1]!, userPoolId: m[2]! };
-          reason = 'it resolved to a value that is not a Cognito user pool ARN';
-        } else {
-          reason = r.reason;
+          if (m) {
+            return {
+              pool: { userPoolArn: r.value, region: m[1]!, userPoolId: m[2]! },
+              real: true as const,
+            };
+          }
+          return {
+            pool,
+            real: false as const,
+            idx,
+            reason: 'it resolved to a value that is not a Cognito user pool ARN',
+          };
         }
-        const effect =
-          auth.pools.length === 1
-            ? `JWKS pass-through admits every Bearer token on ${routeLabel}`
-            : `a token from that pool is not verified (and so not accepted) on ${routeLabel}`;
-        warnOnce(
-          `${routeKey}\0${stackName}\0${auth.logicalId}\0provider${idx}`,
-          `${location} is an intrinsic ${cli} start-api could not resolve (${reason}), so ${effect}. ${hint}`
-        );
-        return pool;
+        return { pool, real: false as const, idx, reason: r.reason };
       });
-      const stillPending = pools.some(
-        (pool, idx) => pool === auth.pools[idx] && isIntrinsicObject(providerArns[idx])
-      );
+      const realPools = outcomes.filter((o) => o.real).map((o) => o.pool);
+      for (const o of outcomes) {
+        if (o.real) continue;
+        // With a real pool beside it, the placeholder is DROPPED: its issuer is
+        // predictable, so keeping it would admit any token naming it.
+        const effect =
+          realPools.length > 0
+            ? `a token from that pool is rejected on ${routeLabel} (the other pools are verified for real)`
+            : `JWKS pass-through admits every Bearer token on ${routeLabel}`;
+        warnOnce(
+          `${routeKey}\0${stackName}\0${auth.logicalId}\0provider${o.idx}`,
+          `${label}.ProviderARNs[${o.idx}] is an intrinsic ${cli} start-api could not resolve (${o.reason}), so ${effect}. ${hint}`
+        );
+      }
+      const allResolved = realPools.length === auth.pools.length;
+      // `pending` stays only while the pools are still index-aligned with it
+      // (nothing resolved), so a re-run resolves the same entries again.
       return {
         ...entry,
         authorizer: buildCognitoAuthorizer(
           auth.logicalId,
-          pools,
+          realPools.length > 0 ? realPools : outcomes.map((o) => o.pool),
           auth.declaredAt,
-          stillPending ? auth.pending : undefined
+          allResolved || realPools.length > 0 ? undefined : auth.pending
         ),
       };
     }

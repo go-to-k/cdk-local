@@ -90,6 +90,12 @@ function fakeJwks(urls: string[]): JwksCache {
   };
 }
 
+/** An unsigned JWT carrying `payload` (signature is not checked on these paths). */
+function unsignedJwt(payload: Record<string, unknown>): string {
+  const b64 = (v: unknown): string => Buffer.from(JSON.stringify(v)).toString('base64url');
+  return `${b64({ alg: 'RS256', kid: 'k1' })}.${b64(payload)}.c2ln`;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -174,6 +180,11 @@ describe('REST v1 COGNITO_USER_POOLS authorizer with an intrinsic ProviderARNs e
     expect(warn).toHaveBeenCalledTimes(2);
     const result = await verifyCognitoJwt(auth, 'Bearer garbage', fakeJwks([]));
     expect(result.allow).toBe(true);
+    // A real token from the deployed pool is admitted too: no issuer can match
+    // the stand-in, so the iss match is skipped (code review on #1013).
+    const realIss = unsignedJwt({ iss: 'https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_AbC123', sub: 'u1' });
+    const real = await verifyCognitoJwt(auth, `Bearer ${realIss}`, fakeJwks([]));
+    expect(real.allow).toBe(true);
   });
 
   it('keeps the placeholder when the state has no record for the pool', () => {
@@ -199,16 +210,31 @@ describe('REST v1 COGNITO_USER_POOLS authorizer with an intrinsic ProviderARNs e
     expect(String(warn.mock.calls[0]?.[0])).toContain('not a Cognito user pool ARN');
   });
 
-  it('keeps a literal pool beside an unresolved one and says the other pool is not accepted', () => {
+  it('drops an unresolved pool beside a real one, so a token naming the stand-in is rejected', async () => {
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const literal = 'arn:aws:cognito-idp:us-west-2:123456789012:userpool/us-west-2_Lit';
     const attached = attachAuthorizers([restStack([literal, POOL_ARN])], [ROUTE]);
     const auth = cognitoOf(resolveJwtAuthorizerIntrinsics(attached, () => undefined));
-    expect(auth.pools[0]?.userPoolId).toBe('us-west-2_Lit');
-    expect(auth.pools[1]?.userPoolId).toBe('us-east-1_cdklplaceholderAuth');
+    expect(auth.pools.map((p) => p.userPoolId)).toEqual(['us-west-2_Lit']);
+    expect(auth.pending).toBeUndefined();
     expect(String(warn.mock.calls[0]?.[0])).toMatch(
-      /ProviderARNs\[1\].*a token from that pool is not verified \(and so not accepted\) on route GET \/secure/
+      /ProviderARNs\[1\].*a token from that pool is rejected on route GET \/secure/
     );
+    // The stand-in issuer is predictable; it must not open a pass-through.
+    const forged = unsignedJwt({
+      iss: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_cdklplaceholderAuth',
+    });
+    const result = await verifyCognitoJwt(auth, `Bearer ${forged}`, fakeJwks([]));
+    expect(result.allow).toBe(false);
+  });
+
+  it('clears pending once every pool of a multi-pool authorizer resolves', () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const literal = 'arn:aws:cognito-idp:us-west-2:123456789012:userpool/us-west-2_Lit';
+    const attached = attachAuthorizers([restStack([literal, POOL_ARN])], [ROUTE]);
+    const auth = cognitoOf(resolveJwtAuthorizerIntrinsics(attached, () => STATE));
+    expect(auth.pools.map((p) => p.userPoolId)).toEqual(['us-west-2_Lit', 'eu-west-1_AbC123']);
+    expect(auth.pending).toBeUndefined();
   });
 
   it('refuses an entry that is neither a string nor an intrinsic', () => {
@@ -240,6 +266,13 @@ describe('warnUnenforcedRouteAuthSettings (#1010)', () => {
     expect(messagesFor(restStack([literal], { ApiKeyRequired: false, AuthorizationScopes: [] }))).toEqual(
       []
     );
+  });
+
+  it('says nothing for a mock-CORS route, which no authorizer pass reaches', () => {
+    const messages = messagesFor(restStack([literal], { ApiKeyRequired: true }), [
+      { ...ROUTE, mockCors: { statusCode: 204, headers: {} } } as DiscoveredRoute,
+    ]);
+    expect(messages).toEqual([]);
   });
 
   it('warns for a RestApi resource Policy', () => {
