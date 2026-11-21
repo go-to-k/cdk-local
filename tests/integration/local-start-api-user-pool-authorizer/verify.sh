@@ -14,6 +14,12 @@
 #     the real pool's JWKS is verified: client-A token -> 200 with the user's
 #     sub; tampered signature / no header -> 401; client-B token (valid
 #     signature, wrong audience) -> 401.
+#   - REST v1 `CognitoUserPoolsAuthorizer` on the same pool
+#     (go-to-k/cdk-local#1010), whose ProviderARNs is `Fn::GetAtt <Pool>.Arn`:
+#     without a state source it boots, warns once per route naming the route,
+#     and admits any Bearer token (JWKS pass-through); under --from-cfn-stack
+#     the pool resolves, a real token -> 200 with the user's sub and a garbage
+#     / tampered token or no header is denied.
 #
 # Run via `/run-integ local-start-api-user-pool-authorizer` or:
 #
@@ -193,9 +199,25 @@ start_server_and_get_port() {
     cat "${LOG_FILE}" >&2
     return 1
   fi
-  SERVER_PORT="$(grep -E 'Server listening on http://' "${LOG_FILE}" \
+  # The stack serves an HTTP API and a REST API, each on its own port.
+  SERVER_PORT="$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*HTTP API v2\)' "${LOG_FILE}" \
     | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)"
-  [ -n "${SERVER_PORT}" ] || { echo "[verify] FAIL: no port in the start-api log" >&2; return 1; }
+  REST_PORT="$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*REST API v1\)' "${LOG_FILE}" \
+    | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)"
+  [ -n "${SERVER_PORT}" ] || { echo "[verify] FAIL: no HTTP API port in the start-api log" >&2; return 1; }
+  [ -n "${REST_PORT}" ] || { echo "[verify] FAIL: no REST API port in the start-api log" >&2; return 1; }
+}
+
+# GET /rest-secure on the REST API; sets HTTP_CODE, body to BODY_FILE.
+request_rest() {
+  local port="$1" auth="$2"
+  if [ -n "${auth}" ]; then
+    HTTP_CODE="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' \
+      -H "Authorization: ${auth}" "http://127.0.0.1:${port}/rest-secure" || true)"
+  else
+    HTTP_CODE="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' \
+      "http://127.0.0.1:${port}/rest-secure" || true)"
+  fi
 }
 
 # GET /secure; sets HTTP_CODE and writes the body to BODY_FILE. $2 is the
@@ -217,6 +239,17 @@ PORT_NOSTATE="${SERVER_PORT}"
 echo "[verify]   server on port ${PORT_NOSTATE}"
 grep -q 'JwtConfiguration.Issuer is an intrinsic' "${LOG_FILE}" || \
   fail "expected the 'JwtConfiguration.Issuer is an intrinsic' warning without a state source"
+# #1010: the REST v1 Cognito authorizer's GetAtt ARN is warned per route.
+grep -q 'ProviderARNs\[0\] is an intrinsic .*JWKS pass-through admits every Bearer token on route GET /rest-secure' "${LOG_FILE}" || \
+  fail "expected the per-route ProviderARNs[0] warning naming GET /rest-secure without a state source"
+OK=0
+for _ in $(seq 1 30); do
+  request_rest "${REST_PORT}" "Bearer garbage"
+  if [ "${HTTP_CODE}" = "200" ]; then OK=1; break; fi
+  sleep 1
+done
+[ "${OK}" -eq 1 ] || fail "REST, no state: garbage token expected 200 (pass-through), last got ${HTTP_CODE}"
+echo "[verify]   REST, no state: warned per route; garbage token -> 200 (pass-through)"
 stop_server
 
 echo "[verify] step 6: --from-cfn-stack — issuer + audience resolved from the stack"
@@ -253,6 +286,30 @@ echo "[verify]   no header -> 401"
 request_secure "${PORT_CFN}" "Bearer ${TOKEN_B}"
 [ "${HTTP_CODE}" = "401" ] || fail "client-B token (wrong audience): expected 401, got ${HTTP_CODE}"
 echo "[verify]   client-B token (wrong audience) -> 401"
+
+# #1010: the REST v1 Cognito authorizer resolves its pool from the stack.
+if grep -q 'ProviderARNs\[0\] is an intrinsic' "${LOG_FILE}"; then
+  fail "REST ProviderARNs still reported as an intrinsic under --from-cfn-stack"
+fi
+OK=0
+for _ in $(seq 1 30); do
+  request_rest "${REST_PORT}" "Bearer ${TOKEN_A}"
+  if [ "${HTTP_CODE}" = "200" ]; then OK=1; break; fi
+  sleep 1
+done
+[ "${OK}" -eq 1 ] || fail "REST real token: expected 200, last got ${HTTP_CODE} body=$(cat "${BODY_FILE}")"
+grep -q "\"sub\":\"${USER_SUB}\"" "${BODY_FILE}" || \
+  fail "REST real token: body sub mismatch (want ${USER_SUB}): $(cat "${BODY_FILE}")"
+echo "[verify]   REST real token -> 200, sub matches"
+# A denied token answers 401 or 403 depending on the deny kind; never 2xx.
+for bad in "Bearer garbage" "Bearer ${TOKEN_TAMPERED}" ""; do
+  request_rest "${REST_PORT}" "${bad}"
+  case "${HTTP_CODE}" in
+    401|403) ;;
+    *) fail "REST denied token (${bad:0:16}...): expected 401/403, got ${HTTP_CODE}" ;;
+  esac
+done
+echo "[verify]   REST garbage / tampered / no header -> denied"
 stop_server
 
 echo "[verify] step 7: cdk destroy --force"
@@ -274,3 +331,4 @@ echo ""
 echo "[verify] All checks passed:"
 echo "[verify]   - no state source: boots with the intrinsic-issuer warning (JWKS pass-through)."
 echo "[verify]   - --from-cfn-stack: issuer + audience resolved; 200 / tampered 401 / no-header 401 / wrong-audience 401."
+echo "[verify]   - REST v1 Cognito (#1010): no state -> per-route warning + pass-through; --from-cfn-stack -> real token 200, garbage / tampered / none denied."

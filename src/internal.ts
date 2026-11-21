@@ -272,8 +272,11 @@ export {
  * TOKEN / REQUEST, Cognito JWT, AWS_IAM SigV4) to the route list. `AuthorizerInfo`
  * is the per-route resolved-authorizer descriptor; `RouteWithAuth` is a route
  * paired with its authorizer. `resolveJwtAuthorizerIntrinsics` resolves an HTTP
- * v2 JWT authorizer's intrinsic Issuer / Audience once the host's state source
- * has loaded (#1001). Exposed only as the consuming host's `import`
+ * v2 JWT authorizer's intrinsic Issuer / Audience (#1001) and a REST v1 Cognito
+ * authorizer's intrinsic ProviderARNs (#1010) once the host's state source has
+ * loaded, warning per route for what stays unresolved; a host that attaches
+ * authorizers must call it (with no state, `() => undefined`) or those
+ * routes serve their placeholder without a warning. Exposed only as the consuming host's `import`
  * statements require them.
  */
 export {

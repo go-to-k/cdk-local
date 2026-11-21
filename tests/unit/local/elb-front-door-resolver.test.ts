@@ -2163,3 +2163,37 @@ describe('isApplicationLoadBalancer', () => {
     expect(isApplicationLoadBalancer({ Type: 'AWS::ECS::Service' } as TemplateResource)).toBe(false);
   });
 });
+
+// go-to-k/cdk-local#1010: mTLS is never enforced locally, so it is warned.
+describe('resolveAlbFrontDoor — listener MutualAuthentication', () => {
+  function listenerWith(mtls: unknown): StackInfo {
+    return stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: TG } }],
+          MutualAuthentication: mtls,
+        },
+      },
+    });
+  }
+
+  it('warns that a verify-mode listener is served without a client certificate check', () => {
+    const { warnings } = resolveAlbFrontDoor(
+      listenerWith({ Mode: 'verify', TrustStoreArn: { Ref: 'Store' } }),
+      ALB
+    );
+    expect(warnings).toEqual([
+      expect.stringMatching(
+        /declares MutualAuthentication \(Mode verify\), which the local front-door does not enforce: every route on this listener is served without a client certificate check/
+      ),
+    ]);
+  });
+
+  it('says nothing for Mode off', () => {
+    expect(resolveAlbFrontDoor(listenerWith({ Mode: 'off' }), ALB).warnings).toEqual([]);
+  });
+});

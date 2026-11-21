@@ -172,7 +172,7 @@ export class LocalStartCloudFrontStack extends cdk.Stack {
 
     const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(bucket);
 
-    new cloudfront.Distribution(this, 'SiteDist', {
+    const siteDist = new cloudfront.Distribution(this, 'SiteDist', {
       defaultRootObject: 'index.html',
       defaultBehavior: {
         origin: s3Origin,
@@ -198,6 +198,14 @@ export class LocalStartCloudFrontStack extends cdk.Stack {
       },
       errorResponses: [
         { httpStatus: 403, responseHttpStatus: 200, responsePagePath: '/404.html' },
+      ],
+    });
+    // go-to-k/cdk-local#1010: a behavior whose PathPattern is a token cannot
+    // be routed locally, so its requests reach the default behavior WITHOUT
+    // its viewer-request guard; the boot warning must name it and the guard.
+    siteDist.addBehavior(cdk.Fn.join('', ['/tok-', cdk.Aws.REGION, '/*']), s3Origin, {
+      functionAssociations: [
+        { function: basicAuth, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
       ],
     });
 

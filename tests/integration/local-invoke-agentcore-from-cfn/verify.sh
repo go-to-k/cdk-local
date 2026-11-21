@@ -13,6 +13,12 @@
 #     resolved with WithDecryption AND kept OFF the docker argv (issue #99
 #     mechanism, mirrored for invoke-agentcore).
 #   - STATIC_VALUE: a literal — confirms the normal-case passthrough.
+#   - JwtAgent (go-to-k/cdk-local#1010): a Cognito-backed customJwtAuthorizer
+#     whose DiscoveryUrl is an Fn::Join over the pool and whose AllowedClients
+#     is `Ref <Client>`. Without a state source it is served unverified with a
+#     warning naming the runtime and DiscoveryUrl; under --from-cfn-stack both
+#     resolve, so no token / a garbage token is rejected and a real token for
+#     the client is accepted.
 #
 # Steps: deploy via upstream cdk -> swap api-key to SecureString -> baseline
 # invoke (both SSM env vars drop) -> --from-cfn-stack invoke (both resolve)
@@ -196,6 +202,86 @@ echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e "?GREETING=\*\*\*"?( |$)' || {
   exit 1
 }
 echo "[verify]   SecureString API_KEY routed off the argv; String GREETING stayed inline (control)."
+
+echo "[verify] step 6b: JwtAgent without a state source — served unverified, warned (#1010)"
+JWT_TARGET="${STACK}/JwtAgent"
+JWT_ERR="$(mktemp)"
+JWT_OUT=$(${CLI} invoke-agentcore "${JWT_TARGET}" 2>"${JWT_ERR}" | tail -1) || {
+  echo "[verify] FAIL: JwtAgent invoke without state did not run (expected served unverified):"
+  tail -20 "${JWT_ERR}"
+  exit 1
+}
+echo "${JWT_OUT}" | grep -q '"runtime":"agentcore-from-cfn"' || {
+  echo "[verify] FAIL: JwtAgent invoke without state: unexpected response: ${JWT_OUT}"
+  exit 1
+}
+grep -q 'AgentCore Runtime JwtAgent[A-F0-9]*: CustomJWTAuthorizer.DiscoveryUrl could not be resolved (no deployed-state source is active)' "${JWT_ERR}" || {
+  echo "[verify] FAIL: expected the DiscoveryUrl warning naming the runtime without a state source:"
+  tail -20 "${JWT_ERR}"
+  exit 1
+}
+echo "[verify]   no state: served unverified with the DiscoveryUrl warning"
+
+echo "[verify] step 6c: JwtAgent under --from-cfn-stack — authorizer resolved and enforced (#1010)"
+set +e
+${CLI} invoke-agentcore "${JWT_TARGET}" --from-cfn-stack >/dev/null 2>"${JWT_ERR}"
+RC_NO_TOKEN=$?
+${CLI} invoke-agentcore "${JWT_TARGET}" --from-cfn-stack --bearer-token garbage >/dev/null 2>>"${JWT_ERR}"
+RC_GARBAGE=$?
+set -e
+[ "${RC_NO_TOKEN}" -ne 0 ] && grep -q 'requires an inbound JWT' "${JWT_ERR}" || {
+  echo "[verify] FAIL: --from-cfn-stack without a token: expected the auth-required refusal (rc=${RC_NO_TOKEN}):"
+  tail -20 "${JWT_ERR}"
+  exit 1
+}
+[ "${RC_GARBAGE}" -ne 0 ] && grep -q 'Inbound JWT rejected' "${JWT_ERR}" || {
+  echo "[verify] FAIL: --from-cfn-stack with a garbage token: expected a rejection (rc=${RC_GARBAGE}):"
+  tail -20 "${JWT_ERR}"
+  exit 1
+}
+if grep -q 'DiscoveryUrl could not be resolved' "${JWT_ERR}"; then
+  echo "[verify] FAIL: DiscoveryUrl still unresolved under --from-cfn-stack"
+  exit 1
+fi
+stack_output() {
+  aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}" \
+    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" --output text
+}
+POOL_ID="$(stack_output PoolId)"
+CLIENT_ID="$(stack_output ClientId)"
+JWT_USER="integ-user"
+JWT_PASS="Integ-Pass-1234!aB"
+aws cognito-idp admin-create-user --user-pool-id "${POOL_ID}" --username "${JWT_USER}" \
+  --message-action SUPPRESS --region "${REGION}" >/dev/null
+aws cognito-idp admin-set-user-password --user-pool-id "${POOL_ID}" --username "${JWT_USER}" \
+  --password "${JWT_PASS}" --permanent --region "${REGION}"
+ACCESS_TOKEN="$(aws cognito-idp admin-initiate-auth --user-pool-id "${POOL_ID}" --client-id "${CLIENT_ID}" \
+  --auth-flow ADMIN_USER_PASSWORD_AUTH --auth-parameters "USERNAME=${JWT_USER},PASSWORD=${JWT_PASS}" \
+  --region "${REGION}" --query 'AuthenticationResult.AccessToken' --output text)"
+case "${ACCESS_TOKEN}" in
+  eyJ*.*.*) ;;
+  *) echo "[verify] FAIL: minted access token does not look like a JWT"; exit 1 ;;
+esac
+# The info line lands on stdout, the response is its last line.
+JWT_STDOUT="$(mktemp)"
+${CLI} invoke-agentcore "${JWT_TARGET}" --from-cfn-stack --bearer-token "${ACCESS_TOKEN}" \
+  >"${JWT_STDOUT}" 2>"${JWT_ERR}" || {
+  echo "[verify] FAIL: --from-cfn-stack with a real token did not run:"
+  tail -20 "${JWT_ERR}"
+  exit 1
+}
+JWT_OUT="$(tail -1 "${JWT_STDOUT}")"
+echo "${JWT_OUT}" | grep -q '"runtime":"agentcore-from-cfn"' || {
+  echo "[verify] FAIL: --from-cfn-stack with a real token: unexpected response: ${JWT_OUT}"
+  exit 1
+}
+cat "${JWT_STDOUT}" "${JWT_ERR}" | grep -q 'Inbound JWT verified against https://cognito-idp\.' || {
+  echo "[verify] FAIL: expected 'Inbound JWT verified against' the resolved Cognito discovery URL:"
+  tail -20 "${JWT_STDOUT}" "${JWT_ERR}"
+  exit 1
+}
+rm -f "${JWT_ERR}" "${JWT_STDOUT}"
+echo "[verify]   --from-cfn-stack: no token / garbage rejected; real token verified and served"
 
 echo "[verify] step 7: cdk destroy"
 cdk destroy "${STACK}" --force --region "${REGION}" \

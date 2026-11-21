@@ -18,6 +18,7 @@ import {
 import { serveFromStaticOrigin } from '../../../src/local/cloudfront-static-origin.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 let outDir: string;
 
@@ -271,6 +272,60 @@ describe('resolveCloudFrontDistribution — unresolved + custom origins', () => 
     const stack = buildStack(template, HASH);
     const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
     expect(resolved.behaviors.map((b) => b.pathPattern)).toEqual([undefined]);
+  });
+
+  // go-to-k/cdk-local#1010: the skipped behavior's requests reach the default
+  // behavior, so its own guards do not run on them; the warning says so.
+  it('names a skipped behavior and every guard it loses', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const template = s3DistributionTemplate();
+    const dc = (template.Resources!['Dist']!.Properties as Record<string, Record<string, unknown>>)[
+      'DistributionConfig'
+    ]!;
+    dc['CacheBehaviors'] = [
+      { PathPattern: '/ok/*', TargetOriginId: 'origin1' },
+      {
+        PathPattern: { 'Fn::Join': ['', ['/', { Ref: 'Prefix' }, '/*']] },
+        TargetOriginId: 'origin1',
+        FunctionAssociations: [
+          { EventType: 'viewer-request', FunctionARN: { 'Fn::GetAtt': ['RewriteFn', 'FunctionARN'] } },
+        ],
+        LambdaFunctionAssociations: [
+          { EventType: 'origin-request', LambdaFunctionARN: { Ref: 'EdgeVersion' } },
+        ],
+      },
+    ];
+    const stack = buildStack(template, HASH);
+    resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
+    const skipped = messages.find((m) => m.includes('no literal PathPattern'));
+    expect(skipped).toMatch(
+      /Distribution Dist: CacheBehaviors\[1\] \(TargetOriginId origin1\) has no literal PathPattern.*served by the default behavior instead, WITHOUT this behavior's CloudFront Function viewer-request, Lambda@Edge origin-request\./
+    );
+  });
+
+  it('warns for a function association it cannot run instead of dropping it silently', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const template = s3DistributionTemplate();
+    const dc = (template.Resources!['Dist']!.Properties as Record<string, Record<string, unknown>>)[
+      'DistributionConfig'
+    ]!;
+    (dc['DefaultCacheBehavior'] as Record<string, unknown>)['FunctionAssociations'] = [
+      { EventType: { Ref: 'Evt' }, FunctionARN: { 'Fn::GetAtt': ['RewriteFn', 'FunctionARN'] } },
+      { EventType: 'viewer-request', FunctionARN: { 'Fn::GetAtt': ['NotAFunction', 'FunctionARN'] } },
+    ];
+    const stack = buildStack(template, HASH);
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
+    expect(resolved.behaviors[0]?.viewerRequest).toBeUndefined();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/CloudFront Function RewriteFn has EventType \(not a literal\).*it will not run/),
+        expect.stringMatching(/names NotAFunction, which is not an AWS::CloudFront::Function in the template; it will not run/),
+      ])
+    );
   });
 
   it('throws on a distribution with no DistributionConfig', () => {

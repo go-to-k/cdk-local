@@ -174,6 +174,7 @@ import { type NextStateMaterial } from '../../local/reload-orchestrator.js';
 import {
   attachAuthorizers,
   resolveJwtAuthorizerIntrinsics,
+  warnUnenforcedRouteAuthSettings,
   type AuthorizerInfo,
   type RouteWithAuth,
 } from '../../local/authorizer-resolver.js';
@@ -1058,13 +1059,16 @@ async function serveStartApi(
           webSocketApis
         )
       : new Map<string, StackStateBundle>();
-    // #1001: an HTTP v2 JWT authorizer's intrinsic Issuer / Audience
-    // (`HttpUserPoolAuthorizer`) resolves from the stack's shared state.
+    // #1001 / #1010: an HTTP v2 JWT authorizer's intrinsic Issuer / Audience
+    // (`HttpUserPoolAuthorizer`) and a REST v1 Cognito authorizer's intrinsic
+    // ProviderARNs (`CognitoUserPoolsAuthorizer`) resolve from the stack's
+    // shared state; what stays unresolved is warned per route.
     routesWithAuth = resolveJwtAuthorizerIntrinsics(
       routesWithAuth,
       (stackName) => jwtAuthorizerSubstitutionContext(stateByStack.get(stackName)),
       jwtIntrinsicWarned
     );
+    warnUnenforcedRouteAuthSettings(servedStacks, routesWithAuth, jwtIntrinsicWarned);
 
     // Issue #654: resolve `--profile <p>` to a concrete credential set
     // ONCE at boot for forwarding into every Lambda container that
@@ -4030,11 +4034,12 @@ export async function loadStateForRoutedStacks(
       }
     }
   }
-  // A JWT authorizer whose Issuer / Audience waits on state (#1001) needs its
-  // own stack's state even when no Lambda there is routed (an HTTP_PROXY or
+  // A JWT authorizer whose Issuer / Audience waits on state (#1001), or a
+  // REST v1 Cognito authorizer whose ProviderARNs do (#1010), needs its own
+  // stack's state even when no Lambda there is routed (an HTTP_PROXY or
   // service-integration route, or a Lambda in another stack).
   for (const { authorizer } of routesWithAuth) {
-    if (authorizer?.kind === 'jwt' && authorizer.pending) {
+    if ((authorizer?.kind === 'jwt' || authorizer?.kind === 'cognito') && authorizer.pending) {
       reachableStackNames.add(authorizer.pending.stackName);
     }
   }

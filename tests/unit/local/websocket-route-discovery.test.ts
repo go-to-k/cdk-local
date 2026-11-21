@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
+import { getLogger } from '../../../src/utils/logger.js';
 import {
   discoverWebSocketApis,
   discoverWebSocketApisOrThrow,
@@ -671,5 +672,39 @@ describe('WebSocket API target matchers (issue #311)', () => {
     const a = mk({ apiLogicalId: 'A', apiCdkPath: 'Stack/A' });
     const b = mk({ apiLogicalId: 'B' }); // no cdk path -> bare id
     expect(availableWebSocketApiIdentifiers([a, b, a])).toEqual(['Stack/A', 'B']);
+  });
+});
+
+// go-to-k/cdk-local#1010: API keys live in the deployed API, so a route that
+// requires one is warned instead of being served as if it did not.
+describe('discoverWebSocketApis — ApiKeyRequired', () => {
+  it('warns naming the route', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const stack = buildStack('S', {
+      MyHandler: buildLambda(),
+      WsApi: {
+        Type: 'AWS::ApiGatewayV2::Api',
+        Properties: { ProtocolType: 'WEBSOCKET', RouteSelectionExpression: '$request.body.action' },
+      },
+      ConnectInteg: buildIntegration(),
+      ConnectRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: {
+          ApiId: { Ref: 'WsApi' },
+          RouteKey: '$connect',
+          ApiKeyRequired: true,
+          Target: { 'Fn::Join': ['', ['integrations/', { Ref: 'ConnectInteg' }]] },
+        },
+      },
+    });
+    const { errors } = discoverWebSocketApis([stack]);
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
+    expect(errors).toEqual([]);
+    expect(messages).toEqual([
+      expect.stringMatching(
+        /S\/ConnectRoute: ApiKeyRequired is not enforced .*WebSocket route "\$connect" is served without an x-api-key check/
+      ),
+    ]);
   });
 });

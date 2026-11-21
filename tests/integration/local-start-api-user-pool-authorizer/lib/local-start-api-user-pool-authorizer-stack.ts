@@ -4,6 +4,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { HttpUserPoolAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
@@ -22,6 +23,10 @@ const HOST_ARCHITECTURE =
  * Audience is `[Ref <UserPoolClient>]`, so only a state source can resolve
  * them. Client B exists but is NOT given to the authorizer: its tokens carry
  * a valid signature and the wrong audience.
+ *
+ * A REST v1 API behind `CognitoUserPoolsAuthorizer` on the same pool rides
+ * along (go-to-k/cdk-local#1010): its `ProviderARNs` is
+ * `[Fn::GetAtt <Pool>.Arn]`, which only a state source resolves.
  */
 export class LocalStartApiUserPoolAuthorizerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -47,6 +52,18 @@ export class LocalStartApiUserPoolAuthorizerStack extends cdk.Stack {
       methods: [apigwv2.HttpMethod.GET],
       integration: new HttpLambdaIntegration('SecureIntegration', fn),
       authorizer: new HttpUserPoolAuthorizer('Auth', pool, { userPoolClients: [clientA] }),
+    });
+
+    const restApi = new apigw.RestApi(this, 'RestApi', {
+      deployOptions: { stageName: 'prod' },
+      // No account-level CloudWatch role: CDK retains it on destroy.
+      cloudWatchRole: false,
+    });
+    restApi.root.addResource('rest-secure').addMethod('GET', new apigw.LambdaIntegration(fn), {
+      authorizer: new apigw.CognitoUserPoolsAuthorizer(this, 'RestAuth', {
+        cognitoUserPools: [pool],
+      }),
+      authorizationType: apigw.AuthorizationType.COGNITO,
     });
 
     new cdk.CfnOutput(this, 'PoolId', { value: pool.userPoolId });

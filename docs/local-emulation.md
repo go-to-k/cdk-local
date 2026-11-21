@@ -1612,17 +1612,29 @@ route:
 - **Cognito User Pool** (REST v1) — `Type: 'COGNITO_USER_POOLS'`. The
   Bearer token from `Authorization: Bearer <token>` is verified locally
   against the user pool's published JWKS. Allow → claims under
-  `event.requestContext.authorizer.claims`. Deny → HTTP 403.
+  `event.requestContext.authorizer.claims`. Deny → HTTP 403. A
+  `CognitoUserPoolsAuthorizer` names its pool as `Fn::GetAtt <Pool>.Arn`;
+  `--from-cfn-stack` resolves it from the deployed stack and verifies for
+  real (an invalid token is denied). Without a state source the stack still
+  boots, warns once per route, and the authorizer runs in the JWKS
+  pass-through mode below.
 - **JWT** (HTTP v2) — `AuthorizerType: 'JWT'`. Same JWKS-based
   verification, with `aud` / `client_id` matched against the
   `JwtConfiguration.Audience` allowlist. Allow → claims under
   `event.requestContext.authorizer.jwt.claims`. Deny → HTTP 401. An
   `HttpUserPoolAuthorizer`'s issuer and audience are intrinsics over the
   user pool and app clients; `--from-cfn-stack` resolves them from the
-  deployed stack. Without a state source the stack still boots, warns,
-  and the authorizer runs in the JWKS pass-through mode below. An
-  audience entry that does not resolve alone is warned and skips the
-  audience check (signature, issuer and expiry are still verified).
+  deployed stack. Without a state source the stack still boots, warns
+  once per route, and the authorizer runs in the JWKS pass-through mode
+  below. An audience entry that does not resolve alone is warned and skips
+  the audience check (signature, issuer and expiry are still verified).
+
+Auth settings `start-api` does not enforce locally are still served, never
+silently: each warns once per route at startup, naming the route and the
+setting — `ApiKeyRequired` (REST v1 method, WebSocket route; API keys live in
+the deployed API), `AuthorizationScopes` (REST v1 method, HTTP v2 route), a
+TOKEN authorizer's `IdentityValidationExpression`, and a RestApi resource
+`Policy`.
 
 Authorizer results are cached per `(authorizer, identity)` for the TTL
 declared by the authorizer (REST v1: `AuthorizerResultTtlInSeconds`,
