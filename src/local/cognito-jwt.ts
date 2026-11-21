@@ -771,9 +771,11 @@ function extractBearer(header: string | undefined): string | undefined {
 /**
  * {@link extractBearer} with the `Bearer ` prefix optional: a REST v1
  * Cognito authorizer and an HTTP v2 JWT authorizer both accept the raw token
- * too (measured against the deployed API, go-to-k/cdk-local#1015).
+ * too (measured against the deployed API, go-to-k/cdk-local#1015). The
+ * authorizer cache keys on the token this returns, so `Bearer <t>` and a
+ * bare `<t>` share one entry.
  */
-function extractToken(header: string | undefined): string | undefined {
+export function extractToken(header: string | undefined): string | undefined {
   const bearer = extractBearer(header);
   if (bearer !== undefined || !header) return bearer;
   const m = /^\s*([A-Za-z0-9._-]+)\s*$/.exec(header);

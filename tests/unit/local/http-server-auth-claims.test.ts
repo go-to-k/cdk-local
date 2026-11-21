@@ -211,6 +211,64 @@ describe('REST v1 COGNITO_USER_POOLS rejection status (#1012)', () => {
   });
 });
 
+describe('Cognito / JWT authorizer cache key', () => {
+  it('shares one entry between "Bearer <t>" and a bare "<t>", and keeps a different token apart', async () => {
+    let fetches = 0;
+    let verifies = 0;
+    const jwksCache = createJwksCache({
+      fetchImpl: async () => {
+        fetches++;
+        return { ok: true, status: 200, text: async () => JSON.stringify({ keys: [JWK] }) };
+      },
+    });
+    // Count signature verifications through a JWKS cache whose entry is
+    // re-read on every verification (the verdict cache sits in front of it).
+    const countingJwks = {
+      ...jwksCache,
+      fetchAndCache: async (url: string) => {
+        verifies++;
+        return jwksCache.fetchAndCache(url);
+      },
+    };
+    const authorizerCache = createAuthorizerCache();
+    const server = await startApiServer({
+      state: {
+        routes: [route('/rest', COGNITO), route('/http', JWT, 'v2')],
+        pool: makePool(),
+        corsConfigByApiId: new Map(),
+      },
+      rieTimeoutMs: 1000,
+      host: '127.0.0.1',
+      port: 0,
+      jwksCache: countingJwks,
+      authorizerCache,
+    });
+    const url = (p: string): string => `http://${server.host}:${server.port}${p}`;
+    try {
+      expect((await get(url('/rest'), `Bearer ${ID_TOKEN}`)).status).toBe(200);
+      expect((await get(url('/rest'), ID_TOKEN)).status).toBe(200);
+      expect((await get(url('/rest'), `bearer  ${ID_TOKEN}`)).status).toBe(200);
+      expect(verifies).toBe(1);
+      expect(authorizerCache.get('Auth', ID_TOKEN)).toBeDefined();
+      expect(authorizerCache.get('Auth', `Bearer ${ID_TOKEN}`)).toBeUndefined();
+
+      const otherIdToken = sign({ sub: 'u2', iss: ISSUER, aud: CLIENT_ID, token_use: 'id', exp: exp() });
+      expect((await get(url('/rest'), `Bearer ${otherIdToken}`)).status).toBe(200);
+      expect(verifies).toBe(2);
+      // A tampered token is not served the cached Allow of the real one.
+      expect((await get(url('/rest'), `Bearer ${tamper(ID_TOKEN)}`)).status).toBe(403);
+
+      verifies = 0;
+      expect((await get(url('/http'), `Bearer ${ACCESS_TOKEN}`)).status).toBe(200);
+      expect((await get(url('/http'), ACCESS_TOKEN)).status).toBe(200);
+      expect(verifies).toBe(1);
+      expect(fetches).toBe(1);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe('REST v1 COGNITO_USER_POOLS AuthorizationScopes (#1011)', () => {
   let srv: Awaited<ReturnType<typeof serve>>;
   beforeEach(async () => {
@@ -231,8 +289,7 @@ describe('REST v1 COGNITO_USER_POOLS AuthorizationScopes (#1011)', () => {
 
   it('answers 401 for an access token carrying none — after a cache hit on another route too', async () => {
     // /hit caches the token's Allow under the authorizer; /miss must still
-    // check. The raw token is the header form whose cache key the lookup
-    // shares (the cache stores the bare token).
+    // check.
     expect((await get(srv.url('/hit'), ACCESS_TOKEN)).status).toBe(200);
     expect(await get(srv.url('/miss'), ACCESS_TOKEN)).toEqual(UNAUTHORIZED);
   });

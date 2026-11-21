@@ -27,6 +27,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { applyCorsResponseHeaders, matchPreflight, type CorsConfig } from './cors-handler.js';
 import {
+  buildIdentityHash,
   compileIdentityValidation,
   tokenHasAnyScope,
   type AuthorizerInfo,
@@ -48,6 +49,7 @@ import {
   type WarnedAt,
   verifyCognitoJwt,
   verifyJwtAuthorizer,
+  extractToken,
 } from './cognito-jwt.js';
 import { type CredentialsLoader, verifySigV4 } from './sigv4-verify.js';
 import {
@@ -1219,12 +1221,16 @@ async function runAuthorizerPass(
   }
 
   const authHeader = headers['authorization'];
+  // The verifiers cache under the token itself (`identityHash`), so the
+  // lookup keys on the same extraction — with the header verbatim, a
+  // `Bearer <t>` request never found its own entry.
+  const cacheToken = extractToken(authHeader);
   const jwksOpts = { ...(opts.jwksWarnedAt && { warnedAt: opts.jwksWarnedAt }) };
   if (authorizer.kind === 'cognito') {
     // The cache is per authorizer + token while the claim checks are per
     // route, so they run on a cache hit too.
-    if (cache && authHeader !== undefined) {
-      const cached = cache.get(authorizer.logicalId, hashOne(authHeader));
+    if (cache && cacheToken !== undefined) {
+      const cached = cache.get(authorizer.logicalId, buildIdentityHash([cacheToken]));
       if (cached) return checkCognitoRouteClaims(authorizer, cached);
     }
     const result = await verifyCognitoJwt(authorizer, authHeader, opts.jwksCache, jwksOpts);
@@ -1255,8 +1261,8 @@ async function runAuthorizerPass(
   }
 
   // jwt
-  if (cache && authHeader !== undefined) {
-    const cached = cache.get(authorizer.logicalId, hashOne(authHeader));
+  if (cache && cacheToken !== undefined) {
+    const cached = cache.get(authorizer.logicalId, buildIdentityHash([cacheToken]));
     if (cached) return checkJwtRouteScopes(authorizer, cached);
   }
   const result = await verifyJwtAuthorizer(authorizer, authHeader, opts.jwksCache, jwksOpts);
