@@ -1657,7 +1657,11 @@ the deployed API), `AuthorizationScopes` on a route whose authorizer does not
 check them (anything but a REST v1 Cognito / HTTP v2 JWT authorizer) or that
 stayed an unresolved intrinsic, an `IdentityValidationExpression` that stayed
 an unresolved intrinsic or is not a pattern the local server can evaluate, and
-a RestApi resource `Policy`.
+a RestApi resource `Policy`. The local server evaluates
+`IdentityValidationExpression` as a JavaScript Unicode-mode pattern, so Java
+syntax with no exact JavaScript equivalent (`\p{Alnum}`, `\A`, `\z`, an
+escaped `\_`) is warned and not applied rather than applied with a different
+meaning; `\w`, `\S` and plain character classes are applied as written.
 
 Authorizer results are cached per `(authorizer, identity)` for the TTL
 declared by the authorizer (REST v1: `AuthorizerResultTtlInSeconds`,

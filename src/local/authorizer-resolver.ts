@@ -727,7 +727,7 @@ const compiledIdentityValidation = new Map<string, RegExp>();
  * is anchored at both ends. It is compiled on its own first, so a pattern
  * that would unbalance the anchoring group (`a)|(b`) throws instead of
  * losing an anchor, and with the `u` flag, so Java-only syntax JavaScript
- * would otherwise read differently (`\p{Alpha}`, `\A`, `\Z`) throws into the
+ * would otherwise read differently (`\p{Alnum}`, `\A`, `\Z`) throws into the
  * "cannot evaluate" warning rather than enforcing a different pattern.
  */
 export function compileIdentityValidation(pattern: string): RegExp {
