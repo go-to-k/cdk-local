@@ -420,3 +420,181 @@ describe('warnUnenforcedRouteAuthSettings (#1010)', () => {
     );
   });
 });
+
+describe('route auth settings through the state-resolution rebuild (#1011)', () => {
+  const SERVER_SCOPE = { 'Fn::Join': ['', [{ Ref: 'Server' }, '/read']] };
+  const SERVER_STATE: SubstitutionContext = {
+    ...STATE,
+    resources: {
+      ...STATE.resources,
+      Server: { physicalId: 'orders', resourceType: 'AWS::Cognito::UserPoolResourceServer', properties: {} },
+    },
+  };
+
+  function cognitoStack(authExtra: Record<string, unknown>, methodExtra: Record<string, unknown>): StackInfo {
+    const stack = restStack([POOL_ARN], methodExtra);
+    const resources = (stack.template as { Resources: Record<string, { Properties: Record<string, unknown> }> })
+      .Resources;
+    Object.assign(resources['Auth']!.Properties, authExtra);
+    return stack;
+  }
+
+  it('keeps scopes and IdentityValidationExpression when an intrinsic ProviderARNs pool resolves', () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const stack = cognitoStack({ IdentityValidationExpression: 'client123' }, { AuthorizationScopes: ['admin'] });
+    const auth = cognitoOf(resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack], [ROUTE]), () => STATE));
+    expect(auth.userPoolId).toBe('eu-west-1_AbC123');
+    expect(auth.scopes).toEqual({ state: 'enforced', value: ['admin'] });
+    expect(auth.identityValidation).toEqual({ state: 'enforced', value: 'client123' });
+  });
+
+  it('keeps them when the intrinsic pool stays unresolved too', () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const stack = cognitoStack({ IdentityValidationExpression: 'client123' }, { AuthorizationScopes: ['admin'] });
+    const auth = cognitoOf(resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack], [ROUTE]), () => undefined));
+    expect(auth.scopes).toEqual({ state: 'enforced', value: ['admin'] });
+    expect(auth.identityValidation).toEqual({ state: 'enforced', value: 'client123' });
+  });
+
+  it('resolves intrinsic scopes beside an intrinsic pool from the same state', () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const stack = cognitoStack({}, { AuthorizationScopes: [SERVER_SCOPE] });
+    const auth = cognitoOf(resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack], [ROUTE]), () => SERVER_STATE));
+    expect(auth.scopes).toEqual({ state: 'enforced', value: ['orders/read'] });
+  });
+
+  it('keeps an HTTP v2 route scopes when an intrinsic JWT issuer resolves', () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const stack: StackInfo = {
+      ...restStack([]),
+      template: {
+        Resources: {
+          Auth: {
+            Type: 'AWS::ApiGatewayV2::Authorizer',
+            Properties: {
+              AuthorizerType: 'JWT',
+              JwtConfiguration: {
+                Issuer: { 'Fn::Join': ['', ['https://cognito-idp.eu-west-1.amazonaws.com/', { Ref: 'Pool' }]] },
+                Audience: ['aud'],
+              },
+            },
+          },
+          Route: {
+            Type: 'AWS::ApiGatewayV2::Route',
+            Properties: {
+              RouteKey: 'GET /secure',
+              AuthorizationType: 'JWT',
+              AuthorizerId: { Ref: 'Auth' },
+              AuthorizationScopes: ['admin', SERVER_SCOPE],
+            },
+          },
+        },
+      } as never,
+    };
+    const route = { ...ROUTE, source: 'http-api', apiVersion: 'v2', declaredAt: `${STACK_NAME}/Route` } as DiscoveredRoute;
+    const auth = resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack], [route]), () => SERVER_STATE)[0]
+      ?.authorizer;
+    if (auth?.kind !== 'jwt') throw new Error('expected jwt');
+    expect(auth.issuer).toBe('https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_AbC123');
+    expect(auth.scopes).toEqual({ state: 'enforced', value: ['admin', 'orders/read'] });
+  });
+
+  it('reads a Cognito authorizer IdentityValidationExpression from the template, and warns with the aud wording when unresolved', () => {
+    const literal = 'arn:aws:cognito-idp:us-west-2:123456789012:userpool/us-west-2_Lit';
+    const stack = restStack([literal]);
+    const resources = (stack.template as { Resources: Record<string, { Properties: Record<string, unknown> }> })
+      .Resources;
+    resources['Auth']!.Properties['IdentityValidationExpression'] = { Ref: 'ClientPattern' };
+    const attached = attachAuthorizers([stack], [ROUTE]);
+    expect(cognitoOf(attached).identityValidation?.state).toBe('unresolved');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    warnUnenforcedRouteAuthSettings([stack], attached);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(
+      /MyStack\/Auth: IdentityValidationExpression could not be applied .*route GET \/secure a token's aud claim is not matched against it/
+    );
+  });
+
+  it('names why scopes stay unresolved: a list intrinsic, a scalar, an unresolvable or non-string entry', () => {
+    const literal = 'arn:aws:cognito-idp:us-west-2:123456789012:userpool/us-west-2_Lit';
+    const reasonFor = (scopes: unknown, context: SubstitutionContext): string => {
+      const auth = cognitoOf(
+        resolveJwtAuthorizerIntrinsics(
+          attachAuthorizers([restStack([literal], { AuthorizationScopes: scopes })], [ROUTE]),
+          () => context
+        )
+      );
+      if (auth.scopes?.state !== 'unresolved') throw new Error(`expected unresolved, got ${JSON.stringify(auth.scopes)}`);
+      return auth.scopes.reason;
+    };
+    expect(reasonFor({ 'Fn::Split': [',', 'a,b'] }, SERVER_STATE)).toBe('the list itself is an intrinsic');
+    expect(reasonFor('admin', SERVER_STATE)).toBe('it is not a list');
+    expect(reasonFor([{ Ref: 'Missing' }], SERVER_STATE)).not.toBe('no state source is loaded for the stack');
+    expect(
+      reasonFor([{ Ref: 'Num' }], { resources: {}, parameters: { Num: 42 } } as unknown as SubstitutionContext)
+    ).toBe('an entry resolved to a non-string');
+  });
+
+  it('warns that AuthorizationScopes on a Lambda authorizer are not checked', () => {
+    const stack: StackInfo = {
+      ...restStack([]),
+      template: {
+        Resources: {
+          Auth: {
+            Type: 'AWS::ApiGateway::Authorizer',
+            Properties: { Type: 'TOKEN', AuthorizerUri: { 'Fn::GetAtt': ['AuthFn', 'Arn'] } },
+          },
+          AuthFn: { Type: 'AWS::Lambda::Function', Properties: {} },
+          Method: {
+            Type: 'AWS::ApiGateway::Method',
+            Properties: {
+              AuthorizationType: 'CUSTOM',
+              AuthorizerId: { Ref: 'Auth' },
+              AuthorizationScopes: ['orders/read'],
+            },
+          },
+        },
+      } as never,
+    };
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    warnUnenforcedRouteAuthSettings([stack], attachAuthorizers([stack], [ROUTE]));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(
+      /AuthorizationScopes .*orders\/read.* are not checked .*\(they apply to a COGNITO_USER_POOLS authorizer only\).*route GET \/secure/
+    );
+  });
+
+  it('names why an IdentityValidationExpression stays unresolved', () => {
+    const literal = 'arn:aws:cognito-idp:us-west-2:123456789012:userpool/us-west-2_Lit';
+    const reasonFor = (raw: unknown, context: SubstitutionContext | undefined): string => {
+      const stack = restStack([literal]);
+      const resources = (stack.template as { Resources: Record<string, { Properties: Record<string, unknown> }> })
+        .Resources;
+      resources['Auth']!.Properties['IdentityValidationExpression'] = raw;
+      const auth = cognitoOf(resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack], [ROUTE]), () => context));
+      if (auth.identityValidation?.state !== 'unresolved') throw new Error('expected unresolved');
+      return auth.identityValidation.reason;
+    };
+    expect(reasonFor({ Ref: 'P' }, undefined)).toBe('no state source is loaded for the stack');
+    expect(reasonFor({ Ref: 'Missing' }, { resources: {} })).not.toBe('no state source is loaded for the stack');
+    expect(reasonFor({ Ref: 'P' }, { resources: {}, parameters: { P: 42 } } as unknown as SubstitutionContext)).toBe(
+      'it resolved to a non-string'
+    );
+    expect(reasonFor({ Ref: 'P' }, { resources: {}, parameters: { P: '(open' } } as unknown as SubstitutionContext)).toMatch(
+      /is not a pattern .* can evaluate/
+    );
+  });
+
+  it('refuses, rather than mis-enforces, a pattern that would break the anchoring or uses Java-only syntax', () => {
+    const literal = 'arn:aws:cognito-idp:us-west-2:123456789012:userpool/us-west-2_Lit';
+    for (const pattern of ['a)|(b', '^Bearer \\p{Alnum}+$', '\\Aabc\\z']) {
+      const stack = restStack([literal]);
+      const resources = (stack.template as { Resources: Record<string, { Properties: Record<string, unknown> }> })
+        .Resources;
+      resources['Auth']!.Properties['IdentityValidationExpression'] = pattern;
+      const setting = cognitoOf(attachAuthorizers([stack], [ROUTE])).identityValidation;
+      expect(setting?.state, pattern).toBe('unresolved');
+      // One rendered copy of the pattern: the engine's echo is stripped.
+      if (setting?.state === 'unresolved') expect(setting.reason).not.toContain('Invalid regular expression');
+    }
+  });
+});

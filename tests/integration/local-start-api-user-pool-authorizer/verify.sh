@@ -232,6 +232,15 @@ request_rest() {
   fi
 }
 
+# #1011: literal scopes / validationRegex are enforced, so no per-route
+# warning may call them unchecked or unresolved.
+UNENFORCED_RE='AuthorizationScopes .*(are not checked|could not be resolved)|IdentityValidationExpression could not be applied'
+assert_no_unenforced_scope_warning() {
+  if grep -Eq "${UNENFORCED_RE}" "${LOG_FILE}"; then
+    fail "a literal AuthorizationScopes / IdentityValidationExpression was warned as unenforced: $(grep -E "${UNENFORCED_RE}" "${LOG_FILE}")"
+  fi
+}
+
 # GET <path> on <port>; sets HTTP_CODE, body to BODY_FILE. $3 is the
 # Authorization header value ("" = send none).
 request_path() {
@@ -292,9 +301,7 @@ request_rest "${REST_PORT}" "Bearer ${TOKEN_A}"
 grep -q 'ApiKeyRequired is not enforced .*route GET /rest-secure is served without an x-api-key check' "${LOG_FILE}" || \
   fail "expected the per-route ApiKeyRequired warning for GET /rest-secure"
 # #1011: literal scopes and a literal validationRegex are enforced, not warned.
-if grep -q 'AuthorizationScopes\|IdentityValidationExpression' "${LOG_FILE}"; then
-  fail "a literal AuthorizationScopes / IdentityValidationExpression was warned as unenforced: $(grep 'AuthorizationScopes\|IdentityValidationExpression' "${LOG_FILE}")"
-fi
+assert_no_unenforced_scope_warning
 echo "[verify]   REST, no state: warned per route (ProviderARNs, ApiKeyRequired); garbage and real tokens -> 200 (pass-through)"
 stop_server
 
@@ -309,6 +316,7 @@ fi
 if grep -q 'JWKS unreachable' "${LOG_FILE}"; then
   fail "JWKS unreachable under --from-cfn-stack (issuer did not resolve to the real pool)"
 fi
+assert_no_unenforced_scope_warning
 
 OK=0
 for _ in $(seq 1 30); do

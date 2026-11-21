@@ -703,11 +703,17 @@ function identityValidationFromString(
   try {
     compileIdentityValidation(pattern);
   } catch (err) {
+    // The engine's message echoes the pattern; keep only its verdict, so the
+    // warning carries one rendered copy of the template value.
+    const detail = (err instanceof Error ? err.message : String(err)).replace(
+      /^Invalid regular expression: \/.*\/[a-z]*: /s,
+      ''
+    );
     return {
       state: 'unresolved',
       stackName,
       raw,
-      reason: `${displayUntrustedValue(pattern)} is not a pattern ${getEmbedConfig().cliName} start-api can evaluate (${err instanceof Error ? err.message : String(err)})`,
+      reason: `${displayUntrustedValue(pattern)} is not a pattern ${getEmbedConfig().cliName} start-api can evaluate (${detail})`,
     };
   }
   return { state: 'enforced', value: pattern };
@@ -717,27 +723,40 @@ const compiledIdentityValidation = new Map<string, RegExp>();
 
 /**
  * Compile an `IdentityValidationExpression`. API Gateway evaluates it as a
- * Java regular expression against the WHOLE token header value, so the
- * pattern is anchored at both ends.
+ * Java regular expression against the WHOLE value (measured), so the pattern
+ * is anchored at both ends. It is compiled on its own first, so a pattern
+ * that would unbalance the anchoring group (`a)|(b`) throws instead of
+ * losing an anchor, and with the `u` flag, so Java-only syntax JavaScript
+ * would otherwise read differently (`\p{Alpha}`, `\A`, `\Z`) throws into the
+ * "cannot evaluate" warning rather than enforcing a different pattern.
  */
 export function compileIdentityValidation(pattern: string): RegExp {
   let re = compiledIdentityValidation.get(pattern);
   if (!re) {
-    re = new RegExp(`^(?:${pattern})$`);
+    new RegExp(pattern, 'u');
+    re = new RegExp(`^(?:${pattern})$`, 'u');
     compiledIdentityValidation.set(pattern, re);
   }
   return re;
 }
 
 /**
- * Whether a token's `scope` claim (OAuth space-separated string) carries at
- * least one of the route's `AuthorizationScopes` (#1011) — the rule API
- * Gateway applies for both a REST v1 Cognito authorizer and an HTTP v2 JWT
- * authorizer.
+ * Whether a token's scope claims carry at least one of the route's
+ * `AuthorizationScopes` (#1011) — the any-of rule API Gateway applies for
+ * both a REST v1 Cognito authorizer and an HTTP v2 JWT authorizer. Each
+ * claim value is an OAuth space-separated string or a string array; an HTTP
+ * v2 JWT authorizer reads `scope` or `scp` (AWS docs), a Cognito token
+ * carries `scope` only.
  */
-export function tokenHasAnyScope(scopeClaim: unknown, scopes: readonly string[]): boolean {
-  if (typeof scopeClaim !== 'string') return false;
-  const granted = new Set(scopeClaim.split(' ').filter((s) => s.length > 0));
+export function tokenHasAnyScope(
+  scopeClaims: readonly unknown[],
+  scopes: readonly string[]
+): boolean {
+  const granted = new Set<string>();
+  for (const claim of scopeClaims) {
+    const values = typeof claim === 'string' ? claim.split(' ') : Array.isArray(claim) ? claim : [];
+    for (const v of values) if (typeof v === 'string' && v.length > 0) granted.add(v);
+  }
   return scopes.some((s) => granted.has(s));
 }
 
@@ -1079,7 +1098,9 @@ function resolveScopesFromState(
   if (!Array.isArray(setting.raw)) {
     // The whole list is one intrinsic (a `Fn::Split`, a list parameter); the
     // state substituter answers scalars only.
-    return unresolved('the list itself is an intrinsic');
+    return unresolved(
+      isIntrinsicObject(setting.raw) ? 'the list itself is an intrinsic' : 'it is not a list'
+    );
   }
   const value: string[] = [];
   for (const item of setting.raw) {

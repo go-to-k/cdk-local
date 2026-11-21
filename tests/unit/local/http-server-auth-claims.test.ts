@@ -285,6 +285,59 @@ describe('JWKS pass-through skips the claim checks', () => {
   });
 });
 
+describe('JWKS pass-through skips the claim checks for a parsed token too', () => {
+  it('admits a signed ID token on a scoped, validated Cognito method, and an HTTP route missing its scope', async () => {
+    const srv = await serve(
+      [
+        route('/rest', {
+          ...COGNITO,
+          scopes: { state: 'enforced', value: ['orders/read'] },
+          identityValidation: { state: 'enforced', value: 'nomatch' },
+        }),
+        route('/http', { ...JWT, scopes: { state: 'enforced', value: ['other/scope'] } }, 'v2'),
+      ],
+      false
+    );
+    try {
+      expect((await get(srv.url('/rest'), `Bearer ${ID_TOKEN}`)).status).toBe(200);
+      expect((await get(srv.url('/http'), `Bearer ${ACCESS_TOKEN}`)).status).toBe(200);
+    } finally {
+      await srv.close();
+    }
+  });
+});
+
+describe('HTTP v2 JWT AuthorizationScopes — unresolved and scp (#1011)', () => {
+  it('accepts any valid token while the scopes stay unresolved', async () => {
+    const srv = await serve([
+      route(
+        '/pending',
+        { ...JWT, scopes: { state: 'unresolved', stackName: 'S', raw: [{ Ref: 'X' }], reason: 'r' } },
+        'v2'
+      ),
+    ]);
+    try {
+      expect((await get(srv.url('/pending'), `Bearer ${ID_TOKEN}`)).status).toBe(200);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('reads the scp claim, as a string or an array, as the deployed JWT authorizer does', async () => {
+    const srv = await serve([
+      route('/scp', { ...JWT, scopes: { state: 'enforced', value: ['orders/read'] } }, 'v2'),
+    ]);
+    const base = { sub: 'u1', iss: ISSUER, aud: CLIENT_ID, exp: exp() };
+    try {
+      expect((await get(srv.url('/scp'), `Bearer ${sign({ ...base, scp: 'a orders/read' })}`)).status).toBe(200);
+      expect((await get(srv.url('/scp'), `Bearer ${sign({ ...base, scp: ['orders/read'] })}`)).status).toBe(200);
+      expect((await get(srv.url('/scp'), `Bearer ${sign({ ...base, scp: ['other'] })}`)).status).toBe(403);
+    } finally {
+      await srv.close();
+    }
+  });
+});
+
 describe('HTTP v2 JWT AuthorizationScopes (#1011)', () => {
   let srv: Awaited<ReturnType<typeof serve>>;
   beforeEach(async () => {

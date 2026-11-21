@@ -1307,13 +1307,14 @@ function checkCognitoRouteClaims(
     return claims['token_use'] === 'id' ? { result } : deny;
   }
   if (claims['token_use'] !== 'access') return deny;
-  if (scopes.state === 'enforced' && !tokenHasAnyScope(claims['scope'], scopes.value)) return deny;
+  if (scopes.state === 'enforced' && !tokenHasAnyScope([claims['scope']], scopes.value))
+    return deny;
   return { result };
 }
 
 /**
  * An HTTP v2 JWT route's `AuthorizationScopes` (#1011): the token's `scope`
- * claim must carry at least one, or the deployed API answers 403. A JWKS
+ * or `scp` claim must carry at least one, or the deployed API answers 403. A JWKS
  * pass-through Allow verified nothing, so its claims are not checked.
  */
 function checkJwtRouteScopes(
@@ -1322,7 +1323,8 @@ function checkJwtRouteScopes(
 ): AuthorizerOutcome {
   if (!result.allow) return shapeOutcome(result);
   if (result.passThrough || authorizer.scopes?.state !== 'enforced') return { result };
-  if (tokenHasAnyScope((result.context ?? {})['scope'], authorizer.scopes.value)) {
+  const claims = result.context ?? {};
+  if (tokenHasAnyScope([claims['scope'], claims['scp']], authorizer.scopes.value)) {
     return { result };
   }
   return { result: { allow: false }, denyKind: 'insufficient-scope' };

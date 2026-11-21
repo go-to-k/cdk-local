@@ -1634,8 +1634,8 @@ route:
   verification, with `aud` / `client_id` matched against the
   `JwtConfiguration.Audience` allowlist; the `Bearer ` prefix is optional.
   Allow → claims under `event.requestContext.authorizer.jwt.claims`. Deny →
-  HTTP 401. A route's `AuthorizationScopes` require the token's `scope`
-  claim to carry at least one of them, else HTTP 403
+  HTTP 401. A route's `AuthorizationScopes` require the token's `scope` (or
+  `scp`) claim to carry at least one of them, else HTTP 403
   (`{"message":"Forbidden"}`). An
   `HttpUserPoolAuthorizer`'s issuer and audience are intrinsics over the
   user pool and app clients; `--from-cfn-stack` resolves them from the

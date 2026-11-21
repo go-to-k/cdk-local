@@ -4038,9 +4038,23 @@ export async function loadStateForRoutedStacks(
   // REST v1 Cognito authorizer whose ProviderARNs do (#1010), needs its own
   // stack's state even when no Lambda there is routed (an HTTP_PROXY or
   // service-integration route, or a Lambda in another stack).
+  // So does a route's intrinsic AuthorizationScopes / an authorizer's
+  // intrinsic IdentityValidationExpression (#1011).
   for (const { authorizer } of routesWithAuth) {
     if ((authorizer?.kind === 'jwt' || authorizer?.kind === 'cognito') && authorizer.pending) {
       reachableStackNames.add(authorizer.pending.stackName);
+    }
+    if (
+      (authorizer?.kind === 'jwt' || authorizer?.kind === 'cognito') &&
+      authorizer.scopes?.state === 'unresolved'
+    ) {
+      reachableStackNames.add(authorizer.scopes.stackName);
+    }
+    if (
+      (authorizer?.kind === 'lambda-token' || authorizer?.kind === 'cognito') &&
+      authorizer.identityValidation?.state === 'unresolved'
+    ) {
+      reachableStackNames.add(authorizer.identityValidation.stackName);
     }
   }
 
