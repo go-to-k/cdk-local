@@ -262,6 +262,9 @@ describe('Cognito / JWT authorizer cache key', () => {
       expect((await get(url('/http'), `Bearer ${ACCESS_TOKEN}`)).status).toBe(200);
       expect((await get(url('/http'), ACCESS_TOKEN)).status).toBe(200);
       expect(verifies).toBe(1);
+      const otherAccess = sign({ sub: 'u2', iss: ISSUER, client_id: CLIENT_ID, token_use: 'access', exp: exp() });
+      expect((await get(url('/http'), `Bearer ${otherAccess}`)).status).toBe(200);
+      expect(verifies).toBe(2);
       expect(fetches).toBe(1);
     } finally {
       await server.close();
