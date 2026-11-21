@@ -51,9 +51,13 @@ export class LocalInvokeAgentCoreFromCfnStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const artifact = AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../agent'), {
-      platform: Platform.LINUX_ARM64,
-    });
+    // One artifact per Runtime: an AgentRuntimeArtifact binds once, so a shared
+    // one grants ECR pull only to the first Runtime's role (the same asset hash
+    // still publishes one image).
+    const newArtifact = () =>
+      AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../agent'), {
+        platform: Platform.LINUX_ARM64,
+      });
 
     // go-to-k/cdk-local#1010: a Cognito-backed customJwtAuthorizer synthesizes
     // its DiscoveryUrl as an Fn::Join over the pool and its AllowedClients as
@@ -63,7 +67,7 @@ export class LocalInvokeAgentCoreFromCfnStack extends cdk.Stack {
     });
     const client = pool.addClient('Client', { authFlows: { adminUserPassword: true } });
     new Runtime(this, 'JwtAgent', {
-      agentRuntimeArtifact: artifact,
+      agentRuntimeArtifact: newArtifact(),
       authorizerConfiguration: RuntimeAuthorizerConfiguration.usingCognito(pool, [client]),
       environmentVariables: { STATIC_VALUE: 'always-the-same' },
     });
@@ -71,7 +75,7 @@ export class LocalInvokeAgentCoreFromCfnStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ClientId', { value: client.userPoolClientId });
 
     new Runtime(this, 'EchoAgent', {
-      agentRuntimeArtifact: artifact,
+      agentRuntimeArtifact: newArtifact(),
       environmentVariables: {
         // A literal env var — confirms --from-cfn-stack doesn't break the
         // normal-case passthrough.
