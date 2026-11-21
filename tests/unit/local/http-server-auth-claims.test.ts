@@ -230,9 +230,11 @@ describe('REST v1 COGNITO_USER_POOLS AuthorizationScopes (#1011)', () => {
   });
 
   it('answers 401 for an access token carrying none — after a cache hit on another route too', async () => {
-    // /hit caches the token's Allow under the authorizer; /miss must still check.
-    expect((await get(srv.url('/hit'), `Bearer ${ACCESS_TOKEN}`)).status).toBe(200);
-    expect(await get(srv.url('/miss'), `Bearer ${ACCESS_TOKEN}`)).toEqual(UNAUTHORIZED);
+    // /hit caches the token's Allow under the authorizer; /miss must still
+    // check. The raw token is the header form whose cache key the lookup
+    // shares (the cache stores the bare token).
+    expect((await get(srv.url('/hit'), ACCESS_TOKEN)).status).toBe(200);
+    expect(await get(srv.url('/miss'), ACCESS_TOKEN)).toEqual(UNAUTHORIZED);
   });
 
   it('answers 401 for an ID token, which carries no scope', async () => {
@@ -298,6 +300,11 @@ describe('HTTP v2 JWT AuthorizationScopes (#1011)', () => {
     expect((await get(srv.url('/hit'), `Bearer ${ACCESS_TOKEN}`)).status).toBe(200);
     expect((await get(srv.url('/plain'), `Bearer ${ID_TOKEN}`)).status).toBe(200);
     expect((await get(srv.url('/plain'), `Bearer ${ACCESS_TOKEN}`)).status).toBe(200);
+  });
+
+  it('checks the scopes on a cache hit from another route', async () => {
+    expect((await get(srv.url('/hit'), ACCESS_TOKEN)).status).toBe(200);
+    expect((await get(srv.url('/miss'), ACCESS_TOKEN)).status).toBe(403);
   });
 
   it('answers 403 Forbidden for a token without one — the ID token included', async () => {
