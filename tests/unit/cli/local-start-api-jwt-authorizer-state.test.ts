@@ -75,6 +75,34 @@ describe('loadStateForRoutedStacks with a JWT authorizer waiting on state', () =
     expect(createProviderMock.mock.calls.map((c) => c[1])).toEqual(['Api']);
   });
 
+  it('loads the stack of literal authorizers whose route scopes or validation expression wait on state (#1011)', async () => {
+    const scoped: RouteWithAuth = {
+      ...jwtEntry(false),
+      authorizer: {
+        ...(jwtEntry(false).authorizer as Extract<RouteWithAuth['authorizer'], { kind: 'jwt' }>),
+        scopes: { state: 'unresolved', stackName: 'Api', raw: [{ Ref: 'Server' }], reason: 'r' },
+      },
+    };
+    await loadStateForRoutedStacks([apiStack], [], [scoped], {} as never, undefined);
+    expect(createProviderMock.mock.calls.map((c) => c[1])).toEqual(['Api']);
+
+    createProviderMock.mockClear();
+    const token: RouteWithAuth = {
+      route: { declaredAt: 'Api/Method', serviceIntegration: true } as never,
+      authorizer: {
+        kind: 'lambda-token',
+        logicalId: 'Auth',
+        lambdaLogicalId: 'AuthFn',
+        tokenHeader: 'authorization',
+        resultTtlSeconds: 0,
+        identityValidation: { state: 'unresolved', stackName: 'Api', raw: { Ref: 'P' }, reason: 'r' },
+        declaredAt: 'Api/Method',
+      },
+    };
+    await loadStateForRoutedStacks([apiStack], [], [token], {} as never, undefined);
+    expect(createProviderMock.mock.calls.map((c) => c[1])).toEqual(['Api']);
+  });
+
   it('does not load a stack whose JWT authorizer is all literal', async () => {
     await loadStateForRoutedStacks([apiStack], [], [jwtEntry(false)], {} as never, undefined);
     expect(createProviderMock).not.toHaveBeenCalled();
