@@ -27,6 +27,10 @@ const HOST_ARCHITECTURE =
  * A REST v1 API behind `CognitoUserPoolsAuthorizer` on the same pool rides
  * along (go-to-k/cdk-local#1010): its `ProviderARNs` is
  * `[Fn::GetAtt <Pool>.Arn]`, which only a state source resolves.
+ *
+ * go-to-k/cdk-local#1011: a scoped REST method and two scoped HTTP routes
+ * (one scope every access token carries, one none does), plus a REST TOKEN
+ * authorizer with an `IdentityValidationExpression`.
  */
 export class LocalStartApiUserPoolAuthorizerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -47,11 +51,28 @@ export class LocalStartApiUserPoolAuthorizerStack extends cdk.Stack {
     });
 
     const api = new apigwv2.HttpApi(this, 'Api');
+    const httpAuthorizer = new HttpUserPoolAuthorizer('Auth', pool, { userPoolClients: [clientA] });
+    const httpIntegration = new HttpLambdaIntegration('SecureIntegration', fn);
     api.addRoutes({
       path: '/secure',
       methods: [apigwv2.HttpMethod.GET],
-      integration: new HttpLambdaIntegration('SecureIntegration', fn),
-      authorizer: new HttpUserPoolAuthorizer('Auth', pool, { userPoolClients: [clientA] }),
+      integration: httpIntegration,
+      authorizer: httpAuthorizer,
+    });
+    // Every Cognito access token carries this scope; none carries other/scope.
+    api.addRoutes({
+      path: '/secure-scoped-ok',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: httpIntegration,
+      authorizer: httpAuthorizer,
+      authorizationScopes: ['aws.cognito.signin.user.admin'],
+    });
+    api.addRoutes({
+      path: '/secure-scoped-miss',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: httpIntegration,
+      authorizer: httpAuthorizer,
+      authorizationScopes: ['other/scope'],
     });
 
     const restApi = new apigw.RestApi(this, 'RestApi', {
@@ -59,14 +80,36 @@ export class LocalStartApiUserPoolAuthorizerStack extends cdk.Stack {
       // No account-level CloudWatch role: CDK retains it on destroy.
       cloudWatchRole: false,
     });
-    restApi.root.addResource('rest-secure').addMethod('GET', new apigw.LambdaIntegration(fn), {
-      authorizer: new apigw.CognitoUserPoolsAuthorizer(this, 'RestAuth', {
-        cognitoUserPools: [pool],
-      }),
+    const restAuthorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'RestAuth', {
+      cognitoUserPools: [pool],
+    });
+    const restIntegration = new apigw.LambdaIntegration(fn);
+    restApi.root.addResource('rest-secure').addMethod('GET', restIntegration, {
+      authorizer: restAuthorizer,
       authorizationType: apigw.AuthorizationType.COGNITO,
       // Not enforced locally (API keys live in the deployed API): it must be
       // warned per route rather than dropped silently.
       apiKeyRequired: true,
+    });
+    restApi.root.addResource('rest-scoped').addMethod('GET', restIntegration, {
+      authorizer: restAuthorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      authorizationScopes: ['aws.cognito.signin.user.admin'],
+    });
+    const tokenFn = new lambda.Function(this, 'TokenAuthorizerFn', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
+      handler: 'index.authorize',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
+      timeout: cdk.Duration.seconds(10),
+    });
+    restApi.root.addResource('rest-token').addMethod('GET', restIntegration, {
+      authorizer: new apigw.TokenAuthorizer(this, 'TokenAuth', {
+        handler: tokenFn,
+        validationRegex: '^Bearer [a-z]+$',
+        resultsCacheTtl: cdk.Duration.seconds(0),
+      }),
+      authorizationType: apigw.AuthorizationType.CUSTOM,
     });
 
     new cdk.CfnOutput(this, 'PoolId', { value: pool.userPoolId });

@@ -47,6 +47,16 @@ import { substituteAgainstState, type SubstitutionContext } from './state-resolv
  *     policies. See `src/local/sigv4-verify.ts`.
  */
 
+/**
+ * A route auth setting (go-to-k/cdk-local#1011) that is either enforced with
+ * its literal / state-resolved value, or still unresolved — an intrinsic that
+ * no state source answered — in which case it is NOT enforced and
+ * {@link warnUnenforcedRouteAuthSettings} warns for the route with `reason`.
+ */
+export type RouteAuthSetting<T> =
+  | { state: 'enforced'; value: T }
+  | { state: 'unresolved'; stackName: string; raw: unknown; reason: string };
+
 export interface LambdaTokenAuthorizer {
   kind: 'lambda-token';
   /** `AWS::ApiGateway::Authorizer` logical ID. */
@@ -61,6 +71,12 @@ export interface LambdaTokenAuthorizer {
   tokenHeader: string;
   /** TTL in seconds; 0 disables caching. Default 300, max 3600 (REST v1 cap). */
   resultTtlSeconds: number;
+  /**
+   * The authorizer's `IdentityValidationExpression`: a token header value
+   * that does not match it is answered 401 without invoking the Lambda,
+   * as the deployed API does. Absent when the authorizer declares none.
+   */
+  identityValidation?: RouteAuthSetting<string>;
   /** Diagnostic. */
   declaredAt: string;
 }
@@ -134,6 +150,18 @@ export interface CognitoUserPoolAuthorizer {
    * warns per route that JWKS pass-through applies.
    */
   pending?: { stackName: string; providerArns: readonly unknown[] };
+  /**
+   * The REST v1 method's `AuthorizationScopes` (go-to-k/cdk-local#1011): the
+   * token's `scope` claim must carry at least one of them. Absent when the
+   * method declares none.
+   */
+  scopes?: RouteAuthSetting<readonly string[]>;
+  /**
+   * The authorizer's `IdentityValidationExpression` (#1011). On a
+   * COGNITO_USER_POOLS authorizer API Gateway matches it against the token's
+   * `aud` claim (measured: an access token, which has none, never matches).
+   */
+  identityValidation?: RouteAuthSetting<string>;
   // NOTE: there is intentionally no `audience` field on REST v1 Cognito
   // authorizers. The audience that JWT verification would check (`aud`
   // for ID tokens, `client_id` for access tokens) is the User Pool *App
@@ -175,6 +203,12 @@ export interface JwtAuthorizer {
    * resolves them from state, or warns that JWKS pass-through applies.
    */
   pending?: { stackName: string; issuer: unknown; audience: readonly unknown[] };
+  /**
+   * The HTTP v2 route's `AuthorizationScopes` (go-to-k/cdk-local#1011): the
+   * token's `scope` claim must carry at least one of them. Absent when the
+   * route declares none.
+   */
+  scopes?: RouteAuthSetting<readonly string[]>;
   declaredAt: string;
 }
 
@@ -253,12 +287,17 @@ export function resolveRestV1Authorizer(
         : 'method.request.header.Authorization';
     const tokenHeader = parseRestV1HeaderSelector(identitySource, stackName, authorizerLogicalId);
     const ttl = parseTtl(props['AuthorizerResultTtlInSeconds'], 300, 3600);
+    const identityValidation = parseIdentityValidationSetting(
+      props['IdentityValidationExpression'],
+      stackName
+    );
     return {
       kind: 'lambda-token',
       logicalId: authorizerLogicalId,
       lambdaLogicalId,
       tokenHeader,
       resultTtlSeconds: ttl,
+      ...(identityValidation && { identityValidation }),
       declaredAt,
     };
   }
@@ -311,12 +350,19 @@ export function resolveRestV1Authorizer(
       const parsed = parseCognitoUserPoolArn(entry, location);
       return { userPoolArn: entry, region: parsed.region, userPoolId: parsed.userPoolId };
     });
-    return buildCognitoAuthorizer(
-      authorizerLogicalId,
-      pools,
-      declaredAt,
-      anyIntrinsic ? { stackName, providerArns: arns } : undefined
+    const identityValidation = parseIdentityValidationSetting(
+      props['IdentityValidationExpression'],
+      stackName
     );
+    return {
+      ...buildCognitoAuthorizer(
+        authorizerLogicalId,
+        pools,
+        declaredAt,
+        anyIntrinsic ? { stackName, providerArns: arns } : undefined
+      ),
+      ...(identityValidation && { identityValidation }),
+    };
   }
 
   // Unknown Type — surface a structured error that the route-discovery
@@ -341,7 +387,8 @@ export function resolveRestV1Authorizer(
  */
 export function resolveHttpApiAuthorizer(
   authorizerLogicalId: string,
-  routeAuthorizationScopes: readonly string[] | undefined,
+  /** The route's raw `AuthorizationScopes`, enforced on a JWT authorizer (#1011). */
+  routeAuthorizationScopes: unknown,
   template: CloudFormationTemplate,
   stackName: string,
   declaredAt: string
@@ -391,7 +438,7 @@ export function resolveHttpApiAuthorizer(
     const audienceRaw = obj['Audience'];
     const rawAudience: readonly unknown[] = Array.isArray(audienceRaw) ? audienceRaw : [];
     const audienceIsIntrinsic = rawAudience.some(isIntrinsicObject);
-    void routeAuthorizationScopes; // not enforced; warnUnenforcedRouteAuthSettings warns per route.
+    const scopes = parseScopesSetting(routeAuthorizationScopes, stackName);
     if (issuerIsIntrinsic || audienceIsIntrinsic) {
       // Served as the unreachable placeholder until state resolves it.
       return {
@@ -402,14 +449,18 @@ export function resolveHttpApiAuthorizer(
           declaredAt
         ),
         pending: { stackName, issuer: rawIssuer, audience: rawAudience },
+        ...(scopes && { scopes }),
       };
     }
-    return buildJwtAuthorizer(
-      authorizerLogicalId,
-      rawIssuer as string,
-      rawAudience.filter((s): s is string => typeof s === 'string'),
-      declaredAt
-    );
+    return {
+      ...buildJwtAuthorizer(
+        authorizerLogicalId,
+        rawIssuer as string,
+        rawAudience.filter((s): s is string => typeof s === 'string'),
+        declaredAt
+      ),
+      ...(scopes && { scopes }),
+    };
   }
 
   throw new RouteDiscoveryError(
@@ -609,6 +660,87 @@ function isIntrinsicObject(value: unknown): boolean {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+const NO_STATE_REASON = 'no state source is loaded for the stack';
+
+/**
+ * Read a route's `AuthorizationScopes` (#1011). A list of literal strings is
+ * enforced; one carrying an intrinsic (CDK's `OAuthScope.resourceServer`
+ * emits `Fn::Join` over `Ref <ResourceServer>`) waits for state. An empty
+ * list declares nothing.
+ */
+function parseScopesSetting(
+  raw: unknown,
+  stackName: string
+): RouteAuthSetting<readonly string[]> | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) return undefined;
+    if (raw.every((s): s is string => typeof s === 'string')) {
+      return { state: 'enforced', value: raw };
+    }
+  }
+  return { state: 'unresolved', stackName, raw, reason: NO_STATE_REASON };
+}
+
+/**
+ * Read a TOKEN authorizer's `IdentityValidationExpression` (#1011). A literal
+ * pattern is enforced once it compiles; an intrinsic waits for state.
+ */
+function parseIdentityValidationSetting(
+  raw: unknown,
+  stackName: string
+): RouteAuthSetting<string> | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  if (typeof raw === 'string') return identityValidationFromString(raw, stackName, raw);
+  return { state: 'unresolved', stackName, raw, reason: NO_STATE_REASON };
+}
+
+function identityValidationFromString(
+  pattern: string,
+  stackName: string,
+  raw: unknown
+): RouteAuthSetting<string> {
+  try {
+    compileIdentityValidation(pattern);
+  } catch (err) {
+    return {
+      state: 'unresolved',
+      stackName,
+      raw,
+      reason: `${displayUntrustedValue(pattern)} is not a pattern ${getEmbedConfig().cliName} start-api can evaluate (${err instanceof Error ? err.message : String(err)})`,
+    };
+  }
+  return { state: 'enforced', value: pattern };
+}
+
+const compiledIdentityValidation = new Map<string, RegExp>();
+
+/**
+ * Compile an `IdentityValidationExpression`. API Gateway evaluates it as a
+ * Java regular expression against the WHOLE token header value, so the
+ * pattern is anchored at both ends.
+ */
+export function compileIdentityValidation(pattern: string): RegExp {
+  let re = compiledIdentityValidation.get(pattern);
+  if (!re) {
+    re = new RegExp(`^(?:${pattern})$`);
+    compiledIdentityValidation.set(pattern, re);
+  }
+  return re;
+}
+
+/**
+ * Whether a token's `scope` claim (OAuth space-separated string) carries at
+ * least one of the route's `AuthorizationScopes` (#1011) — the rule API
+ * Gateway applies for both a REST v1 Cognito authorizer and an HTTP v2 JWT
+ * authorizer.
+ */
+export function tokenHasAnyScope(scopeClaim: unknown, scopes: readonly string[]): boolean {
+  if (typeof scopeClaim !== 'string') return false;
+  const granted = new Set(scopeClaim.split(' ').filter((s) => s.length > 0));
+  return scopes.some((s) => granted.has(s));
+}
+
 /**
  * The issuer an HTTP v2 JWT authorizer is served with while its template
  * issuer is an unresolved intrinsic: a Cognito-shaped URL naming a pool that
@@ -755,7 +887,7 @@ export function resolveJwtAuthorizerIntrinsics(
   const cli = getEmbedConfig().cliName;
   const hint =
     'Deploy the stack and pass --from-state (or --from-cfn-stack) for real signature verification.';
-  return routes.map((entry) => {
+  const resolveIssuerAndPools = (entry: RouteWithAuth): RouteWithAuth => {
     const auth = entry.authorizer;
     if (!auth || (auth.kind !== 'jwt' && auth.kind !== 'cognito') || !auth.pending) return entry;
     const { stackName } = auth.pending;
@@ -824,12 +956,16 @@ export function resolveJwtAuthorizerIntrinsics(
       // (nothing resolved), so a re-run resolves the same entries again.
       return {
         ...entry,
-        authorizer: buildCognitoAuthorizer(
-          auth.logicalId,
-          realPools.length > 0 ? realPools : outcomes.map((o) => o.pool),
-          auth.declaredAt,
-          allResolved || realPools.length > 0 ? undefined : auth.pending
-        ),
+        authorizer: {
+          ...buildCognitoAuthorizer(
+            auth.logicalId,
+            realPools.length > 0 ? realPools : outcomes.map((o) => o.pool),
+            auth.declaredAt,
+            allResolved || realPools.length > 0 ? undefined : auth.pending
+          ),
+          ...(auth.scopes && { scopes: auth.scopes }),
+          ...(auth.identityValidation && { identityValidation: auth.identityValidation }),
+        },
       };
     }
 
@@ -866,14 +1002,99 @@ export function resolveJwtAuthorizerIntrinsics(
     }
     return {
       ...entry,
-      authorizer: buildJwtAuthorizer(
-        auth.logicalId,
-        issuerResult.value,
-        unresolvedAudience.length > 0 ? [] : resolvedAudience,
-        auth.declaredAt
+      authorizer: {
+        ...buildJwtAuthorizer(
+          auth.logicalId,
+          issuerResult.value,
+          unresolvedAudience.length > 0 ? [] : resolvedAudience,
+          auth.declaredAt
+        ),
+        ...(auth.scopes && { scopes: auth.scopes }),
+      },
+    };
+  };
+  return routes.map((entry) => resolveRouteAuthSettings(resolveIssuerAndPools(entry), contextFor));
+}
+
+/**
+ * Resolve a route's intrinsic `AuthorizationScopes` and a TOKEN authorizer's
+ * intrinsic `IdentityValidationExpression` (#1011) against state. A setting
+ * that resolves is enforced; one that does not keeps its reason, and
+ * {@link warnUnenforcedRouteAuthSettings} warns for the route. Scopes resolve
+ * all-or-nothing: enforcing only the resolved entries would reject a token
+ * carrying just an unresolved one, which the deployed API accepts.
+ */
+function resolveRouteAuthSettings(
+  entry: RouteWithAuth,
+  contextFor: (stackName: string) => SubstitutionContext | undefined
+): RouteWithAuth {
+  let auth = entry.authorizer;
+  if (!auth) return entry;
+  if ((auth.kind === 'jwt' || auth.kind === 'cognito') && auth.scopes?.state === 'unresolved') {
+    auth = {
+      ...auth,
+      scopes: resolveScopesFromState(auth.scopes, contextFor(auth.scopes.stackName)),
+    };
+  }
+  if (
+    (auth.kind === 'lambda-token' || auth.kind === 'cognito') &&
+    auth.identityValidation?.state === 'unresolved'
+  ) {
+    auth = {
+      ...auth,
+      identityValidation: resolveIdentityValidationFromState(
+        auth.identityValidation,
+        contextFor(auth.identityValidation.stackName)
       ),
     };
+  }
+  return auth === entry.authorizer ? entry : { ...entry, authorizer: auth };
+}
+
+function resolveIdentityValidationFromState(
+  setting: Extract<RouteAuthSetting<string>, { state: 'unresolved' }>,
+  context: SubstitutionContext | undefined
+): RouteAuthSetting<string> {
+  // A literal that did not compile stays as it is: state cannot change it.
+  if (typeof setting.raw === 'string' || !context) return setting;
+  const result = substituteAgainstState(setting.raw, context);
+  if (result.kind === 'literal' && typeof result.value === 'string' && result.value.length > 0) {
+    return identityValidationFromString(result.value, setting.stackName, setting.raw);
+  }
+  return {
+    ...setting,
+    reason: result.kind === 'unresolved' ? result.reason : 'it resolved to a non-string',
+  };
+}
+
+function resolveScopesFromState(
+  setting: Extract<RouteAuthSetting<readonly string[]>, { state: 'unresolved' }>,
+  context: SubstitutionContext | undefined
+): RouteAuthSetting<readonly string[]> {
+  if (!context) return setting;
+  const unresolved = (reason: string): RouteAuthSetting<readonly string[]> => ({
+    ...setting,
+    reason,
   });
+  if (!Array.isArray(setting.raw)) {
+    // The whole list is one intrinsic (a `Fn::Split`, a list parameter); the
+    // state substituter answers scalars only.
+    return unresolved('the list itself is an intrinsic');
+  }
+  const value: string[] = [];
+  for (const item of setting.raw) {
+    if (typeof item === 'string') {
+      value.push(item);
+      continue;
+    }
+    const result = substituteAgainstState(item, context);
+    if (result.kind !== 'literal') return unresolved(result.reason);
+    if (typeof result.value !== 'string' || result.value.length === 0) {
+      return unresolved('an entry resolved to a non-string');
+    }
+    value.push(result.value);
+  }
+  return { state: 'enforced', value };
 }
 
 /**
@@ -882,8 +1103,10 @@ export function resolveJwtAuthorizerIntrinsics(
  * is dropped silently:
  *
  * - REST v1 method `ApiKeyRequired`: API keys live in the deployed API.
- * - REST v1 method / HTTP v2 route `AuthorizationScopes`.
- * - REST v1 TOKEN authorizer `IdentityValidationExpression`.
+ * - REST v1 method / HTTP v2 route `AuthorizationScopes` on an authorizer kind
+ *   that does not check them, or that stayed an unresolved intrinsic (#1011).
+ * - REST v1 TOKEN / COGNITO_USER_POOLS authorizer `IdentityValidationExpression` that stayed an
+ *   unresolved intrinsic or is not a pattern the local server can evaluate.
  * - REST v1 `AWS::ApiGateway::RestApi.Policy` (a resource policy).
  *
  * The route is still served. `warned` dedups across `--watch` reloads.
@@ -932,21 +1155,36 @@ export function warnUnenforcedRouteAuthSettings(
     }
     const scopes = props['AuthorizationScopes'];
     if (scopes !== undefined && (!Array.isArray(scopes) || scopes.length > 0)) {
-      warnOnce(
-        'AuthorizationScopes',
-        `${where}: AuthorizationScopes ${displayIdent(shortJson(scopes))} are not checked by ${cli} start-api, ` +
-          `so ${routeLabel} accepts any token its authorizer accepts, whatever its scope claim.`
-      );
-    }
-    if (authorizer?.kind === 'lambda-token') {
-      const authProps = stack.template.Resources?.[authorizer.logicalId]?.Properties ?? {};
-      if (authProps['IdentityValidationExpression'] !== undefined) {
+      // Enforced on the authorizer kind API Gateway checks them for (#1011).
+      const enforcing =
+        (isRest && authorizer?.kind === 'cognito') || (isHttp && authorizer?.kind === 'jwt');
+      if (!enforcing) {
         warnOnce(
-          'IdentityValidationExpression',
-          `${displayStackName(stackName)}/${displayIdent(authorizer.logicalId)}: IdentityValidationExpression is not applied by ` +
-            `${cli} start-api, so on ${routeLabel} every token reaches the authorizer Lambda.`
+          'AuthorizationScopes',
+          `${where}: AuthorizationScopes ${displayIdent(shortJson(scopes))} are not checked by ${cli} start-api ` +
+            `(they apply to a ${isRest ? 'COGNITO_USER_POOLS' : 'JWT'} authorizer only), ` +
+            `so ${routeLabel} accepts any token its authorizer accepts, whatever its scope claim.`
+        );
+      } else if (authorizer.scopes?.state === 'unresolved') {
+        warnOnce(
+          'AuthorizationScopes',
+          `${where}: AuthorizationScopes ${displayIdent(shortJson(scopes))} could not be resolved by ${cli} start-api ` +
+            `(${authorizer.scopes.reason}), so ${routeLabel} accepts any token its authorizer accepts, whatever its scope claim.`
         );
       }
+    }
+    if (
+      (authorizer?.kind === 'lambda-token' || authorizer?.kind === 'cognito') &&
+      authorizer.identityValidation?.state === 'unresolved'
+    ) {
+      warnOnce(
+        'IdentityValidationExpression',
+        `${displayStackName(stackName)}/${displayIdent(authorizer.logicalId)}: IdentityValidationExpression could not be applied by ` +
+          `${cli} start-api (${authorizer.identityValidation.reason}), so on ${routeLabel} ` +
+          (authorizer.kind === 'lambda-token'
+            ? 'every token reaches the authorizer Lambda.'
+            : "a token's aud claim is not matched against it.")
+      );
     }
     if (isRest && route.apiLogicalId) {
       const api = stack.template.Resources?.[route.apiLogicalId];
@@ -1164,12 +1402,19 @@ function detectRestV1Authorizer(
     );
   }
 
-  return resolveRestV1Authorizer(
+  const authorizer = resolveRestV1Authorizer(
     refLogicalId,
     stack.template,
     stack.stackName,
     `${stack.stackName}/${methodLogicalId}`
   );
+  // A method's AuthorizationScopes apply to a COGNITO_USER_POOLS authorizer
+  // only (#1011); for the others the deployed API ignores them.
+  if (authorizer.kind === 'cognito') {
+    const scopes = parseScopesSetting(props['AuthorizationScopes'], stack.stackName);
+    if (scopes) return { ...authorizer, scopes };
+  }
+  return authorizer;
 }
 
 function detectHttpApiAuthorizer(
@@ -1188,14 +1433,9 @@ function detectHttpApiAuthorizer(
       `${displayStackName(stack.stackName)}/${displayIdent(routeLogicalId)}: AuthorizationType=${displayIdent(stringifyValue(authType))} but AuthorizerId is missing or not a {Ref:...}.`
     );
   }
-  const scopesRaw = props['AuthorizationScopes'];
-  const scopes = Array.isArray(scopesRaw)
-    ? scopesRaw.filter((s): s is string => typeof s === 'string')
-    : undefined;
-
   return resolveHttpApiAuthorizer(
     refLogicalId,
-    scopes,
+    props['AuthorizationScopes'],
     stack.template,
     stack.stackName,
     `${stack.stackName}/${routeLogicalId}`

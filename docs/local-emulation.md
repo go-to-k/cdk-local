@@ -1602,7 +1602,10 @@ route:
   cached verdicts get re-evaluated against the new methodArn so a
   narrow-Resource Allow doesn't leak across routes. Allow → context
   flat under `event.requestContext.authorizer`. Policy-deny → HTTP 403,
-  missing identity header → HTTP 401 without invoking the Lambda.
+  missing identity header → HTTP 401 without invoking the Lambda. An
+  `IdentityValidationExpression` is applied as the deployed API applies it:
+  a header value that does not match the WHOLE pattern → HTTP 401 without
+  invoking the Lambda.
 - **Lambda REQUEST** — REST v1 (`Type: 'REQUEST'`) and HTTP v2
   (`AuthorizerType: 'REQUEST'`). The full request snapshot (headers,
   query string, path parameters) is passed to the authorizer Lambda.
@@ -1610,9 +1613,18 @@ route:
   shape in addition to the IAM-policy shape. REST v1 missing-identity →
   HTTP 401 without invoking the Lambda; HTTP v2 falls through.
 - **Cognito User Pool** (REST v1) — `Type: 'COGNITO_USER_POOLS'`. The
-  Bearer token from `Authorization: Bearer <token>` is verified locally
-  against the user pool's published JWKS. Allow → claims under
-  `event.requestContext.authorizer.claims`. Deny → HTTP 403. A
+  token from `Authorization: <token>` (a `Bearer ` prefix is optional, as on
+  the deployed API) is verified locally against the user pool's published
+  JWKS. Allow → claims under `event.requestContext.authorizer.claims`. The
+  token type and the method's `AuthorizationScopes` are checked as the
+  deployed API checks them: a method without scopes accepts an ID token only,
+  a method with scopes an access token whose `scope` claim carries at least
+  one of them; an `IdentityValidationExpression` must match the token's
+  whole `aud` claim. A token whose signature does not verify → HTTP 403
+  (`{"Message":"Access Denied"}`); an expired one → HTTP 401
+  (`{"message":"The incoming token has expired"}`); every other rejection
+  (missing, malformed, unsigned, another issuer, wrong token type, missing
+  scope) → HTTP 401 (`{"message":"Unauthorized"}`). A
   `CognitoUserPoolsAuthorizer` names its pool as `Fn::GetAtt <Pool>.Arn`;
   `--from-cfn-stack` resolves it from the deployed stack and verifies for
   real (an invalid token is denied). Without a state source the stack still
@@ -1620,8 +1632,11 @@ route:
   pass-through mode below.
 - **JWT** (HTTP v2) — `AuthorizerType: 'JWT'`. Same JWKS-based
   verification, with `aud` / `client_id` matched against the
-  `JwtConfiguration.Audience` allowlist. Allow → claims under
-  `event.requestContext.authorizer.jwt.claims`. Deny → HTTP 401. An
+  `JwtConfiguration.Audience` allowlist; the `Bearer ` prefix is optional.
+  Allow → claims under `event.requestContext.authorizer.jwt.claims`. Deny →
+  HTTP 401. A route's `AuthorizationScopes` require the token's `scope`
+  claim to carry at least one of them, else HTTP 403
+  (`{"message":"Forbidden"}`). An
   `HttpUserPoolAuthorizer`'s issuer and audience are intrinsics over the
   user pool and app clients; `--from-cfn-stack` resolves them from the
   deployed stack. Without a state source the stack still boots, warns
@@ -1629,12 +1644,20 @@ route:
   below. An audience entry that does not resolve alone is warned and skips
   the audience check (signature, issuer and expiry are still verified).
 
+`AuthorizationScopes` and an `IdentityValidationExpression` written as
+intrinsics (CDK's `OAuthScope.resourceServer` emits a `Fn::Join` over the
+resource server) resolve from the state source like the authorizer settings
+above. The route claim checks are not applied to a token admitted by the JWKS
+pass-through mode below, which verified nothing.
+
 Auth settings `start-api` does not enforce locally are still served, never
 silently: each warns once per route at startup, naming the route and the
 setting — `ApiKeyRequired` (REST v1 method, WebSocket route; API keys live in
-the deployed API), `AuthorizationScopes` (REST v1 method, HTTP v2 route), a
-TOKEN authorizer's `IdentityValidationExpression`, and a RestApi resource
-`Policy`.
+the deployed API), `AuthorizationScopes` on a route whose authorizer does not
+check them (anything but a REST v1 Cognito / HTTP v2 JWT authorizer) or that
+stayed an unresolved intrinsic, an `IdentityValidationExpression` that stayed
+an unresolved intrinsic or is not a pattern the local server can evaluate, and
+a RestApi resource `Policy`.
 
 Authorizer results are cached per `(authorizer, identity)` for the TTL
 declared by the authorizer (REST v1: `AuthorizerResultTtlInSeconds`,

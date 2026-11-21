@@ -298,9 +298,9 @@ export async function verifyCognitoJwt(
   authorizationHeader: string | undefined,
   jwksCache: JwksCache,
   opts: { now?: () => number; warnedAt?: WarnedAt } = {}
-): Promise<CachedAuthorizerResult & { identityHash: string | undefined; ttlSeconds: number }> {
+): Promise<JwtVerifyResult> {
   const now = opts.now ?? ((): number => Date.now());
-  const token = extractBearer(authorizationHeader);
+  const token = extractToken(authorizationHeader);
   if (!token) {
     return { allow: false, identityHash: undefined, ttlSeconds: 0 };
   }
@@ -391,9 +391,9 @@ export async function verifyJwtAuthorizer(
   authorizationHeader: string | undefined,
   jwksCache: JwksCache,
   opts: { now?: () => number; warnedAt?: WarnedAt } = {}
-): Promise<CachedAuthorizerResult & { identityHash: string | undefined; ttlSeconds: number }> {
+): Promise<JwtVerifyResult> {
   const now = opts.now ?? ((): number => Date.now());
-  const token = extractBearer(authorizationHeader);
+  const token = extractToken(authorizationHeader);
   if (!token) {
     return { allow: false, identityHash: undefined, ttlSeconds: 0 };
   }
@@ -476,7 +476,7 @@ export async function verifyJwtViaDiscovery(
       url: string
     ) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
   } = {}
-): Promise<CachedAuthorizerResult & { identityHash: string | undefined; ttlSeconds: number }> {
+): Promise<JwtVerifyResult> {
   const now = opts.now ?? ((): number => Date.now());
   const token = extractBearer(authorizationHeader);
   if (!token) {
@@ -537,6 +537,19 @@ export async function verifyJwtViaDiscovery(
   );
 }
 
+/**
+ * A JWT verifier's verdict. On a deny, `signatureInvalid` marks a signed
+ * token whose signature does not verify against its key and `expired` a
+ * verified token past its `exp` — the two rejections a REST v1 Cognito
+ * authorizer answers differently (measured, go-to-k/cdk-local#1012).
+ */
+export type JwtVerifyResult = CachedAuthorizerResult & {
+  identityHash: string | undefined;
+  ttlSeconds: number;
+  signatureInvalid?: true;
+  expired?: true;
+};
+
 async function verifyAndShape(
   token: string,
   jwksUrl: string,
@@ -547,7 +560,7 @@ async function verifyAndShape(
   jwksCache: JwksCache,
   warnedAt: WarnedAt | undefined,
   now: () => number
-): Promise<CachedAuthorizerResult & { identityHash: string | undefined; ttlSeconds: number }> {
+): Promise<JwtVerifyResult> {
   const identityHash = buildIdentityHash([token]);
 
   // Fetch JWKS first so the pass-through mode (JWKS unreachable) can
@@ -576,12 +589,13 @@ async function verifyAndShape(
     // and an empty claims map. Either way the request is allowed.
     const parsed = parseJwt(token);
     if (parsed) {
-      return shapeAllowResult(parsed, identityHash, now);
+      return { ...shapeAllowResult(parsed, identityHash, now), passThrough: true };
     }
     return {
       allow: true,
       principalId: 'unknown',
       context: {},
+      passThrough: true,
       identityHash,
       ttlSeconds: 0,
     };
@@ -602,13 +616,20 @@ async function verifyAndShape(
   }
 
   if (!verifyRs256(token, key)) {
-    return { allow: false, identityHash, ttlSeconds: 0 };
+    // Measured (#1012): only a signed RS256 token whose signature does not
+    // verify is the 403 case; an unsigned one (`alg: none`, no signature)
+    // is answered 401 like any other malformed token.
+    const signed = parsed.header['alg'] === 'RS256' && parsed.signatureB64.length > 0;
+    return { allow: false, identityHash, ttlSeconds: 0, ...(signed && { signatureInvalid: true }) };
   }
 
   // Validate `exp`.
   const claims = parsed.payload;
-  if (typeof claims['exp'] !== 'number' || claims['exp'] * 1000 <= now()) {
+  if (typeof claims['exp'] !== 'number') {
     return { allow: false, identityHash, ttlSeconds: 0 };
+  }
+  if (claims['exp'] * 1000 <= now()) {
+    return { allow: false, identityHash, ttlSeconds: 0, expired: true };
   }
   // Validate `iss` (best-effort — strip any trailing slash on either side).
   if (typeof claims['iss'] !== 'string' || claims['iss'].replace(/\/+$/, '') !== expectedIssuer) {
@@ -744,6 +765,20 @@ function extractBearer(header: string | undefined): string | undefined {
   if (!header) return undefined;
   const m = /^\s*Bearer\s+([A-Za-z0-9._-]+)\s*$/i.exec(header);
   if (!m) return undefined;
+  return m[1]!;
+}
+
+/**
+ * {@link extractBearer} with the `Bearer ` prefix optional: a REST v1
+ * Cognito authorizer and an HTTP v2 JWT authorizer both accept the raw token
+ * too (measured against the deployed API, go-to-k/cdk-local#1015).
+ */
+function extractToken(header: string | undefined): string | undefined {
+  const bearer = extractBearer(header);
+  if (bearer !== undefined || !header) return bearer;
+  const m = /^\s*([A-Za-z0-9._-]+)\s*$/.exec(header);
+  // A bare scheme (`Bearer` with no token) is no token.
+  if (!m || /^bearer$/i.test(m[1]!)) return undefined;
   return m[1]!;
 }
 

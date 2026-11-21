@@ -253,13 +253,52 @@ describe('warnUnenforcedRouteAuthSettings (#1010)', () => {
     return warn.mock.calls.map((c) => String(c[0]));
   }
 
-  it('warns per route for ApiKeyRequired and AuthorizationScopes on a REST v1 method', () => {
-    const messages = messagesFor(
-      restStack([literal], { ApiKeyRequired: true, AuthorizationScopes: ['orders/read'] })
-    );
-    expect(messages).toHaveLength(2);
+  it('warns per route for ApiKeyRequired, and enforces literal AuthorizationScopes without a warning (#1011)', () => {
+    const stack = restStack([literal], { ApiKeyRequired: true, AuthorizationScopes: ['orders/read'] });
+    const messages = messagesFor(stack);
+    expect(messages).toHaveLength(1);
     expect(messages[0]).toMatch(/MyStack\/Method: ApiKeyRequired is not enforced .*route GET \/secure is served without an x-api-key check/);
-    expect(messages[1]).toMatch(/AuthorizationScopes .*orders\/read.* are not checked .*route GET \/secure accepts any token/);
+    expect(cognitoOf(attachAuthorizers([stack], [ROUTE])).scopes).toEqual({
+      state: 'enforced',
+      value: ['orders/read'],
+    });
+  });
+
+  it('resolves intrinsic AuthorizationScopes from state and enforces them (#1011)', () => {
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const stack = restStack([literal], {
+      AuthorizationScopes: [{ 'Fn::Join': ['', [{ Ref: 'Server' }, '/read']] }, 'admin'],
+    });
+    const context: SubstitutionContext = {
+      resources: {
+        Server: {
+          physicalId: 'orders',
+          resourceType: 'AWS::Cognito::UserPoolResourceServer',
+          properties: {},
+        },
+      },
+    };
+    const resolved = resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack], [ROUTE]), () => context);
+    expect(cognitoOf(resolved).scopes).toEqual({ state: 'enforced', value: ['orders/read', 'admin'] });
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    warnUnenforcedRouteAuthSettings([stack], resolved);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns per route, and enforces no scope, when one AuthorizationScopes entry stays unresolved (#1011)', () => {
+    const stack = restStack([literal], {
+      AuthorizationScopes: [{ 'Fn::Join': ['', [{ Ref: 'Server' }, '/read']] }, 'admin'],
+    });
+    vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const resolved = resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack], [ROUTE]), () => undefined);
+    // All-or-nothing: enforcing only 'admin' would reject an orders/read token the deployed API accepts.
+    expect(cognitoOf(resolved).scopes?.state).toBe('unresolved');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    warnUnenforcedRouteAuthSettings([stack], resolved);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(
+      /MyStack\/Method: AuthorizationScopes .* could not be resolved .*no state source is loaded.*route GET \/secure accepts any token/
+    );
   });
 
   it('says nothing for a method that declares neither', () => {
@@ -285,8 +324,8 @@ describe('warnUnenforcedRouteAuthSettings (#1010)', () => {
     expect(messages[0]).toMatch(/MyStack\/Api: the RestApi resource Policy is not evaluated .*route GET \/secure/);
   });
 
-  it('warns for a TOKEN authorizer IdentityValidationExpression', () => {
-    const stack: StackInfo = {
+  function tokenStack(identityValidationExpression: unknown): StackInfo {
+    return {
       ...restStack([literal]),
       template: {
         Resources: {
@@ -295,7 +334,7 @@ describe('warnUnenforcedRouteAuthSettings (#1010)', () => {
             Properties: {
               Type: 'TOKEN',
               AuthorizerUri: { 'Fn::GetAtt': ['AuthFn', 'Arn'] },
-              IdentityValidationExpression: '^Bearer [-0-9a-zA-Z._]*$',
+              IdentityValidationExpression: identityValidationExpression,
             },
           },
           AuthFn: { Type: 'AWS::Lambda::Function', Properties: {} },
@@ -306,14 +345,46 @@ describe('warnUnenforcedRouteAuthSettings (#1010)', () => {
         },
       } as never,
     };
-    const messages = messagesFor(stack);
+  }
+
+  it('enforces a literal TOKEN authorizer IdentityValidationExpression without a warning (#1011)', () => {
+    const stack = tokenStack('^Bearer [-0-9a-zA-Z._]*$');
+    expect(messagesFor(stack)).toEqual([]);
+    const auth = attachAuthorizers([stack], [ROUTE])[0]?.authorizer;
+    expect(auth?.kind === 'lambda-token' && auth.identityValidation).toEqual({
+      state: 'enforced',
+      value: '^Bearer [-0-9a-zA-Z._]*$',
+    });
+  });
+
+  it('warns for an IdentityValidationExpression that stays an unresolved intrinsic (#1011)', () => {
+    const messages = messagesFor(tokenStack({ Ref: 'TokenPattern' }));
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatch(
-      /MyStack\/Auth: IdentityValidationExpression is not applied .*on route GET \/secure every token reaches the authorizer Lambda/
+      /MyStack\/Auth: IdentityValidationExpression could not be applied .*no state source is loaded.*on route GET \/secure every token reaches the authorizer Lambda/
     );
   });
 
-  it('warns for HTTP v2 route AuthorizationScopes, once across reloads', () => {
+  it('resolves an intrinsic IdentityValidationExpression from state (#1011)', () => {
+    const stack = tokenStack({ Ref: 'TokenPattern' });
+    const resolved = resolveJwtAuthorizerIntrinsics(attachAuthorizers([stack], [ROUTE]), () => ({
+      resources: {},
+      parameters: { TokenPattern: '^Bearer .+$' },
+    }));
+    const auth = resolved[0]?.authorizer;
+    expect(auth?.kind === 'lambda-token' && auth.identityValidation).toEqual({
+      state: 'enforced',
+      value: '^Bearer .+$',
+    });
+  });
+
+  it('warns for an IdentityValidationExpression the local server cannot compile (#1011)', () => {
+    const messages = messagesFor(tokenStack('(unclosed'));
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatch(/IdentityValidationExpression could not be applied .*is not a pattern/);
+  });
+
+  it('warns for unresolved HTTP v2 route AuthorizationScopes, once across reloads', () => {
     const stack: StackInfo = {
       ...restStack([literal]),
       template: {
@@ -331,7 +402,7 @@ describe('warnUnenforcedRouteAuthSettings (#1010)', () => {
               RouteKey: 'GET /secure',
               AuthorizationType: 'JWT',
               AuthorizerId: { Ref: 'Auth' },
-              AuthorizationScopes: ['admin'],
+              AuthorizationScopes: [{ Ref: 'ScopeParam' }],
             },
           },
         },
@@ -344,6 +415,8 @@ describe('warnUnenforcedRouteAuthSettings (#1010)', () => {
     warnUnenforcedRouteAuthSettings([stack], attached, warned);
     warnUnenforcedRouteAuthSettings([stack], attached, warned);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]?.[0])).toMatch(/MyStack\/Route: AuthorizationScopes .*admin/);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(
+      /MyStack\/Route: AuthorizationScopes .*ScopeParam.* could not be resolved/
+    );
   });
 });
