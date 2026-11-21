@@ -13,6 +13,7 @@ import { parseTarget, type ParsedTarget } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { getLogger } from '../utils/logger.js';
 import { displayIdent } from '../utils/ident-display.js';
+import { substituteAgainstState, type SubstitutionContext } from './state-resolver.js';
 
 /**
  * CloudFormation resource type for a Bedrock AgentCore Runtime.
@@ -96,9 +97,10 @@ export interface ResolvedAgentCoreRuntime {
   protocol: string;
   /**
    * `Properties.AuthorizerConfiguration.CustomJWTAuthorizer` when present
-   * with a literal `DiscoveryUrl` — the inbound JWT (OAuth / OIDC) authorizer
-   * AgentCore uses to gate `/invocations`. Undefined when the runtime is
-   * unauthenticated, or when `DiscoveryUrl` is an unresolved intrinsic.
+   * with a `DiscoveryUrl` that is literal or resolves against the deployed
+   * state — the inbound JWT (OAuth / OIDC) authorizer AgentCore uses to gate
+   * `/invocations`. Undefined when the runtime is unauthenticated, or (warned)
+   * when the authorizer cannot be resolved.
    */
   jwtAuthorizer?: AgentCoreJwtAuthorizer;
 }
@@ -375,7 +377,11 @@ function extractRuntimeProperties(
       : {};
 
   const roleArn = typeof props['RoleArn'] === 'string' ? props['RoleArn'] : undefined;
-  const jwtAuthorizer = extractJwtAuthorizer(props['AuthorizerConfiguration'], logicalId);
+  const jwtAuthorizer = extractJwtAuthorizer(
+    props['AuthorizerConfiguration'],
+    logicalId,
+    authorizerSubstitutionContext(imageContext)
+  );
 
   return {
     stack,
@@ -392,40 +398,202 @@ function extractRuntimeProperties(
 }
 
 /**
- * Extract a literal `CustomJWTAuthorizer` from `AuthorizerConfiguration`.
- * Returns undefined when there is no authorizer, or when `DiscoveryUrl` is
- * not a literal string (an unresolved intrinsic) — verification needs a
- * concrete URL to fetch, so an intrinsic is warn-and-skipped by the caller.
+ * The context an intrinsic authorizer setting resolves against: the target
+ * stack's deployed state plus pseudo parameters, built by the command under
+ * `--from-cfn-stack` (or a host state source). `undefined` without state.
+ */
+function authorizerSubstitutionContext(imageContext: ImageResolutionContext | undefined): {
+  context?: SubstitutionContext;
+  loadError?: string;
+} {
+  if (!imageContext?.stateResources) {
+    return imageContext?.stateLoadFailureMessage
+      ? { loadError: imageContext.stateLoadFailureMessage }
+      : {};
+  }
+  return {
+    context: {
+      resources: imageContext.stateResources,
+      ...(imageContext.pseudoParameters && { pseudoParameters: imageContext.pseudoParameters }),
+      // A SecureString parameter is left out: a DiscoveryUrl built from one
+      // would be printed (boot line, refusals, the serve's 403 body), so it
+      // stays unresolved and warned instead.
+      ...(imageContext.stateParameters && {
+        parameters: withoutSensitive(
+          imageContext.stateParameters,
+          imageContext.stateSensitiveParameters
+        ),
+      }),
+    },
+  };
+}
+
+function withoutSensitive(
+  parameters: Record<string, string | string[]>,
+  sensitive: readonly string[] | undefined
+): Record<string, string | string[]> {
+  if (!sensitive || sensitive.length === 0) return parameters;
+  const drop = new Set(sensitive);
+  return Object.fromEntries(Object.entries(parameters).filter(([id]) => !drop.has(id)));
+}
+
+/** What an unverified inbound request reaches, as a warning names it. */
+const AGENTCORE_INBOUND_ROUTES =
+  'its inbound endpoints (/invocations, and the /ws bridge of a warm serve)';
+
+/**
+ * Extract the `CustomJWTAuthorizer` from `AuthorizerConfiguration`, resolving
+ * an intrinsic setting (the `Fn::Join` DiscoveryUrl and `Ref <UserPoolClient>`
+ * AllowedClients a Cognito-backed authorizer synthesizes) against the stack's
+ * deployed state when one is loaded (go-to-k/cdk-local#1010).
+ *
+ * Returns undefined when there is no authorizer, or when the authorizer
+ * cannot be resolved (`AuthorizerConfiguration` / `CustomJWTAuthorizer` /
+ * `DiscoveryUrl` an unresolvable intrinsic): verification needs a concrete
+ * URL, so the runtime is served unauthenticated — never silently: each such
+ * case warns naming the runtime, its inbound endpoints and the setting.
+ * An AllowedAudience / AllowedClients entry that stays unresolved drops the
+ * audience/client check (warned): signature, issuer and expiry are still
+ * verified, and no token the deployed runtime accepts is rejected.
  */
 function extractJwtAuthorizer(
   authorizerConfig: unknown,
-  logicalId: string
+  logicalId: string,
+  state: { context?: SubstitutionContext; loadError?: string }
 ): AgentCoreJwtAuthorizer | undefined {
-  if (
-    !authorizerConfig ||
-    typeof authorizerConfig !== 'object' ||
-    Array.isArray(authorizerConfig)
-  ) {
-    return undefined;
-  }
-  const jwt = (authorizerConfig as Record<string, unknown>)['CustomJWTAuthorizer'];
-  if (!jwt || typeof jwt !== 'object' || Array.isArray(jwt)) return undefined;
-  const cfg = jwt as Record<string, unknown>;
-
-  const discoveryUrl = cfg['DiscoveryUrl'];
-  if (typeof discoveryUrl !== 'string' || discoveryUrl.length === 0) {
+  const label = `AgentCore Runtime ${displayIdent(logicalId)}`;
+  const reasonFor = (detail: string | undefined): string =>
+    detail ??
+    (state.loadError
+      ? `the stack's deployed state did not load: ${state.loadError}`
+      : 'no deployed-state source is active');
+  const hint = 'Deploy the stack and pass --from-cfn-stack for real JWT verification.';
+  const unverified = (setting: string, detail: string | undefined): undefined => {
     getLogger().warn(
-      `AgentCore Runtime ${displayIdent(logicalId)} declares a CustomJWTAuthorizer whose DiscoveryUrl is not a literal string; ` +
-        `${getEmbedConfig().cliName} invoke-agentcore cannot verify inbound JWTs against it and will skip auth.`
+      `${label}: ${setting} could not be resolved (${reasonFor(detail)}), so ${AGENTCORE_INBOUND_ROUTES} ` +
+        `are served WITHOUT inbound JWT verification. ${hint}`
     );
     return undefined;
+  };
+  const resolveString = (value: unknown): { value: string } | { reason: string | undefined } => {
+    if (typeof value === 'string') {
+      return value.length > 0 ? { value } : { reason: 'it is an empty string' };
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { reason: `it is not a string (got ${typeof value})` };
+    }
+    if (!state.context) return { reason: undefined };
+    const result = substituteAgainstState(value, state.context);
+    if (result.kind === 'literal' && typeof result.value === 'string' && result.value !== '') {
+      return { value: result.value };
+    }
+    return { reason: result.kind === 'unresolved' ? result.reason : 'it resolved to a non-string' };
+  };
+
+  if (authorizerConfig === undefined || authorizerConfig === null) return undefined;
+  if (typeof authorizerConfig !== 'object' || Array.isArray(authorizerConfig)) {
+    return unverified('AuthorizerConfiguration is not an object', 'it is not a literal object');
+  }
+  const configObj = authorizerConfig as Record<string, unknown>;
+  if (!('CustomJWTAuthorizer' in configObj)) {
+    // A whole-value intrinsic (`Fn::If` choosing an authorizer or none) has
+    // no key the emulator can read; any other key is not an authorizer the
+    // local runtime models.
+    const keys = Object.keys(configObj);
+    if (keys.length === 1 && (keys[0] === 'Ref' || keys[0]!.startsWith('Fn::'))) {
+      return unverified(
+        `AuthorizerConfiguration is an intrinsic (${displayIdent(keys[0]!)})`,
+        'a whole-value intrinsic cannot be evaluated locally'
+      );
+    }
+    if (keys.length > 0) {
+      return unverified(
+        `AuthorizerConfiguration declares no CustomJWTAuthorizer (keys: ${keys.map((k) => displayIdent(k, { listMember: true })).join(', ')})`,
+        'only a CustomJWTAuthorizer is verified locally'
+      );
+    }
+    return undefined;
+  }
+  const jwt = configObj['CustomJWTAuthorizer'];
+  if (!jwt || typeof jwt !== 'object' || Array.isArray(jwt)) {
+    return unverified(
+      'AuthorizerConfiguration.CustomJWTAuthorizer is not an object',
+      'it is not a literal object'
+    );
+  }
+  const cfg = jwt as Record<string, unknown>;
+  const jwtKeys = Object.keys(cfg);
+  if (jwtKeys.length === 1 && (jwtKeys[0] === 'Ref' || jwtKeys[0]!.startsWith('Fn::'))) {
+    return unverified(
+      `CustomJWTAuthorizer is an intrinsic (${displayIdent(jwtKeys[0]!)})`,
+      'a whole-value intrinsic cannot be evaluated locally'
+    );
   }
 
-  const toStringArray = (v: unknown): string[] | undefined =>
-    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
-  const allowedAudience = toStringArray(cfg['AllowedAudience']);
-  const allowedClients = toStringArray(cfg['AllowedClients']);
-  const allowedScopes = toStringArray(cfg['AllowedScopes']);
+  const discovery = resolveString(cfg['DiscoveryUrl']);
+  if (!('value' in discovery)) {
+    return unverified('CustomJWTAuthorizer.DiscoveryUrl', discovery.reason);
+  }
+  const discoveryUrl = discovery.value;
+
+  // Resolve a string-list setting entry by entry; `unresolved` lists the
+  // indexes that stayed intrinsic.
+  const resolveList = (
+    v: unknown
+  ): { values: string[] | undefined; unresolved: number[]; reason?: string } => {
+    if (v === undefined || v === null) return { values: undefined, unresolved: [] };
+    if (!Array.isArray(v)) {
+      const r = resolveString(v);
+      return 'value' in r
+        ? { values: [r.value], unresolved: [] }
+        : { values: [], unresolved: [-1], reason: reasonFor(r.reason) };
+    }
+    const values: string[] = [];
+    const unresolved: number[] = [];
+    let reason: string | undefined;
+    v.forEach((entry, idx) => {
+      const r = resolveString(entry);
+      if ('value' in r) values.push(r.value);
+      else {
+        unresolved.push(idx);
+        reason ??= reasonFor(r.reason);
+      }
+    });
+    return { values, unresolved, ...(reason !== undefined && { reason }) };
+  };
+  const describeUnresolved = (field: string, idxs: number[]): string =>
+    idxs.includes(-1) ? field : `${field} ${idxs.map((i) => `[${i}]`).join(', ')}`;
+
+  const audience = resolveList(cfg['AllowedAudience']);
+  const clients = resolveList(cfg['AllowedClients']);
+  let allowedAudience = audience.values;
+  let allowedClients = clients.values;
+  if (audience.unresolved.length > 0 || clients.unresolved.length > 0) {
+    // The audience / client allowlist is one union: checking a partial one
+    // would reject a token the deployed runtime accepts, so drop both.
+    const fields = [
+      ...(audience.unresolved.length > 0
+        ? [describeUnresolved('AllowedAudience', audience.unresolved)]
+        : []),
+      ...(clients.unresolved.length > 0
+        ? [describeUnresolved('AllowedClients', clients.unresolved)]
+        : []),
+    ].join(' and ');
+    getLogger().warn(
+      `${label}: CustomJWTAuthorizer ${fields} could not be resolved (${audience.reason ?? clients.reason}), ` +
+        `so on ${AGENTCORE_INBOUND_ROUTES} the token audience / client is NOT checked (signature, issuer and expiry still are). ${hint}`
+    );
+    allowedAudience = undefined;
+    allowedClients = undefined;
+  }
+  const scopes = resolveList(cfg['AllowedScopes']);
+  if (scopes.unresolved.length > 0) {
+    getLogger().warn(
+      `${label}: CustomJWTAuthorizer ${describeUnresolved('AllowedScopes', scopes.unresolved)} could not be resolved ` +
+        `(${scopes.reason}), so on ${AGENTCORE_INBOUND_ROUTES} those scopes are NOT required (the resolved ones still are). ${hint}`
+    );
+  }
+  const allowedScopes = scopes.values;
   const customClaims = extractCustomClaims(cfg['CustomClaims'], logicalId);
 
   return {

@@ -347,24 +347,52 @@ function resolveBehaviors(
     );
   }
   const extra = Array.isArray(dc['CacheBehaviors']) ? (dc['CacheBehaviors'] as unknown[]) : [];
-  for (const b of extra) {
-    if (!b || typeof b !== 'object') continue;
+  extra.forEach((b, idx) => {
+    if (!b || typeof b !== 'object') return;
     const behavior = b as Record<string, unknown>;
-    // CFn requires a literal `PathPattern` on every non-default behavior. A
-    // missing / non-literal (intrinsic) value is malformed: defaulting it to a
-    // catch-all `*` would silently shadow the default behavior for ALL
-    // requests, so skip it with a WARN instead.
+    // A missing / non-literal (intrinsic) `PathPattern` cannot be matched:
+    // defaulting it to a catch-all `*` would shadow the default behavior for
+    // ALL requests, so the behavior is skipped and its requests reach the
+    // default behavior instead. Its own guards then do not run on them, so
+    // the warning names the behavior and every guard it loses (#1010).
     if (typeof behavior['PathPattern'] !== 'string') {
+      const guards = describeBehaviorGuards(behavior);
+      const origin =
+        typeof behavior['TargetOriginId'] === 'string'
+          ? ` (TargetOriginId ${displayIdent(behavior['TargetOriginId'])})`
+          : '';
       getLogger().warn(
-        `Distribution ${displayIdent(distLogicalId)}: a cache behavior has no literal PathPattern; cdk-local cannot route it and is skipping it.`
+        `Distribution ${displayIdent(distLogicalId)}: CacheBehaviors[${idx}]${origin} has no literal PathPattern, so cdk-local cannot route it; ` +
+          `its requests are served by the default behavior instead` +
+          (guards.length > 0
+            ? `, WITHOUT this behavior's ${guards.join(', ')}.`
+            : ' (this behavior declares no function association).')
       );
-      continue;
+      return;
     }
     behaviors.push(
       resolveBehavior(behavior, behavior['PathPattern'], functions, distLogicalId, template)
     );
-  }
+  });
   return behaviors;
+}
+
+/** The function associations a behavior declares, as a warning names them. */
+function describeBehaviorGuards(behavior: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const list = (key: string, kind: string): void => {
+    const assocs = Array.isArray(behavior[key]) ? (behavior[key] as unknown[]) : [];
+    for (const a of assocs) {
+      if (!a || typeof a !== 'object') continue;
+      const eventType = (a as Record<string, unknown>)['EventType'];
+      out.push(
+        `${kind} ${typeof eventType === 'string' ? displayIdent(eventType) : '(non-literal EventType)'}`
+      );
+    }
+  };
+  list('FunctionAssociations', 'CloudFront Function');
+  list('LambdaFunctionAssociations', 'Lambda@Edge');
+  return out;
 }
 
 function resolveBehavior(
@@ -416,9 +444,26 @@ function resolveBehavior(
       continue;
     }
     const fn = functions.get(fnLogicalId);
-    if (!fn) continue;
+    if (!fn) {
+      // A non-inline function was already warned at compile; one that names
+      // no AWS::CloudFront::Function at all was not.
+      if (template.Resources?.[fnLogicalId]?.Type !== CLOUDFRONT_FUNCTION_TYPE) {
+        getLogger().warn(
+          `Cache behavior ${displayIdent(pathPattern ?? 'default')} of distribution ${displayIdent(distLogicalId)}: a FunctionAssociation names ` +
+            `${displayIdent(fnLogicalId)}, which is not an AWS::CloudFront::Function in the template; it will not run.`
+        );
+      }
+      continue;
+    }
     if (eventType === 'viewer-request') resolved.viewerRequest = fn;
     else if (eventType === 'viewer-response') resolved.viewerResponse = fn;
+    else {
+      getLogger().warn(
+        `Cache behavior ${displayIdent(pathPattern ?? 'default')} of distribution ${displayIdent(distLogicalId)}: CloudFront Function ` +
+          `${displayIdent(fnLogicalId)} has EventType ${typeof eventType === 'string' ? displayIdent(eventType) : '(not a literal)'} ` +
+          '(expected viewer-request / viewer-response); it will not run.'
+      );
+    }
   }
   return resolved;
 }
@@ -471,6 +516,13 @@ function resolveLambdaEdgeAssociations(
     else if (eventType === 'origin-request') out.originRequest = entry;
     else if (eventType === 'origin-response') out.originResponse = entry;
     else if (eventType === 'viewer-response') out.viewerResponse = entry;
+    else {
+      getLogger().warn(
+        `Distribution ${displayIdent(distLogicalId)}: Lambda@Edge function ${displayIdent(functionLogicalId)} has EventType ` +
+          `${typeof eventType === 'string' ? displayIdent(eventType) : '(not a literal)'} (expected viewer-request / origin-request / ` +
+          'origin-response / viewer-response); it will not run.'
+      );
+    }
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

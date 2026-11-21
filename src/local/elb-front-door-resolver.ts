@@ -5,7 +5,7 @@ import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
-import { jwtPlaceholderIssuer } from './authorizer-resolver.js';
+import { jwtPlaceholderIssuer, userPoolArnFromState } from './authorizer-resolver.js';
 import { substituteAgainstState, type SubstitutionContext } from './state-resolver.js';
 
 /**
@@ -390,6 +390,23 @@ export function resolveAlbFrontDoor(
           'retrievable locally. The front-door terminates TLS with --tls-cert/--tls-key or an ' +
           'auto-generated self-signed cert.'
       );
+    }
+    // mTLS: the trust store lives in the deployed account, so no client
+    // certificate check runs locally — warn rather than drop it (#1010).
+    const mtls = props['MutualAuthentication'];
+    if (mtls !== undefined && mtls !== null) {
+      const mode =
+        typeof mtls === 'object' && !Array.isArray(mtls)
+          ? (mtls as Record<string, unknown>)['Mode']
+          : undefined;
+      if (mode !== 'off') {
+        warnings.push(
+          `Listener ${displayIdent(listenerLogicalId)} on port ${port} declares MutualAuthentication` +
+            `${typeof mode === 'string' ? ` (Mode ${displayIdent(mode)})` : ''}, which the local ` +
+            'front-door does not enforce: every route on this listener is served without a client ' +
+            'certificate check.'
+        );
+      }
     }
 
     const defaultLabel = `Listener ${displayIdent(listenerLogicalId)} (port ${port}) default action`;
@@ -1518,11 +1535,6 @@ const DEFAULT_ALB_SESSION_COOKIE = 'AWSELBAuthSessionCookie';
  */
 const COGNITO_USERPOOL_ARN = /^arn:[^:]+:cognito-idp:([a-z0-9-]+):[^:]+:userpool\/([^/]+)$/;
 
-/** A Cognito user pool id (`<region>_<suffix>`), which is the pool's physical id. */
-const COGNITO_USERPOOL_ID = /^([a-z]{2}(?:-[a-z]+)+-\d+)_[0-9A-Za-z]+$/;
-
-const COGNITO_USERPOOL_TYPE = 'AWS::Cognito::UserPool';
-
 type GuardKind = FrontDoorAuthGuard['kind'];
 
 /**
@@ -1756,33 +1768,6 @@ function parseAuthenticateAction(
     label,
     (_field, message) => warnings.push(message)
   );
-}
-
-/**
- * The deployed ARN behind `Fn::GetAtt: [<UserPool>, 'Arn']` when the state
- * record carries no `Arn` attribute (the `--from-cfn-stack` provider records
- * physical ids only): a Cognito user pool's physical id is its pool id, whose
- * `<region>_` prefix names the region. Only the region and the pool id are
- * read back out of the ARN, so the account falls back to a filler.
- */
-function userPoolArnFromState(raw: unknown, context: SubstitutionContext): string | undefined {
-  if (!isIntrinsicValue(raw)) return undefined;
-  const getAtt = (raw as Record<string, unknown>)['Fn::GetAtt'];
-  let logicalId: string | undefined;
-  if (Array.isArray(getAtt) && getAtt.length === 2 && getAtt[1] === 'Arn') {
-    logicalId = typeof getAtt[0] === 'string' ? getAtt[0] : undefined;
-  } else if (typeof getAtt === 'string' && getAtt.endsWith('.Arn')) {
-    logicalId = getAtt.slice(0, -'.Arn'.length);
-  }
-  if (logicalId === undefined) return undefined;
-  const record = context.resources[logicalId];
-  if (!record || record.resourceType !== COGNITO_USERPOOL_TYPE) return undefined;
-  if (record.attributes?.['Arn'] !== undefined) return undefined; // the substituter reads it
-  const match = COGNITO_USERPOOL_ID.exec(record.physicalId);
-  if (!match) return undefined;
-  const partition = context.pseudoParameters?.partition ?? 'aws';
-  const account = context.pseudoParameters?.accountId ?? '000000000000';
-  return `arn:${partition}:cognito-idp:${match[1]}:${account}:userpool/${record.physicalId}`;
 }
 
 /** Resolve one raw config field against a stack's state. */

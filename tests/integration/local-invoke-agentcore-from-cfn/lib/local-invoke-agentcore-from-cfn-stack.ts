@@ -3,8 +3,13 @@ import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
-import { Runtime, AgentRuntimeArtifact } from 'aws-cdk-lib/aws-bedrockagentcore';
+import {
+  Runtime,
+  AgentRuntimeArtifact,
+  RuntimeAuthorizerConfiguration,
+} from 'aws-cdk-lib/aws-bedrockagentcore';
 import { integScopedName } from '../../_lib/stack-name.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,10 +51,31 @@ export class LocalInvokeAgentCoreFromCfnStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    new Runtime(this, 'EchoAgent', {
-      agentRuntimeArtifact: AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../agent'), {
+    // One artifact per Runtime: an AgentRuntimeArtifact binds once, so a shared
+    // one grants ECR pull only to the first Runtime's role (the same asset hash
+    // still publishes one image).
+    const newArtifact = () =>
+      AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../agent'), {
         platform: Platform.LINUX_ARM64,
-      }),
+      });
+
+    // go-to-k/cdk-local#1010: a Cognito-backed customJwtAuthorizer synthesizes
+    // its DiscoveryUrl as an Fn::Join over the pool and its AllowedClients as
+    // `Ref <Client>`; only the deployed state resolves them.
+    const pool = new cognito.UserPool(this, 'Pool', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const client = pool.addClient('Client', { authFlows: { adminUserPassword: true } });
+    new Runtime(this, 'JwtAgent', {
+      agentRuntimeArtifact: newArtifact(),
+      authorizerConfiguration: RuntimeAuthorizerConfiguration.usingCognito(pool, [client]),
+      environmentVariables: { STATIC_VALUE: 'always-the-same' },
+    });
+    new cdk.CfnOutput(this, 'PoolId', { value: pool.userPoolId });
+    new cdk.CfnOutput(this, 'ClientId', { value: client.userPoolClientId });
+
+    new Runtime(this, 'EchoAgent', {
+      agentRuntimeArtifact: newArtifact(),
       environmentVariables: {
         // A literal env var — confirms --from-cfn-stack doesn't break the
         // normal-case passthrough.

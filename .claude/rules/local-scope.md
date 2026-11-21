@@ -123,7 +123,9 @@ Covers the container artifact AND the CodeConfiguration managed-runtime artifact
   SSE prints to stdout incrementally; `--ws` streams over `/ws` on the same 8080.
 - A declared `customJwtAuthorizer` is enforced: the bearer token is verified
   against the runtime's OIDC discovery URL BEFORE the container starts, then
-  forwarded. `--sigv4` is an opt-in alternative for a runtime declaring none.
+  forwarded. An intrinsic `DiscoveryUrl` / `AllowedClients` resolves from
+  `--from-cfn-stack` state; one that cannot is served unverified and warned
+  per runtime (#1010). `--sigv4` is an opt-in alternative for a runtime declaring none.
 - `--from-cfn-stack` reaches parity with `cdkl invoke` / `run-task`: same-stack
   ECR ContainerUri resolution, `AWS::SSM::Parameter::Value` env values, bare
   `--assume-role` resolving an intrinsic `RoleArn` from state.

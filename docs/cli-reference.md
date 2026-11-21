@@ -989,6 +989,15 @@ before the container starts:
   the run.
 - **`--no-verify-auth`** → skips verification entirely; a `--bearer-token`,
   if given, is still forwarded.
+- **Intrinsic settings** — a Cognito-backed authorizer synthesizes its
+  `DiscoveryUrl` as an `Fn::Join` over the pool and its `AllowedClients` as
+  `Ref <UserPoolClient>`; `--from-cfn-stack` resolves both from the deployed
+  stack and the authorizer is enforced as above. Without a state source (or
+  for an `AuthorizerConfiguration` that is an `Fn::If`) the runtime is
+  served WITHOUT inbound JWT verification and a warning names the runtime,
+  its inbound endpoints and the unresolved setting. An `AllowedAudience` /
+  `AllowedClients` entry that alone stays unresolved skips the audience /
+  client check (warned); signature, issuer and expiry are still verified.
 
 ### Inbound SigV4 (`--sigv4`)
 
@@ -1217,6 +1226,9 @@ forwarded on pass. `GET /ping` is an unauthenticated health check. A
 `customJwtAuthorizer`) signs each forwarded request with AWS SigV4 (service
 `bedrock-agentcore`) so the container sees the same `Authorization` / `X-Amz-*`
 header set the cloud receives — mutually exclusive with `--bearer-token`.
+An intrinsic `DiscoveryUrl` / `AllowedClients` resolves from `--from-cfn-stack`
+state exactly as for `invoke-agentcore`; one that cannot resolve serves the
+runtime unverified, with a startup warning naming it.
 
 **`/ws` bridge (same port).** The serve also fronts the agent's bidirectional
 `/ws` WebSocket endpoint behind a host **bridge** on the same port. The
@@ -2037,7 +2049,9 @@ deployed ALB also accepts an already-signed-in browser via the
 of that cookie as a pass-through (no JWT check) so a browser session that
 authenticated through the cloud ALB keeps working against the local
 front-door. `--no-verify-auth` disables every guard on the listener (every
-request passes).
+request passes). A listener's `MutualAuthentication` (mTLS) is not enforced
+locally — its trust store lives in the deployed account — so such a listener
+warns at startup and serves its routes without a client certificate check.
 
 A declared `authenticate-*` action is never dropped. When `UserPoolArn` /
 `UserPoolClientId` (Cognito) or `Issuer` / `ClientId` (OIDC) is an intrinsic

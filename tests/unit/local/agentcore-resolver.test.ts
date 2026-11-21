@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   AgentCoreResolutionError,
   agentCoreTargetWorkload,
@@ -7,6 +7,7 @@ import {
 } from '../../../src/local/agentcore-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 function buildStack(
   stackName: string,
@@ -890,5 +891,180 @@ describe('agentCoreTargetWorkload', () => {
     expect(agentCoreTargetWorkload('S/Agent', stacks)).toEqual(want);
     expect(agentCoreTargetWorkload('Agent1234', stacks)).toEqual(want);
     expect(agentCoreTargetWorkload('S/Missing', stacks)).toBeUndefined();
+  });
+});
+
+// go-to-k/cdk-local#1010: a Cognito-backed CustomJWTAuthorizer synthesizes
+// its DiscoveryUrl as a Fn::Join and its AllowedClients as `Ref <Client>`.
+describe('resolveAgentCoreTarget — intrinsic JWT authorizer settings (#1010)', () => {
+  const COGNITO_DISCOVERY = {
+    'Fn::Join': [
+      '',
+      [
+        'https://cognito-idp.',
+        { Ref: 'AWS::Region' },
+        '.amazonaws.com/',
+        { Ref: 'Pool' },
+        '/.well-known/openid-configuration',
+      ],
+    ],
+  };
+  const STATE_CONTEXT = {
+    pseudoParameters: { region: 'eu-west-1', accountId: '123456789012', partition: 'aws' },
+    stateResources: {
+      Pool: { physicalId: 'eu-west-1_AbC123', resourceType: 'AWS::Cognito::UserPool', properties: {} },
+      Client: { physicalId: 'client123', resourceType: 'AWS::Cognito::UserPoolClient', properties: {} },
+    },
+  } as never;
+
+  function cognitoRuntime(authorizer: unknown): StackInfo {
+    return buildStack('App', {
+      ChatAgent: containerRuntime({ AuthorizerConfiguration: authorizer }),
+    });
+  }
+
+  function warnings(run: () => void): string[] {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    try {
+      run();
+      return warn.mock.calls.map((c) => String(c[0]));
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  it('resolves DiscoveryUrl and AllowedClients from the deployed state', () => {
+    const stack = cognitoRuntime({
+      CustomJWTAuthorizer: { DiscoveryUrl: COGNITO_DISCOVERY, AllowedClients: [{ Ref: 'Client' }] },
+    });
+    let resolved: ReturnType<typeof resolveAgentCoreTarget> | undefined;
+    const messages = warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [stack], STATE_CONTEXT);
+    });
+    expect(resolved?.jwtAuthorizer).toEqual({
+      discoveryUrl:
+        'https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_AbC123/.well-known/openid-configuration',
+      allowedClients: ['client123'],
+    });
+    expect(messages).toEqual([]);
+  });
+
+  it('serves unauthenticated without state, warning that names the runtime, its endpoints and DiscoveryUrl', () => {
+    const stack = cognitoRuntime({
+      CustomJWTAuthorizer: { DiscoveryUrl: COGNITO_DISCOVERY, AllowedClients: [{ Ref: 'Client' }] },
+    });
+    let resolved: ReturnType<typeof resolveAgentCoreTarget> | undefined;
+    const messages = warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    });
+    expect(resolved?.jwtAuthorizer).toBeUndefined();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatch(
+      /AgentCore Runtime ChatAgent: CustomJWTAuthorizer\.DiscoveryUrl could not be resolved \(no deployed-state source is active\), so its inbound endpoints \(\/invocations, and the \/ws bridge of a warm serve\) are served WITHOUT inbound JWT verification/
+    );
+    expect(messages[0]).not.toContain('invoke-agentcore');
+  });
+
+  it('names the state load failure when the state source could not load', () => {
+    const stack = cognitoRuntime({ CustomJWTAuthorizer: { DiscoveryUrl: COGNITO_DISCOVERY } });
+    const messages = warnings(() =>
+      resolveAgentCoreTarget('App:ChatAgent', [stack], {
+        stateLoadFailureMessage: 'Stack App does not exist',
+      } as never)
+    );
+    expect(messages[0]).toContain("the stack's deployed state did not load: Stack App does not exist");
+  });
+
+  it('warns for an Fn::If AuthorizerConfiguration instead of dropping it silently', () => {
+    const stack = cognitoRuntime({
+      'Fn::If': ['UseAuth', { CustomJWTAuthorizer: { DiscoveryUrl: 'https://x' } }, { Ref: 'AWS::NoValue' }],
+    });
+    let resolved: ReturnType<typeof resolveAgentCoreTarget> | undefined;
+    const messages = warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [stack], STATE_CONTEXT);
+    });
+    expect(resolved?.jwtAuthorizer).toBeUndefined();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatch(/AuthorizerConfiguration is an intrinsic \(Fn::If\).*WITHOUT inbound JWT verification/);
+  });
+
+  it('drops the audience / client check, warned, when an AllowedClients entry stays unresolved', () => {
+    const stack = cognitoRuntime({
+      CustomJWTAuthorizer: {
+        DiscoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+        AllowedAudience: ['aud-1'],
+        AllowedClients: [{ Ref: 'Client' }],
+      },
+    });
+    let resolved: ReturnType<typeof resolveAgentCoreTarget> | undefined;
+    const messages = warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    });
+    expect(resolved?.jwtAuthorizer).toEqual({
+      discoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatch(
+      /CustomJWTAuthorizer AllowedClients \[0\] could not be resolved .*the token audience \/ client is NOT checked/
+    );
+  });
+
+  it('warns for a CustomJWTAuthorizer that is itself an intrinsic', () => {
+    const stack = cognitoRuntime({
+      CustomJWTAuthorizer: { 'Fn::If': ['UseAuth', { DiscoveryUrl: 'https://x' }, { Ref: 'AWS::NoValue' }] },
+    });
+    let resolved: ReturnType<typeof resolveAgentCoreTarget> | undefined;
+    const messages = warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [stack], STATE_CONTEXT);
+    });
+    expect(resolved?.jwtAuthorizer).toBeUndefined();
+    expect(messages[0]).toMatch(/CustomJWTAuthorizer is an intrinsic \(Fn::If\).*WITHOUT inbound JWT verification/);
+  });
+
+  it('warns for an AuthorizerConfiguration with no CustomJWTAuthorizer', () => {
+    const stack = cognitoRuntime({ SomeFutureAuthorizer: { Foo: 'bar' } });
+    const messages = warnings(() => resolveAgentCoreTarget('App:ChatAgent', [stack]));
+    expect(messages[0]).toMatch(
+      /AuthorizerConfiguration declares no CustomJWTAuthorizer \(keys: SomeFutureAuthorizer\).*WITHOUT inbound JWT verification/
+    );
+  });
+
+  it('does not resolve a DiscoveryUrl from a SecureString parameter (it would be printed)', () => {
+    const stack = cognitoRuntime({ CustomJWTAuthorizer: { DiscoveryUrl: { Ref: 'SecretUrl' } } });
+    let resolved: ReturnType<typeof resolveAgentCoreTarget> | undefined;
+    const messages = warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [stack], {
+        stateResources: {},
+        stateParameters: { SecretUrl: 'https://secret.example.com/.well-known/openid-configuration', PlainUrl: 'https://p' },
+        stateSensitiveParameters: ['SecretUrl'],
+      } as never);
+    });
+    expect(resolved?.jwtAuthorizer).toBeUndefined();
+    expect(messages[0]).toContain('CustomJWTAuthorizer.DiscoveryUrl could not be resolved');
+    expect(messages.join('\n')).not.toContain('secret.example.com');
+    const plain = cognitoRuntime({ CustomJWTAuthorizer: { DiscoveryUrl: { Ref: 'PlainUrl' } } });
+    warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [plain], {
+        stateResources: {},
+        stateParameters: { SecretUrl: 'x', PlainUrl: 'https://p' },
+        stateSensitiveParameters: ['SecretUrl'],
+      } as never);
+    });
+    expect(resolved?.jwtAuthorizer?.discoveryUrl).toBe('https://p');
+  });
+
+  it('keeps the resolved scopes and warns for an unresolved one', () => {
+    const stack = cognitoRuntime({
+      CustomJWTAuthorizer: {
+        DiscoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+        AllowedScopes: ['read', { Ref: 'ScopeParam' }],
+      },
+    });
+    let resolved: ReturnType<typeof resolveAgentCoreTarget> | undefined;
+    const messages = warnings(() => {
+      resolved = resolveAgentCoreTarget('App:ChatAgent', [stack], STATE_CONTEXT);
+    });
+    expect(resolved?.jwtAuthorizer?.allowedScopes).toEqual(['read']);
+    expect(messages[0]).toMatch(/AllowedScopes \[1\] could not be resolved/);
   });
 });

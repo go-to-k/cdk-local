@@ -115,6 +115,14 @@ done
 [[ "${BOOTED}" -eq 1 ]] || fail "server did not print its ready banner in time"
 
 # ---------------------------------------------------------------------------
+# 0. A behavior whose PathPattern is a token (go-to-k/cdk-local#1010) cannot be
+#    routed locally: the boot warning names it and the guard it loses.
+# ---------------------------------------------------------------------------
+echo "==> Boot warning names the token-PathPattern behavior and its lost guard"
+grep -q 'CacheBehaviors\[2\] (TargetOriginId [^)]*) has no literal PathPattern.*WITHOUT this behavior.s CloudFront Function viewer-request' "${OUT_FILE}" \
+  || fail "no boot warning naming CacheBehaviors[2] and its viewer-request guard"
+
+# ---------------------------------------------------------------------------
 # 1. Default root object + viewer-response header.
 # ---------------------------------------------------------------------------
 echo "==> GET / (default root object + viewer-response header)"

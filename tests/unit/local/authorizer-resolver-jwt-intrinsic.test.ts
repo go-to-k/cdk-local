@@ -101,18 +101,24 @@ describe('HTTP v2 JWT authorizer with an intrinsic Issuer / Audience (#1001)', (
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('keeps the placeholder and warns once per authorizer without state', () => {
+  it('keeps the placeholder and warns once per route without state (#1010)', () => {
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     const attached = attachAuthorizers(
       [stack({ Issuer: COGNITO_ISSUER, Audience: [{ Ref: 'Client' }] })],
       [ROUTE, { ...ROUTE, method: 'POST' }]
     );
-    const resolved = resolveJwtAuthorizerIntrinsics(attached, () => undefined);
+    const warned = new Set<string>();
+    const resolved = resolveJwtAuthorizerIntrinsics(attached, () => undefined, warned);
     expect(jwtOf(resolved).issuer).toContain('placeholderAuth');
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]?.[0])).toMatch(
-      /JwtConfiguration\.Issuer is an intrinsic .*no state source is loaded.*JWKS pass-through admits every token/
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatch(
+      /JwtConfiguration\.Issuer is an intrinsic .*no state source is loaded.*JWKS pass-through admits every token on route GET \/secure/
     );
+    expect(messages[1]).toContain('on route POST /secure');
+    // A --watch reload re-running the pass with the same set warns nothing new.
+    resolveJwtAuthorizerIntrinsics(attached, () => undefined, warned);
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the placeholder when state lacks the pool record', () => {

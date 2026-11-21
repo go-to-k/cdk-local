@@ -91,6 +91,12 @@ export interface CognitoPoolRef {
   region: string;
   /** Pool id parsed from the ARN. */
   userPoolId: string;
+  /**
+   * Set on the unreachable stand-in for an intrinsic `ProviderARNs[]` entry
+   * that did not resolve (#1010). When every pool is one, the verifier skips
+   * the `iss` match so JWKS pass-through admits every token, a real one too.
+   */
+  placeholder?: true;
 }
 
 export interface CognitoUserPoolAuthorizer {
@@ -118,6 +124,16 @@ export interface CognitoUserPoolAuthorizer {
   region: string;
   /** Backwards-compatible alias for `pools[0].userPoolId`. */
   userPoolId: string;
+  /**
+   * Set when a `ProviderARNs[]` entry is an intrinsic: CDK's
+   * `CognitoUserPoolsAuthorizer` always emits `Fn::GetAtt: [<Pool>, 'Arn']`.
+   * Route discovery runs before any state source loads, so the raw entries
+   * are recorded here (index-aligned with {@link pools}) and the intrinsic
+   * ones are served as an unreachable placeholder pool meanwhile;
+   * {@link resolveJwtAuthorizerIntrinsics} resolves them from state, or
+   * warns per route that JWKS pass-through applies.
+   */
+  pending?: { stackName: string; providerArns: readonly unknown[] };
   // NOTE: there is intentionally no `audience` field on REST v1 Cognito
   // authorizers. The audience that JWT verification would check (`aud`
   // for ID tokens, `client_id` for access tokens) is the User Pool *App
@@ -278,28 +294,29 @@ export function resolveRestV1Authorizer(
     // federation (multi-tenant SaaS with one pool per tenant). A single
     // malformed entry aborts the whole authorizer at discovery time so
     // the user sees the exact offending index, not a mid-request failure
-    // for one tenant only.
+    // for one tenant only. An intrinsic entry is served as a placeholder
+    // pool until state resolves it (`pending`).
+    let anyIntrinsic = false;
     const pools: CognitoPoolRef[] = arns.map((entry, idx) => {
-      const arn = pickStringFromArn(
-        entry,
-        `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}.ProviderARNs[${idx}]`
-      );
-      const parsed = parseCognitoUserPoolArn(
-        arn,
-        `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}.ProviderARNs[${idx}]`
-      );
-      return { userPoolArn: arn, region: parsed.region, userPoolId: parsed.userPoolId };
+      const location = `${displayStackName(stackName)}/${displayIdent(authorizerLogicalId)}.ProviderARNs[${idx}]`;
+      if (isIntrinsicObject(entry)) {
+        anyIntrinsic = true;
+        return cognitoPlaceholderPool(authorizerLogicalId);
+      }
+      if (typeof entry !== 'string') {
+        throw new RouteDiscoveryError(
+          `${location}: must be a literal string or an intrinsic (got ${shortJson(entry)}).`
+        );
+      }
+      const parsed = parseCognitoUserPoolArn(entry, location);
+      return { userPoolArn: entry, region: parsed.region, userPoolId: parsed.userPoolId };
     });
-    const first = pools[0]!;
-    return {
-      kind: 'cognito',
-      logicalId: authorizerLogicalId,
+    return buildCognitoAuthorizer(
+      authorizerLogicalId,
       pools,
-      userPoolArn: first.userPoolArn,
-      region: first.region,
-      userPoolId: first.userPoolId,
       declaredAt,
-    };
+      anyIntrinsic ? { stackName, providerArns: arns } : undefined
+    );
   }
 
   // Unknown Type — surface a structured error that the route-discovery
@@ -374,7 +391,7 @@ export function resolveHttpApiAuthorizer(
     const audienceRaw = obj['Audience'];
     const rawAudience: readonly unknown[] = Array.isArray(audienceRaw) ? audienceRaw : [];
     const audienceIsIntrinsic = rawAudience.some(isIntrinsicObject);
-    void routeAuthorizationScopes; // scopes are not enforced in v1; accepted for parity.
+    void routeAuthorizationScopes; // not enforced; warnUnenforcedRouteAuthSettings warns per route.
     if (issuerIsIntrinsic || audienceIsIntrinsic) {
       // Served as the unreachable placeholder until state resolves it.
       return {
@@ -604,6 +621,82 @@ export function jwtPlaceholderIssuer(logicalId: string): string {
   return `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_${getEmbedConfig().binaryName}placeholder${logicalId}`;
 }
 
+/**
+ * The pool a REST v1 `COGNITO_USER_POOLS` authorizer is served with while a
+ * `ProviderARNs[]` entry is an unresolved intrinsic: a pool id that does not
+ * exist, so the JWKS fetch fails into the documented pass-through mode. The
+ * id is namespaced with the authorizer's logical id so a warning greps back
+ * to it.
+ */
+function cognitoPlaceholderPool(logicalId: string): CognitoPoolRef {
+  const userPoolId = `us-east-1_${getEmbedConfig().binaryName}placeholder${logicalId}`;
+  return {
+    userPoolArn: `arn:aws:cognito-idp:us-east-1:000000000000:userpool/${userPoolId}`,
+    region: 'us-east-1',
+    userPoolId,
+    placeholder: true,
+  };
+}
+
+function buildCognitoAuthorizer(
+  logicalId: string,
+  pools: CognitoPoolRef[],
+  declaredAt: string,
+  pending: CognitoUserPoolAuthorizer['pending']
+): CognitoUserPoolAuthorizer {
+  const first = pools[0]!;
+  return {
+    kind: 'cognito',
+    logicalId,
+    pools,
+    userPoolArn: first.userPoolArn,
+    region: first.region,
+    userPoolId: first.userPoolId,
+    ...(pending && { pending }),
+    declaredAt,
+  };
+}
+
+const COGNITO_USERPOOL_TYPE = 'AWS::Cognito::UserPool';
+const COGNITO_USERPOOL_ID = /^([a-z]{2}(?:-[a-z]+)+-\d+)_[0-9A-Za-z]+$/;
+
+/**
+ * The deployed ARN behind `Fn::GetAtt: [<UserPool>, 'Arn']` when the state
+ * record carries no `Arn` attribute (the `--from-cfn-stack` provider records
+ * physical ids only): a Cognito user pool's physical id is its pool id, whose
+ * `<region>_` prefix names the region. Only the region and the pool id are
+ * read back out of the ARN, so the account falls back to a filler.
+ * `undefined` when the value is not that shape or the record cannot derive
+ * it; the caller then substitutes against state as usual.
+ */
+export function userPoolArnFromState(
+  raw: unknown,
+  context: SubstitutionContext
+): string | undefined {
+  if (!isIntrinsicObject(raw)) return undefined;
+  const getAtt = (raw as Record<string, unknown>)['Fn::GetAtt'];
+  let logicalId: string | undefined;
+  if (Array.isArray(getAtt) && getAtt.length === 2 && getAtt[1] === 'Arn') {
+    logicalId = typeof getAtt[0] === 'string' ? getAtt[0] : undefined;
+  } else if (typeof getAtt === 'string' && getAtt.endsWith('.Arn')) {
+    logicalId = getAtt.slice(0, -'.Arn'.length);
+  }
+  if (logicalId === undefined) return undefined;
+  const record = context.resources[logicalId];
+  if (!record || record.resourceType !== COGNITO_USERPOOL_TYPE) return undefined;
+  if (record.attributes?.['Arn'] !== undefined) return undefined; // the substituter reads it
+  const match = COGNITO_USERPOOL_ID.exec(record.physicalId);
+  if (!match) return undefined;
+  const partition = context.pseudoParameters?.partition ?? 'aws';
+  const account = context.pseudoParameters?.accountId ?? '000000000000';
+  return `arn:${partition}:cognito-idp:${match[1]}:${account}:userpool/${record.physicalId}`;
+}
+
+/** A route as a warning names it: its method and path. */
+export function describeRouteForWarning(route: { method: string; pathPattern: string }): string {
+  return `route ${displayIdent(route.method)} ${displayIdent(route.pathPattern)}`;
+}
+
 function buildJwtAuthorizer(
   logicalId: string,
   issuer: string,
@@ -626,22 +719,28 @@ function buildJwtAuthorizer(
 }
 
 /**
- * Resolve every HTTP v2 JWT authorizer whose template `Issuer` / `Audience`
- * is an intrinsic (#1001) against the routed stack's state, once a state
- * source has loaded. `contextFor` returns the stack's substitution context,
- * or `undefined` when it has no state.
+ * Resolve every authorizer whose template settings are intrinsics against the
+ * routed stack's state, once a state source has loaded. `contextFor` returns
+ * the stack's substitution context, or `undefined` when it has no state.
  *
+ * HTTP v2 JWT (`Issuer` / `Audience`, #1001):
  * - Issuer and every audience entry resolve: the authorizer verifies exactly
  *   as one with literal values would.
  * - Issuer resolves, an audience entry does not: signature, issuer and expiry
  *   are verified and the audience is NOT checked (warned), which is stricter
  *   than pass-through and never rejects a token the deployed API accepts.
  * - Issuer does not resolve (no state source, or no record): the placeholder
- *   stays, so JWKS pass-through admits every token (warned once per
- *   authorizer).
+ *   stays, so JWKS pass-through admits every token (warned).
  *
- * `warned` dedups the warnings; a caller re-running this on every `--watch`
- * reload passes one set that outlives the reloads.
+ * REST v1 `COGNITO_USER_POOLS` (`ProviderARNs[]`, go-to-k/cdk-local#1010):
+ * every intrinsic entry that resolves to a user pool ARN is verified against
+ * that pool's real JWKS; one that does not stays the placeholder pool
+ * (warned) — with a single pool, JWKS pass-through admits every token.
+ *
+ * Every warning names the route it applies to and the unresolved setting, so
+ * nothing a route declares goes unenforced without a word. `warned` dedups
+ * them; a caller re-running this on every `--watch` reload passes one set
+ * that outlives the reloads.
  */
 export function resolveJwtAuthorizerIntrinsics(
   routes: readonly RouteWithAuth[],
@@ -653,11 +752,16 @@ export function resolveJwtAuthorizerIntrinsics(
     warned.add(key);
     getLogger().warn(message);
   };
+  const cli = getEmbedConfig().cliName;
+  const hint =
+    'Deploy the stack and pass --from-state (or --from-cfn-stack) for real signature verification.';
   return routes.map((entry) => {
     const auth = entry.authorizer;
-    if (!auth || auth.kind !== 'jwt' || !auth.pending) return entry;
-    const { stackName, issuer, audience } = auth.pending;
+    if (!auth || (auth.kind !== 'jwt' && auth.kind !== 'cognito') || !auth.pending) return entry;
+    const { stackName } = auth.pending;
     const label = `${displayStackName(stackName)}/${displayIdent(auth.logicalId)}`;
+    const routeLabel = describeRouteForWarning(entry.route);
+    const routeKey = `${entry.route.declaredAt}\0${entry.route.method}\0${entry.route.pathPattern}`;
     const context = contextFor(stackName);
     const resolveString = (value: unknown): { value: string } | { reason: string } => {
       if (typeof value === 'string') return { value };
@@ -673,13 +777,69 @@ export function resolveJwtAuthorizerIntrinsics(
       return { reason: result.kind === 'unresolved' ? result.reason : 'resolved to a non-string' };
     };
 
+    if (auth.kind === 'cognito') {
+      const providerArns = auth.pending.providerArns;
+      // Resolve every intrinsic entry first; the warning's effect depends on
+      // whether any real pool is left.
+      const outcomes = auth.pools.map((pool, idx) => {
+        const raw = providerArns[idx];
+        if (!isIntrinsicObject(raw)) return { pool, real: true as const };
+        const derived = context ? userPoolArnFromState(raw, context) : undefined;
+        const r = derived !== undefined ? { value: derived } : resolveString(raw);
+        if ('value' in r) {
+          const m = /^arn:aws[a-z0-9-]*:cognito-idp:([a-z0-9-]+):[0-9]+:userpool\/(.+)$/.exec(
+            r.value
+          );
+          if (m) {
+            return {
+              pool: { userPoolArn: r.value, region: m[1]!, userPoolId: m[2]! },
+              real: true as const,
+            };
+          }
+          return {
+            pool,
+            real: false as const,
+            idx,
+            reason: 'it resolved to a value that is not a Cognito user pool ARN',
+          };
+        }
+        return { pool, real: false as const, idx, reason: r.reason };
+      });
+      const realPools = outcomes.filter((o) => o.real).map((o) => o.pool);
+      for (const o of outcomes) {
+        if (o.real) continue;
+        // With a real pool beside it, the placeholder is DROPPED: its issuer is
+        // predictable, so keeping it would admit any token naming it.
+        const effect =
+          realPools.length > 0
+            ? `a token from that pool is rejected on ${routeLabel} (the other pools are verified for real)`
+            : `JWKS pass-through admits every Bearer token on ${routeLabel}`;
+        warnOnce(
+          `${routeKey}\0${stackName}\0${auth.logicalId}\0provider${o.idx}`,
+          `${label}.ProviderARNs[${o.idx}] is an intrinsic ${cli} start-api could not resolve (${o.reason}), so ${effect}. ${hint}`
+        );
+      }
+      const allResolved = realPools.length === auth.pools.length;
+      // `pending` stays only while the pools are still index-aligned with it
+      // (nothing resolved), so a re-run resolves the same entries again.
+      return {
+        ...entry,
+        authorizer: buildCognitoAuthorizer(
+          auth.logicalId,
+          realPools.length > 0 ? realPools : outcomes.map((o) => o.pool),
+          auth.declaredAt,
+          allResolved || realPools.length > 0 ? undefined : auth.pending
+        ),
+      };
+    }
+
+    const { issuer, audience } = auth.pending;
     const issuerResult = resolveString(issuer);
     if (!('value' in issuerResult)) {
       warnOnce(
-        `${stackName}\0${auth.logicalId}\0issuer`,
-        `${label}: JwtConfiguration.Issuer is an intrinsic ${getEmbedConfig().cliName} start-api could not resolve ` +
-          `(${issuerResult.reason}), so JWKS pass-through admits every token on its routes. ` +
-          `Deploy the stack and pass --from-state (or --from-cfn-stack) for real signature verification.`
+        `${routeKey}\0${stackName}\0${auth.logicalId}\0issuer`,
+        `${label}: JwtConfiguration.Issuer is an intrinsic ${cli} start-api could not resolve ` +
+          `(${issuerResult.reason}), so JWKS pass-through admits every token on ${routeLabel}. ${hint}`
       );
       return entry;
     }
@@ -699,9 +859,9 @@ export function resolveJwtAuthorizerIntrinsics(
     });
     if (unresolvedAudience.length > 0) {
       warnOnce(
-        `${stackName}\0${auth.logicalId}\0audience`,
+        `${routeKey}\0${stackName}\0${auth.logicalId}\0audience`,
         `${label}: JwtConfiguration.Audience ${unresolvedAudience.map((i) => `[${i}]`).join(', ')} could not be resolved ` +
-          `(${firstReason}), so the token audience is not checked on its routes (signature, issuer and expiry still are).`
+          `(${firstReason}), so the token audience is not checked on ${routeLabel} (signature, issuer and expiry still are).`
       );
     }
     return {
@@ -717,52 +877,91 @@ export function resolveJwtAuthorizerIntrinsics(
 }
 
 /**
- * Pull a string out of a literal / `Fn::GetAtt` entry under `ProviderARNs`.
+ * Warn, once per route, about every auth setting a served route declares that
+ * `start-api` does not enforce locally (go-to-k/cdk-local#1010), so no setting
+ * is dropped silently:
  *
- * CDK's `apigateway.CognitoUserPoolsAuthorizer` emits a `Fn::GetAtt:
- * [<UserPool>, 'Arn']` reference, which is the canonical shape any user
- * who writes `new CognitoUserPoolsAuthorizer(this, 'auth', { cognitoUserPools: [pool] })`
- * ends up with (#470). Without `--from-state` we cannot resolve the
- * deployed pool ARN, so we synthesize an obviously-unreachable placeholder
- * pointing at a non-existent pool id — the JWKS fetch will fail and
- * cognito-jwt.ts's pass-through fallback (PR #234) admits every JWT
- * without signature verification. The warn log names the affected
- * authorizer + the recommended explicit `providerArns` workaround so
- * developers who DO want real verification know how to switch over.
+ * - REST v1 method `ApiKeyRequired`: API keys live in the deployed API.
+ * - REST v1 method / HTTP v2 route `AuthorizationScopes`.
+ * - REST v1 TOKEN authorizer `IdentityValidationExpression`.
+ * - REST v1 `AWS::ApiGateway::RestApi.Policy` (a resource policy).
  *
- * The `location` argument carries the full
- * `<stack>/<authorizer>.ProviderARNs[<idx>]` path so the warn / error
- * names the offending entry exactly.
+ * The route is still served. `warned` dedups across `--watch` reloads.
  */
-function pickStringFromArn(value: unknown, location: string): string {
-  if (typeof value === 'string') return value;
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>;
-    if ('Fn::GetAtt' in obj) {
-      const arg = obj['Fn::GetAtt'];
-      if (
-        Array.isArray(arg) &&
-        arg.length === 2 &&
-        typeof arg[0] === 'string' &&
-        arg[1] === 'Arn'
-      ) {
-        const logicalId = arg[0];
-        getLogger().warn(
-          `${location}: uses Fn::GetAtt against logical ID ${displayIdent(logicalId)}. ` +
-            `${getEmbedConfig().cliName} start-api cannot resolve the deployed user pool ARN — synthesizing ` +
-            `an unreachable placeholder so JWKS pass-through admits every token. ` +
-            `For real signature verification, set 'providerArns: [pool.userPoolArn]' explicitly on the CDK construct.`
+export function warnUnenforcedRouteAuthSettings(
+  stacks: readonly StackInfo[],
+  routes: readonly RouteWithAuth[],
+  warned: Set<string> = new Set<string>()
+): void {
+  const cli = getEmbedConfig().cliName;
+  const byName = new Map(stacks.map((st) => [st.stackName, st] as const));
+  for (const { route, authorizer } of routes) {
+    if (route.unsupported || route.mockCors) continue;
+    const slash = route.declaredAt.indexOf('/');
+    if (slash < 0) continue;
+    const stackName = route.declaredAt.slice(0, slash);
+    const logicalId = route.declaredAt.slice(slash + 1);
+    const stack = byName.get(stackName);
+    const resource = stack?.template.Resources?.[logicalId];
+    if (!stack || !resource) continue;
+    const props = resource.Properties ?? {};
+    const routeLabel = describeRouteForWarning(route);
+    const where = `${displayStackName(stackName)}/${displayIdent(logicalId)}`;
+    const warnOnce = (field: string, message: string): void => {
+      const key = `${route.declaredAt}\0${route.method}\0${route.pathPattern}\0${field}`;
+      if (warned.has(key)) return;
+      warned.add(key);
+      getLogger().warn(message);
+    };
+    const isRest = resource.Type === 'AWS::ApiGateway::Method';
+    const isHttp = resource.Type === 'AWS::ApiGatewayV2::Route';
+    if (!isRest && !isHttp) continue;
+
+    const apiKeyRequired = props['ApiKeyRequired'];
+    if (
+      isRest &&
+      apiKeyRequired !== undefined &&
+      apiKeyRequired !== false &&
+      apiKeyRequired !== 'false'
+    ) {
+      warnOnce(
+        'ApiKeyRequired',
+        `${where}: ApiKeyRequired is not enforced by ${cli} start-api (API keys live in the deployed API), ` +
+          `so ${routeLabel} is served without an x-api-key check.`
+      );
+    }
+    const scopes = props['AuthorizationScopes'];
+    if (scopes !== undefined && (!Array.isArray(scopes) || scopes.length > 0)) {
+      warnOnce(
+        'AuthorizationScopes',
+        `${where}: AuthorizationScopes ${displayIdent(shortJson(scopes))} are not checked by ${cli} start-api, ` +
+          `so ${routeLabel} accepts any token its authorizer accepts, whatever its scope claim.`
+      );
+    }
+    if (authorizer?.kind === 'lambda-token') {
+      const authProps = stack.template.Resources?.[authorizer.logicalId]?.Properties ?? {};
+      if (authProps['IdentityValidationExpression'] !== undefined) {
+        warnOnce(
+          'IdentityValidationExpression',
+          `${displayStackName(stackName)}/${displayIdent(authorizer.logicalId)}: IdentityValidationExpression is not applied by ` +
+            `${cli} start-api, so on ${routeLabel} every token reaches the authorizer Lambda.`
         );
-        // The placeholder region is informational — the JWKS URL it
-        // produces (`https://cognito-idp.us-east-1.amazonaws.com/<pool>/.well-known/jwks.json`)
-        // is supposed to 404 so the pass-through path is the only outcome.
-        // The pool id is namespaced with the logical id so the warn line is
-        // easy to grep back to the offending authorizer if multiple coexist.
-        return `arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_${getEmbedConfig().binaryName}placeholder${logicalId}`;
+      }
+    }
+    if (isRest && route.apiLogicalId) {
+      const api = stack.template.Resources?.[route.apiLogicalId];
+      if (
+        api?.Type === 'AWS::ApiGateway::RestApi' &&
+        (api.Properties ?? {})['Policy'] !== undefined
+      ) {
+        warnOnce(
+          'Policy',
+          `${displayStackName(stackName)}/${displayIdent(route.apiLogicalId)}: the RestApi resource Policy is not evaluated by ` +
+            `${cli} start-api, so ${routeLabel} is served whatever the policy allows or denies.`
+        );
       }
     }
   }
-  throw new RouteDiscoveryError(`${location}: must be a literal string (got ${shortJson(value)}).`);
 }
 
 /**

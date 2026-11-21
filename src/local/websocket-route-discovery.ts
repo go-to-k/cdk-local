@@ -6,6 +6,7 @@ import { displayIdent, displayStackName } from '../utils/ident-display.js';
 import { resolveLambdaArnIntrinsic } from './intrinsic-lambda-arn.js';
 import { pickRefLogicalId } from './intrinsic-utils.js';
 import { getEmbedConfig } from './embed-config.js';
+import { getLogger } from '../utils/logger.js';
 
 /**
  * Discovered WebSocket API for `cdkl start-api`.
@@ -355,6 +356,16 @@ function collectRoutesForApi(
       );
     }
     seenKeys.add(routeKey);
+
+    // API keys live in the deployed API, so the check cannot run locally;
+    // warn rather than drop the setting silently (#1010).
+    const apiKeyRequired = props['ApiKeyRequired'];
+    if (apiKeyRequired !== undefined && apiKeyRequired !== false && apiKeyRequired !== 'false') {
+      getLogger().warn(
+        `${displayStackName(declaredAt)}: ApiKeyRequired is not enforced by ${getEmbedConfig().cliName} start-api, ` +
+          `so WebSocket route ${displayIdent(routeKey)} is served without an x-api-key check.`
+      );
+    }
 
     const targetLogicalId = parseRouteTarget(props['Target'], declaredAt);
     const integration = resources[targetLogicalId];
