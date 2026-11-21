@@ -1661,7 +1661,10 @@ a RestApi resource `Policy`. The local server evaluates
 `IdentityValidationExpression` as a JavaScript Unicode-mode pattern, so Java
 syntax with no exact JavaScript equivalent (`\p{Alnum}`, `\A`, `\z`, an
 escaped `\_`) is warned and not applied rather than applied with a different
-meaning; `\w`, `\S` and plain character classes are applied as written.
+meaning; `\w`, `\S` and plain character classes are applied as written. One
+exception is not caught: Java's ASCII-only `\p{Alpha}` / `\p{Lower}` /
+`\p{Upper}` are read as Unicode properties, so locally they also match a
+non-ASCII character the deployed API would reject.
 
 Authorizer results are cached per `(authorizer, identity)` for the TTL
 declared by the authorizer (REST v1: `AuthorizerResultTtlInSeconds`,
