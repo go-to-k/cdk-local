@@ -125,10 +125,13 @@ echo "==> start-alb: naming the ALB (DesiredCount=2 backing service); HTTP:80 ->
 # so the front-door binds without root (the macOS Docker Desktop privileged-port
 # path). No --tls flag: the HTTPS:443 listener exercises the #198 default —
 # served over plain HTTP locally, with X-Forwarded-Proto: https preserved.
+# The target sits BETWEEN the two --lb-port flags: each flag takes one value,
+# so the target after one is still the target (issue #1020).
 env -u AWS_PROFILE -u AWS_SESSION_TOKEN AWS_ACCESS_KEY_ID="${FAKE_CHAIN_KEY}" AWS_SECRET_ACCESS_KEY=integ-fake-secret-889 \
-  ${CDKL} start-alb CdkLocalStartAlbFixture:WebLB \
+  ${CDKL} start-alb \
   --container-host 127.0.0.1 \
   --lb-port "80=${LB_HOST_PORT}" \
+  CdkLocalStartAlbFixture:WebLB \
   --lb-port "443=${LB_HOST_PORT_HTTPS}" \
   > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!

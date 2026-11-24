@@ -3,7 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Command, Option } from 'commander';
-import { addAwsEndpointOptions } from '../options.js';
+import { addAwsEndpointOptions, collectRepeated } from '../options.js';
 import {
   activateWorkloadAwsWiring,
   type WorkloadAwsWiring,
@@ -1062,7 +1062,7 @@ interface LocalStudioOptions {
   /** `--ca-bundle <file>`: forwarded to every child command (as an absolute path). */
   caBundle?: string;
   /**
-   * `--stack <glob...>`: DISPLAY-only filter — show only targets whose id
+   * `--stack <glob>` (repeatable): DISPLAY-only filter — show only targets whose id
    * matches one of the globs (e.g. `dev/*`). Does NOT scope synth.
    */
   stack?: string[];
@@ -1580,12 +1580,13 @@ export function addStudioSpecificOptions(cmd: Command): Command {
   addAwsEndpointOptions(cmd);
   cmd.addOption(
     new Option(
-      '--stack <glob...>',
+      '--stack <glob>',
       'Filter the DISPLAYED targets by stack glob (e.g. "dev/*"); a target id is ' +
         '"Stack/Construct". Display-only — does NOT scope synth (the whole app is still ' +
         "synthesized; gate synth with the app's own -c context or a committed cdk.context.json). " +
-        'Space-separate multiple globs; a target matching ANY glob is shown.'
-    )
+        'Repeat the flag for several globs (--stack "dev/*" --stack "qa/*"); a target matching ANY glob ' +
+        'is shown.'
+    ).argParser(collectRepeated)
   );
   cmd.addOption(
     new Option(

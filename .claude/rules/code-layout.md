@@ -43,7 +43,7 @@ Commander command factories — one `createLocal*Command` per verb in
     forwarded verbatim to every child, EDITABLE at run time
     (`PATCH /api/config` -> `applyConfigPatch`) and applying to SUBSEQUENT runs,
     not running serves; the handler logs a change-gated one-liner.
-  - `--stack <glob...>` (`filterStudioTargetGroups`) is DISPLAY-only; it does NOT
+  - `--stack <glob>` (repeatable; `filterStudioTargetGroups`) is DISPLAY-only; it does NOT
     scope synth — gate synth with the app's own `-c` context.
   - Boot pin classification marks a deployed-registry-pinned service `pinned`, so
     the UI offers a Dockerfile picker; under `--from-cfn-stack` deployed-state

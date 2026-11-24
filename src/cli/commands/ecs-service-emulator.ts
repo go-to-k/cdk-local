@@ -1,6 +1,7 @@
 import { readEnvVarsFileText } from '../../local/env-resolver.js';
 import {
   addAwsEndpointOptions,
+  collectRepeated,
   emulateRoleViaOption,
   isRoleFlagRequested,
   warnIfEmulateRoleViaUnused,
@@ -3806,49 +3807,49 @@ export function addImageOverrideOptions(cmd: Command): Command {
   return cmd
     .addOption(
       new Option(
-        '--image-override <service=dockerfile or dockerfile...>',
+        '--image-override <service=dockerfile or dockerfile>',
         "Replace a service target's deployed-registry image with a local `docker build` of the " +
           'supplied Dockerfile (repeatable). Two forms: <service>=<dockerfile> binds the service ' +
           'explicitly; a bare <dockerfile> opens a multi-select picker against the still-uncovered ' +
           'pinned targets (one Dockerfile across N services). Mix freely. Lets `--from-cfn-stack` ' +
           'still reach real AWS state while you iterate locally on the application container.'
-      )
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(
-        '--image-build-arg <KEY=VAL...>',
+        '--image-build-arg <KEY=VAL>',
         'Global `docker build --build-arg KEY=VAL` pair applied to every --image-override build ' +
           '(repeatable). Lets a CDK Dockerfile that branches on an ARG (env target, base image tag, ' +
           'package mirror) honor that ARG locally without editing the Dockerfile.'
-      )
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(
-        '--image-build-secret <id=src...>',
+        '--image-build-secret <id=src>',
         'Global `docker build --secret id=<id>,src=<src>` entry applied to every --image-override ' +
           'build (repeatable). Enables `RUN --mount=type=secret,id=<id>` in the Dockerfile — the ' +
           'standard private-registry / npm-token recipe (e.g. ' +
           '`--image-build-secret npmrc=./.npmrc`).'
-      )
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(
-        '--image-target <stage or svc=stage...>',
+        '--image-target <stage or svc=stage>',
         'Repeatable. Bare `<stage>` is a global --target for every --image-override build; ' +
           '`<service>=<stage>` (issue #240) scopes the --target to one overridden target so a ' +
           'monorepo with different multi-stage Dockerfiles per service can stop each at its own ' +
           'intermediate stage. Per-service form overrides the global on the named target.'
-      )
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(
-        '--image-context <dir or svc=dir...>',
+        '--image-context <dir or svc=dir>',
         'Repeatable. The `docker build` context for --image-override builds whose Dockerfile lives ' +
           'below it (a monorepo whose apps share code: --image-override Svc=apps/api/Dockerfile ' +
           '--image-context Svc=.). Bare `<dir>` applies to every overridden target; ' +
           '`<service>=<dir>` scopes it to one and overrides the global. Default: the ' +
           "Dockerfile's directory."
-      )
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(

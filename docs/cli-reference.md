@@ -46,7 +46,7 @@ Shared across every `cdkl` subcommand (declared in
 | `-y, --yes` | off | Automatically answer interactive prompts with the recommended response. |
 | `-a, --app <cmd-or-dir>` | — | CDK app command (e.g. `"node app.ts"`) or path to a pre-synthesized cloud assembly directory (e.g. `"cdk.out"`). Falls back to `CDKL_APP` env or the `app` field in `cdk.json`. |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
-| `-c, --context <key=value...>` | — | Set CDK context values (repeatable). |
+| `-c, --context <key=value>` | — | Set CDK context values. One `key=value` per flag; repeat the flag for more. |
 | `--region <region>` | — | AWS region for the host-side SDK calls (STS `GetCallerIdentity` for `${AWS::AccountId}` resolution, `AssumeRole` for `--assume-role`, the `--from-cfn-stack` CFn client) and the container's `AWS_REGION` env var. Defaults to `AWS_REGION` / `AWS_DEFAULT_REGION` env, then the synthesized stack region, then the `--profile`'s configured region. |
 | `--aws-emulator [url]` | off | Run against a local AWS Emulator (default `https://127.0.0.1:9297`) for the command's own AWS calls and every workload container; also reads `CDK_LOCAL_AWS_EMULATOR`. Registered by every command that starts containers, and by `studio`, which forwards it. See [AWS endpoints, CA bundles and credentials inside containers](#aws-endpoints-ca-bundles-and-credentials-inside-containers). |
 | `--ca-bundle <file>` | host `AWS_CA_BUNDLE` | PEM CA bundle mounted read-only into every workload container. Registered by every command that starts containers, and by `studio`, which forwards it. |
@@ -312,6 +312,27 @@ a VALUE rather than rejected as an unknown option, so a mistyped
 of immediately.
 
 Both follow from the `commander` 14 upgrade.
+
+## Repeatable flags take one value per flag
+
+Every repeatable value flag — `-c, --context`, `--host-port`, `--lb-port`,
+`--image-override`, `--image-build-arg`, `--image-build-secret`,
+`--image-target`, `--image-context`, `studio`'s `--stack`, and the rest —
+takes exactly ONE value per occurrence, as the AWS CDK CLI does for
+`--context`. Repeat the flag for several values:
+
+```console
+$ cdkl start-service --host-port 80=8080 --host-port 443=8443 MyStack/MySvc
+```
+
+A target written after such a flag stays the target. Before
+go-to-k/cdk-local#1020 these flags were variadic, so
+`cdkl start-service --host-port 80=8080 MyStack/MySvc` read
+`MyStack/MySvc` as a second `--host-port` value and selected no target.
+The old space-separated form (`--host-port 80=8080 443=8443`) no longer
+works: on `start-service`, `start-alb` and `start-api`, which take several
+targets, the second value is read as a target; on a single-target command
+and on `studio` it is refused as too many arguments.
 
 ## Interactive target selection
 
@@ -2758,7 +2779,7 @@ The console is a three-pane layout:
 | `--assume-role <arn>` | (off) | IAM role ARN to assume for every invoke / serve started from the UI; the temporary credentials are forwarded into the containers. Forwarded to each child command. |
 | `--aws-emulator [url]` | (off; reads `CDK_LOCAL_AWS_EMULATOR`) | Run studio's own AWS calls (the `--from-cfn-stack` binding) and every invoke / serve started from the UI against a local AWS Emulator. studio checks the emulator's health at boot and forwards the URL to each child command. See [`--aws-emulator [url]`](#--aws-emulator-url). |
 | `--ca-bundle <file>` | host `AWS_CA_BUNDLE` | PEM CA bundle mounted into every workload container. Forwarded to each child command as an absolute path. |
-| `--stack <glob...>` | (all) | Filter the DISPLAYED targets by stack glob (a target id is `Stack/Construct`, so `dev/*` keeps stack `dev`'s targets, `dev*` any stack starting `dev`). Space-separate multiple globs (a target matching ANY is shown). **Display-only — does NOT scope synth**: the whole app is still synthesized, so gate synth itself with the app's own `-c` context / a committed `cdk.context.json`. |
+| `--stack <glob>` | (all) | Filter the DISPLAYED targets by stack glob (a target id is `Stack/Construct`, so `dev/*` keeps stack `dev`'s targets, `dev*` any stack starting `dev`). Repeatable, one glob per flag (a target matching ANY is shown). **Display-only — does NOT scope synth**: the whole app is still synthesized, so gate synth itself with the app's own `-c` context / a committed `cdk.context.json`. |
 | `--watch` | (off) | Spawn serves started from the UI (`start-api` / `start-alb` / `start-service`) with `--watch`, so they re-synth + rolling-reload on CDK source changes. Toggleable live from the Session bar (`PATCH /api/config`), applying to the next serve. No effect on single-shot invokes (each re-synths anyway); the target list is not re-synthed (restart studio to pick up newly-added resources). |
 
 `--from-cfn-stack`, `--assume-role`, `--aws-emulator` and `--ca-bundle` are **session-global**: they apply
