@@ -103,6 +103,12 @@ describe('repeatable flags keep a following target (go-to-k/cdk-local#1020)', ()
     expect(opts['stack']).toEqual(['dev/*', 'qa/*']);
   });
 
+  it('studio --stack: a second word after one flag is an extra argument, not a glob', () => {
+    const cmd = createLocalStudioCommand();
+    cmd.configureOutput({ writeErr: () => {} });
+    expect(() => parse(cmd, ['--stack', 'dev/*', 'qa/*'])).toThrow(/too many arguments/);
+  });
+
   it('no flag leaves each option unset', () => {
     const { opts, operands } = parse(createLocalStartServiceCommand(), ['MyStack/Svc']);
     expect(operands).toEqual(['MyStack/Svc']);

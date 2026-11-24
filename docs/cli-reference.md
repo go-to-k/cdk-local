@@ -329,8 +329,10 @@ A target written after such a flag stays the target. Before
 go-to-k/cdk-local#1020 these flags were variadic, so
 `cdkl start-service --host-port 80=8080 MyStack/MySvc` read
 `MyStack/MySvc` as a second `--host-port` value and selected no target.
-The old space-separated form (`--host-port 80=8080 443=8443`) now reads
-the second value as a target.
+The old space-separated form (`--host-port 80=8080 443=8443`) no longer
+works: on `start-service`, `start-alb` and `start-api`, which take several
+targets, the second value is read as a target; on a single-target command
+and on `studio` it is refused as too many arguments.
 
 ## Interactive target selection
 

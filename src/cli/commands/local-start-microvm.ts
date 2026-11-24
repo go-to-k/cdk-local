@@ -100,7 +100,7 @@ export interface LocalStartMicrovmOptions extends LambdaContainerEnvOptions {
   platform?: string;
   /** `--no-build-cache` sets this false. */
   buildCache?: boolean;
-  /** `--proxy-port <ports...>`: extra container ports the front door may route to. */
+  /** `--proxy-port <port>` (repeatable): extra container ports the front door may route to. */
   proxyPort?: number[];
   /** `--auto-resume`: resume a suspended MicroVM on its next request. */
   autoResume?: boolean;
