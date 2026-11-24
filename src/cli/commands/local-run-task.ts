@@ -2,6 +2,7 @@ import { readEnvVarsFileText } from '../../local/env-resolver.js';
 import path from 'node:path';
 import {
   addAwsEndpointOptions,
+  collectRepeated,
   isRoleFlagRequested,
   warnIfEmulateRoleViaUnused,
 } from '../options.js';
@@ -149,7 +150,7 @@ interface LocalRunTaskOptions {
    * authenticate against the target ECR repository.
    */
   ecrRoleArn?: string;
-  /** `--host-port <containerPort=hostPort>` overrides (repeatable; variadic array). */
+  /** `--host-port <containerPort=hostPort>` overrides (repeatable, one value per flag). */
   hostPort?: string[];
   platform?: string;
   keepRunning: boolean;
@@ -1207,12 +1208,12 @@ export function addRunTaskSpecificOptions(cmd: Command): Command {
     )
     .addOption(
       new Option(
-        '--host-port <containerPort=hostPort...>',
+        '--host-port <containerPort=hostPort>',
         'Publish a container port on a specific host port (e.g. 80=8080); repeatable. ' +
           'Default: host port == container port. Use this on macOS to map a privileged ' +
           'container port (< 1024) to a non-privileged host port and avoid the Docker ' +
           'Desktop admin-password prompt.'
-      )
+      ).argParser(collectRepeated)
     );
   // Issue #249 / C6 — `--assume-task-role` plus its `--assume-role`
   // cross-command alias, both routed through `resolveEcsAssumeRoleOption`.

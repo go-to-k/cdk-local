@@ -6,6 +6,7 @@ import {
   setEmbedConfig,
   type CdkLocalEmbedConfig,
 } from '../../local/embed-config.js';
+import { collectRepeated } from '../options.js';
 import type { ExtraStateProviders } from './local-state-source.js';
 import type { CdkAppSynthesizer } from '../../synthesis/synthesizer.js';
 import {
@@ -141,13 +142,13 @@ export function addStartServiceSpecificOptions(cmd: Command): Command {
   return cmd
     .addOption(
       new Option(
-        '--host-port <containerPort=hostPort...>',
+        '--host-port <containerPort=hostPort>',
         'Publish a container port on a specific host port (e.g. 80=8080); repeatable. ' +
           'Default: host port == container port. Use this on macOS to map a privileged ' +
           'container port (< 1024) to a non-privileged host port and avoid the Docker ' +
           'Desktop admin-password prompt. (Single-replica services only — multi-replica ' +
           'services do not publish host ports.)'
-      )
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(

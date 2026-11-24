@@ -114,8 +114,8 @@ export const CATALOG_EXCLUDED_FLAGS: ReadonlySet<string> = new Set([
  * would leave them reachable ONLY via the raw extra-args box — the exact UX
  * gap the auto-rendered controls exist to close. A user rebuilding a pinned
  * image from a local Dockerfile legitimately needs to pass build args /
- * secrets / a target stage, so they get a control (variadic → one value per
- * control; the raw-args box remains for multiple).
+ * secrets / a target stage, so they get a control (one value per control; the
+ * raw-args box remains for several).
  */
 export const CATALOG_MANAGED_FLAGS: ReadonlySet<string> = new Set([
   '--event',

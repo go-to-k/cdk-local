@@ -123,13 +123,23 @@ export function appOptions(): Option[] {
 }
 
 /**
- * Context options.
+ * Commander `argParser` for a REPEATABLE single-value option: each flag takes
+ * ONE value, appended to the earlier ones. A variadic `<value...>` would
+ * swallow the target that follows it (`--host-port 80=8080 MySvc`), where the
+ * AWS CDK CLI declares its repeatable options `nargs: 1` (go-to-k/cdk-local#1020).
+ */
+export function collectRepeated(value: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), value];
+}
+
+/**
+ * Context options. One `key=value` per flag, repeatable.
  */
 export const contextOptions = [
   new Option(
-    '-c, --context <key=value...>',
+    '-c, --context <key=value>',
     'Set context values (can be specified multiple times)'
-  ),
+  ).argParser(collectRepeated),
 ];
 
 /**

@@ -124,11 +124,14 @@ describe('buildFlagCatalog', () => {
     expect(platform?.choices).toEqual(['linux/amd64', 'linux/arm64']);
   });
 
-  it('derives the variadic flag (`<x...>`) from the command', () => {
+  it('derives the variadic flag from the command', () => {
     const cat = buildFlagCatalog();
-    // ecs --host-port is a repeatable (variadic) value flag.
+    // ecs --host-port is repeatable but takes one value per flag, so it is not
+    // variadic (go-to-k/cdk-local#1020).
     const hostPort = (cat.ecs?.flags ?? []).find((f) => f.long === '--host-port');
-    expect(hostPort?.variadic).toBe(true);
+    expect(hostPort?.takesValue).toBe(true);
+    expect(hostPort?.variadic).toBe(false);
+    expect(hostPort?.placeholder).toBe('containerPort=hostPort');
     // A plain scalar flag is not variadic.
     const stackRegion = (cat.cloudfront?.flags ?? []).find((f) => f.long === '--stack-region');
     expect(stackRegion?.variadic).toBe(false);

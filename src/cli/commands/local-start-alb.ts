@@ -6,6 +6,7 @@ import {
   setEmbedConfig,
   type CdkLocalEmbedConfig,
 } from '../../local/embed-config.js';
+import { collectRepeated } from '../options.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { parseEcsTarget, type ParsedEcsTarget } from '../../local/ecs-task-resolver.js';
 import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
@@ -476,11 +477,11 @@ export function addAlbSpecificOptions(cmd: Command): Command {
   return cmd
     .addOption(
       new Option(
-        '--lb-port <listenerPort=hostPort...>',
+        '--lb-port <listenerPort=hostPort>',
         'Bind the local front-door on a specific host port (e.g. 80=8080); repeatable. ' +
           'Default: host port == ALB listener port. Use this on macOS to remap a privileged ' +
           'listener port (< 1024) to a non-privileged host port.'
-      )
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(
@@ -493,7 +494,7 @@ export function addAlbSpecificOptions(cmd: Command): Command {
           'applies to one listener and wins over a bare <host>; repeatable. Other rule conditions ' +
           'are unaffected, and a redirect action keeps the request Host so the browser stays on ' +
           'the local front-door. Default: the request Host is used as sent.'
-      ).argParser((value: string, prev: string[] | undefined) => [...(prev ?? []), value])
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(

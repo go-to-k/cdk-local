@@ -1,6 +1,7 @@
 import { Command, Option } from 'commander';
 import {
   addAwsEndpointOptions,
+  collectRepeated,
   emulateRoleViaOption,
   warnIfEmulateRoleViaUnused,
 } from '../options.js';
@@ -1380,7 +1381,7 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
         '--origin <originId=dir>',
         'Point a distribution origin at a local directory (repeatable). Use when cdk-local cannot resolve the ' +
           "origin's BucketDeployment source automatically (content uploaded out of band, or a non-CDK bucket)."
-      ).argParser((value: string, prev: string[] | undefined) => [...(prev ?? []), value])
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(
@@ -1390,7 +1391,7 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
           'logical id, its construct path, or its bare construct id; the file is a flat ' +
           '{ "key": "value" } object. The AWS-free alternative to --from-cfn-stack, which instead reads the ' +
           'deployed store via the GetKey API.'
-      ).argParser((value: string, prev: string[] | undefined) => [...(prev ?? []), value])
+      ).argParser(collectRepeated)
     )
     .addOption(
       new Option(
