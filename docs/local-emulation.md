@@ -231,13 +231,18 @@ runs a command against a local AWS Emulator. The URL defaults to
   so a handler that misses the endpoint fails instead of reaching real AWS.
 - The run's `ca.pem` (or `--ca-bundle` / `AWS_CA_BUNDLE`) is mounted as
   above; certificate verification stays on.
-- SQS goes through a sidecar: with an https URL whose run wrote its `ca.pem`,
-  containers also get `AWS_ENDPOINT_URL_SQS=https://127.0.0.1:47297`, a
-  sidecar inside the workload's network namespace. AWS Emulator answers
+- SQS may go through a sidecar. AWS Emulator before 1.0.580 answers
   `CreateQueue` / `GetQueueUrl` / `ListQueues` / `ListDeadLetterSourceQueues`
   with real-looking queue URLs (`https://sqs.<region>.amazonaws.com/<account>/<queue>`),
   and the AWS SDK for JavaScript v3 sends an SQS request to its queue URL's
-  host, which would leave the emulator. The sidecar rewrites those URLs (the
+  host, which would leave the emulator; 1.0.580 and later answer with a URL
+  on the endpoint the request reached. At startup cdk-local sends the
+  emulator one read-only `ListQueues` in the run's region: when the queue
+  URL it returns is local, no sidecar runs (go-to-k/cdk-local#935).
+  Otherwise (a real-looking URL, no queue in that region yet, or no answer),
+  with an https URL whose run wrote its `ca.pem`, containers also get
+  `AWS_ENDPOINT_URL_SQS=https://127.0.0.1:47297`, a sidecar inside the
+  workload's network namespace. The sidecar rewrites those URLs (the
   URL fields only, never a message body) to `https://127.0.0.1:47297/<account>/<queue>`,
   so the next call stays local. It forwards each request unchanged (the
   container already signs with the emulator's keys) over TLS verified

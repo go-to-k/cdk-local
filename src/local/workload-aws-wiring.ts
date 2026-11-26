@@ -44,9 +44,11 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { rootCertificates } from 'node:tls';
-import { get as httpGet } from 'node:http';
+import { get as httpGet, request as httpRequest } from 'node:http';
 import type { IncomingMessage } from 'node:http';
-import { get as httpsGet } from 'node:https';
+import { get as httpsGet, request as httpsRequest } from 'node:https';
+import { Sha256 } from '@aws-crypto/sha256-js';
+import { SignatureV4 } from '@smithy/signature-v4';
 import { isLoopbackHostname } from '../utils/loopback-host.js';
 import { getLogger } from '../utils/logger.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -79,6 +81,7 @@ import {
 import type { RealAwsException } from './aws-emulator-mixed-mode.js';
 import { buildJavaTrustStore, createMixedModeTlsMaterials } from './mixed-mode-tls.js';
 import {
+  isRealAwsHost,
   realSqsHostnames,
   rewriteSqsQueueUrlsInEnv,
   sqsBlockedRegionsFor,
@@ -489,6 +492,17 @@ export interface ResolveWorkloadAwsWiringOptions {
    * Resolves `undefined` when healthy, else a short reason.
    */
   probeHealth?: (url: string, caPath: string | undefined) => Promise<string | undefined>;
+  /**
+   * Host-side probe of the emulator's SQS queue URLs (default
+   * {@link probeAwsEmulatorQueueUrls}). `'local'` skips the full-mode SQS
+   * sidecar.
+   */
+  probeQueueUrls?: (
+    url: string,
+    caPath: string | undefined,
+    credentials: CallerCredentials,
+    region: string
+  ) => Promise<'local' | 'real' | undefined>;
   /** `--no-pull`: never pull the loopback forwarder image. */
   skipPull?: boolean | undefined;
   /**
@@ -638,6 +652,92 @@ export function probeAwsEmulatorHealth(
     });
     req.on('error', (e: NodeJS.ErrnoException) => resolve(e.code ?? 'ERROR'));
   });
+}
+
+/**
+ * What an AWS Emulator's SQS queue URLs name, read from one `ListQueues`
+ * (`MaxResults: 1`, read-only) signed with the emulator's keys: `'local'`
+ * when the URL's host is not a real AWS host (aws/aws-emulator#25 fixed, from
+ * 1.0.580: the URL names the endpoint the request reached), `'real'` for a
+ * real-shaped `sqs.<region>.amazonaws.com` URL. `undefined` when no queue
+ * exists in `region` or the request fails: nothing to judge by. Never throws.
+ *
+ * Host-side use case: a host CLI deciding, as {@link resolveWorkloadAwsWiring}
+ * does, whether its workloads need the SQS queue URL sidecar.
+ */
+export async function probeAwsEmulatorQueueUrls(
+  url: string,
+  caPath: string | undefined,
+  credentials: CallerCredentials,
+  region: string,
+  timeoutMs = 3000
+): Promise<'local' | 'real' | undefined> {
+  try {
+    const target = new URL(url);
+    const body = JSON.stringify({ MaxResults: 1 });
+    const signed = await new SignatureV4({
+      credentials,
+      region,
+      service: 'sqs',
+      sha256: Sha256,
+    }).sign({
+      method: 'POST',
+      protocol: target.protocol,
+      hostname: target.hostname,
+      ...(target.port ? { port: Number(target.port) } : {}),
+      path: '/',
+      headers: {
+        host: target.host,
+        'content-type': 'application/x-amz-json-1.0',
+        'x-amz-target': 'AmazonSQS.ListQueues',
+        'content-length': String(Buffer.byteLength(body)),
+      },
+      body,
+    });
+    let ca: string[] | undefined;
+    if (caPath) ca = [...rootCertificates, readFileSync(caPath, 'utf8')];
+    const text = await new Promise<string | undefined>((resolve) => {
+      const opts = { method: 'POST', headers: signed.headers };
+      // One deadline for the whole exchange: a socket timer re-arms on every
+      // chunk, so a slowly dribbling answer would never end.
+      let settled = false;
+      const settle = (v: string | undefined): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        if (v === undefined) req.destroy();
+        resolve(v);
+      };
+      const onResponse = (res: IncomingMessage): void => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          settle(undefined);
+          return;
+        }
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (c: string) => {
+          data += c;
+          if (data.length > 65536) settle(undefined);
+        });
+        res.on('end', () => settle(data));
+        res.on('error', () => settle(undefined));
+      };
+      const req =
+        target.protocol === 'https:'
+          ? httpsRequest(target, { ...opts, ...(ca ? { ca } : {}) }, onResponse)
+          : httpRequest(target, opts, onResponse);
+      const deadline = setTimeout(() => settle(undefined), timeoutMs);
+      req.on('error', () => settle(undefined));
+      req.end(body);
+    });
+    if (text === undefined) return undefined;
+    const first = (JSON.parse(text) as { QueueUrls?: unknown }).QueueUrls;
+    if (!Array.isArray(first) || typeof first[0] !== 'string') return undefined;
+    return isRealAwsHost(new URL(first[0]).hostname) ? 'real' : 'local';
+  } catch {
+    return undefined;
+  }
 }
 
 /** The error for an emulator the host cannot reach. */
@@ -939,9 +1039,33 @@ export async function resolveWorkloadAwsWiring(
       // The SQS sidecar (go-to-k/cdk-local#910): AWS Emulator's queue URLs name
       // real SQS, and the JavaScript SDK follows them. Only for an https AWS
       // Emulator whose run wrote its CA (the sidecar verifies it upstream), and
-      // for a host only once it opted in (`awsEmulatorSqsSidecar`).
-      const sidecarTls =
+      // for a host only once it opted in (`awsEmulatorSqsSidecar`). An
+      // emulator whose queue URLs are already local (aws/aws-emulator#25,
+      // 1.0.580 and later) needs none (go-to-k/cdk-local#935); with no queue
+      // to judge by, or an answer that fails, the sidecar stays.
+      const probeRegion = env['AWS_REGION'] || env['AWS_DEFAULT_REGION'] || 'us-east-1';
+      const queueUrls =
         https && run.caPath && getEmbedConfig().awsEmulatorSqsSidecar
+          ? await (opts.probeQueueUrls ?? probeAwsEmulatorQueueUrls)(
+              ep.url,
+              expandHome(run.caPath, homeDir),
+              credentials,
+              probeRegion
+            )
+          : undefined;
+      if (queueUrls === 'local') {
+        getLogger().debug(
+          '--aws-emulator: the emulator returns local SQS queue URLs; no SQS sidecar.'
+        );
+      } else if (https && run.caPath && getEmbedConfig().awsEmulatorSqsSidecar) {
+        getLogger().debug(
+          queueUrls === 'real'
+            ? '--aws-emulator: the emulator returns real-shaped SQS queue URLs; the SQS sidecar rewrites them.'
+            : `--aws-emulator: no SQS queue in ${probeRegion} (or no answer) to read the emulator's queue URL shape from; the SQS sidecar stays.`
+        );
+      }
+      const sidecarTls =
+        https && run.caPath && getEmbedConfig().awsEmulatorSqsSidecar && queueUrls !== 'local'
           ? createMixedModeTlsMaterials()
           : undefined;
       const ca =

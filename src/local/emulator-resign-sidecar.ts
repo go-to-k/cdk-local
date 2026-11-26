@@ -39,7 +39,7 @@
 //
 // It never logs a header, a body, a key or a signature.
 //
-// SQS queue URLs (go-to-k/cdk-local#910): AWS Emulator answers `CreateQueue`,
+// SQS queue URLs (go-to-k/cdk-local#910): AWS Emulator before 1.0.580 answers `CreateQueue`,
 // `GetQueueUrl`, `ListQueues` and `ListDeadLetterSourceQueues` with real-shaped
 // URLs (`https://sqs.<region>.amazonaws.com/<account>/<queue>`), and the AWS
 // SDK for JavaScript v3 sends an SQS request to its QueueUrl's host, which
@@ -48,7 +48,8 @@
 // `https://127.0.0.1:<port>`, so the SDK's next call stays local.
 //
 // Full emulator mode runs the same server as a PASSTHROUGH (`passthrough` in
-// the config), as the workload's SQS endpoint only: the workload already
+// the config), as the workload's SQS endpoint only, and only for an emulator
+// whose queue URLs are not local already (go-to-k/cdk-local#935): the workload already
 // signs with the emulator's keys, so the request goes upstream unchanged and
 // streams, and only the SQS responses above are rewritten. The config then
 // holds no keys.

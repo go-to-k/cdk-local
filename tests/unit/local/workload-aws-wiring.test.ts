@@ -1,6 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
+import { rootCertificates } from 'node:tls';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
@@ -24,6 +26,7 @@ const {
   DEFAULT_AWS_EMULATOR_URL,
   awsEmulatorEnvName,
   probeAwsEmulatorHealth,
+  probeAwsEmulatorQueueUrls,
   resolveAwsEmulatorOption,
   getActiveWorkloadAwsWiring,
   loopbackForwarderPlan,
@@ -43,6 +46,7 @@ const { recordAssumedRole, resetWorkloadIdentity, workloadClientConfig } = await
   '../../../src/utils/workload-identity.js'
 );
 const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+const { createMixedModeTlsMaterials } = await import('../../../src/local/mixed-mode-tls.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
 
 const PEM = '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n';
@@ -50,6 +54,8 @@ const EMU_KEY = { accessKeyId: 'EMULATOR0123456789AB', secretAccessKey: 'A'.repe
 
 let home: string;
 
+// Never the real probe: a live AWS Emulator on this machine would answer it.
+const noQueueUrls = async (): Promise<undefined> => undefined;
 const TRUSTSTORE = Buffer.from([0x30, 0x82, 0x01, 0x00, 0xde, 0xad, 0xbe, 0xef]);
 
 /** The DER of the first PEM certificate in `text` (the END line may be cut off). */
@@ -375,7 +381,7 @@ describe('resolveWorkloadAwsWiring — --aws-emulator', () => {
       awsEmulator: 'https://127.0.0.1:9297',
       env: { AWS_ENDPOINT_URL_S3: 'https://elsewhere.example.com' },
       homeDir: home,
-      probeHealth: healthy,
+      probeHealth: healthy, probeQueueUrls: noQueueUrls,
     });
     try {
       expect(healthy).toHaveBeenCalledWith('https://127.0.0.1:9297', path.join(home, '.aws/emulator/9297/ca.pem'));
@@ -402,14 +408,14 @@ describe('resolveWorkloadAwsWiring — --aws-emulator', () => {
   it('defaults to https://127.0.0.1:9297 and lets the port select the run directory', async () => {
     writeEmulatorRun(9297);
     writeEmulatorRun(9301);
-    const def = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const def = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     expect(def.emulatorEndpoint?.url).toBe(DEFAULT_AWS_EMULATOR_URL);
     def.dispose();
     const other = await resolveWorkloadAwsWiring({
       awsEmulator: 'https://127.0.0.1:9301',
       env: {},
       homeDir: home,
-      probeHealth: healthy,
+      probeHealth: healthy, probeQueueUrls: noQueueUrls,
     });
     expect(other.loopbackPorts).toEqual([9301, 47297]);
     expect(other.sidecar?.upstream.port).toBe(9301);
@@ -422,7 +428,7 @@ describe('resolveWorkloadAwsWiring — --aws-emulator', () => {
       awsEmulator: 'https://127.0.0.1:9300',
       env: { AWS_ACCESS_KEY_ID: 'AKIAREAL', AWS_SECRET_ACCESS_KEY: 'real' },
       homeDir: home,
-      probeHealth: healthy,
+      probeHealth: healthy, probeQueueUrls: noQueueUrls,
     });
     try {
       expect(w.emulatorCredentials).toEqual(AUTH_OFF_PLACEHOLDER_CREDENTIALS);
@@ -437,7 +443,7 @@ describe('resolveWorkloadAwsWiring — --aws-emulator', () => {
         awsEmulator: 'https://127.0.0.1:9399',
         env: {},
         homeDir: home,
-        probeHealth: async () => 'ECONNREFUSED',
+        probeHealth: async () => 'ECONNREFUSED', probeQueueUrls: noQueueUrls,
       })
     ).rejects.toThrow(/no AWS Emulator answers its health check .*ECONNREFUSED.*running on port 9399/);
   });
@@ -448,7 +454,7 @@ describe('--aws-emulator: the SQS sidecar (#910)', () => {
 
   it('writes a passthrough config holding no keys, and trusts its CA in the container bundle', async () => {
     writeEmulatorRun(9297);
-    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     try {
       const sc = w.sidecar!;
       expect(sc).toMatchObject({ port: 47297, endpoint: 'https://127.0.0.1:47297', passthrough: true });
@@ -477,7 +483,9 @@ describe('--aws-emulator: the SQS sidecar (#910)', () => {
     writeEmulatorRun(9297, { truststore: true });
     try {
       setEmbedConfig({ cliName: 'host local' });
-      const off = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+      const offProbe = vi.fn(async () => 'real' as const);
+      const off = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: offProbe });
+      expect(offProbe).not.toHaveBeenCalled();
       expect(off.sidecar).toBeUndefined();
       expect(off.env['AWS_ENDPOINT_URL_SQS']).toBeUndefined();
       expect(off.loopbackPorts).toEqual([9297]);
@@ -485,12 +493,71 @@ describe('--aws-emulator: the SQS sidecar (#910)', () => {
       expect(readFileSync(store.hostPath)).toEqual(TRUSTSTORE);
       off.dispose();
       setEmbedConfig({ cliName: 'host local', awsEmulatorSqsSidecar: true });
-      const on = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+      const on = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
       expect(on.sidecar?.passthrough).toBe(true);
       on.dispose();
     } finally {
       setEmbedConfig(undefined);
     }
+  });
+
+  it('an emulator returning local queue URLs gets no sidecar (#935); a real-shaped or unknown answer keeps it', async () => {
+    writeEmulatorRun(9297, { truststore: true });
+    const probe = vi.fn(async () => 'local' as const);
+    const local = await resolveWorkloadAwsWiring({
+      awsEmulator: true,
+      env: { AWS_REGION: 'eu-west-1' },
+      homeDir: home,
+      probeHealth: healthy,
+      probeQueueUrls: probe,
+    });
+    try {
+      expect(probe).toHaveBeenCalledWith(
+        'https://127.0.0.1:9297',
+        path.join(home, '.aws', 'emulator', '9297', 'ca.pem'),
+        EMU_KEY,
+        'eu-west-1'
+      );
+      expect(local.sidecar).toBeUndefined();
+      expect(local.env['AWS_ENDPOINT_URL_SQS']).toBeUndefined();
+      expect(local.loopbackPorts).toEqual([9297]);
+      // No sidecar CA: the bundle ends with the run's own CA, and its trust store is copied as-is.
+      const bundle = readFileSync(local.caHostPath!, 'utf8');
+      expect(bundle.startsWith(`${PEM.trimEnd()}\n${rootCertificates[0]}`)).toBe(true);
+      const store = local.mounts.find((m) => m.containerPath.endsWith('truststore.p12'))!;
+      expect(readFileSync(store.hostPath)).toEqual(TRUSTSTORE);
+    } finally {
+      local.dispose();
+    }
+    for (const answer of ['real', undefined] as const) {
+      const w = await resolveWorkloadAwsWiring({
+        awsEmulator: true,
+        env: {},
+        homeDir: home,
+        probeHealth: healthy,
+        probeQueueUrls: async () => answer,
+      });
+      try {
+        expect(w.sidecar?.passthrough).toBe(true);
+        expect(w.env['AWS_ENDPOINT_URL_SQS']).toBe('https://127.0.0.1:47297');
+      } finally {
+        w.dispose();
+      }
+    }
+  });
+
+  it('never probes when no sidecar could start (a plain http emulator)', async () => {
+    writeEmulatorRun(9302);
+    const probe = vi.fn(async () => 'real' as const);
+    const w = await resolveWorkloadAwsWiring({
+      awsEmulator: 'http://127.0.0.1:9302',
+      env: {},
+      homeDir: home,
+      probeHealth: healthy,
+      probeQueueUrls: probe,
+    });
+    w.dispose();
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it('a plain http emulator gets no sidecar: SQS keeps the global endpoint', async () => {
@@ -499,7 +566,7 @@ describe('--aws-emulator: the SQS sidecar (#910)', () => {
       awsEmulator: 'http://127.0.0.1:9302',
       env: {},
       homeDir: home,
-      probeHealth: healthy,
+      probeHealth: healthy, probeQueueUrls: noQueueUrls,
     });
     try {
       expect(w.sidecar).toBeUndefined();
@@ -512,7 +579,7 @@ describe('--aws-emulator: the SQS sidecar (#910)', () => {
 
   it("forces the sidecar as the SQS endpoint, but keeps a container's own literal one", async () => {
     writeEmulatorRun(9297);
-    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     try {
       const plain = applyWorkloadAwsWiringToEnv({}, w);
       expect(plain['AWS_ENDPOINT_URL_SQS']).toBe('https://127.0.0.1:47297');
@@ -528,7 +595,7 @@ describe('--aws-emulator: the SQS sidecar (#910)', () => {
 
   it('starts the sidecar in the forwarder only for a container that uses it', async () => {
     writeEmulatorRun(9297);
-    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     try {
       const uses = effectiveLoopbackPorts(applyWorkloadAwsWiringToEnv({}, w), w);
       expect(uses).toEqual([9297, 47297]);
@@ -555,7 +622,7 @@ describe('--aws-emulator: Java trust store', () => {
 
   it("mounts a world-readable trust store of the run's CA and the SQS sidecar's CA, and points JAVA_TOOL_OPTIONS at it", async () => {
     writeEmulatorRun(9297, { truststore: true });
-    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     try {
       expect(w.env['JAVA_TOOL_OPTIONS']).toBe(JAVA_OPTS);
       const mount = w.mounts.find((m) => m.containerPath === '/cdk-local-aws/truststore.p12');
@@ -579,7 +646,7 @@ describe('--aws-emulator: Java trust store', () => {
 
   it('sets no JAVA_TOOL_OPTIONS when the run has no truststore.p12, or the endpoint is plain http', async () => {
     writeEmulatorRun(9297);
-    const noStore = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const noStore = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     expect(noStore.env['JAVA_TOOL_OPTIONS']).toBeUndefined();
     noStore.dispose();
     writeEmulatorRun(9302, { truststore: true });
@@ -587,7 +654,7 @@ describe('--aws-emulator: Java trust store', () => {
       awsEmulator: 'http://127.0.0.1:9302',
       env: {},
       homeDir: home,
-      probeHealth: healthy,
+      probeHealth: healthy, probeQueueUrls: noQueueUrls,
     });
     expect(http.env['JAVA_TOOL_OPTIONS']).toBeUndefined();
     expect(http.mounts).toEqual([]);
@@ -605,7 +672,7 @@ describe('--aws-emulator: Java trust store', () => {
   it('without the SQS sidecar (no ca.pem in the run) the run\'s truststore.p12 is copied as-is', async () => {
     const dir = writeEmulatorRun(9297, { truststore: true });
     rmSync(path.join(dir, 'ca.pem'));
-    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     try {
       expect(w.sidecar).toBeUndefined();
       expect(w.env['AWS_ENDPOINT_URL_SQS']).toBeUndefined();
@@ -621,7 +688,7 @@ describe('--aws-emulator: Java trust store', () => {
     rmSync(path.join(dir, 'ca.pem')); // no sidecar: the run's own trust store is copied
     mkdirSync(path.join(dir, 'truststore.p12')); // EISDIR on read
     const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
-    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     try {
       expect(w.env['JAVA_TOOL_OPTIONS']).toBeUndefined();
       expect(w.mounts.map((m) => m.containerPath)).toEqual([]);
@@ -634,7 +701,7 @@ describe('--aws-emulator: Java trust store', () => {
 
   it("appends to a container's own JAVA_TOOL_OPTIONS instead of replacing it", async () => {
     writeEmulatorRun(9297, { truststore: true });
-    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     try {
       expect(applyWorkloadAwsWiringToEnv({ JAVA_TOOL_OPTIONS: '-Xmx256m' }, w)['JAVA_TOOL_OPTIONS']).toBe(
         `-Xmx256m ${JAVA_OPTS}`
@@ -829,7 +896,7 @@ describe('scrub and CA details', () => {
 
   it('emulator mode scrubs every key in EMULATOR_SCRUBBED_ENV_KEYS', async () => {
     writeEmulatorRun(9297);
-    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy });
+    const w = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
     try {
       expect(w.scrubEnvKeys).toEqual(EMULATOR_SCRUBBED_ENV_KEYS);
       const dirty = Object.fromEntries(EMULATOR_SCRUBBED_ENV_KEYS.map((k) => [k, 'x']));
@@ -849,7 +916,7 @@ describe('scrub and CA details', () => {
       caBundle: path.join(home, 'flag.pem'),
       env: {},
       homeDir: home,
-      probeHealth: probe,
+      probeHealth: probe, probeQueueUrls: noQueueUrls,
     });
     expect(flagged.emulatorEndpoint?.url).toBe('https://127.0.0.1:9297');
     // The host probe trusts the same bundle that gets mounted.
@@ -861,7 +928,7 @@ describe('scrub and CA details', () => {
       awsEmulator: 'http://127.0.0.1:9302',
       env: {},
       homeDir: home,
-      probeHealth: healthy,
+      probeHealth: healthy, probeQueueUrls: noQueueUrls,
     });
     expect(plain.mounts).toEqual([]);
     expect(plain.probeHealth).toBe(false);
@@ -1025,5 +1092,118 @@ describe('probeAwsEmulatorHealth', () => {
     await expect(probeAwsEmulatorHealth(`http://127.0.0.1:${server.port}`, undefined)).resolves.toBe(
       'ECONNREFUSED'
     );
+  });
+});
+
+describe('probeAwsEmulatorQueueUrls (#935)', () => {
+  async function withSqs(
+    reply: (body: string) => { status: number; body: string },
+    run: (url: string, seen: { headers: Record<string, unknown>; body: string }[]) => Promise<void>
+  ): Promise<void> {
+    const seen: { headers: Record<string, unknown>; body: string }[] = [];
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c.toString()));
+      req.on('end', () => {
+        seen.push({ headers: req.headers, body });
+        const r = reply(body);
+        res.writeHead(r.status, { 'content-type': 'application/x-amz-json-1.0' }).end(r.body);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  it('sends one signed, read-only ListQueues and reads the first URL host', async () => {
+    await withSqs(
+      () => ({ status: 200, body: JSON.stringify({ QueueUrls: ['https://127.0.0.1:9297/000000000000/q'] }) }),
+      async (url, seen) => {
+        await expect(probeAwsEmulatorQueueUrls(url, undefined, EMU_KEY, 'eu-west-1')).resolves.toBe('local');
+        expect(seen).toHaveLength(1);
+        expect(seen[0]!.headers['x-amz-target']).toBe('AmazonSQS.ListQueues');
+        expect(JSON.parse(seen[0]!.body)).toEqual({ MaxResults: 1 });
+        expect(String(seen[0]!.headers['authorization'])).toMatch(
+          new RegExp(`^AWS4-HMAC-SHA256 Credential=${EMU_KEY.accessKeyId}/\\d{8}/eu-west-1/sqs/aws4_request`)
+        );
+      }
+    );
+  });
+
+  it("is 'real' for a real-shaped URL, undefined with no queue, an error answer or garbage", async () => {
+    for (const [status, body, expected] of [
+      [200, JSON.stringify({ QueueUrls: ['https://sqs.us-east-1.amazonaws.com/000000000000/q'] }), 'real'],
+      [200, JSON.stringify({}), undefined],
+      [200, JSON.stringify({ QueueUrls: [] }), undefined],
+      [400, JSON.stringify({ __type: 'InvalidSecurity' }), undefined],
+      [200, 'not json', undefined],
+    ] as const) {
+      await withSqs(
+        () => ({ status, body }),
+        async (url) => {
+          await expect(probeAwsEmulatorQueueUrls(url, undefined, EMU_KEY, 'us-east-1')).resolves.toBe(expected);
+        }
+      );
+    }
+    await expect(probeAwsEmulatorQueueUrls('http://127.0.0.1:1', undefined, EMU_KEY, 'us-east-1')).resolves.toBe(
+      undefined
+    );
+  });
+
+  it('trusts the run CA it is given over https (the real call path)', async () => {
+    const tls = createMixedModeTlsMaterials();
+    writeFileSync(path.join(home, 'probe-ca.pem'), tls.caCertPem);
+    const server = createHttpsServer({ cert: tls.certPem, key: tls.keyPem }, (req, res) => {
+      req.resume();
+      req.on('end', () =>
+        res.writeHead(200).end(JSON.stringify({ QueueUrls: ['https://localhost:9297/000000000000/q'] }))
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const url = `https://localhost:${(server.address() as AddressInfo).port}`;
+    try {
+      await expect(
+        probeAwsEmulatorQueueUrls(url, path.join(home, 'probe-ca.pem'), EMU_KEY, 'us-east-1')
+      ).resolves.toBe('local');
+      // Without the run's CA the certificate is refused: nothing to judge by.
+      await expect(probeAwsEmulatorQueueUrls(url, undefined, EMU_KEY, 'us-east-1')).resolves.toBe(undefined);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('gives up at its deadline on an answer that never ends, or one past the size cap', async () => {
+    await withSqs(
+      () => ({ status: 200, body: JSON.stringify({ QueueUrls: ['x'.repeat(70000)] }) }),
+      async (url) => {
+        await expect(probeAwsEmulatorQueueUrls(url, undefined, EMU_KEY, 'us-east-1')).resolves.toBe(undefined);
+      }
+    );
+    const server = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200);
+      const t = setInterval(() => res.write(' '), 20);
+      res.on('close', () => clearInterval(t));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const started = Date.now();
+      await expect(
+        probeAwsEmulatorQueueUrls(
+          `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+          undefined,
+          EMU_KEY,
+          'us-east-1',
+          200
+        )
+      ).resolves.toBe(undefined);
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
