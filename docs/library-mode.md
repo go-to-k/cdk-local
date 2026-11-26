@@ -268,7 +268,9 @@ standalone `cdkl`) turns on full `--aws-emulator` mode's SQS sidecar: the
 wiring then carries `AWS_ENDPOINT_URL_SQS=https://127.0.0.1:47297`, port
 `47297` in `loopbackPorts` and a `sidecar` field, so the AWS SDK for
 JavaScript v3 does not follow AWS Emulator's real-shaped queue URLs out of
-the emulator. Opt in once every forwarder you start yourself takes its ports
+the emulator. An emulator whose `ListQueues` already returns a local queue
+URL (1.0.580 and later, `probeAwsEmulatorQueueUrls`) gets no sidecar, so the
+wiring carries none of the three. Opt in once every forwarder you start yourself takes its ports
 and `resignConfigHostPath` from `loopbackForwarderPlan`, and you remove
 `AWS_ENDPOINT_URL_SQS` from a host-network container's env (no sidecar can
 run there), as `withWorkloadAwsWiring` does.

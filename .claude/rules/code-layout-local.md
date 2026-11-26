@@ -94,7 +94,8 @@ a log line, and a served HTTP response body.
   endpoint (`realAwsEndpointFor`, tables in `aws-real-endpoints.ts`), gives a
   container keeping none the emulator's keys only, and drops `"real-aws"`
   without `--aws-emulator`. The sidecar (`emulator-resign-sidecar.ts`,
-  `wiring.sidecar`; full: SQS passthrough, #910) runs INSIDE the
+  `wiring.sidecar`; full: SQS passthrough, #910, skipped when one
+  `ListQueues` returns a local queue URL, #935) runs INSIDE the
   forwarder container via `forwarderCommand`; `loopbackForwarderPlan` splits
   a container's ports. Its secrets: one 0600 file, never argv; the
   per-run CA key (`mixed-mode-tls.ts`) is never written.

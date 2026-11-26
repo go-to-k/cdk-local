@@ -1389,6 +1389,7 @@ export {
   DEFAULT_AWS_EMULATOR_URL,
   awsEmulatorEnvName,
   probeAwsEmulatorHealth,
+  probeAwsEmulatorQueueUrls,
   resolveAwsEmulatorOption,
   getActiveWorkloadAwsWiring,
   getContainerCaBundlePath,
