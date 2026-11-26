@@ -83,7 +83,7 @@
     "@smithy/types": "^4.14.2",
     "agent-base": "^9.0.0",
     "chokidar": "^5.0.0",
-    "commander": "^14.0.0",
+    "commander": "^15.1.0",
     "fflate": "^0.8.3",
     "graphlib": "^2.1.8",
     "http-proxy-agent": "^9.0.0",
