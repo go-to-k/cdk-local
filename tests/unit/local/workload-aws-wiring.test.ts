@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { rootCertificates } from 'node:tls';
 import { tmpdir } from 'node:os';
@@ -45,6 +46,7 @@ const { recordAssumedRole, resetWorkloadIdentity, workloadClientConfig } = await
   '../../../src/utils/workload-identity.js'
 );
 const { setEmbedConfig } = await import('../../../src/local/embed-config.js');
+const { createMixedModeTlsMaterials } = await import('../../../src/local/mixed-mode-tls.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
 
 const PEM = '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n';
@@ -481,7 +483,9 @@ describe('--aws-emulator: the SQS sidecar (#910)', () => {
     writeEmulatorRun(9297, { truststore: true });
     try {
       setEmbedConfig({ cliName: 'host local' });
-      const off = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: noQueueUrls });
+      const offProbe = vi.fn(async () => 'real' as const);
+      const off = await resolveWorkloadAwsWiring({ awsEmulator: true, env: {}, homeDir: home, probeHealth: healthy, probeQueueUrls: offProbe });
+      expect(offProbe).not.toHaveBeenCalled();
       expect(off.sidecar).toBeUndefined();
       expect(off.env['AWS_ENDPOINT_URL_SQS']).toBeUndefined();
       expect(off.loopbackPorts).toEqual([9297]);
@@ -1147,5 +1151,59 @@ describe('probeAwsEmulatorQueueUrls (#935)', () => {
     await expect(probeAwsEmulatorQueueUrls('http://127.0.0.1:1', undefined, EMU_KEY, 'us-east-1')).resolves.toBe(
       undefined
     );
+  });
+
+  it('trusts the run CA it is given over https (the real call path)', async () => {
+    const tls = createMixedModeTlsMaterials();
+    writeFileSync(path.join(home, 'probe-ca.pem'), tls.caCertPem);
+    const server = createHttpsServer({ cert: tls.certPem, key: tls.keyPem }, (req, res) => {
+      req.resume();
+      req.on('end', () =>
+        res.writeHead(200).end(JSON.stringify({ QueueUrls: ['https://localhost:9297/000000000000/q'] }))
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const url = `https://localhost:${(server.address() as AddressInfo).port}`;
+    try {
+      await expect(
+        probeAwsEmulatorQueueUrls(url, path.join(home, 'probe-ca.pem'), EMU_KEY, 'us-east-1')
+      ).resolves.toBe('local');
+      // Without the run's CA the certificate is refused: nothing to judge by.
+      await expect(probeAwsEmulatorQueueUrls(url, undefined, EMU_KEY, 'us-east-1')).resolves.toBe(undefined);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('gives up at its deadline on an answer that never ends, or one past the size cap', async () => {
+    await withSqs(
+      () => ({ status: 200, body: JSON.stringify({ QueueUrls: ['x'.repeat(70000)] }) }),
+      async (url) => {
+        await expect(probeAwsEmulatorQueueUrls(url, undefined, EMU_KEY, 'us-east-1')).resolves.toBe(undefined);
+      }
+    );
+    const server = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200);
+      const t = setInterval(() => res.write(' '), 20);
+      res.on('close', () => clearInterval(t));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const started = Date.now();
+      await expect(
+        probeAwsEmulatorQueueUrls(
+          `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+          undefined,
+          EMU_KEY,
+          'us-east-1',
+          200
+        )
+      ).resolves.toBe(undefined);
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

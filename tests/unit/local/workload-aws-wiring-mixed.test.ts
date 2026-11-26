@@ -622,3 +622,25 @@ describe('sweepStaleResignDirs (a SIGKILLed run left its keys behind)', () => {
     }
   });
 });
+
+describe('the queue URL probe (#935)', () => {
+  it('mixed mode never probes: its re-signing sidecar stays whatever the queue URLs are', async () => {
+    writeEmulatorRun(9362, true);
+    const probe = vi.fn(async () => 'local' as const);
+    const w = await resolveWorkloadAwsWiring({
+      awsEmulator: 'https://127.0.0.1:9362',
+      realAwsExceptions: EXCEPTIONS,
+      homeDir: home,
+      env: {},
+      probeHealth: healthy,
+      probeQueueUrls: probe,
+    });
+    try {
+      expect(probe).not.toHaveBeenCalled();
+      expect(w.sidecar).toBeDefined();
+      expect(w.sidecar?.passthrough).not.toBe(true);
+    } finally {
+      w.dispose();
+    }
+  });
+});

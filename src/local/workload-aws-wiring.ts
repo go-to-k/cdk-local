@@ -669,7 +669,8 @@ export async function probeAwsEmulatorQueueUrls(
   url: string,
   caPath: string | undefined,
   credentials: CallerCredentials,
-  region: string
+  region: string,
+  timeoutMs = 3000
 ): Promise<'local' | 'real' | undefined> {
   try {
     const target = new URL(url);
@@ -696,30 +697,38 @@ export async function probeAwsEmulatorQueueUrls(
     let ca: string[] | undefined;
     if (caPath) ca = [...rootCertificates, readFileSync(caPath, 'utf8')];
     const text = await new Promise<string | undefined>((resolve) => {
-      const opts = { method: 'POST', headers: signed.headers, timeout: 3000 };
+      const opts = { method: 'POST', headers: signed.headers };
+      // One deadline for the whole exchange: a socket timer re-arms on every
+      // chunk, so a slowly dribbling answer would never end.
+      let settled = false;
+      const settle = (v: string | undefined): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        if (v === undefined) req.destroy();
+        resolve(v);
+      };
       const onResponse = (res: IncomingMessage): void => {
         if (res.statusCode !== 200) {
           res.resume();
-          resolve(undefined);
+          settle(undefined);
           return;
         }
         let data = '';
         res.setEncoding('utf8');
         res.on('data', (c: string) => {
-          if (data.length < 65536) data += c;
+          data += c;
+          if (data.length > 65536) settle(undefined);
         });
-        res.on('end', () => resolve(data));
-        res.on('error', () => resolve(undefined));
+        res.on('end', () => settle(data));
+        res.on('error', () => settle(undefined));
       };
       const req =
         target.protocol === 'https:'
           ? httpsRequest(target, { ...opts, ...(ca ? { ca } : {}) }, onResponse)
           : httpRequest(target, opts, onResponse);
-      req.on('timeout', () => {
-        req.destroy();
-        resolve(undefined);
-      });
-      req.on('error', () => resolve(undefined));
+      const deadline = setTimeout(() => settle(undefined), timeoutMs);
+      req.on('error', () => settle(undefined));
       req.end(body);
     });
     if (text === undefined) return undefined;
@@ -1034,18 +1043,25 @@ export async function resolveWorkloadAwsWiring(
       // emulator whose queue URLs are already local (aws/aws-emulator#25,
       // 1.0.580 and later) needs none (go-to-k/cdk-local#935); with no queue
       // to judge by, or an answer that fails, the sidecar stays.
+      const probeRegion = env['AWS_REGION'] || env['AWS_DEFAULT_REGION'] || 'us-east-1';
       const queueUrls =
         https && run.caPath && getEmbedConfig().awsEmulatorSqsSidecar
           ? await (opts.probeQueueUrls ?? probeAwsEmulatorQueueUrls)(
               ep.url,
               expandHome(run.caPath, homeDir),
               credentials,
-              env['AWS_REGION'] || env['AWS_DEFAULT_REGION'] || 'us-east-1'
+              probeRegion
             )
           : undefined;
       if (queueUrls === 'local') {
         getLogger().debug(
           '--aws-emulator: the emulator returns local SQS queue URLs; no SQS sidecar.'
+        );
+      } else if (https && run.caPath && getEmbedConfig().awsEmulatorSqsSidecar) {
+        getLogger().debug(
+          queueUrls === 'real'
+            ? '--aws-emulator: the emulator returns real-shaped SQS queue URLs; the SQS sidecar rewrites them.'
+            : `--aws-emulator: no SQS queue in ${probeRegion} (or no answer) to read the emulator's queue URL shape from; the SQS sidecar stays.`
         );
       }
       const sidecarTls =
